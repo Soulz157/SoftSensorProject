@@ -35,6 +35,8 @@ function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
     baseDatasetVersionId: null,
     additionalDatasetVersionId: null,
     combinedArtifactId: null,
+    cvFolds: null,
+    acceptanceCriteria: null,
     ...overrides,
   }
 }
@@ -83,11 +85,11 @@ function comparison(
       metricsBasis: null,
       newRegimeMetrics: null,
       newRegimeMetricsBasis: null,
-    newDataHoldoutMetrics: null,
-    newDataHoldoutRowCount: null,
-    newDataHoldoutFrom: null,
-    newDataHoldoutTo: null,
-    newDataHoldoutBasis: null,
+      newDataHoldoutMetrics: null,
+      newDataHoldoutRowCount: null,
+      newDataHoldoutFrom: null,
+      newDataHoldoutTo: null,
+      newDataHoldoutBasis: null,
     },
     rmseDelta: -0.5,
     selectionMetric: 'rmse',
@@ -109,10 +111,35 @@ describe('retrainPhase', () => {
     )
   })
 
-  it('is evaluating once at least one candidate has completed but the job is still live', () => {
+  it('is validating once some — not all — candidates have completed (MODEL-SERVE-027)', () => {
     expect(retrainPhase(job({ status: 'RUNNING', completedRuns: 1 }))).toBe(
+      'validating',
+    )
+    expect(retrainPhase(job({ status: 'RUNNING', completedRuns: 3 }))).toBe(
+      'validating',
+    )
+  })
+
+  it('is evaluating (Result) once every candidate has completed and the job is still live', () => {
+    expect(retrainPhase(job({ status: 'RUNNING', completedRuns: 4 }))).toBe(
       'evaluating',
     )
+  })
+
+  it('walks all three boxes in order: each becomes active before it is done', () => {
+    const seen = [0, 1, 4].map(n =>
+      (['training', 'validating', 'evaluating'] as const).map(k =>
+        stageBoxState(
+          k,
+          retrainPhase(job({ status: 'RUNNING', completedRuns: n })),
+        ),
+      ),
+    )
+    expect(seen).toEqual([
+      ['active', 'pending', 'pending'],
+      ['done', 'active', 'pending'],
+      ['done', 'done', 'active'],
+    ])
   })
 
   it('is done on SUCCEEDED', () => {

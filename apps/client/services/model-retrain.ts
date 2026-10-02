@@ -1,4 +1,5 @@
 import { fetchClient } from '@/lib/fetcher'
+import type { RetrainCriterion } from '@/lib/acceptance-criteria'
 import {
   brandModelVersionNumber,
   type ModelVersionNumber,
@@ -187,6 +188,12 @@ export interface RetrainJob {
   baseDatasetVersionId: string | null
   additionalDatasetVersionId: string | null
   combinedArtifactId: string | null
+  /** MODEL-SERVE-026-T05. Folds requested for the cross-validation of the
+   *  gap; null = none (every job before this field, and every job that did
+   *  not ask). */
+  cvFolds: number | null
+  /** MODEL-SERVE-026-T07. Null = none chosen (every job before this field). */
+  acceptanceCriteria: RetrainCriterion[] | null
 }
 
 /** The incumbent PRODUCTION version — resolved independently of any job, so
@@ -266,6 +273,17 @@ export interface TriggerRetrainInput {
   /** Custom Finetune's own train ratio (0.5–0.95). Omitted = the current
    *  version's ratio, reused server-side. */
   trainTestSplit?: number
+  /** MODEL-SERVE-026-T05. Expanding folds for the cross-validation of the
+   *  gap (NEW_DATA_ONLY only). The server refuses a count the data cannot
+   *  support, before the job exists. Omitted = no cross-validation. */
+  cvFolds?: number
+  /** MODEL-SERVE-026-T06. Custom Finetune only: false opts out of also
+   *  refitting the current version's own settings on the new data. Omitted
+   *  = refit (the default). */
+  refitCurrentSettings?: boolean
+  /** MODEL-SERVE-026-T07. Criteria chosen before the retrain starts — a
+   *  stated verdict on the Retrain tab, never a gate. Omitted = none. */
+  acceptanceCriteria?: RetrainCriterion[]
 }
 
 /**
@@ -376,6 +394,30 @@ export type RetrainPredictionPopulation =
   | 'holdout'
   | 'new_data_holdout'
   | 'current_new_data_holdout'
+
+/** MODEL-SERVE-026-T05. One row of a candidate's cross-validation series:
+ *  the candidate configuration's fold-fit prediction and the current
+ *  version's (null before its own cut, where it may have trained). */
+export interface CvGapPoint {
+  fold: number
+  timestamp: string
+  yTrue: number
+  yPred: number
+  yPredCurrent: number | null
+}
+
+export const modelRunCvGapService = {
+  get: (
+    modelId: string,
+    runId: string,
+  ): Promise<
+    ApiResponse<{ sourceKey: string; rowCount: number; points: CvGapPoint[] }>
+  > =>
+    fetchClient(
+      `/api/v1/authorized/model/${modelId}/runs/${encodeURIComponent(runId)}/cv-gap`,
+      { method: 'GET' },
+    ),
+}
 
 /** A Model-owned run's per-row predictions. A 404 (thrown as `ApiError` by
  *  `fetchClient`) carries the server's own reason naming which population is

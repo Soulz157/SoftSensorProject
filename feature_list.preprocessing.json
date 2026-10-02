@@ -4679,6 +4679,73 @@
           "status": "pending"
         }
       ]
+    },
+    {
+      "id": "DS-LAKE-036",
+      "title": "Step 5 Save: a duplicate dataset name is reported as a name clash, not as 'another save in progress', and the retrain handoff proposes a free name",
+      "priority": 36,
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": [],
+      "description": "Reported live 2026-10-02: saving the new dataset for a New Data Only retrain failed at Step 5 with 'Another save for this dataset is already in progress — retry.', and every retry failed the same way. Cause: the retrain handoff (use-retrain-dataset-handoff.ts) pre-fills the name '{base} — new data'; 'Dataset 6 month — new data' already existed in the workspace (saved 2026-09-24), so tx.dataset.create hit Dataset_workspaceId_name_key. saveDraftService maps EVERY P2002 inside its transaction to that one 409, a message written for the DatasetVersion_datasetId_versionNumber_key race (DS-LAKE-024-T06). A permanent condition was reported as a transient one.",
+      "decisions": [
+        {
+          "id": "DS-LAKE-036-D01",
+          "decision": "Match the violated constraint by name, using the driver-adapter-aware check already proven live in prediction-job.authorized.service.ts (MODEL-SERVE-003-V02): under @prisma/adapter-pg the constraint name is in meta.driverAdapterError.cause.originalMessage, not meta.target. Name clash -> 409 naming the dataset and asking for another name; version-number race -> today's retry message; any other P2002 -> rethrown, not disguised.",
+          "why": "User request 2026-10-02. The draft service's own isUniqueViolation is code-only and is also used by the edit-draft race at the resolve path, which must keep matching any P2002 -- so the constraint argument is optional."
+        },
+        {
+          "id": "DS-LAKE-036-D02",
+          "decision": "The handoff picks the first free name among '{base} — new data', '{base} — new data (2)', ... against the workspace's own dataset names, read at click time. If that list cannot be read, it falls back to today's name; the clearer 409 then covers it.",
+          "why": "Step 6's name field stays editable; this only stops the default from being a guaranteed collision on the second retrain of the same base."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-036-T01",
+          "title": "Backend: constraint-aware P2002 mapping in saveDraftService",
+          "status": "completed",
+          "progress": 100,
+          "result": "Done 2026-10-02. isUniqueViolation(err, match?) in dataset-draft.authorized.service.ts: match omitted = any P2002 (the edit-draft race keeps working); given, it matches the constraint name in driverAdapterError.cause.originalMessage OR the field list in meta.target. Note: prediction-job's copy matches a constraint NAME against meta.target, which carries FIELD names on the classic engine -- that copy cannot match the target shape; not changed here. Save now maps Dataset_workspaceId_name_key to 409 naming the dataset, DatasetVersion_datasetId_versionNumber_key to the old retry message, and rethrows any other P2002."
+        },
+        {
+          "id": "DS-LAKE-036-T02",
+          "title": "Client: lib helper for a free default name + handoff uses it",
+          "status": "completed",
+          "progress": 100,
+          "result": "Done 2026-10-02. lib/free-dataset-name.ts (freeDatasetName) + colocated test; use-retrain-dataset-handoff.ts is now async, reads datasetService.list(workspaceId) at click time and falls back to the plain name on failure; retrain-fetch-new-data.tsx calls it with void."
+        },
+        {
+          "id": "DS-LAKE-036-T03",
+          "title": "Verify: unit tests both directions, type-check, live save with the clashing name",
+          "status": "in_progress",
+          "progress": 70,
+          "result": "Unit: dataset-draft.authorized.service.spec.ts 106/106 (101 existing + 5 new; the existing version-race case had to gain a real meta, since a meta-less P2002 is now rethrown rather than disguised). lib/free-dataset-name.test.ts 4/4, retrain-fetch-new-data.test.tsx 4/4. tsc: no errors in touched files (one pre-existing error at spec line 1190, identical at HEAD). eslint clean. LIVE V03 NOT RUN -- needs a save through the UI."
+        }
+      ],
+      "acceptance_criteria": [
+        "A Step 5 save whose name already exists in the workspace returns a 409 whose message names the dataset and asks for a different name.",
+        "The DatasetVersion version-number race still returns the existing retry message.",
+        "A P2002 on any other constraint is not reported as either message.",
+        "Starting a retrain handoff whose default name is taken pre-fills the next free suffixed name."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-036-V01",
+          "status": "completed", "result": "PASS -- it.each over adapter and target shapes, both constraints, plus an unrelated constraint rethrown.",
+          "description": "Unit: the mapping distinguishes the two constraints in BOTH shapes (meta.target and driverAdapterError) -- one shape alone cannot tell a working check from one that matches nothing."
+        },
+        {
+          "id": "DS-LAKE-036-V02",
+          "status": "completed", "result": "PASS -- free, (2), skip taken suffixes, trim/case.",
+          "description": "Unit: the free-name helper returns the base name when free, '(2)' when the base is taken, and skips taken suffixes."
+        },
+        {
+          "id": "DS-LAKE-036-V03",
+          "status": "pending",
+          "description": "Live: save a dataset named 'Dataset 6 month — new data' in workspace 68ce2dfc and see the name message, not the retry message."
+        }
+      ]
     }
   ],
   "deferred": [

@@ -65,6 +65,7 @@ from schemas.preprocess import (
     MetadataResponse,
     ModelRunPredictionsRequest,
     ModelRunPredictionsResponse,
+    RunCvGapResponse,
     RunPredictionsBatchRequest,
     RunPredictionsBatchResponse,
     ModelObjectVerifyRequest,
@@ -899,6 +900,24 @@ async def run_predictions(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.run_predictions, store, body)
+
+
+@router.post(
+    "/models/runs/cv-gap",
+    response_model=RunCvGapResponse,
+    summary="A retrain candidate's CV-gap series (every fold's test rows)",
+    description=(
+        "MODEL-SERVE-026-T05. Reads cv_gap_predictions.parquet: per fold, "
+        "the candidate configuration's fold-fit prediction and the current "
+        "version's prediction (null before its own cut). Own endpoint "
+        "because the shape is five columns, not predictions.parquet's three."
+    ),
+)
+async def run_cv_gap(
+    body: ModelRunPredictionsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.run_cv_gap, store, body)
 
 
 @router.post(

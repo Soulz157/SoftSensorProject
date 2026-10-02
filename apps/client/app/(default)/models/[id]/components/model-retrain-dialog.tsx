@@ -11,6 +11,16 @@ import {
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Checkbox } from '@/components/ui/checkbox'
+import type { RetrainCriterion } from '@/lib/acceptance-criteria'
+import { RetrainCriteriaPicker } from './retrain-criteria'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import type { RetrainIncumbent } from '@/services/model-retrain'
 import type { CandidateInput } from '@/services/model-draft'
 import type { AIModel } from '@/types'
@@ -37,6 +47,13 @@ export interface StartRetrainOptions {
   /** Custom Finetune's own train ratio (0.5–0.95). Omitted = the current
    *  version's ratio, reused server-side (Auto Finetune never sends one). */
   trainTestSplit?: number
+  /** MODEL-SERVE-026-T05. Folds for the cross-validation of the gap; New
+   *  data only. Omitted = none. */
+  cvFolds?: number
+  /** MODEL-SERVE-026-T06. Custom Finetune only; false skips the B refit. */
+  refitCurrentSettings?: boolean
+  /** MODEL-SERVE-026-T07. Criteria chosen before starting; New data only. */
+  acceptanceCriteria?: RetrainCriterion[]
 }
 
 export function ModelRetrainDialog({
@@ -107,6 +124,14 @@ export function ModelRetrainDialog({
   // New data only + a version that ends before the current version's cut:
   // no validation window can exist in it, so Start can never enable.
   const [windowImpossible, setWindowImpossible] = useState(false)
+  // MODEL-SERVE-026-T05. null = no cross-validation (the default).
+  const [cvFolds, setCvFolds] = useState<number | null>(null)
+  // MODEL-SERVE-026-T06. Default ON — the B refit is what lets the tab say
+  // whether a change came from the data or from the settings.
+  const [refitCurrentSettings, setRefitCurrentSettings] = useState(true)
+  // MODEL-SERVE-026-T07. Which offered criteria the operator ticked. Both
+  // unticked by default — nothing here recommends one.
+  const [criteria, setCriteria] = useState<RetrainCriterion[]>([])
 
   // MODEL-SERVE-017. The dialog is remounted by the return navigation, so the
   // initial state above is normally enough. This re-seeds it for the case
@@ -139,6 +164,17 @@ export function ModelRetrainDialog({
                 newValidationFrom: validationWindow.from,
                 newValidationTo: validationWindow.to,
               }
+            : {}),
+          // MODEL-SERVE-026-T05. Absent unless asked for, and only for New
+          // data only — the server refuses it anywhere else.
+          ...(dataStrategy === 'NEW_DATA_ONLY' && cvFolds !== null
+            ? { cvFolds }
+            : {}),
+          // MODEL-SERVE-026-T07. Only New data only has the shared window
+          // both versions are scored on — the one population a criterion
+          // may read.
+          ...(dataStrategy === 'NEW_DATA_ONLY' && criteria.length > 0
+            ? { acceptanceCriteria: criteria }
             : {}),
         }
       : undefined
@@ -253,6 +289,54 @@ export function ModelRetrainDialog({
                 />
               )}
 
+              {/* MODEL-SERVE-026-T05. Cross-validation of the GAP: each
+                  candidate also refits on k expanding folds and is scored
+                  beside the current version per fold. New data only — under
+                  Existing + new most training rows are the current version's
+                  own, so it cannot be scored fairly on those folds. */}
+              {dataStrategy === 'NEW_DATA_ONLY' && (
+                <div className="space-y-1.5">
+                  <p className="text-sm font-medium text-foreground">
+                    Cross-validation
+                  </p>
+                  <Select
+                    value={cvFolds === null ? 'off' : String(cvFolds)}
+                    onValueChange={value =>
+                      setCvFolds(value === 'off' ? null : Number(value))
+                    }
+                    disabled={disabled}
+                  >
+                    <SelectTrigger className="h-9 w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">Off</SelectItem>
+                      {[2, 3, 4, 5].map(k => (
+                        <SelectItem key={k} value={String(k)}>
+                          {k} folds
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {cvFolds === null
+                      ? 'Shows whether the new version’s lead holds across time, fold by fold. Off: no extra training.'
+                      : `Each candidate trains ${cvFolds} more times, so the retrain takes roughly ${cvFolds + 1}× as long. Refused before it starts if the new data has too few distinct target values (10 per fold) for ${cvFolds} folds.`}
+                  </p>
+                </div>
+              )}
+
+              {/* MODEL-SERVE-026-T07. Chosen BEFORE the retrain; the tab
+                  states each verdict with both readings. Offered set comes
+                  from the engine, never a list written here. */}
+              {dataStrategy === 'NEW_DATA_ONLY' && (
+                <RetrainCriteriaPicker
+                  value={criteria}
+                  onChange={setCriteria}
+                  disabled={disabled}
+                />
+              )}
+
               <Tabs defaultValue="auto" className="flex w-full flex-col">
                 <TabsList className="flex h-10 w-full flex-row items-center rounded-md bg-muted p-1">
                   <TabsTrigger value="auto" className="flex-1">
@@ -267,7 +351,10 @@ export function ModelRetrainDialog({
                   <p className="text-sm text-muted-foreground">
                     Searches the current production algorithm&apos;s own curated
                     hyperparameter shortlist and keeps the best result by RMSE.
-                    No configuration needed.
+                    No configuration needed. The first fit is always the current
+                    version&apos;s own settings on the new data, so the result
+                    can show what the data changed and what the settings
+                    changed.
                   </p>
                   <Button
                     className="w-full gap-2"
@@ -302,6 +389,20 @@ export function ModelRetrainDialog({
                     disabled={disabled}
                     modelId={model.id}
                   />
+                  {/* MODEL-SERVE-026-T06. On by default, cost stated. */}
+                  <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                    <Checkbox
+                      checked={refitCurrentSettings}
+                      onCheckedChange={v => setRefitCurrentSettings(v === true)}
+                      disabled={disabled}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      Also refit the current version&apos;s own settings on the
+                      new data — one more fit, so the result can show what the
+                      data changed and what your settings changed.
+                    </span>
+                  </label>
                   <Button
                     className="w-full gap-2"
                     onClick={() => {
@@ -309,7 +410,11 @@ export function ModelRetrainDialog({
                         return
                       onStart(
                         [{ algorithm: incumbent.algorithm, hyperparameters }],
-                        { ...startOptions, trainTestSplit: trainSplit / 100 },
+                        {
+                          ...startOptions,
+                          trainTestSplit: trainSplit / 100,
+                          refitCurrentSettings,
+                        },
                       )
                       onClose()
                     }}

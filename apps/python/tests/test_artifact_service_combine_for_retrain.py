@@ -14,7 +14,11 @@ import pandas as pd
 import pytest
 
 from intergrations.object_store import STATUS_GOOD
-from schemas.preprocess import CombineForRetrainRequest, PassthroughHoldoutForRunRequest
+from schemas.preprocess import (
+    CombineForRetrainRequest,
+    CombineForRetrainResponse,
+    PassthroughHoldoutForRunRequest,
+)
 from services import artifact_service
 from tests.test_artifact_service import RecordingStore, _daily_frame
 
@@ -169,6 +173,17 @@ def test_frozen_eval_dropped_rows_counts_what_the_new_dataset_cut_off() -> None:
     assert result["validation_row_count"] == 6
     assert result["frozen_eval_dropped_rows"] == 8
 
+    # MODEL-SERVE-027, found live 2026-10-02: the ROUTE serialises this dict
+    # through CombineForRetrainResponse, which silently DROPPED these three
+    # keys (undeclared) — 0 of 12 real combine records ever stored them, so
+    # an Existing + new candidate never learned where the new data starts.
+    # Every key the service returns must survive the response model.
+    dumped = CombineForRetrainResponse.model_validate(result).model_dump()
+    assert set(result) <= set(dumped), sorted(set(result) - set(dumped))
+    assert dumped["frozen_eval_to"] == "2026-01-23 00:00:00"
+    assert dumped["frozen_eval_dropped_rows"] == 8
+    assert dumped["combined_end_time"] is not None
+
 
 def test_new_data_only_replaces_the_dataset_and_trains_only_before_the_window() -> None:
     """MODEL-SERVE-021. `combine=False` ("New Data Only") REPLACES the
@@ -253,6 +268,13 @@ def test_new_data_only_replaces_the_dataset_and_trains_only_before_the_window() 
     assert result["base_train_row_count"] == 0
     assert result["new_train_row_count"] == 6
     assert result["new_validation_row_count"] == 2
+
+    # MODEL-SERVE-021, found live 2026-10-02: the route serialises this dict
+    # through `response_model=CombineForRetrainResponse`. That model required
+    # a non-null `frozen_eval_checksum`, so every New Data Only retrain wrote
+    # all its objects and then answered a bare 500 (NestJS: 502). Asserting
+    # the dict alone, as above, could never see it.
+    CombineForRetrainResponse.model_validate(result)
 
 
 def test_new_data_only_requires_a_validation_window() -> None:

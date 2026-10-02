@@ -25,6 +25,7 @@ import {
   writeDismissedJobId,
 } from '@/lib/retrain-dismissal'
 import type { AIModel } from '@/types'
+import type { RetrainCriterion } from '@/lib/acceptance-criteria'
 
 /** Same cadence `use-model-training.ts`'s own `pollRun` uses for a training
  *  container — matched here rather than inventing a second constant. */
@@ -71,6 +72,12 @@ export interface UseModelRetrain {
       newValidationTo?: string
       /** Custom Finetune's own train ratio; omitted = the current version's. */
       trainTestSplit?: number
+      /** MODEL-SERVE-026-T05. Folds for the cross-validation of the gap. */
+      cvFolds?: number
+      /** MODEL-SERVE-026-T06. false = Custom Finetune skips the B refit. */
+      refitCurrentSettings?: boolean
+      /** MODEL-SERVE-026-T07. Criteria chosen before starting. */
+      acceptanceCriteria?: RetrainCriterion[]
     },
   ) => Promise<void>
   /** Clears the last error only — the job itself is server state and is
@@ -228,6 +235,9 @@ export function useModelRetrain({
         newValidationFrom?: string
         newValidationTo?: string
         trainTestSplit?: number
+        cvFolds?: number
+        refitCurrentSettings?: boolean
+        acceptanceCriteria?: RetrainCriterion[]
       },
     ) => {
       if (!modelId || jobLive) return
@@ -253,6 +263,9 @@ export function useModelRetrain({
           newValidationFrom: options.newValidationFrom,
           newValidationTo: options.newValidationTo,
           trainTestSplit: options.trainTestSplit,
+          cvFolds: options.cvFolds,
+          refitCurrentSettings: options.refitCurrentSettings,
+          acceptanceCriteria: options.acceptanceCriteria,
         })
         // A fresh trigger (201) and an idempotent replay (200) return the
         // same job envelope — both handled identically.

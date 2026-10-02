@@ -15,12 +15,30 @@ structurally instead of by four agreeing ternaries.
 
 from __future__ import annotations
 
+import math
 import sys
 from typing import Any, Mapping
 
 import requests
 
 from config import RunContext
+
+
+def json_safe(value: Any) -> Any:
+    """MODEL-SERVE-027, found live 2026-10-02: a 1-row frozen holdout scored
+    r2 = nan (R² is undefined on one row), and `requests` refused the whole
+    completion ("Out of range float values are not JSON compliant: nan"),
+    failing an otherwise good run. Non-finite floats become null — the
+    backend's metric schema accepts null and the UI reads it as "not
+    recorded", which is what an undefined figure is. Recursive, so nested
+    metric dicts and splitSpec are covered too."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
 
 # role -> {mode: path}. The ONLY place these surfaces are paired; every
 # caller in this codebase asks for a role, never a literal URL. MODEL-SERVE-
@@ -108,7 +126,7 @@ class RunApi:
 
     def complete(self, payload: Mapping[str, Any]) -> None:
         response = self.session.post(
-            self._endpoint("complete"), json=dict(payload), timeout=60
+            self._endpoint("complete"), json=json_safe(dict(payload)), timeout=60
         )
         response.raise_for_status()
 

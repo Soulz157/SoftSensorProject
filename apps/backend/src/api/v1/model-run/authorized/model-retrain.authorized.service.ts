@@ -106,6 +106,38 @@ interface RunSplitStatsShape {
   test_labelled_rows?: number | null;
 }
 
+/** Key-order-independent JSON, so `{a:1,b:2}` and `{b:2,a:1}` compare equal. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([a], [b]) => a.localeCompare(b),
+    );
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * MODEL-SERVE-026-T06. Custom Finetune's candidate list with "B" — the
+ * current version's own configuration refitted on the new data — first.
+ * Not added twice: when the operator's own candidate IS the current
+ * configuration, the list is returned as given.
+ */
+export function withCurrentSettingsFirst<
+  C extends { algorithm: string; hyperparameters: Record<string, unknown> },
+>(
+  requested: C[],
+  current: { algorithm: string; hyperparameters: Record<string, unknown> },
+  include: boolean,
+): Array<C | typeof current> {
+  if (!include) return requested;
+  const same = (c: C) =>
+    c.algorithm === current.algorithm &&
+    canonicalJson(c.hyperparameters) === canonicalJson(current.hyperparameters);
+  return requested.some(same) ? requested : [current, ...requested];
+}
+
 function readMetric(metrics: unknown, key: string): number | null {
   if (!metrics || typeof metrics !== 'object') return null;
   const value = (metrics as Record<string, unknown>)[key];
@@ -434,6 +466,18 @@ export class ModelRetrainAuthorizedService {
         user,
         dto.strategy === 'AUGMENT_DATA',
       );
+      // MODEL-SERVE-026-T05. The fold cap, at CONFIG time: measured on the
+      // frame the candidates will actually train on (only now known — the
+      // combine is what cuts it), and before the job row exists, so a refused
+      // k never spawns a container.
+      if (dto.cvFolds) {
+        await this.assertCvFoldsAdmissible(
+          augmentedArtifact.combinedObjectKey,
+          sourceRun.targetY,
+          trainRatio,
+          dto.cvFolds,
+        );
+      }
     }
 
     // Candidates: the operator's own list, or the incumbent's configuration
@@ -476,18 +520,26 @@ export class ModelRetrainAuthorizedService {
           trainingArtifactId,
           inheritedSize ?? {},
         );
-    const requested =
-      dto.candidates ??
-      this.candidateJobs.expandSearchCandidates(
-        {
-          algorithm: incumbent.algorithm,
-          hyperparameters: (incumbent.hyperparameters ?? {}) as Record<
-            string,
-            unknown
-          >,
-        },
-        searchSize,
-      );
+    // MODEL-SERVE-026-T06. "B": the current version's OWN configuration
+    // (read off its version row, never client defaults), refitted on the new
+    // data. Auto Finetune has always tried it first (`expandSearchCandidates`
+    // returns `[base, ...variants]`); Custom Finetune now does too, unless
+    // the operator opts out — without B a retrain cannot say whether its
+    // change came from the data or from the settings.
+    const currentSettings = {
+      algorithm: incumbent.algorithm,
+      hyperparameters: (incumbent.hyperparameters ?? {}) as Record<
+        string,
+        unknown
+      >,
+    };
+    const requested = dto.candidates
+      ? withCurrentSettingsFirst(
+          dto.candidates,
+          currentSettings,
+          dto.refitCurrentSettings !== false,
+        )
+      : this.candidateJobs.expandSearchCandidates(currentSettings, searchSize);
     const candidates = requested.map((candidate) => ({
       ...candidate,
       phase: 1,
@@ -497,6 +549,11 @@ export class ModelRetrainAuthorizedService {
     // `as unknown as X` on one field collapses Prisma's generic return-type
     // inference for the whole call to `any` (see createJob's own note).
     const candidatesJson = candidates as unknown as PrismaTypes.InputJsonValue;
+    // MODEL-SERVE-026-T07. Omitted (not JSON null) when none were chosen,
+    // so the column stays SQL NULL — "none chosen", like every older job.
+    const criteriaJson = dto.acceptanceCriteria?.length
+      ? (dto.acceptanceCriteria as unknown as PrismaTypes.InputJsonValue)
+      : undefined;
 
     let job: PrismaModels.ModelCandidateJobModel;
     try {
@@ -518,6 +575,8 @@ export class ModelRetrainAuthorizedService {
               }
             : {}),
           trainTestSplit: trainRatio,
+          cvFolds: dto.cvFolds ?? null,
+          ...(criteriaJson ? { acceptanceCriteria: criteriaJson } : {}),
           kind: 'HYPERPARAMETER_SEARCH',
           candidates: candidatesJson,
           totalRuns: candidates.length,
@@ -663,6 +722,49 @@ export class ModelRetrainAuthorizedService {
       });
     }
     return { method: 'chronological', ratio };
+  }
+
+  /**
+   * MODEL-SERVE-026-T05. REFUSE, DO NOT DEGRADE — the same rule
+   * MODEL-FLOW-016 applies to a wizard CV run, at the same point (config
+   * time) and from the same measurement (`/split-stats`' own
+   * `max_admissible_k` = distinct labelled values // 10, measured, not
+   * picked). Synchronous ON PURPOSE, unlike `freezeJobSplitStats` below: its
+   * answer decides whether the job may exist at all. The trainer's
+   * `assert_admissible_fold_count` stays as the fit-time backstop.
+   */
+  private async assertCvFoldsAdmissible(
+    objectKey: string,
+    targetY: string,
+    ratio: number,
+    cvFolds: number,
+  ): Promise<void> {
+    const stats = PythonSplitStatsSchema.parse(
+      await postToPython(
+        '/v1/preprocess/split-stats',
+        {
+          source_key: objectKey,
+          tags: [targetY],
+          target_y: targetY,
+          split_ratio: ratio,
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+    if (cvFolds > stats.max_admissible_k) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          `${cvFolds} folds is more than this data supports: the new ` +
+          `dataset's training rows carry ${stats.distinct_labelled_values} ` +
+          'distinct target values, and each fold needs at least 10, so at ' +
+          `most ${stats.max_admissible_k} folds are allowed.` +
+          (stats.max_admissible_k < 2
+            ? ' Run the retrain without cross-validation.'
+            : ''),
+        type: 'ERROR',
+      });
+    }
   }
 
   /**

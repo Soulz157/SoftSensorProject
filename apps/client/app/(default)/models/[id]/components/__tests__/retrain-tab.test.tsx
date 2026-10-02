@@ -121,6 +121,8 @@ function doneJob(): RetrainJob {
     baseDatasetVersionId: null,
     additionalDatasetVersionId: null,
     combinedArtifactId: null,
+    cvFolds: null,
+    acceptanceCriteria: null,
   }
 }
 

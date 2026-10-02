@@ -24,6 +24,7 @@ import {
   RESIDUAL_LEGEND,
   ResidualChart,
 } from '@/app/(default)/models/create/components/pipeline/evaluation/residual-chart'
+import { BasisLabEvents } from './basis-lab-events'
 
 const TOGGLE_ITEM =
   'h-8 cursor-pointer rounded-md border border-border px-3 text-xs font-medium data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary'
@@ -198,6 +199,15 @@ export function RetrainCharts({
         {dataSetBasis && (
           <p className="text-[10px] text-muted-foreground">
             {describeEvalBasis(dataSetBasis, versionLabel)}
+            <BasisLabEvents
+              basis={dataSetBasis}
+              role="candidate"
+              ids={{
+                modelId,
+                candidateRunId: candidate.runId,
+                incumbentSourceRunId: incumbent.sourceRunId,
+              }}
+            />
           </p>
         )}
       </div>

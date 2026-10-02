@@ -419,8 +419,30 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // proven by their unit specs and this behavioural check, not by a live run.
   // The image is not pushed (same registry gap as every prior bump), so only
   // this build host has it.
+  //
+  // 1.0.18 — MODEL-SERVE-026-T05. Adds pipelines/cv_gap.py: when claim()
+  // puts `cvGap` in the spec (a NEW_DATA_ONLY job with cvFolds), each
+  // candidate also refits its configuration per expanding fold and scores it
+  // beside the current version, uploading `cv_gap_predictions.parquet`
+  // (MIRRORS.md entry 11). ADDITIVE like every prior bump: absent spec field
+  // = no CV, so every other run is byte-for-byte the 1.0.17 behaviour.
+  // Built by the user on this host (2026-10-02, image 6ce4f8ee2d7e) after
+  // this session's own build could not reach docker.io; the trainer suite
+  // (75 tests, incl. test/test_cv_gap.py) passed INSIDE it. Not pushed.
+  //
+  // 1.0.19 — MODEL-SERVE-027. pipelines/chronological.py cuts the test split
+  // on the OLD rows only when claim() sends `augmentNewDataFrom` (an
+  // Existing + new retrain), so every new row trains; before this, the new
+  // rows were always the newest 30% and all landed in test. ADDITIVE: absent
+  // field = the plain split, byte-for-byte 1.0.18. Built by the user
+  // (2026-10-02, image a4597bcbd504); trainer suite 78/78 inside it.
+  //
+  // 1.0.20 — MODEL-SERVE-027. api.complete() sends non-finite floats as null
+  // (json_safe): a 1-row frozen holdout's r2 is NaN, and requests refused the
+  // whole completion, failing good runs. Built by the user (2026-10-02, image
+  // e27b112f7562); trainer suite 80/80 inside it.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.17';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.20';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

@@ -6,6 +6,8 @@ import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { initDatasetWizardFromBaseRecipeAtom } from '@/store/dataset-studio'
 import { rememberRetrainHandoff } from '@/lib/retrain-handoff'
+import { freeDatasetName } from '@/lib/free-dataset-name'
+import { datasetService } from '@/services/dataset'
 import type { SavedDataset } from '@/store/datasets'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
 
@@ -35,7 +37,7 @@ export function useRetrainDatasetHandoff() {
   const initFromBaseRecipe = useSetAtom(initDatasetWizardFromBaseRecipeAtom)
 
   return useCallback(
-    (
+    async (
       baseDataset: SavedDataset,
       allSources: SavedDataSource[],
       /**
@@ -81,6 +83,17 @@ export function useRetrainDatasetHandoff() {
       // it. Written last among the guards: an early return above means the
       // operator never left, and a stale intent would then redirect an
       // unrelated later save back to this model.
+      // DS-LAKE-036. `{base} — new data` was a guaranteed name clash on the
+      // second retrain of the same base, and Save refuses a taken name. Read
+      // the workspace's names now; if that read fails, keep the plain name —
+      // Save's own 409 then says the name is taken.
+      const defaultName = `${baseDataset.name} — new data`
+      const taken = await datasetService
+        .list(baseDataset.workspaceId)
+        .then(res => (res.data ?? []).map(d => d.name))
+        .catch(() => [] as string[])
+      const name = freeDatasetName(defaultName, taken)
+
       if (returning) {
         rememberRetrainHandoff({
           modelId: returning.modelId,
@@ -96,7 +109,7 @@ export function useRetrainDatasetHandoff() {
         // cannot embed it. Step 6's name field is editable and required
         // before Save, which is where a date-bearing name gets written if
         // the operator wants one.
-        name: `${baseDataset.name} — new data`,
+        name,
         cutTimestamp,
       })
       router.push('/data-studio/create')

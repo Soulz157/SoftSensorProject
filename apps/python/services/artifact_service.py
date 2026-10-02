@@ -34,6 +34,7 @@ from intergrations.object_store import (
     HOLDOUT_PREDICTIONS_FILENAME,
     NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
     INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+    CV_GAP_PREDICTIONS_FILENAME,
     TIMESTAMP_COLUMN,
     VALIDATE_DATA_FILENAME,
     VALIDATE_NEW_DATA_FILENAME,
@@ -156,6 +157,10 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         # window — a third population, own filename, never overwriting either
         # of the above.
         INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-026-T05. The CV-gap series — five columns, so it is
+        # uploadable here but read only by `run_cv_gap`, never by the
+        # three-column readers below.
+        CV_GAP_PREDICTIONS_FILENAME,
     }
 )
 
@@ -2202,6 +2207,67 @@ def _decimated_run_predictions(
         "downsampled": sample.downsampled,
         "error": None,
     }
+
+
+_CV_GAP_COLUMNS = {"fold", TIMESTAMP_COLUMN, "y_true", "y_pred", "y_pred_current"}
+
+
+def run_cv_gap(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-SERVE-026-T05. Reads a retrain candidate's
+    `cv_gap_predictions.parquet` — every expanding fold's test rows, the
+    candidate configuration's fold-fit prediction and the current version's
+    prediction (null before the current version's own cut, where it may have
+    trained). Its own reader because the shape is five columns, not the
+    three `run_predictions` accepts. Undecimated and point-capped like
+    `run_predictions`: the client picks lab events from these rows, so a
+    sampled series would change which rows count.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != CV_GAP_PREDICTIONS_FILENAME:
+        raise ValueError(f"'{key}' does not name {CV_GAP_PREDICTIONS_FILENAME}.")
+    if not is_model_run_key(key):
+        raise ValueError(
+            f"'{key}' is not a well-formed model-run output key. Only "
+            "models/{modelId}/runs/{runId}/... carries a CV-gap series."
+        )
+
+    frame = store.get_frame(key)
+    actual = set(frame.columns)
+    if actual != _CV_GAP_COLUMNS:
+        raise ValueError(
+            f"'{key}' is not a CV-gap frame (missing "
+            f"{sorted(_CV_GAP_COLUMNS - actual)}, unexpected "
+            f"{sorted(actual - _CV_GAP_COLUMNS)})."
+        )
+    row_count = int(len(frame))
+    if row_count > MAX_PREDICTION_POINTS:
+        raise ValueError(
+            f"'{key}' has {row_count} rows, over the {MAX_PREDICTION_POINTS} "
+            "this endpoint serves without decimation."
+        )
+
+    frame = frame.sort_values(["fold", TIMESTAMP_COLUMN]).reset_index(drop=True)
+    points = [
+        {
+            "fold": int(fold),
+            "timestamp": (
+                ts.isoformat(sep=" ") if hasattr(ts, "isoformat") else str(ts)
+            ),
+            "y_true": _finite(y_true) or 0.0,
+            "y_pred": _finite(y_pred) or 0.0,
+            # null, never 0: a missing current prediction means "not scored
+            # here", and 0 would read as a real, very wrong prediction.
+            "y_pred_current": _finite(y_cur),
+        }
+        for fold, ts, y_true, y_pred, y_cur in zip(
+            frame["fold"],
+            frame[TIMESTAMP_COLUMN],
+            frame["y_true"],
+            frame["y_pred"],
+            frame["y_pred_current"],
+        )
+    ]
+    return {"source_key": key, "row_count": row_count, "points": points}
 
 
 def run_predictions_batch(store: ObjectStore, body) -> dict[str, Any]:

@@ -56,7 +56,14 @@ export function retrainPhase(job: RetrainJob | null): RetrainPhase {
   switch (job.status) {
     case 'QUEUED':
     case 'RUNNING':
-      return job.completedRuns > 0 ? 'evaluating' : 'training'
+      // MODEL-SERVE-027 (user report 2026-10-02: "Training does not continue
+      // into Validating"). This used to jump training -> evaluating on the
+      // first finished candidate, so the Validating box was never active.
+      // Now: no candidate finished = training; some finished (each is scored
+      // on held-out data as it finishes) = validating; all finished while the
+      // job is still live (picking the winner, saving its version) = Result.
+      if (job.completedRuns === 0) return 'training'
+      return job.completedRuns < job.totalRuns ? 'validating' : 'evaluating'
     case 'SUCCEEDED':
       return 'done'
     case 'FAILED':

@@ -480,6 +480,149 @@ describe('ModelRunAuthorizedService', () => {
       });
     });
 
+    // MODEL-SERVE-026-T05. The same NEW_DATA_ONLY claim, with the job's
+    // cvFolds and the current version's own cut varied.
+    function cvGapClaim(cvFolds: number | null, cut: string | null) {
+      const run = { ...RUN_BASE, candidateJobId: 'job-1' };
+      const prisma = makePrisma({ run });
+      (prisma as Record<string, unknown>).modelCandidateJob = {
+        findUnique: jest.fn().mockResolvedValue({
+          retrainStrategy: 'NEW_DATA_ONLY',
+          sourceVersionId: 'version-1',
+          cvFolds,
+        }),
+      };
+      (prisma as Record<string, unknown>).modelVersion = {
+        findUnique: jest.fn().mockResolvedValue({
+          modelObjectKey: 'models/model-1/runs/run-incumbent/model.joblib',
+          modelChecksum: 'incumbent-sha',
+          algorithm: 'ridge',
+          sourceRunId: 'run-incumbent',
+        }),
+      };
+      prisma.datasetArtifact.findUnique = jest
+        .fn()
+        .mockImplementation((args: { where: { id: string } }) =>
+          Promise.resolve(
+            args.where.id === run.goldArtifactId
+              ? { parentArtifactId: 'gold-parent-1' }
+              : {
+                  operations: [
+                    {
+                      newValidationRowCount: 30,
+                      newValidationFrom: '2026-11-06T19:00:00Z',
+                      newValidationTo: '2026-11-10T19:00:00Z',
+                    },
+                  ],
+                },
+          ),
+        );
+      prisma.modelTrainingRun.findUnique = jest
+        .fn()
+        .mockResolvedValueOnce(run)
+        .mockResolvedValueOnce({ manifestKey: 'manifest-key-1' })
+        // cvGapSpec: the current version's source run, for its own cut.
+        .mockResolvedValueOnce({
+          splitSpec: cut ? { method: 'chronological', cut_timestamp: cut } : {},
+        });
+      (pythonClient.getRunManifest as jest.Mock).mockResolvedValue({
+        feature_columns: ['a', 'b'],
+      });
+      (pythonClient.passthroughHoldoutForRun as jest.Mock).mockResolvedValue(
+        {},
+      );
+      mockedPresignRunObject
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/window',
+          sidecar_urls: {},
+          checksum: 'w',
+          row_count: 30,
+          expires_at: '2026-01-01T00:00:00Z',
+        })
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/incumbent',
+          sidecar_urls: {},
+          checksum: 'i',
+          row_count: null,
+          expires_at: '2026-01-01T00:00:00Z',
+        });
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+      return { prisma, service };
+    }
+
+    it('MODEL-SERVE-026-T05 — asks the trainer for CV with the current version’s OWN cut', async () => {
+      const { service } = cvGapClaim(3, '2025-11-06 19:00:00');
+      const result = await service.claim('run-1');
+      expect(result.cvGap).toEqual({
+        nSplits: 3,
+        currentCutTimestamp: '2025-11-06 19:00:00',
+      });
+    });
+
+    it('MODEL-SERVE-026-T05 — no folds requested, or no recorded cut: no CV, and the missing cut is logged', async () => {
+      const none = cvGapClaim(null, '2025-11-06 19:00:00');
+      expect((await none.service.claim('run-1')).cvGap).toBeUndefined();
+
+      const noCut = cvGapClaim(3, null);
+      expect((await noCut.service.claim('run-1')).cvGap).toBeUndefined();
+      expect(noCut.prisma.modelTrainingRunLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            message: expect.stringContaining('Cross-validation skipped'),
+          }),
+        }),
+      );
+    });
+
+    // MODEL-SERVE-027. Existing + new: the new data's start reaches the
+    // trainer, read off the FINAL's GOLD parent (never the FINAL itself).
+    function augmentClaim(goldOps: unknown) {
+      const run = { ...RUN_BASE, candidateJobId: 'job-1' };
+      const prisma = makePrisma({ run });
+      (prisma as Record<string, unknown>).modelCandidateJob = {
+        findUnique: jest.fn().mockResolvedValue({
+          retrainStrategy: 'AUGMENT_DATA',
+          sourceVersionId: 'version-1',
+          cvFolds: null,
+        }),
+      };
+      prisma.datasetArtifact.findUnique = jest
+        .fn()
+        .mockImplementation((args: { where: { id: string } }) =>
+          Promise.resolve(
+            args.where.id === run.goldArtifactId
+              ? { parentArtifactId: 'gold-parent-1', operations: [] }
+              : { operations: goldOps },
+          ),
+        );
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+      jest
+        .spyOn(
+          service as unknown as { tryReplayHoldout: () => Promise<null> },
+          'tryReplayHoldout',
+        )
+        .mockResolvedValue(null);
+      return service;
+    }
+
+    it('MODEL-SERVE-027 — passes the new data start for an Existing + new candidate', async () => {
+      const service = augmentClaim([{ frozenEvalTo: '2025-11-07 19:01:00' }]);
+      const result = await service.claim('run-1');
+      expect(result.augmentNewDataFrom).toBe('2025-11-07 19:01:00');
+    });
+
+    it('MODEL-SERVE-027 — sends nothing when the combine never recorded it', async () => {
+      const service = augmentClaim([{}]);
+      const result = await service.claim('run-1');
+      expect(result.augmentNewDataFrom).toBeUndefined();
+    });
+
     it('skips the incumbent side for lstm/gru without failing the candidate side', async () => {
       const run = { ...RUN_BASE, candidateJobId: 'job-1' };
       const prisma = makePrisma({ run });

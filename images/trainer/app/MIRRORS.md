@@ -246,6 +246,33 @@ via a manual `docker build` + the pinned-tag bump in
 
 ---
 
+## 11. `CV_GAP_PREDICTIONS_FILENAME = "cv_gap_predictions.parquet"`
+
+| Copy        | Location                                                                                                                                                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| this image  | `artifacts.py`                                                                                                                                                                                                                                   |
+| apps/python | `object_store.py` (`CV_GAP_PREDICTIONS_FILENAME`), in `_ALLOWED_RUN_UPLOADS` but deliberately NOT `_READABLE_PREDICTION_FILENAMES` (that reader refuses anything but 3 columns) — read by its own `run_cv_gap` in `services/artifact_service.py` |
+| API (TS)    | `artifact-keys.ts` (`RUN_UPLOAD_FILENAMES`)                                                                                                                                                                                                      |
+
+MODEL-SERVE-026-T05. Same three-copy-plus-two-allow-list shape as entries 9
+and 10, with ONE difference that matters to every reader: the schema is
+`{fold, timestamp, y_true, y_pred, y_pred_current}`, NOT the
+`{timestamp,y_true,y_pred}` its siblings share. `y_pred` is the candidate
+CONFIGURATION refitted on that fold's expanding train window (never the
+shipped model); `y_pred_current` is the current version's prediction, NaN on
+every row before its own cut (it may have trained on those rows). A reader that
+assumes the three-column shape will silently drop the two columns the whole
+file exists for.
+
+Written by `pipelines/cv_gap.py` only when the spec carries `cvGap` (a
+NEW_DATA_ONLY retrain that asked for it) and the current version's model was
+presigned; absent otherwise. Folds come from `splits.expanding_fold_plan`,
+whose own docstring names its mirror in `split_stats_service.py`.
+
+**Image rebuild required**, same as entries 9 and 10.
+
+---
+
 ## Long-term
 
 The right fix is a shared wheel containing `labelled_mask`, the fold plan, and

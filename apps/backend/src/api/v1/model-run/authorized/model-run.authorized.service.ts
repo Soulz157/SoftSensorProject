@@ -564,7 +564,11 @@ export class ModelRunAuthorizedService {
     const job = run.candidateJobId
       ? await this.prisma.modelCandidateJob.findUnique({
           where: { id: run.candidateJobId },
-          select: { retrainStrategy: true, sourceVersionId: true },
+          select: {
+            retrainStrategy: true,
+            sourceVersionId: true,
+            cvFolds: true,
+          },
         })
       : null;
     const holdout = isCvRun
@@ -576,6 +580,28 @@ export class ModelRunAuthorizedService {
             job.sourceVersionId,
           )
         : await this.tryReplayHoldout(run, owner);
+
+    // MODEL-SERVE-026-T05. The CV-gap request, only where it can be honest:
+    // a NEW_DATA_ONLY job that asked for folds, with the current version's
+    // model actually presigned (the trainer scores it per fold) and its own
+    // cut known (the trainer never scores it on rows before that cut).
+    // Absent otherwise — the trainer then runs no CV at all.
+    const cvGap =
+      job?.retrainStrategy === 'NEW_DATA_ONLY' &&
+      job.cvFolds &&
+      holdout &&
+      'incumbentModelUrl' in holdout &&
+      holdout.incumbentModelUrl
+        ? await this.cvGapSpec(run.id, job.sourceVersionId, job.cvFolds)
+        : null;
+
+    // MODEL-SERVE-027. An Existing + new candidate trains on old + new rows;
+    // the trainer must cut its test split on the OLD rows only, or the new
+    // rows (always the newest) all land in test and never train.
+    const augmentNewDataFrom =
+      job?.retrainStrategy === 'AUGMENT_DATA'
+        ? await this.augmentNewDataFrom(run.goldArtifactId)
+        : null;
 
     return {
       runId: run.id,
@@ -606,7 +632,74 @@ export class ModelRunAuthorizedService {
       featureColumns: run.featureColumns ?? undefined,
       rowCount: presigned.row_count,
       ...(holdout ?? {}),
+      ...(cvGap ? { cvGap } : {}),
+      ...(augmentNewDataFrom ? { augmentNewDataFrom } : {}),
     };
+  }
+
+  /**
+   * MODEL-SERVE-027. The new dataset's first timestamp, as the combine
+   * recorded it (`operations[0].frozenEvalTo` = python's `new_start`). Read
+   * off the FINAL's GOLD PARENT — the FINAL row carries `operations: []`
+   * (MODEL-SERVE-020-T01's correction). Null when not recorded (a combine
+   * from before that field): the trainer then falls back to today's plain
+   * split rather than guessing a boundary.
+   */
+  private async augmentNewDataFrom(finalId: string): Promise<string | null> {
+    const final = await this.prisma.datasetArtifact.findUnique({
+      where: { id: finalId },
+      select: { parentArtifactId: true },
+    });
+    const gold = final?.parentArtifactId
+      ? await this.prisma.datasetArtifact.findUnique({
+          where: { id: final.parentArtifactId },
+          select: { operations: true },
+        })
+      : null;
+    const ops = gold?.operations as
+      | Array<{ frozenEvalTo?: unknown }>
+      | null
+      | undefined;
+    const from = Array.isArray(ops) ? ops[0]?.frozenEvalTo : undefined;
+    return typeof from === 'string' && from ? from : null;
+  }
+
+  /**
+   * MODEL-SERVE-026-T05. `{nSplits, currentCutTimestamp}` for the trainer's
+   * cv_gap.py. The cut is the current version's OWN, read off its source
+   * run's recorded splitSpec — the boundary before which it may have trained.
+   * Null (no CV, with a log line saying why) when that boundary is not
+   * recorded: scoring it per fold without one could score it on rows it fit.
+   */
+  private async cvGapSpec(
+    runId: string,
+    sourceVersionId: string | null,
+    nSplits: number,
+  ): Promise<{ nSplits: number; currentCutTimestamp: string } | null> {
+    const version = sourceVersionId
+      ? await this.prisma.modelVersion.findUnique({
+          where: { id: sourceVersionId },
+          select: { sourceRunId: true },
+        })
+      : null;
+    const sourceRun = version?.sourceRunId
+      ? await this.prisma.modelTrainingRun.findUnique({
+          where: { id: version.sourceRunId },
+          select: { splitSpec: true },
+        })
+      : null;
+    const cut = (sourceRun?.splitSpec as { cut_timestamp?: unknown } | null)
+      ?.cut_timestamp;
+    if (typeof cut !== 'string' || !cut) {
+      await this.appendLog(runId, {
+        level: 'warn',
+        message:
+          'Cross-validation skipped: the current version records no ' +
+          'test-split boundary, so it could not be kept off rows it trained on.',
+      });
+      return null;
+    }
+    return { nSplits, currentCutTimestamp: cut };
   }
 
   appendLog(runId: string, dto: { level?: string; message: string }) {

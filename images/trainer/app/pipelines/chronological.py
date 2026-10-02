@@ -16,7 +16,7 @@ from pipelines.context import (
     feature_std,
     labelled_frame,
 )
-from splits import chronological_split
+from splits import chronological_split, chronological_split_holding_new
 from config import TIMESTAMP_COLUMN
 
 import pandas as pd
@@ -26,13 +26,33 @@ def run(prepared: PreparedRun, api: RunApi) -> TrainingResult:
     labelled = labelled_frame(prepared, log_fn=api.log)
 
     ratio = float(prepared.spec["splitSpec"].get("ratio", 0.8))
-    train, test, cut_timestamp = chronological_split(labelled, ratio)
+    # MODEL-SERVE-027. Present only for an Existing + new retrain (claim()
+    # puts it there): cut on the OLD rows only, so every new row trains.
+    new_data_from = prepared.spec.get("augmentNewDataFrom")
+    if new_data_from:
+        train, test, cut_timestamp = chronological_split_holding_new(
+            labelled, ratio, pd.Timestamp(new_data_from)
+        )
+    else:
+        train, test, cut_timestamp = chronological_split(labelled, ratio)
     split_spec = {
         "method": "chronological",
         "ratio": ratio,
         "cut_timestamp": cut_timestamp,
         "train_rows": int(len(train)),
         "test_rows": int(len(test)),
+        # MODEL-SERVE-027. Recorded so a reader can see the test split is the
+        # tail of the EXISTING rows and how many new rows reached training.
+        **(
+            {
+                "new_data_from": str(new_data_from),
+                "new_train_rows": int(
+                    (train[TIMESTAMP_COLUMN] >= pd.Timestamp(new_data_from)).sum()
+                ),
+            }
+            if new_data_from
+            else {}
+        ),
         # The pre-drop count, kept alongside so the sparsity is visible in the
         # record rather than only in a log line.
         "source_rows": int(len(prepared.frame)),

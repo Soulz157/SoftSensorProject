@@ -150,11 +150,42 @@ export class DatasetDraftAuthorizedService {
     };
   }
 
-  private isUniqueViolation(err: unknown): boolean {
-    return (
-      err instanceof PrismaTypes.PrismaClientKnownRequestError &&
-      err.code === 'P2002'
-    );
+  /**
+   * DS-LAKE-036. `constraint` omitted = any P2002 (the edit-draft race below
+   * relies on that). Given, it must name the violated constraint — copied
+   * from `prediction-job.authorized.service.ts` (MODEL-SERVE-003-V02): under
+   * this Prisma version's driver adapter the name lives in
+   * `meta.driverAdapterError.cause.originalMessage`, not `meta.target`, so
+   * both shapes are checked. `meta.target` carries the FIELD list (or, on
+   * some engines, the constraint name), hence `fields` beside the name.
+   */
+  private isUniqueViolation(
+    err: unknown,
+    match?: { constraint: string; fields: string[] },
+  ): boolean {
+    if (
+      !(err instanceof PrismaTypes.PrismaClientKnownRequestError) ||
+      err.code !== 'P2002'
+    ) {
+      return false;
+    }
+    if (!match) return true;
+    const meta = err.meta;
+    const target = meta?.target;
+    if (Array.isArray(target)) {
+      const fields = target.map(String).sort().join(',');
+      if (fields === [...match.fields].sort().join(',')) return true;
+    } else if (typeof target === 'string' && target === match.constraint) {
+      return true;
+    }
+    const driverErr = meta?.driverAdapterError as
+      | { cause?: { originalMessage?: unknown } }
+      | undefined;
+    const originalMessage =
+      typeof driverErr?.cause?.originalMessage === 'string'
+        ? driverErr.cause.originalMessage
+        : '';
+    return originalMessage.includes(`"${match.constraint}"`);
   }
 
   /**
@@ -1681,7 +1712,29 @@ export class DatasetDraftAuthorizedService {
           return { dataset, version };
         });
       } catch (err) {
-        if (this.isUniqueViolation(err)) {
+        // DS-LAKE-036. Two different collisions, never one message: a taken
+        // name is permanent (retrying cannot help), a version-number race is
+        // transient. Any other P2002 is rethrown rather than disguised.
+        if (
+          this.isUniqueViolation(err, {
+            constraint: 'Dataset_workspaceId_name_key',
+            fields: ['workspaceId', 'name'],
+          })
+        ) {
+          throw new AppException({
+            statusCode: 409,
+            message:
+              `A dataset named "${dto.name}" already exists in this ` +
+              'workspace — choose a different name.',
+            type: 'ERROR',
+          });
+        }
+        if (
+          this.isUniqueViolation(err, {
+            constraint: 'DatasetVersion_datasetId_versionNumber_key',
+            fields: ['datasetId', 'versionNumber'],
+          })
+        ) {
           throw new AppException({
             statusCode: 409,
             message:

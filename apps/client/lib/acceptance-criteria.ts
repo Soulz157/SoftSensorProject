@@ -224,7 +224,15 @@ function canonicalPair(pair: ComparisonPair): ComparisonPair {
  *  four rules above — never a hand-written list (see module doc). Returns
  *  each unordered pair exactly once, in a stable canonical order, so the
  *  picker and `canonicalise` agree on which side is `left` by default. */
-export function offerablePairs(): ComparisonPair[] {
+export function offerablePairs(): ComparisonPair[]
+export function offerablePairs(scope: 'retrain'): RetrainPair[]
+export function offerablePairs(
+  scope: 'run' | 'retrain' = 'run',
+): ComparisonPair[] | RetrainPair[] {
+  return scope === 'retrain' ? offerableRetrainPairs() : offerableRunPairs()
+}
+
+function offerableRunPairs(): ComparisonPair[] {
   const operands = allOperands()
   const seen = new Set<string>()
   const pairs: ComparisonPair[] = []
@@ -505,4 +513,262 @@ const LOSS_ALIGNED_METRIC: Record<string, RankMetricKey> = {
  *  the training objective. */
 export function lossAlignedMetric(loss: string): RankMetricKey | null {
   return LOSS_ALIGNED_METRIC[loss] ?? null
+}
+
+// ── MODEL-SERVE-026-T07: the 'retrain' scope ─────────────────────────────
+//
+// Every pair above compares two metrics of ONE run. A retrain's question
+// compares figures across TWO versions on one window — the dimension that
+// engine lacks. Added here as a scope, defaulting to the original ('run') so
+// no existing call site changes and no MODEL-FLOW behaviour moves (this
+// ledger's definition of done).
+//
+// Same discipline as the run scope: the offered set is DERIVED from an
+// operand universe and stated rules, never a hand-written list, and no number
+// is ever typed. Widened 2026-10-02 at the user's request from "RMSE vs RMSE
+// only" to operator-built comparisons such as "RMSE < SD", where SD is the
+// spread of the LAB VALUES on the window (user's choice) — RMSE < SD(target)
+// is "beats always guessing the window's mean".
+
+/** Which figure. `target-sd` is the lab values' spread (no version);
+ *  `residual-sd` is a version's error spread. */
+export type RetrainMetric = 'rmse' | 'mae' | 'r2' | 'residual-sd' | 'target-sd'
+/** Whose figure: a version, or the window itself (`target-sd` only). */
+export type RetrainSubject = 'candidate' | 'current' | 'window'
+/** Which rows. Only the shared window carries BOTH versions on the same
+ *  rows; 'own-test' (each version's own test split) is in the universe only
+ *  so the rule below REFUSES it, rather than merely not listing it. */
+export type RetrainPopulation = 'shared-window' | 'own-test'
+
+export interface RetrainOperand {
+  metric: RetrainMetric
+  subject: RetrainSubject
+  population: RetrainPopulation
+}
+
+export interface RetrainPair {
+  left: RetrainOperand
+  right: RetrainOperand
+}
+
+export interface RetrainComparisonCriterion {
+  kind: 'retrain-comparison'
+  left: RetrainOperand
+  operator: ComparisonOperator
+  right: RetrainOperand
+}
+
+/** The new version's R² on the shared window is at least 0. Untyped, like
+ *  `R2FloorCriterion`. */
+export interface RetrainR2FloorCriterion {
+  kind: 'retrain-r2-floor'
+}
+
+export type RetrainCriterion =
+  | RetrainComparisonCriterion
+  | RetrainR2FloorCriterion
+
+const RETRAIN_UNIT: Record<RetrainMetric, 'target-units' | 'dimensionless'> = {
+  rmse: 'target-units',
+  mae: 'target-units',
+  'residual-sd': 'target-units',
+  'target-sd': 'target-units',
+  r2: 'dimensionless',
+}
+
+/** `[larger, smaller]` that hold ALGEBRAICALLY for ONE version's own
+ *  errors: RMSE >= MAE, and RMSE >= residual SD (RMSE² = SD² + bias²). A
+ *  comparison between them can only ever come out one way, so it is
+ *  refused — within one version. Across two versions it can go either way
+ *  and is allowed. */
+const RETRAIN_INEQUALITIES: readonly (readonly [RetrainMetric, RetrainMetric])[] = [
+  ['rmse', 'mae'],
+  ['rmse', 'residual-sd'],
+]
+
+function retrainOperandKey(op: RetrainOperand): string {
+  return `${op.metric}:${op.subject}:${op.population}`
+}
+
+function allRetrainOperands(): RetrainOperand[] {
+  const versionMetrics: RetrainMetric[] = ['rmse', 'mae', 'r2', 'residual-sd']
+  const populations: RetrainPopulation[] = ['shared-window', 'own-test']
+  const ops: RetrainOperand[] = []
+  for (const population of populations) {
+    for (const subject of ['candidate', 'current'] as const) {
+      for (const metric of versionMetrics) ops.push({ metric, subject, population })
+    }
+    ops.push({ metric: 'target-sd', subject: 'window', population })
+  }
+  return ops
+}
+
+/** The rules, symmetric in the pair's sides:
+ *  1. both on the shared window (two versions on different rows is the
+ *     conflation 019-D03 closed — refused, in either order);
+ *  2. not the same figure twice;
+ *  3. same unit class (R² never meets an error in target units);
+ *  4. no algebraic certainty within one version (RMSE vs its own MAE or
+ *     residual SD). */
+function isOfferableRetrainPair(a: RetrainOperand, b: RetrainOperand): boolean {
+  if (a.population !== 'shared-window' || b.population !== 'shared-window')
+    return false
+  if (retrainOperandKey(a) === retrainOperandKey(b)) return false
+  if (RETRAIN_UNIT[a.metric] !== RETRAIN_UNIT[b.metric]) return false
+  if (
+    a.subject === b.subject &&
+    RETRAIN_INEQUALITIES.some(
+      ([x, y]) =>
+        (a.metric === x && b.metric === y) || (a.metric === y && b.metric === x),
+    )
+  )
+    return false
+  return true
+}
+
+const SUBJECT_ORDER: Record<RetrainSubject, number> = {
+  candidate: 0,
+  current: 1,
+  window: 2,
+}
+
+/** Canonical order: new version first, then current, then the window. */
+function canonicalRetrainPair(pair: RetrainPair): RetrainPair {
+  const l = SUBJECT_ORDER[pair.left.subject]
+  const r = SUBJECT_ORDER[pair.right.subject]
+  const leftFirst =
+    l < r || (l === r && retrainOperandKey(pair.left) <= retrainOperandKey(pair.right))
+  return leftFirst ? pair : { left: pair.right, right: pair.left }
+}
+
+function offerableRetrainPairs(): RetrainPair[] {
+  const operands = allRetrainOperands()
+  const seen = new Set<string>()
+  const pairs: RetrainPair[] = []
+  for (const left of operands) {
+    for (const right of operands) {
+      if (!isOfferableRetrainPair(left, right)) continue
+      const pair = canonicalRetrainPair({ left, right })
+      const key = `${retrainOperandKey(pair.left)}|${retrainOperandKey(pair.right)}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      pairs.push(pair)
+    }
+  }
+  return pairs
+}
+
+/** Every operand a builder's right side may take once `left` is picked. */
+export function retrainPartnersOf(left: RetrainOperand): RetrainOperand[] {
+  return allRetrainOperands().filter(op => isOfferableRetrainPair(left, op))
+}
+
+/** Every operand that has at least one partner — the builder's left list. */
+export function retrainBuilderOperands(): RetrainOperand[] {
+  return allRetrainOperands().filter(op => retrainPartnersOf(op).length > 0)
+}
+
+/** Both versions' figures and the window's own spread — read by ONE rule
+ *  (lab-event rows, openDecision 2), never per criterion. */
+export interface RetrainVersionFigures {
+  rmse: number | null
+  r2: number | null
+  mae: number | null
+  residualSd: number | null
+}
+export interface RetrainFigures {
+  candidate: RetrainVersionFigures
+  current: RetrainVersionFigures
+  targetSd: number | null
+}
+
+function readRetrainOperand(
+  op: RetrainOperand,
+  figures: RetrainFigures,
+): OperandReading {
+  if (op.population !== 'shared-window') return { value: null, absence: null }
+  if (op.subject === 'window') return { value: figures.targetSd, absence: null }
+  const f = figures[op.subject]
+  const value =
+    op.metric === 'residual-sd'
+      ? f.residualSd
+      : op.metric === 'target-sd'
+        ? figures.targetSd
+        : f[op.metric]
+  return { value, absence: null }
+}
+
+/** A stated verdict with BOTH readings — never a gate. 'not-evaluated'
+ *  when a figure is undefined (e.g. R² of a target that never changed). */
+export function evaluateRetrainCriterion(
+  criterion: RetrainCriterion,
+  figures: RetrainFigures,
+): CriterionEvaluation {
+  if (criterion.kind === 'retrain-r2-floor') {
+    const left: OperandReading = { value: figures.candidate.r2, absence: null }
+    const right: OperandReading = { value: 0, absence: null }
+    if (left.value === null) return { verdict: 'not-evaluated', left, right }
+    const holds =
+      RANK_DIRECTION.r2 === 'max' ? left.value >= 0 : left.value <= 0
+    return { verdict: holds ? 'pass' : 'fail', left, right }
+  }
+  const left = readRetrainOperand(criterion.left, figures)
+  const right = readRetrainOperand(criterion.right, figures)
+  if (left.value === null || right.value === null) {
+    return { verdict: 'not-evaluated', left, right }
+  }
+  const holds =
+    criterion.operator === 'lt'
+      ? left.value < right.value
+      : left.value > right.value
+  return { verdict: holds ? 'pass' : 'fail', left, right }
+}
+
+/** The preset comparison for a version-vs-version pair of one metric, in
+ *  the direction where the new version is better (`RANK_DIRECTION`). */
+export function retrainCriterionFor(
+  pair: RetrainPair,
+): RetrainComparisonCriterion {
+  const metric = pair.left.metric
+  const lowerIsBetter = metric === 'r2' ? RANK_DIRECTION.r2 === 'min' : true
+  return {
+    kind: 'retrain-comparison',
+    left: pair.left,
+    operator: lowerIsBetter ? 'lt' : 'gt',
+    right: pair.right,
+  }
+}
+
+/** True when the comparison is one the rules offer (in either side order) —
+ *  the check a builder and a stored criterion must both pass. */
+export function isOfferableRetrainCriterion(c: RetrainComparisonCriterion): boolean {
+  return isOfferableRetrainPair(c.left, c.right)
+}
+
+/** Same criterion regardless of side order: `A < B` equals `B > A`. */
+export function retrainCriterionKey(c: RetrainCriterion): string {
+  if (c.kind === 'retrain-r2-floor') return 'r2-floor'
+  const flip = canonicalRetrainPair({ left: c.left, right: c.right }).left !== c.left
+  const op = flip ? (c.operator === 'lt' ? 'gt' : 'lt') : c.operator
+  const pair = canonicalRetrainPair({ left: c.left, right: c.right })
+  return `${retrainOperandKey(pair.left)}|${op}|${retrainOperandKey(pair.right)}`
+}
+
+const RETRAIN_METRIC_LABEL: Record<RetrainMetric, string> = {
+  rmse: 'RMSE',
+  mae: 'MAE',
+  r2: 'R²',
+  'residual-sd': 'error SD',
+  'target-sd': 'SD of lab values',
+}
+
+export function retrainOperandLabel(op: RetrainOperand): string {
+  if (op.subject === 'window') return RETRAIN_METRIC_LABEL[op.metric]
+  const who = op.subject === 'candidate' ? 'New version' : 'Current version'
+  return `${who} ${RETRAIN_METRIC_LABEL[op.metric]}`
+}
+
+export function retrainCriterionLabel(c: RetrainCriterion): string {
+  if (c.kind === 'retrain-r2-floor') return 'New version R² ≥ 0 on the shared window'
+  return `${retrainOperandLabel(c.left)} ${operatorSymbol(c.operator)} ${retrainOperandLabel(c.right)} on the shared window`
 }

@@ -36,6 +36,7 @@ import pandas as pd
 from api import RunApi
 from artifacts import (
     ArtifactSet,
+    CV_GAP_PREDICTIONS_FILENAME,
     FEATURE_IMPORTANCE_FILENAME,
     HOLDOUT_PREDICTIONS_FILENAME,
     INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
@@ -55,6 +56,7 @@ from labels import labelled_mask
 from manifest import build_run_manifest
 from models import SEQUENCE_ALGORITHMS
 from pipelines import chronological, cv_expanding, windowed
+from pipelines.cv_gap import cv_gap_if_requested
 from pipelines.context import (
     PreparedRun,
     TrainingResult,
@@ -79,6 +81,10 @@ def run_training(context: RunContext, api: RunApi) -> int:
         incumbent_new_data_holdout_metrics,
         incumbent_new_data_holdout_predictions,
     ) = _score_new_data_holdout_if_present(prepared, result, api)
+    # MODEL-SERVE-026-T05. After every other measurement, so a slow or failed
+    # CV pass can never cost the run its window scores. None unless the spec
+    # asked for it.
+    cv_gap_series = cv_gap_if_requested(prepared, api, SCRATCH)
     _publish(
         context,
         api,
@@ -91,6 +97,7 @@ def run_training(context: RunContext, api: RunApi) -> int:
         new_data_holdout_predictions,
         incumbent_new_data_holdout_metrics,
         incumbent_new_data_holdout_predictions,
+        cv_gap_series,
     )
     return 0
 
@@ -388,6 +395,7 @@ def _publish(
     new_data_holdout_predictions: pd.DataFrame | None = None,
     incumbent_new_data_holdout_metrics: dict[str, Any] | None = None,
     incumbent_new_data_holdout_predictions: pd.DataFrame | None = None,
+    cv_gap_series: pd.DataFrame | None = None,
 ) -> None:
     import joblib
 
@@ -446,6 +454,11 @@ def _publish(
             INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
             incumbent_new_data_holdout_predictions,
         )
+
+    # MODEL-SERVE-026-T05. The CV-gap series — absent rather than empty when
+    # not requested or when it soft-failed, like every population above.
+    if cv_gap_series is not None:
+        artifacts.add_parquet(CV_GAP_PREDICTIONS_FILENAME, cv_gap_series)
 
     # Written only when a series was actually extracted — an estimator with no
     # iterations (or one that exceeded MAX_LOSS_HISTORY_POINTS) gets no artifact

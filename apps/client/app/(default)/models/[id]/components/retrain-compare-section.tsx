@@ -10,6 +10,14 @@ import {
   describeUsedFor,
 } from '@/lib/retrain-basis'
 import type { ModelVersionNumber } from '@/lib/model-version-number'
+import { BasisLabEvents, type LabEventIds } from './basis-lab-events'
+import { RetrainEventMetricGrid } from './retrain-event-metric-grid'
+import { RetrainPairedEvents } from './retrain-paired-events'
+import { RetrainCvGap } from './retrain-cv-gap'
+import { RetrainAttribution } from './retrain-attribution'
+import { RetrainCriteriaVerdicts } from './retrain-criteria'
+import type { RetrainCriterion } from '@/lib/acceptance-criteria'
+import { pairableOnSharedWindow } from '@/lib/retrain-lab-events'
 
 const METRICS: { key: 'rmse' | 'r2' | 'mae'; label: string }[] = [
   { key: 'rmse', label: 'RMSE' },
@@ -37,8 +45,21 @@ export function RetrainCompareSection({
   promotable,
   onApplyToProduction,
   applying,
+  labEventIds,
+  cvFolds,
+  currentSettingsRunId = null,
+  acceptanceCriteria = null,
 }: {
+  /** MODEL-SERVE-026-T07. Criteria this job's operator chose; null = none. */
+  acceptanceCriteria?: RetrainCriterion[] | null
+  /** MODEL-SERVE-026-T06. Run of "B", the current settings refitted on the
+   *  new data; null when it was not refitted. */
+  currentSettingsRunId?: string | null
   view: ComparisonView
+  /** MODEL-SERVE-026-T02. Absent = no lab-event counts rendered. */
+  labEventIds?: LabEventIds
+  /** MODEL-SERVE-026-T05. Folds this job asked for; null/absent = none. */
+  cvFolds?: number | null
   currentVersion: number | null
   candidateVersion: number | null
   /** Non-null only when the candidate is a STAGING version that can be
@@ -123,29 +144,81 @@ export function RetrainCompareSection({
       {view.candidateMetricsBasis && (
         <p className="text-[10px] text-muted-foreground">
           {describeEvalBasis(view.candidateMetricsBasis, versionLabel)}
+          {labEventIds && (
+            <BasisLabEvents
+              basis={view.candidateMetricsBasis}
+              role="candidate"
+              ids={labEventIds}
+            />
+          )}
           {' · '}
           {describeUsedFor(view.candidateMetricsBasis.usedFor)}
         </p>
       )}
-      <div className="grid grid-cols-3 gap-2">
-        {METRICS.map(({ key, label }) => (
-          <div
-            key={key}
-            className="flex flex-col gap-1 rounded-md bg-muted/30 p-3 ring-1 ring-foreground/20"
-          >
-            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              {label}
-            </p>
-            <p className="text-lg font-semibold tabular-nums text-foreground">
-              {formatMetricValue(view.candidateMetrics[key])}
-            </p>
-            <p className="text-[10px] text-muted-foreground">
-              current v{currentVersion}{' '}
-              {formatMetricValue(view.incumbentMetrics[key])}
-            </p>
-          </div>
-        ))}
-      </div>
+      {/* MODEL-SERVE-026-T03. With ids, the lab-event figure leads and the
+          all-row figure sits beneath it, labelled; without, today's grid. */}
+      {labEventIds ? (
+        <>
+          <RetrainEventMetricGrid
+            view={view}
+            currentVersion={currentVersion}
+            ids={labEventIds}
+          />
+          {/* MODEL-SERVE-026-T04. Only where both versions were scored on
+              the same rows — anywhere else a pairing would be fiction. */}
+          {pairableOnSharedWindow(view) && (
+            <RetrainPairedEvents
+              ids={labEventIds}
+              currentVersion={currentVersion}
+            />
+          )}
+          {/* MODEL-SERVE-026-T07. Only the criteria chosen for this job. */}
+          {acceptanceCriteria && acceptanceCriteria.length > 0 && (
+            <RetrainCriteriaVerdicts
+              modelId={labEventIds.modelId}
+              candidateRunId={labEventIds.candidateRunId}
+              criteria={acceptanceCriteria}
+            />
+          )}
+          {/* MODEL-SERVE-026-T06. Data vs settings — same shared window. */}
+          {pairableOnSharedWindow(view) && (
+            <RetrainAttribution
+              modelId={labEventIds.modelId}
+              chosenRunId={labEventIds.candidateRunId}
+              currentSettingsRunId={currentSettingsRunId}
+              currentVersion={currentVersion}
+            />
+          )}
+          {/* MODEL-SERVE-026-T05. Only when this job asked for folds. */}
+          {cvFolds ? (
+            <RetrainCvGap
+              modelId={labEventIds.modelId}
+              runId={labEventIds.candidateRunId}
+              currentVersion={currentVersion}
+            />
+          ) : null}
+        </>
+      ) : (
+        <div className="grid grid-cols-3 gap-2">
+          {METRICS.map(({ key, label }) => (
+            <div
+              key={key}
+              className="flex flex-col gap-1 rounded-md bg-muted/30 p-3 ring-1 ring-foreground/20"
+            >
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                {label}
+              </p>
+              <p className="text-lg font-semibold tabular-nums text-foreground">
+                {formatMetricValue(view.candidateMetrics[key])}
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                current v{currentVersion}{' '}
+                {formatMetricValue(view.incumbentMetrics[key])}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
       {/* MODEL-SERVE-019 AC3. The current version's OWN figure names its
           basis too — not only the candidate's. Always present (unlike the
           candidate's basis fields, which are null for a legacy job):
@@ -155,6 +228,13 @@ export function RetrainCompareSection({
           view.incumbentMetricsBasis,
           versionLabel,
           'incumbent',
+        )}
+        {labEventIds && (
+          <BasisLabEvents
+            basis={view.incumbentMetricsBasis}
+            role="incumbent"
+            ids={labEventIds}
+          />
         )}
       </p>
 
@@ -171,6 +251,13 @@ export function RetrainCompareSection({
             {view.newRegimeMetricsBasis
               ? describeEvalBasis(view.newRegimeMetricsBasis, versionLabel)
               : 'Its own test data (existing + new)'}
+            {view.newRegimeMetricsBasis && labEventIds && (
+              <BasisLabEvents
+                basis={view.newRegimeMetricsBasis}
+                role="candidate"
+                ids={labEventIds}
+              />
+            )}
           </p>
           {view.newRegimeMetricsBasis && (
             <p className="text-[10px] text-muted-foreground">
@@ -192,7 +279,8 @@ export function RetrainCompareSection({
 
       {view.comparable && view.rmseDelta !== null && (
         <p className="text-xs text-muted-foreground">
-          RMSE {view.rmseDelta < 0 ? 'improved' : 'regressed'} by{' '}
+          {labEventIds ? 'Over all rows, RMSE' : 'RMSE'}{' '}
+          {view.rmseDelta < 0 ? 'improved' : 'regressed'} by{' '}
           <span className="font-medium text-foreground">
             {Math.abs(view.rmseDelta).toFixed(4)}
           </span>{' '}

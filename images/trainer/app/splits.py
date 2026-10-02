@@ -54,6 +54,40 @@ def chronological_split(
     return ordered.iloc[:cut], ordered.iloc[cut:], cut_timestamp
 
 
+def chronological_split_holding_new(
+    frame: pd.DataFrame, ratio: float, new_data_from: pd.Timestamp
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """MODEL-SERVE-027 (user, 2026-10-02: "hold out old rows"). An
+    Existing + new retrain's combined frame is OLD rows then NEW rows. A
+    plain `chronological_split` cut the newest share off as test, so every
+    new row landed in test and the candidate never trained on the new data.
+    Here the cut is taken over the OLD rows only (same ratio): test = the
+    tail of the old rows; train = the rest of the old rows plus EVERY new
+    row. Accepted trade-off, stated: the test rows are older than the new
+    training rows.
+
+    Refuses rather than degrading when the old side cannot be split, or when
+    there are no new rows at all (that would silently be a plain split)."""
+    ordered = frame.sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
+    is_new = ordered[TIMESTAMP_COLUMN] >= new_data_from
+    old = ordered[~is_new]
+    new = ordered[is_new]
+    if len(new) == 0:
+        raise RuntimeError(
+            f"No rows at or after the new data's start ({new_data_from}) — "
+            "nothing new to train on."
+        )
+    cut = int(len(old) * ratio)
+    if cut < 1 or cut >= len(old):
+        raise RuntimeError(
+            f"Split ratio {ratio} leaves one side empty on {len(old)} existing "
+            "rows, so there is no existing-data test split to rank on."
+        )
+    cut_timestamp = str(old.iloc[cut][TIMESTAMP_COLUMN])
+    train = pd.concat([old.iloc[:cut], new]).reset_index(drop=True)
+    return train, old.iloc[cut:].reset_index(drop=True), cut_timestamp
+
+
 def chronological_split_windows(
     window_timestamps: pd.Series, ratio: float
 ) -> tuple[np.ndarray, np.ndarray, str]:

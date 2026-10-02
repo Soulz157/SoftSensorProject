@@ -228,6 +228,14 @@ const ChronologicalSplitSpecSchema = z
     test_rows: z.number().int().nonnegative(),
     source_rows: z.number().int().nonnegative(),
     labelled_rows: z.number().int().nonnegative(),
+    // MODEL-SERVE-027. Present only for an Existing + new retrain, whose
+    // test split is cut on the OLD rows only: where the new data starts and
+    // how many new rows reached training. Without these, .strict() 400'd a
+    // successful run's /complete (found live 2026-10-02, jobs b0f2cd23 and
+    // 8289d406) — the trainer's split_spec and this schema must change
+    // together.
+    new_data_from: z.string().optional(),
+    new_train_rows: z.number().int().nonnegative().optional(),
   })
   .strict();
 

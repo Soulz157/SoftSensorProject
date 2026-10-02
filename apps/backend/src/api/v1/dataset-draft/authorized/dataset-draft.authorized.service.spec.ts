@@ -1539,17 +1539,98 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
   describe('DS-LAKE-024-T06: save as a new VERSION of an existing Dataset', () => {
     const EDIT_DRAFT = { ...DRAFT, editingDatasetId: 'dataset-1' };
 
-    function uniqueViolationError(): Error {
+    // DS-LAKE-036. Both shapes a P2002 can carry: the driver adapter's
+    // (constraint name inside originalMessage — what this codebase's Prisma
+    // actually produces, MODEL-SERVE-003-V02) and the classic `target` field
+    // list.
+    function uniqueViolationError(
+      constraint = 'DatasetVersion_datasetId_versionNumber_key',
+      shape: 'adapter' | 'target' = 'adapter',
+      fields: string[] = ['datasetId', 'versionNumber'],
+    ): Error {
       const err = new Error(
-        'Unique constraint failed on the fields: (`datasetId`,`versionNumber`)',
+        `Unique constraint failed on the fields: (${fields.join(',')})`,
       );
       Object.setPrototypeOf(
         err,
         PrismaTypes.PrismaClientKnownRequestError.prototype,
       );
       (err as unknown as { code: string }).code = 'P2002';
+      (err as unknown as { meta: Record<string, unknown> }).meta =
+        shape === 'adapter'
+          ? {
+              modelName: 'X',
+              driverAdapterError: {
+                cause: {
+                  originalCode: '23505',
+                  originalMessage: `duplicate key value violates unique constraint "${constraint}"`,
+                },
+              },
+            }
+          : { target: fields };
       return err;
     }
+
+    describe('DS-LAKE-036 — which unique constraint a save collided on', () => {
+      const NAME = [
+        'Dataset_workspaceId_name_key',
+        ['workspaceId', 'name'],
+      ] as const;
+      const VERSION = [
+        'DatasetVersion_datasetId_versionNumber_key',
+        ['datasetId', 'versionNumber'],
+      ] as const;
+
+      async function saveRejectingWith(err: Error) {
+        const prisma = chainedPrisma();
+        prisma.datasetDraft.findFirst.mockResolvedValue(EDIT_DRAFT);
+        prisma.dataset.findFirst.mockResolvedValue({ id: 'dataset-1' });
+        prisma._tx.datasetVersion.create.mockRejectedValueOnce(err);
+        post.mockResolvedValueOnce(VALIDATION_REPORT);
+        const { service } = makeService(prisma);
+        return service.saveDraftAsDatasetService(USER, 'draft-1', {
+          name: 'Dataset 6 month — new data',
+          tags: ['TI-101'],
+        } as never);
+      }
+
+      it.each(['adapter', 'target'] as const)(
+        'a taken name (%s shape) says so and names the dataset — not "retry"',
+        async (shape) => {
+          await expect(
+            saveRejectingWith(
+              uniqueViolationError(NAME[0], shape, [...NAME[1]]),
+            ),
+          ).rejects.toMatchObject({
+            statusCode: 409,
+            message:
+              'A dataset named "Dataset 6 month — new data" already exists in this workspace — choose a different name.',
+          });
+        },
+      );
+
+      it.each(['adapter', 'target'] as const)(
+        'a version-number race (%s shape) keeps the retry message',
+        async (shape) => {
+          await expect(
+            saveRejectingWith(
+              uniqueViolationError(VERSION[0], shape, [...VERSION[1]]),
+            ),
+          ).rejects.toMatchObject({
+            statusCode: 409,
+            message:
+              'Another save for this dataset is already in progress — retry.',
+          });
+        },
+      );
+
+      it('a P2002 on any other constraint is rethrown, not disguised as either', async () => {
+        const err = uniqueViolationError('DatasetArtifact_pkey', 'adapter', [
+          'id',
+        ]);
+        await expect(saveRejectingWith(err)).rejects.toBe(err);
+      });
+    });
 
     it('resolves the existing Dataset via update, not create — versionNumber increments off the prior version', async () => {
       const prisma = chainedPrisma();

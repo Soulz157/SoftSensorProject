@@ -15,6 +15,8 @@ import {
 import type { ModelVersionNumber } from '@/lib/model-version-number'
 import { RetrainCompareSection } from './retrain-compare-section'
 import { RetrainNewDataSection } from './retrain-new-data-section'
+import type { LabEventIds } from './basis-lab-events'
+import { currentSettingsRunId } from '@/lib/retrain-attribution'
 
 /**
  * MODEL-SERVE-014. Was driven by a local `setTimeout` sequence and
@@ -29,8 +31,18 @@ export function RetrainProgress({
   onApplyToProduction,
   applying,
   onDismiss,
+  labEventIds,
+  currentSettings = null,
 }: {
+  /** MODEL-SERVE-026-T06. See RetrainTab's own prop. */
+  currentSettings?: {
+    algorithm: string
+    hyperparameters: Record<string, unknown> | null
+  } | null
   job: RetrainJob | null
+  /** MODEL-SERVE-026-T02. Where each figure's lab-event count is read from.
+   *  Absent = no counts rendered. */
+  labEventIds?: LabEventIds
   phase: RetrainPhase
   logs: { id: string; level: string; message: string }[]
   /** MODEL-SERVE-014. The explicit decision to put the retrained version
@@ -149,8 +161,16 @@ export function RetrainProgress({
             promotable={promotable}
             onApplyToProduction={onApplyToProduction}
             applying={applying}
+            labEventIds={labEventIds}
+            cvFolds={job.cvFolds}
+            acceptanceCriteria={job.acceptanceCriteria}
+            currentSettingsRunId={
+              currentSettings
+                ? currentSettingsRunId(job.candidates, currentSettings)
+                : null
+            }
           />
-          <RetrainNewDataSection view={view} />
+          <RetrainNewDataSection view={view} labEventIds={labEventIds} />
         </div>
       )}
     </div>

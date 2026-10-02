@@ -1,4 +1,6 @@
 import { ModelRetrainAuthorizedService } from './model-retrain.authorized.service';
+import * as pythonClient from '@/lib/python-client';
+import { TriggerRetrainSchema } from './dto/model-retrain.authorized.dto';
 
 /**
  * MODEL-SERVE-014. Covers the two reads this feature ADDED to
@@ -1398,5 +1400,335 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
     // rely on exactly this: an absent strategy takes the same code path a
     // KEEP_EXISTING job always did (no augmentation), which is what makes
     // them still valid regression tests of the sizing behaviour.
+  });
+
+  describe('triggerRetrainService — CV fold cap at config time (MODEL-SERVE-026-T05 / V03)', () => {
+    // The combined training frame carries 41 distinct target values, so
+    // max_admissible_k = 41 // 10 = 4.
+    const SPLIT_STATS = {
+      test: { tags: [], insufficient_tags: [] },
+      folds: null,
+      train: { tags: [], insufficient_tags: [] },
+      n_splits: null,
+      target_y: 'y',
+      source_key: 'models/m/combined/data_gold.parquet',
+      source_rows: 900,
+      split_ratio: 0.8,
+      cut_timestamp: '2026-01-01 00:00:00',
+      max_admissible_k: 4,
+      test_labelled_rows: 180,
+      train_labelled_rows: 720,
+      distinct_labelled_values: 41,
+    };
+    const DTO = {
+      strategy: 'NEW_DATA_ONLY',
+      additionalDatasetVersionId: '00000000-0000-0000-0000-000000000001',
+      newValidationFrom: '2026-01-01T00:00:00.000Z',
+      newValidationTo: '2026-01-31T00:00:00.000Z',
+    };
+
+    function setup() {
+      const prisma = makePrisma({ runsById: { 'run-incumbent': RUN_BASE } });
+      const candidateJobs = makeCandidateJobs(JOB_BASE);
+      candidateJobs.expandSearchCandidates.mockReturnValue([
+        { algorithm: 'ridge', hyperparameters: { alpha: 1 } },
+      ]);
+      candidateJobs.launchForJob.mockResolvedValue({ id: 'run-new-1' });
+      const augment = {
+        assertCompatible: jest.fn().mockResolvedValue({
+          baseDatasetVersionId: 'dv-base',
+          newDatasetVersionId: 'dv-new',
+        }),
+        buildCombinedArtifact: jest.fn().mockResolvedValue({
+          combinedFinalArtifactId: 'final-combined',
+          combinedObjectKey: 'models/m/combined/data_gold.parquet',
+          combinedRowCount: 900,
+        }),
+      };
+      const post = jest
+        .spyOn(pythonClient, 'postToPython')
+        .mockResolvedValue(SPLIT_STATS);
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        candidateJobs as never,
+        augment as never,
+      );
+      return { prisma, service, post };
+    }
+
+    afterEach(() => jest.restoreAllMocks());
+
+    it('admits k AT the cap and records it on the job', async () => {
+      const { prisma, service, post } = setup();
+      await service.triggerRetrainService(
+        'model-1',
+        { ...DTO, cvFolds: 4 } as never,
+        ADMIN,
+      );
+      expect(post).toHaveBeenCalledWith(
+        '/v1/preprocess/split-stats',
+        expect.objectContaining({
+          source_key: 'models/m/combined/data_gold.parquet',
+        }),
+        expect.any(Number),
+      );
+      // The cap check runs BEFORE the job row — not merely the later freeze.
+      const createdAt =
+        prisma.modelCandidateJob.create.mock.invocationCallOrder[0];
+      expect(
+        post.mock.invocationCallOrder.some((order) => order < createdAt),
+      ).toBe(true);
+      const data = (
+        prisma.modelCandidateJob.create.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(data.cvFolds).toBe(4);
+    });
+
+    it('refuses k ONE ABOVE the cap before any job row exists, naming the distinct count', async () => {
+      const { prisma, service } = setup();
+      await expect(
+        service.triggerRetrainService(
+          'model-1',
+          { ...DTO, cvFolds: 5 } as never,
+          ADMIN,
+        ),
+      ).rejects.toMatchObject({
+        statusCode: 422,
+        message: expect.stringContaining(
+          '41 distinct target values, and each fold needs at least 10, so at most 4 folds',
+        ) as string,
+      });
+      expect(prisma.modelCandidateJob.create).not.toHaveBeenCalled();
+    });
+
+    it('runs no config-time check and records null when no folds were requested', async () => {
+      const { prisma, service, post } = setup();
+      await service.triggerRetrainService('model-1', DTO as never, ADMIN);
+      // The only /split-stats call is the existing fire-and-forget freeze,
+      // made AFTER the job row exists — never one before it.
+      const createdAt =
+        prisma.modelCandidateJob.create.mock.invocationCallOrder[0];
+      const before = post.mock.invocationCallOrder.filter(
+        (order) => order < createdAt,
+      );
+      expect(before).toHaveLength(0);
+      const data = (
+        prisma.modelCandidateJob.create.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(data.cvFolds).toBeNull();
+    });
+  });
+
+  describe('acceptance criteria (MODEL-SERVE-026-T07)', () => {
+    const shared = (subject: 'candidate' | 'current') => ({
+      metric: 'rmse',
+      subject,
+      population: 'shared-window',
+    });
+    const parse = (criteria: unknown[]) =>
+      TriggerRetrainSchema.safeParse({
+        strategy: 'NEW_DATA_ONLY',
+        additionalDatasetVersionId: '3f2b6c1e-8a4d-4c2b-9e1f-7a6d5c4b3a21',
+        newValidationFrom: '2026-01-01T00:00:00.000Z',
+        newValidationTo: '2026-01-31T00:00:00.000Z',
+        acceptanceCriteria: criteria,
+      });
+
+    it('accepts the presets and an operator-built "RMSE < SD of lab values"', () => {
+      expect(
+        parse([
+          {
+            kind: 'retrain-comparison',
+            left: shared('candidate'),
+            operator: 'lt',
+            right: shared('current'),
+          },
+          { kind: 'retrain-r2-floor' },
+          {
+            kind: 'retrain-comparison',
+            left: shared('candidate'),
+            operator: 'lt',
+            right: {
+              metric: 'target-sd',
+              subject: 'window',
+              population: 'shared-window',
+            },
+          },
+        ]).success,
+      ).toBe(true);
+    });
+
+    it.each([
+      [
+        'a cross-population pair',
+        { ...shared('current'), population: 'own-test' },
+      ],
+      ['the same figure on both sides', shared('candidate')],
+      [
+        "RMSE against the SAME version's own MAE (always one way)",
+        { ...shared('candidate'), metric: 'mae' },
+      ],
+      [
+        "RMSE against the same version's own error SD (always one way)",
+        { ...shared('candidate'), metric: 'residual-sd' },
+      ],
+      [
+        'R² against an error (mixed units)',
+        { ...shared('current'), metric: 'r2' },
+      ],
+      [
+        'SD of lab values claimed by a version',
+        {
+          metric: 'target-sd',
+          subject: 'current',
+          population: 'shared-window',
+        },
+      ],
+    ])('refuses %s', (_label, right) => {
+      expect(
+        parse([
+          {
+            kind: 'retrain-comparison',
+            left: shared('candidate'),
+            operator: 'lt',
+            right,
+          },
+        ]).success,
+      ).toBe(false);
+    });
+
+    it('refuses a typed number on the floor — there is no field for one', () => {
+      expect(parse([{ kind: 'retrain-r2-floor', value: 0.5 }]).success).toBe(
+        false,
+      );
+    });
+
+    it('stores the chosen criteria on the job, and nothing when none were chosen', async () => {
+      const prisma = makePrisma({ runsById: { 'run-incumbent': RUN_BASE } });
+      const candidateJobs = makeCandidateJobs(JOB_BASE);
+      candidateJobs.expandSearchCandidates.mockReturnValue([
+        { algorithm: 'ridge', hyperparameters: { alpha: 1 } },
+      ]);
+      candidateJobs.launchForJob.mockResolvedValue({ id: 'run-new-1' });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        candidateJobs as never,
+        {} as never,
+      );
+      const floor = [{ kind: 'retrain-r2-floor' }];
+      await service.triggerRetrainService(
+        'model-1',
+        { acceptanceCriteria: floor } as never,
+        ADMIN,
+      );
+      await service.triggerRetrainService('model-1', {} as never, ADMIN);
+      const calls = prisma.modelCandidateJob.create.mock.calls as Array<
+        [{ data: Record<string, unknown> }]
+      >;
+      expect(calls[0][0].data.acceptanceCriteria).toEqual(floor);
+      expect(calls[1][0].data).not.toHaveProperty('acceptanceCriteria');
+    });
+  });
+
+  describe('triggerRetrainService — the third fit B (MODEL-SERVE-026-T06 / V05)', () => {
+    // Tuned AWAY from every default, so a B seeded from client defaults (the
+    // MODEL-FLOW-022 defect) cannot pass by coincidence.
+    const TUNED = {
+      ...INCUMBENT_VERSION,
+      hyperparameters: { alpha: 7.5, fit_intercept: false, solver: 'cholesky' },
+    };
+
+    function setup() {
+      const prisma = makePrisma({
+        runsById: { 'run-incumbent': RUN_BASE },
+        productionVersion: TUNED,
+      });
+      const candidateJobs = makeCandidateJobs(JOB_BASE);
+      candidateJobs.launchForJob.mockResolvedValue({ id: 'run-new-1' });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        candidateJobs as never,
+        {} as never,
+      );
+      const created = () =>
+        (
+          prisma.modelCandidateJob.create.mock.calls[0] as [
+            { data: { candidates: Array<Record<string, unknown>> } },
+          ]
+        )[0].data.candidates;
+      return { prisma, candidateJobs, service, created };
+    }
+
+    it('V05 — Custom Finetune fits B FIRST, equal to the current version’s settings field for field', async () => {
+      const { service, created } = setup();
+      await service.triggerRetrainService(
+        'model-1',
+        {
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 3 } }],
+        } as never,
+        ADMIN,
+      );
+      expect(created()).toEqual([
+        {
+          algorithm: 'ridge',
+          hyperparameters: {
+            alpha: 7.5,
+            fit_intercept: false,
+            solver: 'cholesky',
+          },
+          phase: 1,
+        },
+        { algorithm: 'ridge', hyperparameters: { alpha: 3 }, phase: 1 },
+      ]);
+    });
+
+    it('Auto Finetune seeds its search from the same current settings', async () => {
+      const { candidateJobs, service } = setup();
+      candidateJobs.expandSearchCandidates.mockReturnValue([
+        { algorithm: 'ridge', hyperparameters: TUNED.hyperparameters },
+      ]);
+      await service.triggerRetrainService('model-1', {} as never, ADMIN);
+      expect(candidateJobs.expandSearchCandidates).toHaveBeenCalledWith(
+        { algorithm: 'ridge', hyperparameters: TUNED.hyperparameters },
+        expect.anything(),
+      );
+    });
+
+    it('opting out sends only the operator’s candidate; and B is never added twice', async () => {
+      const optOut = setup();
+      await optOut.service.triggerRetrainService(
+        'model-1',
+        {
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 3 } }],
+          refitCurrentSettings: false,
+        } as never,
+        ADMIN,
+      );
+      expect(optOut.created()).toHaveLength(1);
+
+      const same = setup();
+      await same.service.triggerRetrainService(
+        'model-1',
+        {
+          // Same settings, different key order — still B, not a second copy.
+          candidates: [
+            {
+              algorithm: 'ridge',
+              hyperparameters: {
+                solver: 'cholesky',
+                fit_intercept: false,
+                alpha: 7.5,
+              },
+            },
+          ],
+        } as never,
+        ADMIN,
+      );
+      expect(same.created()).toHaveLength(1);
+    });
   });
 });

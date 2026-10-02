@@ -56,6 +56,8 @@ function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
     baseDatasetVersionId: null,
     additionalDatasetVersionId: null,
     combinedArtifactId: null,
+    cvFolds: null,
+    acceptanceCriteria: null,
     ...overrides,
   }
 }

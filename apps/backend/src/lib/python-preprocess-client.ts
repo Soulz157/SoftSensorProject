@@ -604,8 +604,20 @@ const CombineForRetrainSchema = z.object({
   // extent the incumbent's own test split does. Never compared against a
   // labelled row count computed elsewhere (see this field's own note at its
   // origin in artifact_service.combine_for_retrain).
-  frozen_eval_dropped_rows: z.number().int().nonnegative().optional(),
+  // MODEL-SERVE-027, found live 2026-10-02: nullable as well as optional.
+  // Until python's response model declared this field it never arrived at
+  // all; now it does, and New Data Only (no frozen slice) sends null — which
+  // a number-only schema refused, failing every New Data Only trigger.
+  frozen_eval_dropped_rows: z
+    .number()
+    .int()
+    .nonnegative()
+    .nullable()
+    .optional(),
 });
+
+/** Exported for its spec only — the parse a combine response goes through. */
+export const CombineForRetrainResponseSchemaForTest = CombineForRetrainSchema;
 
 export type CombineForRetrainResult = z.infer<typeof CombineForRetrainSchema>;
 
@@ -681,6 +693,45 @@ export type RunPredictions = z.infer<typeof RunPredictionsSchema>;
  * this reads and decodes the whole object, so it is bounded by object size,
  * not by a pipeline.
  */
+/** MODEL-SERVE-026-T05. python `RunCvGapResponse`, camel-cased. */
+const RunCvGapSchema = z
+  .object({
+    source_key: z.string(),
+    row_count: z.number().int().nonnegative(),
+    points: z.array(
+      z.object({
+        fold: z.number().int().positive(),
+        timestamp: z.string(),
+        y_true: z.number(),
+        y_pred: z.number(),
+        // null before the current version's own cut — never 0.
+        y_pred_current: z.number().nullable(),
+      }),
+    ),
+  })
+  .transform((r) => ({
+    sourceKey: r.source_key,
+    rowCount: r.row_count,
+    points: r.points.map((p) => ({
+      fold: p.fold,
+      timestamp: p.timestamp,
+      yTrue: p.y_true,
+      yPred: p.y_pred,
+      yPredCurrent: p.y_pred_current,
+    })),
+  }));
+
+export type RunCvGap = z.infer<typeof RunCvGapSchema>;
+
+export async function runCvGap(sourceKey: string): Promise<RunCvGap> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/cv-gap',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunCvGapSchema.parse(res);
+}
+
 export async function runPredictions(input: {
   source_key: string;
   manifest_key?: string | null;

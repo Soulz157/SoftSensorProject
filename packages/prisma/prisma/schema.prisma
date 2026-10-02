@@ -1443,6 +1443,18 @@ model ModelCandidateJob {
   targetY        String
   goldArtifactId String
   trainTestSplit Float?
+  /// MODEL-SERVE-026-T05. Expanding folds for the CV-GAP measurement: every
+  /// candidate of this job also refits its configuration per fold and scores
+  /// it beside the current version (images/trainer/app/pipelines/cv_gap.py).
+  /// A MEASUREMENT only — candidates stay chronological runs and still rank on
+  /// their own test RMSE. NEW_DATA_ONLY only; capped at config time by the
+  /// combined artifact's distinct labelled values // 10. Null = no CV.
+  cvFolds        Int?
+  /// MODEL-SERVE-026-T07. The acceptance criteria the operator chose BEFORE
+  /// the retrain started (lib/acceptance-criteria.ts shapes, 'retrain'
+  /// scope). A stated verdict only — never blocks a retrain or a promote.
+  /// Null = none chosen (every job before this field).
+  acceptanceCriteria Json?
 
   /// MODEL-FLOW-020-T04/T02. The dataset's own two size figures AS THE
   /// CLIENT SAW THEM at job creation — `sizedRowCount` is /split-stats'

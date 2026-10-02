@@ -62,6 +62,24 @@ describe('SplitSpecSchema — cv_expanding variant', () => {
     ).toBe(false);
   });
 
+  it('MODEL-SERVE-027 — accepts an Existing + new run’s split record (the one that 400’d live), still refuses an unknown field', () => {
+    const live = {
+      method: 'chronological',
+      ratio: 0.7,
+      cut_timestamp: '2025-09-29 03:00:00',
+      train_rows: 2187,
+      test_rows: 928,
+      source_rows: 3115,
+      labelled_rows: 3115,
+      new_data_from: '2025-11-07 19:01:00',
+      new_train_rows: 24,
+    };
+    expect(SplitSpecSchema.safeParse(live).success).toBe(true);
+    expect(SplitSpecSchema.safeParse({ ...live, surprise: 1 }).success).toBe(
+      false,
+    );
+  });
+
   it('the two pre-existing variants still validate unchanged', () => {
     expect(
       SplitSpecSchema.safeParse({

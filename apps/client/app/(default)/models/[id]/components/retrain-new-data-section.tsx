@@ -2,6 +2,7 @@
 
 import { formatMetricValue } from '@/lib/model-evaluation'
 import type { ComparisonView } from '@/lib/retrain'
+import { BasisLabEvents, type LabEventIds } from './basis-lab-events'
 
 const METRICS: { key: 'rmse' | 'r2' | 'mae'; label: string }[] = [
   { key: 'rmse', label: 'RMSE' },
@@ -27,7 +28,14 @@ const METRICS: { key: 'rmse' | 'r2' | 'mae'; label: string }[] = [
  * Renders nothing when no window was set aside (or for a Keep Existing job,
  * kept only as history), so the tab never shows an orphaned heading.
  */
-export function RetrainNewDataSection({ view }: { view: ComparisonView }) {
+export function RetrainNewDataSection({
+  view,
+  labEventIds,
+}: {
+  view: ComparisonView
+  /** MODEL-SERVE-026-T02. Absent = no lab-event count rendered. */
+  labEventIds?: LabEventIds
+}) {
   const hasWindow =
     view.newDataHoldoutMetrics !== null || view.newDataHoldoutBasis !== null
   if (!hasWindow) return null
@@ -76,6 +84,13 @@ export function RetrainNewDataSection({ view }: { view: ComparisonView }) {
                         view.newDataHoldoutTo,
                       ).toLocaleDateString()}`
                     : ''}
+                  {view.newDataHoldoutBasis && labEventIds && (
+                    <BasisLabEvents
+                      basis={view.newDataHoldoutBasis}
+                      role="candidate"
+                      ids={labEventIds}
+                    />
+                  )}
                   . Not compared against the current model, which was never
                   scored on these rows.
                 </p>

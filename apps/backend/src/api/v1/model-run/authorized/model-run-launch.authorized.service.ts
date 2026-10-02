@@ -22,9 +22,11 @@ import {
   getRunCvFolds,
   getRunFeatureImportance,
   getRunPermutationImportance,
+  runCvGap,
   runPredictions,
   runPredictionsBatch,
 } from '@/lib/python-preprocess-client';
+import { buildRunKey } from '@/lib/model-run-owner';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import { PythonSplitStatsSchema } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 import { AppException } from '@softsensor/common';
@@ -925,6 +927,64 @@ export class ModelRunLaunchAuthorizedService {
   }
 
   /** Parse one predictions object and wrap it in the routes' envelope. */
+  /**
+   * MODEL-SERVE-026-T05. A retrain candidate's CV-gap series — every
+   * expanding fold's test rows with the candidate configuration's fold-fit
+   * prediction and the current version's (null before its own cut). Its own
+   * route, not a `population` of the predictions route: the shape carries
+   * `fold` and a second prediction. Every missing case is a 404 naming why,
+   * never an empty 200 a panel would read as "no gap".
+   */
+  async getRunCvGapService(
+    modelId: string,
+    runId: string,
+    userId: string,
+    role: string,
+  ) {
+    await this.assertModelAccess(modelId, userId, role);
+    const run = await this.prisma.modelTrainingRun.findFirst({
+      where: { id: runId, modelId },
+      select: { status: true, candidateJobId: true },
+    });
+    if (!run) throw new NotFoundException('Training run not found');
+    const job = run.candidateJobId
+      ? await this.prisma.modelCandidateJob.findUnique({
+          where: { id: run.candidateJobId },
+          select: { cvFolds: true },
+        })
+      : null;
+    if (!job?.cvFolds) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Cross-validation was not requested for this retrain.',
+        type: 'ERROR',
+      });
+    }
+    if (run.status !== 'SUCCEEDED') {
+      throw new AppException({
+        statusCode: 404,
+        message: `Training run has not succeeded (status: ${run.status}); no cross-validation to show.`,
+        type: 'ERROR',
+      });
+    }
+    // No column records this key — `buildRunKey` convention. A run whose
+    // trainer image predates cv_gap.py, or whose CV soft-failed, has no
+    // object here and python answers 404 with its own reason.
+    const data = await runCvGap(
+      buildRunKey(
+        { scope: 'model', id: modelId },
+        runId,
+        'cv_gap_predictions.parquet',
+      ),
+    );
+    return {
+      statusCode: 200,
+      message: 'Cross-validation series fetched',
+      type: 'SUCCESS' as const,
+      data,
+    };
+  }
+
   private async readPredictions(sourceKey: string, manifestKey: string | null) {
     const predictions = await runPredictions({
       source_key: sourceKey,

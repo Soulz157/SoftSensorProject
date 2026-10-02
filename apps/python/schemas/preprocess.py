@@ -335,6 +335,24 @@ class ModelRunPredictionsRequest(BaseModel):
     manifest_key: str | None = None
 
 
+class RunCvGapPoint(BaseModel):
+    """MODEL-SERVE-026-T05. One fold-test row of the CV-gap series."""
+
+    fold: int
+    timestamp: str
+    y_true: float
+    #: The candidate CONFIGURATION refitted on this fold's train window.
+    y_pred: float
+    #: The current version's prediction; null before its own cut.
+    y_pred_current: float | None
+
+
+class RunCvGapResponse(BaseModel):
+    source_key: str
+    row_count: int
+    points: list[RunCvGapPoint]
+
+
 class RunPredictionPoint(BaseModel):
     #: ISO 8601, `sep=" "` — same convention `sample_rows`/
     #: `get_frame_metadata` already use for a parsed timestamp.
@@ -1561,7 +1579,11 @@ class CombineForRetrainResponse(ArtifactStatsResponse):
 
     #: sha256 of the frozen-eval parquet, independent of the combined GOLD's
     #: own `checksum` (that one covers `data.parquet`, the TRAIN side).
-    frozen_eval_checksum: str
+    #: None for New Data Only (`combine=False`, MODEL-SERVE-021), which carves
+    #: no frozen slice. Was a required `str`, which made FastAPI's response
+    #: validation turn every New Data Only retrain into a bare 500 after all
+    #: its objects were written. NestJS's own schema was already nullable.
+    frozen_eval_checksum: Optional[str] = None
     #: Rows dropped because their timestamp collided with a new-dataset row
     #: at the same instant (new wins — `combine_for_retrain`'s own
     #: docstring). 0 for the overwhelming majority of merges, where the two
@@ -1584,6 +1606,15 @@ class CombineForRetrainResponse(ArtifactStatsResponse):
     #: them are different facts, and the UI reports what was measured.
     new_validation_from: Optional[str] = None
     new_validation_to: Optional[str] = None
+    #: MODEL-SERVE-019 / MODEL-SERVE-027, found 2026-10-02. combine_for_retrain
+    #: has always PUT these three in its payload, but they were never declared
+    #: here — FastAPI's response_model drops undeclared keys, so 0 of 12 real
+    #: combine records ever stored them. `frozen_eval_to` is the new data's
+    #: first timestamp: the boundary an Existing + new candidate's trainer
+    #: needs to cut its test split on the old rows only (027).
+    frozen_eval_to: Optional[str] = None
+    combined_end_time: Optional[str] = None
+    frozen_eval_dropped_rows: Optional[int] = None
 
 
 class ValidateRequest(BaseModel):

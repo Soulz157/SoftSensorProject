@@ -79,6 +79,16 @@ NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = "new_data_holdout_predictions.parquet"
 INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = (
     "incumbent_new_data_holdout_predictions.parquet"
 )
+# MODEL-SERVE-026-T05. The CV-gap series (pipelines/cv_gap.py): every
+# expanding fold's test rows, with the candidate configuration's fold-fit
+# prediction AND the current version's prediction (NaN before its own cut).
+# {fold, timestamp, y_true, y_pred, y_pred_current} — a fifth population, its
+# OWN filename. Written only for a NEW_DATA_ONLY retrain whose spec carries
+# `cvGap`. Mirrored in apps/python's object_store.py
+# (CV_GAP_PREDICTIONS_FILENAME, gating _ALLOWED_RUN_UPLOADS and
+# _READABLE_PREDICTION_FILENAMES) and artifact-keys.ts — change all three.
+# See MIRRORS.md entry 11.
+CV_GAP_PREDICTIONS_FILENAME = "cv_gap_predictions.parquet"
 # MODEL-FLOW-023-T03/T10. A SECOND artifact, never a widened
 # feature_importance.json — importance.py's own finding 6 is explicit that
 # the two methods cannot share one file (a signed permutation drop and an

@@ -154,6 +154,14 @@ export const RUN_UPLOAD_FILENAMES = [
   // images/trainer/app/artifacts.py — change all three. See
   // images/trainer/app/MIRRORS.md entry 10.
   'incumbent_new_data_holdout_predictions.parquet',
+  // MODEL-SERVE-026-T05. The CV-gap series — FIVE columns {fold, timestamp,
+  // y_true, y_pred, y_pred_current}, not its siblings' three, so it is read by
+  // its own python reader (`run_cv_gap`). No run column records its key: it
+  // is resolved by `buildRunKey` convention and is present only when the job
+  // carried `cvFolds`. Mirrored from CV_GAP_PREDICTIONS_FILENAME in
+  // object_store.py and images/trainer/app/artifacts.py — change all three.
+  // See images/trainer/app/MIRRORS.md entry 11.
+  'cv_gap_predictions.parquet',
 ] as const;
 
 /**

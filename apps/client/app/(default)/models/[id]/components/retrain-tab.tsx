@@ -32,8 +32,15 @@ export function RetrainTab({
   onStartRetrain,
   applying,
   onApplyToProduction,
+  currentSettings = null,
 }: {
   modelId: string
+  /** MODEL-SERVE-026-T06. The current version's own configuration, to find
+   *  which candidate is "B" (those settings refitted on the new data). */
+  currentSettings?: {
+    algorithm: string
+    hyperparameters: Record<string, unknown> | null
+  } | null
   /** The retrain job, or null when there is none. Never hidden by the old
    *  panel's per-viewer close: on this tab the finished result is the content,
    *  and closing it would leave nothing to bring it back with. */
@@ -78,7 +85,14 @@ export function RetrainTab({
       ) : (
         <>
           <RetrainProgress
+            labEventIds={{
+              modelId,
+              candidateRunId: job.comparison?.candidate.runId ?? null,
+              incumbentSourceRunId:
+                job.comparison?.incumbent.sourceRunId ?? null,
+            }}
             job={job}
+            currentSettings={currentSettings}
             phase={phase}
             logs={logs}
             applying={applying}

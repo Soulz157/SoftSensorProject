@@ -994,6 +994,14 @@ export default function ModelDetailPage({
           <TabsContent value="retrain" className="mt-4">
             <RetrainTab
               modelId={model.id}
+              currentSettings={
+                retrain.incumbent
+                  ? {
+                      algorithm: retrain.incumbent.algorithm,
+                      hyperparameters: retrain.incumbent.hyperparameters,
+                    }
+                  : null
+              }
               // Not the per-viewer `dismissed` pair the old panel used: that was
               // a way to close a panel sitting above the whole page. Here the
               // finished result IS the tab's content — hiding it would leave an

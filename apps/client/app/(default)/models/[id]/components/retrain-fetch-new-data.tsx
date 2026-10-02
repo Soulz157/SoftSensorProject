@@ -74,7 +74,10 @@ export function RetrainFetchNewData({
         disabled={disabled || !baseDataset || sourcesLoading}
         onClick={() => {
           if (!baseDataset) return
-          handoff(baseDataset, sources, cutTimestamp, { modelId, strategy })
+          void handoff(baseDataset, sources, cutTimestamp, {
+            modelId,
+            strategy,
+          })
         }}
       >
         Build this dataset in Data Studio

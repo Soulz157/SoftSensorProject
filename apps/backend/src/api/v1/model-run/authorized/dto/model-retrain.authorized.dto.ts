@@ -70,6 +70,70 @@ export function usesNewData(
   return (NEW_DATA_STRATEGIES as readonly string[]).includes(strategy ?? '');
 }
 
+/** MODEL-SERVE-026-T07. One retrain acceptance criterion — the client
+ *  engine's 'retrain' scope (lib/acceptance-criteria.ts), re-validated here
+ *  with the SAME rules so a hand-built request cannot store a comparison the
+ *  picker would refuse: both operands on the shared window; not the same
+ *  figure twice; same units (R² never meets an error); and not a pair that is
+ *  algebraically one-way within one version (RMSE vs its own MAE or error
+ *  SD). `target-sd` (SD of the lab values) belongs to the window, not a
+ *  version. No field carries a typed number. Change both copies together. */
+const RetrainOperandSchema = z
+  .object({
+    metric: z.enum(['rmse', 'mae', 'r2', 'residual-sd', 'target-sd']),
+    subject: z.enum(['candidate', 'current', 'window']),
+    population: z.enum(['shared-window', 'own-test']),
+  })
+  .strict()
+  .refine((o) => (o.metric === 'target-sd') === (o.subject === 'window'), {
+    message:
+      'SD of lab values belongs to the window; every other figure to a version.',
+  });
+
+type RetrainOperandInput = z.infer<typeof RetrainOperandSchema>;
+
+const ONE_WAY: ReadonlyArray<readonly [string, string]> = [
+  ['rmse', 'mae'],
+  ['rmse', 'residual-sd'],
+];
+
+export function isOfferableRetrainPair(
+  a: RetrainOperandInput,
+  b: RetrainOperandInput,
+): boolean {
+  if (a.population !== 'shared-window' || b.population !== 'shared-window')
+    return false;
+  if (a.metric === b.metric && a.subject === b.subject) return false;
+  if ((a.metric === 'r2') !== (b.metric === 'r2')) return false;
+  if (
+    a.subject === b.subject &&
+    ONE_WAY.some(
+      ([x, y]) =>
+        (a.metric === x && b.metric === y) ||
+        (a.metric === y && b.metric === x),
+    )
+  )
+    return false;
+  return true;
+}
+
+export const RetrainCriterionSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('retrain-comparison'),
+      left: RetrainOperandSchema,
+      operator: z.enum(['lt', 'gt']),
+      right: RetrainOperandSchema,
+    })
+    .strict()
+    .refine((c) => isOfferableRetrainPair(c.left, c.right), {
+      message:
+        'This comparison is not offered: both sides must be on the shared ' +
+        'validation window, in the same units, and able to come out either way.',
+    }),
+  z.object({ kind: z.literal('retrain-r2-floor') }).strict(),
+]);
+
 export const TriggerRetrainSchema = z
   .object({
     // Opt-in, exactly like PredictionJob's. The per-model live lock is what
@@ -124,8 +188,41 @@ export const TriggerRetrainSchema = z
     // retired KEEP_EXISTING basis checked split equality. Same bounds as
     // CreateCandidateJobSchema's.
     trainTestSplit: z.number().min(0.5).max(0.95).optional(),
+
+    // MODEL-SERVE-026-T05. Expanding folds for the CV-GAP measurement: each
+    // candidate also refits its configuration per fold and is scored beside
+    // the current version, so the gap between the two gets a fold spread. A
+    // measurement only — candidates still rank on their own test RMSE.
+    // 2..10 mirrors CreateTrainingRunDto's nSplits bounds; the REAL ceiling
+    // is data-dependent (distinct labelled values // 10) and is checked
+    // against the combined artifact in the trigger, before any job exists.
+    cvFolds: z.number().int().min(2).max(10).optional(),
+
+    // MODEL-SERVE-026-T06. Custom Finetune also refits the current
+    // version's own configuration on the new data ("B") unless this is
+    // false — one more fit, so a change can be attributed to the data or to
+    // the settings. Auto Finetune always includes B; ignored there.
+    refitCurrentSettings: z.boolean().optional(),
+
+    // MODEL-SERVE-026-T07. The acceptance criteria the operator chose
+    // before starting — a verdict the Retrain tab states, never a gate.
+    // Shapes mirror the client engine's 'retrain' scope
+    // (lib/acceptance-criteria.ts); the refine below re-checks its rule
+    // server-side so a hand-built request cannot store a cross-population
+    // comparison. No numeric threshold field exists to send.
+    acceptanceCriteria: z.array(RetrainCriterionSchema).max(10).optional(),
   })
   .strict()
+  .refine((body) => !body.cvFolds || body.strategy === 'NEW_DATA_ONLY', {
+    // AUGMENT_DATA trains mostly on the current version's OWN training rows
+    // (base_train), so a fold gap there would score the current version on
+    // data it fitted — invalid by construction, not merely unsupported.
+    message:
+      "cvFolds requires strategy 'NEW_DATA_ONLY' — under 'AUGMENT_DATA' " +
+      "most training rows are the current version's own, so the current " +
+      'version cannot be scored fairly on those folds.',
+    path: ['cvFolds'],
+  })
   .refine(
     (body) =>
       (body.newValidationFrom === undefined) ===

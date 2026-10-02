@@ -75,6 +75,24 @@ export class ModelRunLaunchAuthorizedController {
     return this.runs.getRunService(modelId, runId, user.id, user.role);
   }
 
+  @Get('/:modelId/runs/:runId/cv-gap')
+  @ApiOperation({
+    summary: "A retrain candidate's cross-validation series (MODEL-SERVE-026)",
+    description:
+      'Every expanding fold of a NEW_DATA_ONLY retrain that asked for ' +
+      "folds: the candidate configuration's fold-fit prediction and the " +
+      "current version's (null before its own cut). 404 naming why when " +
+      'no folds were requested, the run has not succeeded, or no series ' +
+      'was written.',
+  })
+  getRunCvGapController(
+    @Param('modelId') modelId: string,
+    @Param('runId') runId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.runs.getRunCvGapService(modelId, runId, user.id, user.role);
+  }
+
   @Get('/:modelId/runs/:runId/predictions')
   @ApiOperation({
     summary:

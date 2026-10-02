@@ -1317,6 +1317,13 @@ NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = "new_data_holdout_predictions.parquet"
 INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = (
     "incumbent_new_data_holdout_predictions.parquet"
 )
+# MODEL-SERVE-026-T05. The CV-gap series — {fold, timestamp, y_true, y_pred,
+# y_pred_current}, FIVE columns, so it is in _ALLOWED_RUN_UPLOADS but NOT in
+# _READABLE_PREDICTION_FILENAMES (that reader refuses anything but the
+# three-column shape); it has its own reader, `run_cv_gap`. Mirrored in
+# images/trainer/app/artifacts.py and artifact-keys.ts — change all three.
+# See images/trainer/app/MIRRORS.md entry 11.
+CV_GAP_PREDICTIONS_FILENAME = "cv_gap_predictions.parquet"
 # MODEL-FLOW-016-T08. The model-ready validation holdout `tryReplayHoldout`
 # (model-run.authorized.service.ts) writes under a run's own prefix, via
 # `prepare_holdout_for_run`/`replay_holdout_for_run` — NOT one of train.py's
