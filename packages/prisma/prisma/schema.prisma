@@ -1440,16 +1440,16 @@ model ModelCandidateJob {
   /// hyperparameter search share one shape; targetY/goldArtifactId/
   /// trainTestSplit stay here because varying them would make candidates
   /// incomparable.
-  targetY        String
-  goldArtifactId String
-  trainTestSplit Float?
+  targetY            String
+  goldArtifactId     String
+  trainTestSplit     Float?
   /// MODEL-SERVE-026-T05. Expanding folds for the CV-GAP measurement: every
   /// candidate of this job also refits its configuration per fold and scores
   /// it beside the current version (images/trainer/app/pipelines/cv_gap.py).
   /// A MEASUREMENT only — candidates stay chronological runs and still rank on
   /// their own test RMSE. NEW_DATA_ONLY only; capped at config time by the
   /// combined artifact's distinct labelled values // 10. Null = no CV.
-  cvFolds        Int?
+  cvFolds            Int?
   /// MODEL-SERVE-026-T07. The acceptance criteria the operator chose BEFORE
   /// the retrain started (lib/acceptance-criteria.ts shapes, 'retrain'
   /// scope). A stated verdict only — never blocks a retrain or a promote.
@@ -1794,45 +1794,15 @@ model InferenceWindow {
   /// on which rows to include.
   featureHistograms Json?
 
-  /// MODEL-SERVE-001-T17. The window-plane counterpart of
-  /// `PredictionLog.featureStats` — per feature column, in MODEL-READY
-  /// (scaled) units, `{n, sum, sumsq, min, max}`: sufficient statistics for
-  /// an EXACT pooled mean/std across many windows, feeding the Distribution
-  /// Drift z-score the same way `PredictionLog.featureStats` feeds it for
-  /// the /predict-only plane. Computed from a THROWAWAY scaled copy of this
-  /// row's own `inputKey` frame (`inference_window_service.
-  /// _scaled_feature_stats`) — `inputKey` itself stays RAW/pre-scale;
-  /// nothing here changes what the container scores.
-  ///
-  /// NULLABLE with the identical "absent means not recorded" discipline
-  /// `featureHistograms` above carries, and a tag can be absent from this
-  /// JSON's own keys independently of that: a feature column whose scaler
-  /// is not `"none"` but has no recorded `scalingParams` entry is EXCLUDED
-  /// per-tag rather than scaled with re-fit parameters (never the silently
-  /// wrong transform DS-LAKE-018-T02 exists to prevent, one layer over).
-  /// SET REGARDLESS OF `status`, same reasoning as `featureHistograms`.
   featureStats Json?
 
-  /// MODEL-SERVE-018. The model's TARGET tag (y) — `{n, sum, sumsq, min,
-  /// max}` in RAW units (the target is never scaled in GOLD) and
-  /// `{counts, below, above}` against its frozen `psiRefEdges`. Separate
-  /// columns, never keys of `featureStats`/`featureHistograms`, so model
-  /// health and the drift/PSI report status (which read those maps) never
-  /// see the target: target drift is display-only (MODEL-SERVE-018-D01/D02).
-  /// Null on every window written before this feature, and whenever the
-  /// target was not fetched or has no reference.
   targetStats     Json?
   targetHistogram Json?
 
-  /// Digest, never a tag — same discipline as ModelTrainingRun.imageDigest.
-  /// Null until a container is spawned (a SKIPPED window never runs one).
   imageDigest String?
   containerId String?
 
-  /// sha256 of the window token, never the token — same discipline as
-  /// ModelTrainingRun.tokenHash / PredictionJob.tokenHash.
   tokenHash      String
-  /// Callbacks are refused past this even if the token is right.
   tokenExpiresAt DateTime
 
   /// Incremented by the dispatcher on every spawn. Deliberately NOT the
@@ -1861,20 +1831,6 @@ model InferenceWindow {
   @@index([status])
 }
 
-/// MODEL-SERVE-005-T03. The late-arriving ground-truth join for ONE window.
-///
-/// One row per window (`windowId @unique`) rather than a key of its own:
-/// InferenceWindow already carries @@unique([modelVersionId, windowStart]),
-/// so this inherits that idempotency instead of minting a second one — the
-/// same reasoning MODEL-SERVE-006-T01 gives for not needing a
-/// PredictionJob-style idempotency key at all.
-///
-/// A JOIN IS NOT ONCE-AND-TERMINAL. Lab truth is late AND incremental: a
-/// window joined at a 24h lag holding one sample may hold three at 72h. So
-/// the sweeper UPDATEs this row rather than inserting beside it, carries a
-/// `joinedThrough` watermark for what it has actually seen, and stops at
-/// the schedule's own `truthHorizonHours`. An insert-once design would
-/// silently freeze every window on its first, thinnest number.
 model InferenceWindowTruth {
   id String @id @default(uuid())
 

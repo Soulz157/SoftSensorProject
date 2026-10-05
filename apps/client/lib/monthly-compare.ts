@@ -85,8 +85,9 @@ export interface MergedMonthly<T> {
   result: T
   /** Series names handed to the chart — the month labels that made it in. */
   tags: string[]
-  /** Chart `seriesStyle` lookup, keyed by series name. */
-  styleMap: Map<string, { color: string }>
+  /** Chart `seriesStyle` lookup, keyed by series name. `dashed` is honoured
+   * by the histogram's KDE stroke only. */
+  styleMap: Map<string, { color: string; dashed?: boolean }>
   /** Labels of picked months that contributed nothing: the request failed,
    * or the month held no usable readings for the tag. Named in the caption
    * rather than dropped silently. */
@@ -177,6 +178,74 @@ export function mergeMonthlyBoxplots(
     tags: entries.map(e => e.tag),
     styleMap,
     missing,
+  }
+}
+
+/** A series drawn beside the months — the validation holdout in the
+ * Compare modal's "By month" view. Neutral and dashed so it never collides
+ * with the `--chart-1..5` month palette. */
+export const REFERENCE_STYLE = { color: 'var(--foreground)', dashed: true }
+
+export interface MergedWithReference<T> extends MergedMonthly<T> {
+  /** True when a reference was asked for but there was nothing to draw — the
+   * caller says so rather than leaving the chart silently months-only. */
+  referenceMissing: boolean
+}
+
+/**
+ * Puts one reference series (the validation holdout's entry for the tag) in
+ * front of the merged months, relabelled `label`. Histogram domain is
+ * RECOMPUTED over the reference and the months together — the reference was
+ * computed over its own span, so neither side's domain covers the other.
+ * A null `ref` returns the months untouched, flagged `referenceMissing`.
+ */
+export function withReferenceHistogram(
+  merged: MergedMonthly<DraftHistogramResult>,
+  ref: DraftTagHistogram | null | undefined,
+  label: string,
+  style: { color: string; dashed?: boolean } = REFERENCE_STYLE,
+): MergedWithReference<DraftHistogramResult> {
+  if (!ref) return { ...merged, referenceMissing: true }
+  const entries = [{ ...ref, tag: label }, ...merged.result.tags]
+  let domainMin: number | null = null
+  let domainMax: number | null = null
+  for (const e of entries) {
+    if (domainMin === null || e.min < domainMin) domainMin = e.min
+    if (domainMax === null || e.max > domainMax) domainMax = e.max
+  }
+  const styleMap = new Map(merged.styleMap)
+  styleMap.set(label, style)
+  return {
+    result: {
+      ...merged.result,
+      domain_min: domainMin,
+      domain_max: domainMax,
+      tags: entries,
+    },
+    tags: entries.map(e => e.tag),
+    styleMap,
+    missing: merged.missing,
+    referenceMissing: false,
+  }
+}
+
+/** Box Plot's twin of `withReferenceHistogram`. No domain to reconcile. */
+export function withReferenceBoxplot(
+  merged: MergedMonthly<DraftBoxplotResult>,
+  ref: DraftTagBoxplot | null | undefined,
+  label: string,
+  style: { color: string; dashed?: boolean } = REFERENCE_STYLE,
+): MergedWithReference<DraftBoxplotResult> {
+  if (!ref) return { ...merged, referenceMissing: true }
+  const entries = [{ ...ref, tag: label }, ...merged.result.tags]
+  const styleMap = new Map(merged.styleMap)
+  styleMap.set(label, style)
+  return {
+    result: { ...merged.result, tags: entries },
+    tags: entries.map(e => e.tag),
+    styleMap,
+    missing: merged.missing,
+    referenceMissing: false,
   }
 }
 

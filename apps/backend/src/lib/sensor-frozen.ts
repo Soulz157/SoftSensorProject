@@ -1,7 +1,4 @@
-import type {
-  ColumnBaselineMap,
-  FeatureStatsMap,
-} from '@/lib/prediction-drift';
+import type { ColumnBaselineMap, FeatureStatsMap } from '@/lib/feature-stats';
 
 /**
  * MODEL-SERVE-001-T29. SENSOR FROZEN — a tag whose value has not moved across
@@ -9,7 +6,7 @@ import type {
  * deploy one: the scheduler is dispatching perfectly, the sensor is stuck.
  *
  * WHY THIS IS NOT `poolFeatureStats`, THOUGH THE SHAPES MATCH. That helper
- * (lib/prediction-drift.ts) takes GLOBAL extremes across every window handed
+ * (the since-removed lib/prediction-drift.ts) took GLOBAL extremes across every window handed
  * to it, and its caller pools the standard `take: 24`. Pooling 24 windows
  * destroys the very signal this function needs — a tag that sat still for the
  * last three hours is invisible inside a day's worth of movement — and it

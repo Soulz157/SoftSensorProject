@@ -1,25 +1,22 @@
 /**
- * MODEL-SERVE-001-T13. PSI (Population Stability Index) — the second
- * drift metric, published ALONGSIDE `prediction-drift.ts`'s z-score, never
- * replacing it (T13's own explicit instruction: "if the two disagree, that
- * disagreement is information about the data, and losing the old signal
- * makes it unreadable"). Pure functions, no I/O — same discipline
- * `prediction-drift.ts` follows.
+ * MODEL-SERVE-001-T13. PSI (Population Stability Index) — the ONLY input
+ * drift metric since MODEL-SERVE-028 (2026-10-04), which removed the z-score
+ * mean-shift signal (`prediction-drift.ts`) this was first published beside,
+ * at the user's request: one drift signal for a Data Scientist to read.
+ * Pure functions, no I/O.
  *
  * The caller resolves both inputs: `poolHistograms` combines the
- * `PredictionLog.featureHistograms` Json blobs a time-range query returns
- * (the SAME rows `poolFeatureStats` already pools for the z-score — one
- * query, two metrics); `computePsi` compares the pooled result against
- * `feature_spec.json`'s `psiRefEdges`/`psiBinCount`/`psiBinMode`/
- * `psiRefCounts` (read via `postToPython`'s `readFeatureSpec`, the same
+ * `PredictionLog.featureHistograms` / `InferenceWindow.featureHistograms`
+ * Json blobs a time-range query returns; `computePsi` compares the pooled
+ * result against `feature_spec.json`'s `psiRefEdges`/`psiBinCount`/
+ * `psiBinMode`/`psiRefCounts` (read via `resolvePsiReference`, the same
  * sidecar the serving descriptor already reads — see
  * `model-serving.authorized.service.ts`).
  *
- * SEPARATE CADENCE FROM THE Z-SCORE (T13's own resolved openDecision #2):
  * PSI needs `binCount * PSI_MIN_SAMPLES_PER_BIN` live samples before a
  * figure is even computed, which a single inference window's traffic will
- * often not clear. The caller is expected to pool over a LONGER time range
- * than one z-score request — this module does not enforce or assume any
+ * often not clear. The caller is expected to pool over a LONG time range
+ * (rolling 24 windows) — this module does not enforce or assume any
  * particular range, only the sample floor itself.
  */
 
@@ -45,8 +42,7 @@ export type FeatureHistogramMap = Record<string, FeatureHistogram | null>;
  *  quantile split is). `refCounts` is guaranteed non-zero for every entry
  *  by construction on the Python side (`quantile_edges`'s own
  *  zero-reference-count disqualifier) — `computePsi` does not re-verify
- *  this, the same trust `prediction-drift.ts` places in `column_stats.json`
- *  arriving with a real `std`. */
+ *  this — the Python side's construction is trusted. */
 export interface PsiReference {
   binMode: 'continuous' | 'categorical';
   binCount: number;
@@ -125,7 +121,7 @@ export interface ColumnPsi {
   psi: number | null;
   /** Live mass that fell OUTSIDE the trained edge range, as a percentage
    *  of `liveTotal` — a REAL measured count, straight from the live
-   *  histogram's below/above bins. (MODEL-SERVE-001-T31: `prediction-drift`
+   *  histogram's below/above bins. (MODEL-SERVE-001-T31: the since-removed `prediction-drift`
    *  once published a rival PARAMETRIC estimate of this same quantity, and
    *  even let it raise a z-score WARN; it was deleted, and this is now the
    *  only out-of-range figure in the app.) Reported but never
@@ -219,20 +215,14 @@ function psiForColumn(live: FeatureHistogram, ref: PsiReference): number {
 /**
  * MODEL-SERVE-001-T32. NO HYSTERESIS HERE, AND THAT IS A DECISION.
  *
- * The z-score has one: `applyConsecutiveBreachRule` (prediction-drift.ts,
- * MODEL-SERVE-008-T03) requires N consecutive dense buckets to breach
- * before the signal changes state, because its bands were chosen against
- * HOURLY windows while a dense stream re-evaluates them far more often.
+ * PSI is computed over a rolling-24 window of pooled histograms, so the
+ * smoothing a consecutive-breach rule would add is already inside the
+ * measurement. A rule on top would delay a real population shift by hours
+ * to suppress noise the pooling has already removed. (The removed z-score
+ * signal had one — `applyConsecutiveBreachRule`, MODEL-SERVE-008-T03 —
+ * because it was graded per dense bucket.)
  *
- * PSI needs no equivalent: it is computed over a rolling-24 window of
- * pooled histograms, so the smoothing the z-axis adds after the fact is
- * already inside the measurement. A consecutive-breach rule on top would
- * delay a real population shift by hours to suppress noise the pooling has
- * already removed.
- *
- * The asymmetry is deliberate, not an oversight. Do not "fix" it by
- * mirroring the drift rule; if that rolling window ever narrows, revisit
- * this comment first.
+ * If that rolling window ever narrows, revisit this comment first.
  */
 function statusFor(psi: number, thresholds: PsiThresholds): PsiStatus {
   if (psi >= thresholds.critical) return 'CRITICAL';
@@ -256,7 +246,7 @@ const SEVERITY: Record<PsiStatus, number> = {
 
 /**
  * The comparison. Iterates `live`'s OWN columns, never the reference's —
- * same convention `computeDrift` uses (a reference tag with no live
+ * a reference tag with no live
  * counterpart is simply not compared, neither UNKNOWN nor a gap).
  */
 export function computePsi(

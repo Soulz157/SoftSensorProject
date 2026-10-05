@@ -86,7 +86,7 @@ export class IngestPredictionLogDto extends createZodDto(
 ) {}
 
 /**
- * MODEL-SERVE-005. Shared by GET .../predictions and GET .../drift — both
+ * MODEL-SERVE-005. Shared by GET .../predictions and GET .../psi — both
  * read PredictionLog over the same [from, to] window, just aggregated
  * differently.
  */

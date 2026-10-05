@@ -10,7 +10,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Cpu,
-  Gauge,
+  FlaskConical,
   Thermometer,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -52,8 +52,8 @@ function getNodeTypeIcon(type?: string) {
       return Cpu
     case 'sensor':
       return Thermometer
-    case 'controller':
-      return Gauge
+    case 'reactor':
+      return FlaskConical
     default:
       return Activity
   }

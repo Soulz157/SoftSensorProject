@@ -54,11 +54,10 @@ function formatWindow(fromIso: string, toIso: string): string {
  * with different threshold vocabularies — z's +/-1.5/+/-3 SD vs. PSI's
  * 0.1/0.25 — assert a comparability that does not exist).
  *
- * Its own three-rung ladder (loading / unavailableReason / empty),
- * INDEPENDENT of the z-score's — the structural defect this rebuild fixes:
- * the previous merged `DriftPanel` gated a perfectly good PSI report behind
- * the Z-SCORE's own empty states, so a model with drift data but no
- * histogram-carrying traffic (or vice versa) could not show PSI at all.
+ * Its own three-rung ladder (loading / unavailableReason / empty) — the
+ * original merged drift component gated a perfectly good PSI report behind
+ * the z-score's own empty states. Since MODEL-SERVE-028 this is the only
+ * drift card; the z-score card was removed.
  *
  * "Computed over" replaces T13's literal "rolling 24h" instruction (which
  * would print a FALSE cadence here — this hook fetches PSI over the SAME
@@ -88,7 +87,7 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
   }
 
   if (!report || report.columns.length === 0) {
-    // MODEL-SERVE-001-T17. Same branch discipline as `DriftPanel`: `report`
+    // MODEL-SERVE-001-T17. `report`
     // (when present) names its own plane — a model with an
     // InferenceSchedule but no `psiRefEdges` yet (a spec predating T13,
     // TM2's own live state) lands here too, since `_psi_histograms` writes

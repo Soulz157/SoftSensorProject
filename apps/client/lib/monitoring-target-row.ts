@@ -1,19 +1,15 @@
 import type {
-  DriftColumn,
-  DriftReport,
-  DriftStatus,
   PsiColumn,
   PsiReport,
   PsiStatus,
 } from '@/services/model-monitoring'
 import {
-  explainDriftColumn,
   explainPsiColumn,
   type StatusExplanation,
 } from '@/lib/monitoring-status-explain'
 
 /**
- * MODEL-SERVE-018. Row order for the drift and PSI tables: the target tag
+ * MODEL-SERVE-018. Row order for the PSI table: the target tag
  * (y), when the report carries one, is pinned first and flagged, followed by
  * the feature columns in the backend's own order.
  *
@@ -42,7 +38,7 @@ export function withTargetFirst<T>(
  * so "no data yet" does not look the same as "not supported".
  */
 export function unrecordedTargetColumn(
-  report: Pick<DriftReport | PsiReport, 'target' | 'targetColumn'>,
+  report: Pick<PsiReport, 'target' | 'targetColumn'>,
 ): string | null {
   return report.targetColumn && !report.target ? report.targetColumn : null
 }
@@ -50,19 +46,10 @@ export function unrecordedTargetColumn(
 export const TARGET_NOT_COUNTED_NOTE =
   'Shown for context only: not counted in model status or the retrain suggestion.'
 
-// The shared drift/PSI wording speaks of "this input" and of the model
+// The shared PSI wording speaks of "this input" and of the model
 // predicting on unfamiliar data. Neither is true of y, whose shift means the
 // process output moved (label or concept shift), so the target row carries
 // its own sentences.
-const TARGET_DRIFT_MEANING: Record<DriftStatus, string> = {
-  OK: 'The target’s live mean is still close to its training mean.',
-  WARN: 'The target’s live mean has moved away from its training mean: the process output is running at a different level than the model learned.',
-  CRITICAL:
-    'The target’s live mean has moved far from its training mean: the process output is running well outside the range the model learned.',
-  UNKNOWN:
-    'No verdict. The target’s training baseline is missing or degenerate, so no comparison was possible.',
-}
-
 const TARGET_PSI_MEANING: Record<PsiStatus, string> = {
   OK: 'The target’s live distribution still overlaps its frozen training bins.',
   WARN: 'The target’s live distribution has shifted noticeably against its training bins.',
@@ -77,17 +64,6 @@ const TARGET_PSI_MEANING: Record<PsiStatus, string> = {
 function withReason(meaning: string, reason: string | undefined): string {
   const base = reason ? `${meaning} (${reason})` : meaning
   return `${base} ${TARGET_NOT_COUNTED_NOTE}`
-}
-
-/** Target-row drift tooltip: target wording, same measured criteria. */
-export function explainTargetDrift(
-  col: Pick<DriftColumn, 'z' | 'status' | 'reason'>,
-  thresholds: DriftReport['basis']['thresholds'],
-): StatusExplanation {
-  return {
-    meaning: withReason(TARGET_DRIFT_MEANING[col.status], col.reason),
-    criteria: explainDriftColumn(col, thresholds).criteria,
-  }
 }
 
 /** Target-row PSI tooltip: target wording, same measured criteria. */

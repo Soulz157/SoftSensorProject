@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import { readFeatureSpec } from '@/lib/python-preprocess-client';
 import { PythonColumnStatsSchema } from '@/api/v1/dataset-version/authorized/dto/dataset-version.authorized.dto';
-import type { ColumnBaselineMap } from '@/lib/prediction-drift';
+import type { ColumnBaselineMap } from '@/lib/feature-stats';
 import type { PsiReferenceMap } from '@/lib/prediction-psi';
 
 const log = new Logger('ArtifactBaseline');
@@ -38,7 +38,7 @@ const log = new Logger('ArtifactBaseline');
  *
  * WHY THIS EXISTS NOW, NOT WHEN THE FUNCTION WAS WRITTEN. Every existing
  * caller reads a baseline for ONE model, once, inside a single request —
- * `getDriftService`/`getPsiService`/`getHealthStatus`. `deriveDeployStatuses`
+ * `getPsiService`/`getHealthStatus`. `deriveDeployStatuses`
  * (deploy-status.ts) is the first caller to run this on the LIST path, which
  * means the SAME set of models' SAME keys get re-fetched on every Alerts/
  * Overview/sidebar poll. Uncached, that is an HTTP round trip to apps/python
@@ -70,7 +70,14 @@ const columnBaselineCache = new Map<string, Promise<ColumnBaselineMap>>();
  *  in any spec that configures `postToPython` for column-stats. */
 export function resetColumnBaselineCacheForTests(): void {
   columnBaselineCache.clear();
+  psiReferenceCache.clear();
 }
+
+/** MODEL-SERVE-028. The same cache, same rules, for `feature_spec.json`'s
+ *  PSI reference — the list path (`deriveDeployStatuses`) now reads it per
+ *  enabled model on every Alerts/Overview/sidebar load, exactly the cost
+ *  `columnBaselineCache` exists to avoid. Cleared by the reset above. */
+const psiReferenceCache = new Map<string, Promise<PsiReferenceMap>>();
 
 /**
  * Reads `column_stats.json` for a PRODUCTION version's own training
@@ -78,7 +85,7 @@ export function resetColumnBaselineCacheForTests(): void {
  *
  * A missing sidecar (a legacy artifact predating column_stats.json) is NOT
  * an error — every column simply reports UNKNOWN with a named reason
- * (`computeDrift`'s own "no training baseline" branch), the same honest-
+ * (frozen detection simply has no range to judge), the same honest-
  * empty-state discipline `getArtifactHoldoutService` uses for a dataset
  * with no holdout.
  */
@@ -118,7 +125,7 @@ export async function resolveColumnBaseline(
   } catch (err) {
     columnBaselineCache.delete(goldObjectKey);
     log.warn(
-      `column_stats unavailable for ${goldObjectKey}; drift will report every column UNKNOWN: ${(err as Error).message}`,
+      `column_stats unavailable for ${goldObjectKey}; frozen detection has no baseline: ${(err as Error).message}`,
     );
     return {};
   }
@@ -146,7 +153,10 @@ export async function resolveColumnBaseline(
 export async function resolvePsiReference(
   goldObjectKey: string,
 ): Promise<PsiReferenceMap> {
-  try {
+  const cached = psiReferenceCache.get(goldObjectKey);
+  if (cached) return cached;
+
+  const attempt = (async () => {
     const { spec } = await readFeatureSpec(goldObjectKey);
     const edges = spec.psiRefEdges ?? {};
     const binCounts = spec.psiBinCount ?? {};
@@ -169,7 +179,14 @@ export async function resolvePsiReference(
       };
     }
     return reference;
+  })();
+
+  // Same in-flight sharing and evict-on-failure as `resolveColumnBaseline`.
+  psiReferenceCache.set(goldObjectKey, attempt);
+  try {
+    return await attempt;
   } catch (err) {
+    psiReferenceCache.delete(goldObjectKey);
     log.warn(
       `feature_spec unavailable for ${goldObjectKey}; PSI will report every column UNKNOWN: ${(err as Error).message}`,
     );

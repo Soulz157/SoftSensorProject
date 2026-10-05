@@ -10,13 +10,13 @@ import type { AIModel } from '@/types'
  *
  * `usePredictionMonitoring` fires TWO `useDebouncedAbortableRequest` calls
  * against two DIFFERENT endpoints (`/predictions` -> `{points, truncated}`
- * and `/drift` -> `{status, columns, basis}`). The module-level cache
+ * and `/psi` -> `{status, columns, basis}`). The module-level cache
  * (`lib/chart-request-cache.ts`) is one `Map<string, unknown>` keyed only by
  * the caller's `cacheKey` string, and `getCached<T>` is an UNCHECKED cast
  * (`entry.data as T`). So a single shared key means last-writer-wins, and the
- * next reader gets the other endpoint's payload with no type error anywhere —
- * `DriftPanel` then reads `report.columns.length` off a
- * `PredictionSeriesResult` and throws.
+ * next reader gets the other endpoint's payload with no type error anywhere.
+ * (Found originally on the since-removed z-score `/drift` request; the PSI
+ * request carries the same risk, so the regression now pins that one.)
  *
  * The Input Data tab made this deterministic rather than a race: it calls
  * this same hook with the same model and the same default '24h' range, so by
@@ -25,17 +25,11 @@ import type { AIModel } from '@/types'
  */
 
 const predictions = vi.fn()
-const drift = vi.fn()
-// MODEL-SERVE-001-T13. The hook now fires a THIRD request (`/psi`) — an
-// unmocked call here would throw ("modelMonitoringService.psi is not a
-// function") the moment usePredictionMonitoring mounts, breaking every
-// test in this file regardless of what it actually asserts on.
 const psi = vi.fn()
 
 vi.mock('@/services/model-monitoring', () => ({
   modelMonitoringService: {
     predictions: (...args: unknown[]) => predictions(...args),
-    drift: (...args: unknown[]) => drift(...args),
     psi: (...args: unknown[]) => psi(...args),
   },
 }))
@@ -52,18 +46,16 @@ const PREDICTION_SERIES = {
   truncated: false,
 }
 
-const DRIFT_REPORT = {
+const PSI_REPORT = {
   status: 'OK',
   columns: [
     {
       column: 'AI001A2.PV',
-      n: 1,
-      liveMean: 0.42,
-      liveStd: 0,
-      trainMean: 0.4,
-      trainStd: 0.25,
-      z: 0.08,
+      liveTotal: 400,
+      psi: 0.02,
+      outOfRangePct: 0,
       status: 'OK',
+      bins: null,
     },
   ],
   basis: {
@@ -73,8 +65,11 @@ const DRIFT_REPORT = {
     goldArtifactId: 'gold-1',
     goldObjectKey: 'datasets/gold-1/data.parquet',
     sampleRequests: 1,
+    histogramRequests: 1,
     from: '2026-09-03T10:00:00.000Z',
     to: '2026-09-04T10:00:00.000Z',
+    thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
+    epsilon: 1e-4,
   },
 }
 
@@ -83,28 +78,24 @@ const MODEL = { id: 'model-1', name: 'Soft Sensor A' } as unknown as AIModel
 beforeEach(() => {
   clearChartRequestCache()
   predictions.mockReset()
-  drift.mockReset()
   psi.mockReset()
   predictions.mockResolvedValue({ data: PREDICTION_SERIES })
-  drift.mockResolvedValue({ data: DRIFT_REPORT })
-  psi.mockResolvedValue({
-    data: { status: 'OK', columns: [], basis: DRIFT_REPORT.basis },
-  })
+  psi.mockResolvedValue({ data: PSI_REPORT })
 })
 
 async function mountOnce() {
   const { usePredictionMonitoring } =
     await import('../use-prediction-monitoring')
   const view = renderHook(() => usePredictionMonitoring(MODEL, '24h'))
-  await waitFor(() => expect(view.result.current.drift).not.toBeNull())
+  await waitFor(() => expect(view.result.current.psi).not.toBeNull())
   return view
 }
 
 describe('usePredictionMonitoring — the two requests must not share a cache slot', () => {
-  it('gives the drift consumer a drift report, not the prediction series', async () => {
+  it('gives the PSI consumer a PSI report, not the prediction series', async () => {
     const first = await mountOnce()
 
-    expect(first.result.current.drift).toEqual(DRIFT_REPORT)
+    expect(first.result.current.psi).toEqual(PSI_REPORT)
     expect(first.result.current.points).toHaveLength(1)
   })
 
@@ -118,15 +109,11 @@ describe('usePredictionMonitoring — the two requests must not share a cache sl
     // synchronous cache-hit path.
     const second = await mountOnce()
 
-    // The bug: `drift` came back as the PredictionSeriesResult, so
-    // `report.columns` was undefined and `DriftPanel` threw on `.length`.
-    expect(second.result.current.drift).toEqual(DRIFT_REPORT)
-    expect(second.result.current.drift).not.toHaveProperty('points')
-    expect(
-      (second.result.current.drift as unknown as typeof DRIFT_REPORT).columns,
-    ).toHaveLength(1)
+    expect(second.result.current.psi).toEqual(PSI_REPORT)
+    expect(second.result.current.psi).not.toHaveProperty('points')
+    expect(second.result.current.psi?.columns).toHaveLength(1)
 
-    // And the series consumer must not have been handed the drift report.
+    // And the series consumer must not have been handed the PSI report.
     expect(second.result.current.points).toHaveLength(1)
     expect(second.result.current.points[0]?.features).toEqual({
       'AI001A2.PV': 0.42,

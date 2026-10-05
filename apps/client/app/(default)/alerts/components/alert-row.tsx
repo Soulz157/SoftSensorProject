@@ -10,7 +10,7 @@ import {
   ChevronRight,
   Cpu,
   CpuIcon,
-  Gauge,
+  FlaskConical,
   Network,
   Thermometer,
 } from 'lucide-react'
@@ -34,7 +34,8 @@ function getTypeIcon(row: AlertRowData, className?: string) {
   const label = row.typeLabel.toLowerCase()
   if (label.startsWith('sensor'))
     return <Thermometer className={iconClassName} />
-  if (label.startsWith('controller')) return <Gauge className={iconClassName} />
+  if (label.startsWith('reactor'))
+    return <FlaskConical className={iconClassName} />
   if (label.startsWith('machine')) return <Cpu className={iconClassName} />
   return <Activity className={iconClassName} />
 }

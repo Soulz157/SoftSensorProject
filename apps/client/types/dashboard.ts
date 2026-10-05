@@ -1,7 +1,7 @@
 export interface Node {
   id: string
   name: string
-  type: 'machine' | 'sensor' | 'controller'
+  type: 'reactor' | 'machine' | 'sensor'
   status: 'normal' | 'warning' | 'alarm' | 'offline'
   models: {
     id: string

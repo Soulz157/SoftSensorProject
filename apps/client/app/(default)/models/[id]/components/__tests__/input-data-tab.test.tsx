@@ -14,8 +14,6 @@ const h = vi.hoisted(() => ({
   points: [] as unknown[],
   pointsLoading: false,
   pointsTruncated: false,
-  drift: null as unknown,
-  driftLoading: false,
   psi: null as unknown,
   psiLoading: false,
   schema: null as unknown,
@@ -28,9 +26,6 @@ vi.mock('@/hooks/model/use-prediction-monitoring', () => ({
     points: h.points,
     pointsLoading: h.pointsLoading,
     pointsTruncated: h.pointsTruncated,
-    drift: h.drift,
-    driftLoading: h.driftLoading,
-    driftUnavailableReason: null,
     // MODEL-SERVE-001-T13. Kept honest with the real hook's shape — a
     // missing key here would just read `undefined` at the call site
     // (no crash), but that silently diverges from what the real hook
@@ -71,8 +66,8 @@ beforeEach(() => {
   h.points = []
   h.pointsLoading = false
   h.pointsTruncated = false
-  h.drift = null
-  h.driftLoading = false
+  h.psi = null
+  h.psiLoading = false
   h.schema = null
   h.schemaLoading = false
   h.schemaError = null
@@ -91,7 +86,7 @@ describe('InputDataTab', () => {
       scalingParams: null,
     }
     h.points = []
-    h.drift = null
+    h.psi = null
 
     render(<InputDataTab model={MODEL} />)
 
@@ -99,9 +94,8 @@ describe('InputDataTab', () => {
     expect(screen.getByText('PI-204.PV')).toBeInTheDocument()
     expect(screen.getByText('FC-310.PV')).toBeInTheDocument()
     // MODEL-SERVE-001-T15. Two status columns per row again (3 rows x 2 =
-    // 6), but a different pair than T13's: Drift (no traffic to compare)
-    // and Status (PI said nothing — the hook is mocked to null here). PSI
-    // moved to the Monitoring tab's Distribution Drift panel.
+    // 6): Drift (PSI) has no report to compare, and Status (PI said
+    // nothing — the hook is mocked to null here).
     expect(screen.getAllByText('UNKNOWN')).toHaveLength(6)
   })
 

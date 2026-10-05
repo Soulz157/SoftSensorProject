@@ -1,5 +1,5 @@
 import { detectFrozenColumns } from './sensor-frozen';
-import type { ColumnBaselineMap, FeatureStatsMap } from './prediction-drift';
+import type { ColumnBaselineMap, FeatureStatsMap } from './feature-stats';
 
 /** A window where every named column sat at exactly `value`. `n` well above
  *  the 2-row floor so guard (4) is not what any of these cases is testing. */

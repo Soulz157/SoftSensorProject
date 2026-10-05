@@ -4,7 +4,7 @@ import { CncMachineSvg } from '../machines/cnc-machine'
 import { RobotArmSvg } from '../machines/robot-arm'
 import { SensorSvg } from '../machines/sensor'
 import { ConveyorSvg } from '../machines/conveyor'
-import { ControllerSvg } from '../machines/controller'
+import { ReactorSvg } from '../machines/reactor'
 
 const STATUSES = ['normal', 'warning', 'alarm', 'offline'] as const
 
@@ -14,7 +14,7 @@ describe('Machine SVG components', () => {
     { name: 'RobotArmSvg', Component: RobotArmSvg },
     { name: 'SensorSvg', Component: SensorSvg },
     { name: 'ConveyorSvg', Component: ConveyorSvg },
-    { name: 'ControllerSvg', Component: ControllerSvg },
+    { name: 'ReactorSvg', Component: ReactorSvg },
   ]
 
   components.forEach(({ name, Component }) => {

@@ -11,7 +11,7 @@ import type { RetrainComparison, RetrainJob } from '@/services/model-retrain'
  * comparable/not-comparable fork, the STAGING-not-deployed wording, and the
  * failure path naming the backend's own reason.
  *
- * `RetrainMonitoringContext` is mocked out — it fetches drift/PSI through
+ * `RetrainMonitoringContext` is mocked out — it fetches PSI through
  * `usePredictionMonitoring`, which is the Monitoring tab's own tested
  * surface, not this dialog's subject (T05 is context, never a gate).
  */

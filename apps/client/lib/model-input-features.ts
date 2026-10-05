@@ -1,7 +1,7 @@
 /**
  * Pure derivation for the Model detail Input Data tab — left-joins the
  * trained X feature list (`featureColumns`, predict-time order) against
- * live drift status and logged prediction values. No React, no IO,
+ * live PSI drift status and logged prediction values. No React, no IO,
  * matching the `lib/` convention of `model-config.ts`/`dataset-stats.ts`.
  *
  * T12: `points[].features` is the `/predict` request's own RAW values —
@@ -14,18 +14,27 @@
  * is nothing to invert here; the value already IS engineering units.
  */
 import type {
-  DriftReport,
-  DriftStatus,
+  ColumnBins,
   ModelInputStatus,
   PiTagStatus,
+  PsiReport,
+  PsiStatus,
 } from '@/services/model-monitoring'
 import type { LivePredictionPoint } from '@/hooks/model/use-prediction-monitoring'
 
 export interface InputFeatureRow {
   column: string
-  driftStatus: DriftStatus
+  /** MODEL-SERVE-028. This column's PSI verdict — the only input-drift
+   *  signal. `UNKNOWN` when the report has no row for it. */
+  driftStatus: PsiStatus
   driftReason?: string
-  z: number | null
+  /** The computed PSI, or null when none was published (UNKNOWN /
+   *  INSUFFICIENT_DATA never carry a number). */
+  psi: number | null
+  /** PSI's live sample count and bin readout, carried for the tooltip's
+   *  rows-vs-floor line on INSUFFICIENT_DATA. */
+  psiLiveTotal: number
+  psiBins: ColumnBins | null
   /** MODEL-SERVE-001-T15. PI's OWN quality flag for this tag, read live —
    *  a different question from `driftStatus` ("has the distribution moved
    *  since training"), and the one this tab is actually for. `UNKNOWN`
@@ -99,8 +108,8 @@ export interface BuildInputFeatureRowsInput {
    *  values to these rows. */
   versionId: string
   points: LivePredictionPoint[]
-  drift: DriftReport | null
-  /** MODEL-SERVE-001-T15. Same left-join role as `drift` above — a column
+  psi: PsiReport | null
+  /** MODEL-SERVE-001-T15. Same left-join role as `psi` above — a column
    *  absent from `piStatus.features` (PI unreachable, or a tag it said
    *  nothing about) still renders a row, `piStatus` falling back to
    *  `UNKNOWN`. */
@@ -147,7 +156,7 @@ export interface BuildInputFeatureRowsInput {
 
 /** Builds one row per `featureColumns` entry, in that exact order — never
  *  re-sorted, since predict-time column order is meaningful. Every column
- *  in the list gets a row even when absent from `drift` and every logged
+ *  in the list gets a row even when absent from `psi` and every logged
  *  point (left join, never inner): `driftStatus` falls back to `UNKNOWN`,
  *  `lastValueRaw`/`lastSeen` fall back to `null`. Nothing in
  *  `featureColumns` is ever dropped. */
@@ -155,7 +164,7 @@ export function buildInputFeatureRows({
   featureColumns,
   versionId,
   points,
-  drift,
+  psi,
   piStatus,
   derivedFeatures,
   frozenColumns,
@@ -166,8 +175,8 @@ export function buildInputFeatureRows({
   const flatByColumn = new Map(
     (frozenSince ?? []).map(e => [e.column, e.flatMinutes]),
   )
-  const driftByColumn = new Map(
-    (drift?.columns ?? []).map(col => [col.column, col]),
+  const psiByColumn = new Map(
+    (psi?.columns ?? []).map(col => [col.column, col]),
   )
   const piByColumn = new Map((piStatus?.features ?? []).map(f => [f.column, f]))
   // A Set, not an includes() per row: the same left-join shape the two maps
@@ -180,7 +189,7 @@ export function buildInputFeatureRows({
   const versionPoints = points.filter(p => p.modelVersionId === versionId)
 
   return featureColumns.map(column => {
-    const driftCol = driftByColumn.get(column)
+    const psiCol = psiByColumn.get(column)
     const piCol = piByColumn.get(column)
 
     let lastValueRaw: number | null = null
@@ -206,9 +215,11 @@ export function buildInputFeatureRows({
 
     return {
       column,
-      driftStatus: driftCol?.status ?? 'UNKNOWN',
-      driftReason: driftCol?.reason,
-      z: driftCol?.z ?? null,
+      driftStatus: psiCol?.status ?? 'UNKNOWN',
+      driftReason: psiCol?.reason,
+      psi: psiCol?.psi ?? null,
+      psiLiveTotal: psiCol?.liveTotal ?? 0,
+      psiBins: psiCol?.bins ?? null,
       piStatus: piCol?.status ?? 'UNKNOWN',
       piReason: piCol?.reason,
       failingSources: piCol?.failingSources,

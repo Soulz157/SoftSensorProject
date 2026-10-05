@@ -4,11 +4,7 @@ import { redactUrls } from '@/lib/redact-urls';
 // MODEL-SERVE-001-T26. The monitoring classifier, called from the list path
 // so both axes are derived by ONE implementation each. Acyclic: model-health
 // imports nothing from this module (it names it only in a comment).
-import {
-  classifyModelHealth,
-  thresholdsFromSchedule,
-  type ModelHealth,
-} from '@/lib/model-health';
+import { classifyModelHealth, type ModelHealth } from '@/lib/model-health';
 // MODEL-SERVE-012-T08. The output-error classifier and its horizon, called
 // rather than reimplemented, so the list and the detail page grade a model by
 // one rule over one sample. Acyclic: neither module imports this one.
@@ -23,16 +19,22 @@ import { baselineResidualSd } from '@/lib/model-version-residual-sd';
 // — one rule for "is this tag frozen", not a second one that could disagree
 // with the detail page about the same tag.
 import { detectFrozenColumns } from '@/lib/sensor-frozen';
-// `resolveColumnBaseline`'s OWN caching (by `goldObjectKey`, an immutable
-// artifact key) is what makes calling it here affordable — see its own doc
-// comment. Without that cache this read would be an uncached HTTP round trip
-// to apps/python per enabled model, on every Alerts/Overview/sidebar load.
-import { resolveColumnBaseline } from '@/lib/artifact-baseline';
+// `resolveColumnBaseline`'s and `resolvePsiReference`'s OWN caching (by
+// `goldObjectKey`, an immutable artifact key) is what makes calling them here
+// affordable — see their own doc comments. Without that cache each read would
+// be an uncached HTTP round trip to apps/python per enabled model, on every
+// Alerts/Overview/sidebar load.
 import {
-  computeDrift,
-  poolFeatureStats,
-  type FeatureStatsMap,
-} from '@/lib/prediction-drift';
+  resolveColumnBaseline,
+  resolvePsiReference,
+} from '@/lib/artifact-baseline';
+import type { FeatureStatsMap } from '@/lib/feature-stats';
+import {
+  computePsi,
+  poolHistograms,
+  type FeatureHistogramMap,
+  type PsiStatus,
+} from '@/lib/prediction-psi';
 
 /**
  * MODEL-SERVE-024-D03. The window sample the list's drift verdict is graded
@@ -41,12 +43,12 @@ import {
  */
 const DRIFT_WINDOW_TAKE = 24;
 
-type DriftVerdict = {
-  driftStatus: ReturnType<typeof computeDrift>['status'] | null;
-  driftEvidence: boolean;
+type PsiVerdict = {
+  psiStatus: PsiStatus | null;
+  psiEvidence: boolean;
 };
 
-const NO_DRIFT: DriftVerdict = { driftStatus: null, driftEvidence: false };
+const NO_PSI: PsiVerdict = { psiStatus: null, psiEvidence: false };
 
 /**
  * MODEL-SERVE-006-T12. Per decisions.deploy_status_currently_asserts_
@@ -216,11 +218,11 @@ export interface DeployState {
    * MODEL-SERVE-001-T26/T30. The MONITORING axis for the list payload, so
    * the Alerts page and the workspace failure counts keep seeing fetch
    * faults after they stopped reaching `status`. Frozen detection is
-   * evaluated here (T30), and since MODEL-SERVE-024-D03 so is the z-score
-   * drift verdict, for schedules with `driftMonitor` on, over the detail
-   * page's own sample and thresholds. PSI is NOT (it needs a separate
-   * reference read per model). `OFF` on this path therefore means "no LIVE
-   * fault, frozen tag or z-score drift, and no PSI claim", never "healthy".
+   * evaluated here (T30), and since MODEL-SERVE-024-D03 so is the input
+   * drift verdict (PSI only since MODEL-SERVE-028), for schedules with
+   * `driftMonitor` on, over the detail page's own sample and thresholds.
+   * `OFF` on this path therefore means "no LIVE fault, frozen tag or PSI
+   * drift", never "healthy".
    */
   monitoring: ModelHealth;
 }
@@ -343,23 +345,22 @@ export async function deriveDeployStatuses(
   // as `lastFailure`/`consecutiveFailures` — one Promise.all over enabled
   // models, not a second one.
   const frozenColumnsByModel = new Map<string, string[]>();
-  // MODEL-SERVE-024-D03. The z-score drift verdict per enabled model, so a
-  // DRIFT_WARN/DRIFT_CRITICAL reaches the Alerts page, plant and workspace
-  // instead of living only on the detail page. PSI stays detail-only: it
-  // needs a separate reference read per model.
-  const driftByModel = new Map<string, DriftVerdict>();
+  // MODEL-SERVE-024-D03, PSI since MODEL-SERVE-028. The input-drift verdict
+  // per enabled model, so a DRIFT_WARN/DRIFT_CRITICAL reaches the Alerts
+  // page, plant and workspace instead of living only on the detail page.
+  // The per-model reference read is cached by artifact key.
+  const psiByModel = new Map<string, PsiVerdict>();
   await Promise.all(
     enabledIds.map(async (modelId) => {
       const schedule = scheduleByModel.get(modelId)!;
       const productionForDrift = versionByModel.get(modelId);
       if (schedule.driftMonitor && productionForDrift) {
-        driftByModel.set(
+        psiByModel.set(
           modelId,
-          await resolveListDrift(
+          await resolveListPsi(
             prisma,
             productionForDrift.id,
             productionForDrift.goldObjectKey,
-            thresholdsFromSchedule(schedule),
           ),
         );
       }
@@ -517,25 +518,18 @@ export async function deriveDeployStatuses(
       // keeps the signal from disappearing in the meantime.
       monitoring: classifyModelHealth({
         enabled: schedule.enabled,
-        // MODEL-SERVE-024-D03. Computed above over the detail page's own
-        // sample (PRODUCTION version, newest 24 windows) and thresholds, for
-        // opted-in schedules. Off, or no evidence, is "no drift claim".
+        // MODEL-SERVE-024-D03 / MODEL-SERVE-028. Computed above over the
+        // detail page's own sample (PRODUCTION version, newest 24 windows)
+        // and env PSI thresholds, for opted-in schedules. Off, or no
+        // evidence, is "no drift claim", never "PSI said fine".
         driftMonitor: schedule.driftMonitor,
-        driftStatus: (driftByModel.get(schedule.modelId) ?? NO_DRIFT)
-          .driftStatus,
-        driftEvidence: (driftByModel.get(schedule.modelId) ?? NO_DRIFT)
-          .driftEvidence,
-        // MODEL-SERVE-001-T32. NOT evaluated on the list path: the PSI
-        // reference read is a per-model HTTP round trip, which this batched
-        // derivation exists to avoid. `null`/`false` mean "this payload makes no
-        // DISTRIBUTION claim either", never "PSI said fine".
-        psiStatus: null,
-        psiEvidence: false,
+        psiStatus: (psiByModel.get(schedule.modelId) ?? NO_PSI).psiStatus,
+        psiEvidence: (psiByModel.get(schedule.modelId) ?? NO_PSI).psiEvidence,
         // T27's `missingPct` band is STILL the detail page's job alone: it
         // reads the NEWEST terminal window's own missingPct ("is the data
         // bad RIGHT NOW"), which this batched query has no per-model reason
         // to fetch. `null` here means "this payload makes no BAD_DATA
-        // claim", same discipline as drift above.
+        // claim", same discipline as PSI above.
         consecutiveSkips: 0,
         skipStreakAlert: schedule.skipStreakAlert,
         missingPct: null,
@@ -571,36 +565,37 @@ export async function deriveDeployStatuses(
 }
 
 /**
- * MODEL-SERVE-024-D03. The detail page's drift verdict, computed for the list:
- * the PRODUCTION version's newest `DRIFT_WINDOW_TAKE` windows, pooled, against
- * the gold artifact's column baseline (cached by key, so the frozen detection
- * above has usually already paid for it). The same dark-ship gate as the
- * detail page: no window stats or an empty baseline is NO evidence, and no
- * evidence is never read as "no drift".
+ * MODEL-SERVE-024-D03, PSI since MODEL-SERVE-028. The detail page's drift
+ * verdict, computed for the list: the PRODUCTION version's newest
+ * `DRIFT_WINDOW_TAKE` windows' histograms, pooled, against the gold
+ * artifact's frozen PSI reference (cached by key). The same dark-ship gate
+ * as the detail page (`getHealthStatus`): no window histograms or an empty
+ * reference is NO evidence, and no evidence is never read as "no drift".
  */
-async function resolveListDrift(
+async function resolveListPsi(
   prisma: PrismaService,
   productionVersionId: string,
   goldObjectKey: string,
-  thresholds: ReturnType<typeof thresholdsFromSchedule>,
-): Promise<DriftVerdict> {
+): Promise<PsiVerdict> {
   const windows = await prisma.inferenceWindow.findMany({
     where: { modelVersionId: productionVersionId },
     orderBy: { windowStart: 'desc' },
     take: DRIFT_WINDOW_TAKE,
-    select: { featureStats: true },
+    select: { featureHistograms: true },
   });
-  const statsRows = windows
-    .map((w) => w.featureStats)
-    .filter((s): s is NonNullable<typeof s> => s !== null)
-    .map((s) => s as unknown as FeatureStatsMap);
-  if (statsRows.length === 0) return NO_DRIFT;
-  const baseline = await resolveColumnBaseline(goldObjectKey);
-  if (Object.keys(baseline).length === 0) return NO_DRIFT;
+  const histogramRows = windows
+    .filter((w) => w.featureHistograms != null)
+    .map((w) => w.featureHistograms as unknown as FeatureHistogramMap);
+  if (histogramRows.length === 0) return NO_PSI;
+  const reference = await resolvePsiReference(goldObjectKey);
+  if (Object.keys(reference).length === 0) return NO_PSI;
   return {
-    driftStatus: computeDrift(poolFeatureStats(statsRows), baseline, thresholds)
-      .status,
-    driftEvidence: true,
+    psiStatus: computePsi(poolHistograms(histogramRows), reference, {
+      warn: env.PSI_WARN,
+      critical: env.PSI_CRITICAL,
+      minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+    }).status,
+    psiEvidence: true,
   };
 }
 

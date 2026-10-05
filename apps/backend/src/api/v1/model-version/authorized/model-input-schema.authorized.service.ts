@@ -45,7 +45,7 @@ export class ModelInputSchemaAuthorizedService {
   /** Same duplication rationale `PredictionLogAuthorizedService` and four
    *  other authorized services already state for their own copy of this
    *  check — no shared helper across modules. VIEWER is rejected, same as
-   *  the sibling `/predictions` and `/drift` reads this tab also calls —
+   *  the sibling `/predictions` and `/psi` reads this tab also calls —
    *  opening only this one read to VIEWER would produce a tab whose
    *  feature list loads while every status column still 403s. */
   private async assertModelAccess(modelId: string, user: Auth.UserPayload) {

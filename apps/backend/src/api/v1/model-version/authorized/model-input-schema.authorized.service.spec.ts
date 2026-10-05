@@ -13,7 +13,7 @@ const mockedReadFeatureSpec = pythonClient.readFeatureSpec as jest.Mock;
  * `ModelServingAuthorizedService.buildDescriptor` (the machine-serving
  * twin) deliberately does NOT: PRODUCTION-preferred-but-not-required
  * version resolution, a legacy manifest never throwing, and VIEWER still
- * being rejected (matching the sibling `/predictions` and `/drift` reads).
+ * being rejected (matching the sibling `/predictions` and `/psi` reads).
  */
 
 const EDITOR_USER = { id: 'user-1', role: 'USER' } as Auth.UserPayload;
@@ -181,7 +181,7 @@ describe('ModelInputSchemaAuthorizedService.getInputSchemaService', () => {
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it('403s a VIEWER, matching the /predictions and /drift reads', async () => {
+  it('403s a VIEWER, matching the /predictions and /psi reads', async () => {
     const prisma = buildPrisma({
       workspaceOwned: false,
       member: { role: 'VIEWER' },

@@ -4,7 +4,10 @@ import {
   isStale,
   overlayDeployStatus,
 } from './deploy-status';
-import { resolveColumnBaseline } from '@/lib/artifact-baseline';
+import {
+  resolveColumnBaseline,
+  resolvePsiReference,
+} from '@/lib/artifact-baseline';
 
 // MODEL-SERVE-001-T30. `deriveDeployStatuses` now calls `resolveColumnBaseline`
 // (an HTTP round trip to apps/python, in the real implementation) whenever an
@@ -15,6 +18,7 @@ import { resolveColumnBaseline } from '@/lib/artifact-baseline';
 // fixtures and never reaches it at all.
 jest.mock('@/lib/artifact-baseline');
 const mockedResolveColumnBaseline = resolveColumnBaseline as jest.Mock;
+const mockedResolvePsiReference = resolvePsiReference as jest.Mock;
 
 describe('classifyDeployStatus (MODEL-SERVE-006-T12, reshaped by T26)', () => {
   it('is stopped when the schedule is not enabled, regardless of history', () => {
@@ -987,9 +991,10 @@ describe('deriveDeployStatuses — frozen detection (MODEL-SERVE-001-T30)', () =
   });
 });
 
-describe('deriveDeployStatuses — z-score drift on the list (MODEL-SERVE-024-D03)', () => {
+describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / MODEL-SERVE-028)', () => {
   afterEach(() => {
     mockedResolveColumnBaseline.mockReset();
+    mockedResolvePsiReference.mockReset();
   });
 
   const SCHEDULE = {
@@ -1013,26 +1018,25 @@ describe('deriveDeployStatuses — z-score drift on the list (MODEL-SERVE-024-D0
     metrics: null,
     goldObjectKey: 'models/m1/versions/v1/gold/data.parquet',
   };
-  const BASELINE = {
-    tag_a: { mean: 10, std: 2, percentiles: { p1: 4, p99: 16 } },
+  /** A 50/50 two-bin frozen reference for tag_a. */
+  const REFERENCE = {
+    tag_a: {
+      binMode: 'continuous',
+      binCount: 2,
+      edges: [0, 1, 2],
+      refCounts: [50, 50],
+    },
   };
 
-  /** A production window whose pooled tag_a mean is `mean` (z = (mean-10)/2). */
-  const window = (mean: number) => ({
-    featureStats: {
-      tag_a: {
-        n: 10,
-        sum: mean * 10,
-        sumsq: 10 * (mean * mean + 1),
-        min: mean - 2,
-        max: mean + 2,
-      },
-    },
+  /** A production window whose tag_a live histogram is `[lo, hi]`. Against
+   *  the 50/50 reference: 70/30 is PSI ~0.17 (WARN), 95/5 is ~1.0 (CRITICAL). */
+  const window = (lo: number, hi: number) => ({
+    featureHistograms: { tag_a: { counts: [lo, hi], below: 0, above: 0 } },
   });
 
   /** `findMany` serves two queries: the recent-terminal one (no
    * `modelVersionId`, left empty so frozen detection stays silent) and the
-   * drift sample (scoped to the production version). */
+   * PSI sample (scoped to the production version). */
   function buildPrisma(
     driftWindows: unknown[],
     schedule: Record<string, unknown> = SCHEDULE,
@@ -1063,8 +1067,8 @@ describe('deriveDeployStatuses — z-score drift on the list (MODEL-SERVE-024-D0
   }
 
   it('grades the production version’s newest 24 windows and reports DRIFT_WARN as WARN', async () => {
-    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
-    const { prisma, findMany } = buildPrisma([window(14), window(14)]);
+    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
+    const { prisma, findMany } = buildPrisma([window(35, 15), window(35, 15)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
@@ -1079,8 +1083,8 @@ describe('deriveDeployStatuses — z-score drift on the list (MODEL-SERVE-024-D0
   });
 
   it('reports DRIFT_CRITICAL as ALERT', async () => {
-    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
-    const { prisma } = buildPrisma([window(17)]);
+    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
+    const { prisma } = buildPrisma([window(95, 5)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
@@ -1089,8 +1093,8 @@ describe('deriveDeployStatuses — z-score drift on the list (MODEL-SERVE-024-D0
   });
 
   it('makes no drift claim and no extra query when drift watching is off', async () => {
-    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
-    const { prisma, findMany } = buildPrisma([window(17)], {
+    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
+    const { prisma, findMany } = buildPrisma([window(95, 5)], {
       ...SCHEDULE,
       driftMonitor: false,
     });
@@ -1103,12 +1107,23 @@ describe('deriveDeployStatuses — z-score drift on the list (MODEL-SERVE-024-D0
     expect(result.m1?.monitoring.reason).toBeNull();
   });
 
-  it('treats an empty baseline as no evidence, never as no drift', async () => {
-    mockedResolveColumnBaseline.mockResolvedValue({});
-    const { prisma } = buildPrisma([window(17)]);
+  it('treats an empty PSI reference as no evidence, never as no drift', async () => {
+    mockedResolvePsiReference.mockResolvedValue({});
+    const { prisma } = buildPrisma([window(95, 5)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
+    expect(result.m1?.monitoring.reason).toBeNull();
+    expect(result.m1?.monitoring.status).not.toBe('OK');
+  });
+
+  it('treats windows with no histograms as no evidence, and skips the reference read', async () => {
+    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
+    const { prisma } = buildPrisma([{ featureHistograms: null }]);
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(mockedResolvePsiReference).not.toHaveBeenCalled();
     expect(result.m1?.monitoring.reason).toBeNull();
     expect(result.m1?.monitoring.status).not.toBe('OK');
   });

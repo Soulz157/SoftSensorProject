@@ -46,8 +46,6 @@ import {
   type EdaWindowControl,
 } from '@/lib/time-window'
 import {
-  allMonths,
-  defaultMonthKeys,
   mergeMonthlyBoxplots,
   mergeMonthlyHistograms,
   MAX_MONTHS,
@@ -75,6 +73,7 @@ import { useDatasetCorrelation } from '@/hooks/dataset/use-dataset-correlation'
 import { SegmentedToggle } from '@/components/segmented-toggle'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
 import { useCompareTags } from '@/hooks/dataset/use-compare-tags'
+import { useMonthPicker } from '@/hooks/dataset/use-month-picker'
 import {
   useMonthlyBoxplots,
   useMonthlyHistograms,
@@ -146,6 +145,14 @@ interface Props {
    * picker and every tab reads the whole artifact, as before.
    */
   edaWindow?: EdaWindowControl
+  /**
+   * Which comparison the Histogram and Box Plot tabs open in. Defaults to
+   * `'tag'`, so existing callers are unchanged. A caller that wants month
+   * compare front and centre (the dataset detail dialog) passes `'month'`;
+   * it still only takes effect once the artifact spans at least two months,
+   * and a one-line note says so when it does not.
+   */
+  defaultCompareMode?: CompareMode
 }
 type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
 
@@ -270,6 +277,7 @@ export function DataAnalysisCard({
   showTransforms = true,
   showTagSelector = false,
   edaWindow,
+  defaultCompareMode = 'tag',
 }: Props) {
   // Declared before the tag-selection hook because it also decides WHERE that
   // selection lives, not just which artifact routes are read: a caller naming
@@ -396,7 +404,8 @@ export function DataAnalysisCard({
     [analysisMetadata?.startTime, analysisMetadata?.endTime],
   )
   const canCompareMonths = availableMonths.length >= 2
-  const [compareModePick, setCompareMode] = useState<CompareMode>('tag')
+  const [compareModePick, setCompareMode] =
+    useState<CompareMode>(defaultCompareMode)
   const monthly = canCompareMonths && compareModePick === 'month'
 
   // D02: one tag at a time, from the sidebar tags the artifact actually has.
@@ -408,31 +417,14 @@ export function DataAnalysisCard({
     return artifactTags[0] ?? null
   }, [monthTagPick, focusedTag, artifactTags])
 
-  // `null` = never touched: the latest two months. Kept in calendar order so
-  // the chart, the caption and the popover list all read oldest → newest.
-  const [monthKeysPick, setMonthKeysPick] = useState<string[] | null>(null)
-  // "All months" is a scope, not a pick: it overrides the checklist without
-  // erasing it, so turning it off returns to the months picked before.
-  const [compareAllMonths, setCompareAllMonths] = useState(false)
-  const pickedMonths = useMemo(() => {
-    if (compareAllMonths) return allMonths(availableMonths)
-    const keys = new Set(monthKeysPick ?? defaultMonthKeys(availableMonths))
-    return availableMonths.filter(m => keys.has(m.key))
-  }, [compareAllMonths, monthKeysPick, availableMonths])
-  const pickedMonthKeys = useMemo(
-    () => pickedMonths.map(m => m.key),
-    [pickedMonths],
-  )
-  const toggleMonth = (key: string) => {
-    if (pickedMonthKeys.includes(key)) {
-      // Never down to zero: an empty pick would land on the charts' 'no-tags'
-      // copy, which talks about tags, not months.
-      if (pickedMonthKeys.length <= 1) return
-      setMonthKeysPick(pickedMonthKeys.filter(k => k !== key))
-    } else if (pickedMonthKeys.length < MAX_MONTHS) {
-      setMonthKeysPick([...pickedMonthKeys, key])
-    }
-  }
+  // Shared with the Compare-validation modal (`hooks/dataset/use-month-picker`).
+  const {
+    pickedMonths,
+    pickedMonthKeys,
+    toggleMonth,
+    compareAllMonths,
+    setCompareAllMonths,
+  } = useMonthPicker(availableMonths)
 
   const leg: ArtifactLeg = useDatasetLeg
     ? { kind: 'dataset', datasetId: dsId, artifactId: dsArtifactId }
@@ -761,6 +753,16 @@ export function DataAnalysisCard({
 
         {(tab === 'histogram' || tab === 'boxplot') && (
           <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+            {/* A caller that asked for month compare gets told why it is not
+                on offer, instead of a toggle that silently never appears. */}
+            {defaultCompareMode === 'month' &&
+              !canCompareMonths &&
+              availableMonths.length === 1 && (
+                <p className="mr-auto text-xs text-muted-foreground">
+                  Comparing by month needs data spanning at least two months —
+                  this dataset covers {availableMonths[0]!.label}.
+                </p>
+              )}
             {canCompareMonths && (
               <SegmentedToggle
                 ariaLabel="Compare tags or months"

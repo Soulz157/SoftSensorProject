@@ -1,23 +1,21 @@
 import { describe, it, expect } from 'vitest'
 import { buildInputFeatureRows } from '@/lib/model-input-features'
-import type { DriftReport } from '@/services/model-monitoring'
+import type { PsiReport } from '@/services/model-monitoring'
 import type { LivePredictionPoint } from '@/hooks/model/use-prediction-monitoring'
 
 const VERSION_ID = 'version-1'
 
-const DRIFT: DriftReport = {
+const PSI: PsiReport = {
   status: 'WARN',
   columns: [
     {
       column: 'PI-204.PV',
-      n: 4,
-      liveMean: 3.02,
-      liveStd: 0.1,
-      trainMean: 2.5,
-      trainStd: 0.2,
-      z: 2.6,
+      liveTotal: 400,
+      psi: 0.18,
+      outOfRangePct: 0,
       status: 'WARN',
       reason: undefined,
+      bins: null,
     },
   ],
   basis: {
@@ -27,8 +25,11 @@ const DRIFT: DriftReport = {
     goldArtifactId: 'gold-1',
     goldObjectKey: 'ds-1/artifacts/gold-1/data_gold.parquet',
     sampleRequests: 4,
+    histogramRequests: 4,
     from: '2026-09-06T00:00:00.000Z',
     to: '2026-09-07T00:00:00.000Z',
+    thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
+    epsilon: 1e-4,
   },
 }
 
@@ -50,7 +51,7 @@ describe('buildInputFeatureRows', () => {
       featureColumns: ['FC-310.PV', 'TI-101.PV', 'PI-204.PV'],
       versionId: VERSION_ID,
       points: [],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
     })
@@ -62,18 +63,22 @@ describe('buildInputFeatureRows', () => {
     ])
   })
 
-  it('left-joins drift — a column absent from drift.columns gets UNKNOWN, never dropped', () => {
+  it('left-joins PSI — a column absent from psi.columns gets UNKNOWN, never dropped', () => {
     const rows = buildInputFeatureRows({
       featureColumns: ['PI-204.PV', 'FC-310.PV'],
       versionId: VERSION_ID,
       points: [],
-      drift: DRIFT,
+      psi: PSI,
       piStatus: null,
       derivedFeatures: null,
     })
 
     expect(rows).toHaveLength(2)
-    expect(rows[0]).toMatchObject({ column: 'PI-204.PV', driftStatus: 'WARN' })
+    expect(rows[0]).toMatchObject({
+      column: 'PI-204.PV',
+      driftStatus: 'WARN',
+      psi: 0.18,
+    })
     expect(rows[1]).toMatchObject({
       column: 'FC-310.PV',
       driftStatus: 'UNKNOWN',
@@ -85,7 +90,7 @@ describe('buildInputFeatureRows', () => {
       featureColumns: ['PI-204.PV', 'FC-310.PV'],
       versionId: VERSION_ID,
       points: [],
-      drift: null,
+      psi: null,
       piStatus: {
         features: [
           {
@@ -125,7 +130,7 @@ describe('buildInputFeatureRows', () => {
           features: { 'PI-204.PV': 0.1 },
         }),
       ],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
     })
@@ -139,7 +144,7 @@ describe('buildInputFeatureRows', () => {
       featureColumns: ['TI-101.PV'],
       versionId: VERSION_ID,
       points: [],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
     })
@@ -164,7 +169,7 @@ describe('buildInputFeatureRows', () => {
       featureColumns: ['TI-101.PV'],
       versionId: VERSION_ID,
       points: [point({ features: { 'TI-101.PV': 190.4 } })],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
     })
@@ -183,7 +188,7 @@ describe('buildInputFeatureRows', () => {
           features: { 'TI-101.PV': 0.9 },
         }),
       ],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
     })
@@ -193,14 +198,14 @@ describe('buildInputFeatureRows', () => {
   })
 
   /** T12. The equation-under-the-tag join — keyed by feature NAME, not by
-   *  any relationship to `points`/`drift`, so it applies even to a column
+   *  any relationship to `points`/`psi`, so it applies even to a column
    *  with zero logged traffic. */
   it("attaches a derived feature's equation by name; a base tag gets none", () => {
     const rows = buildInputFeatureRows({
       featureColumns: ['FIC204.PV', 'Reflux_ratio'],
       versionId: VERSION_ID,
       points: [],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: [
         { name: 'Reflux_ratio', display: 'FIC204.PV/(FY107.CPV+1)' },
@@ -247,7 +252,7 @@ describe('tag observations take precedence (MODEL-SERVE-009-T04)', () => {
           modelVersionId: VERSION_ID,
         },
       ],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
       // ...the authoritative fetch says another, and wins.
@@ -271,7 +276,7 @@ describe('tag observations take precedence (MODEL-SERVE-009-T04)', () => {
           modelVersionId: VERSION_ID,
         },
       ],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
       tagObservations: [],
@@ -288,7 +293,7 @@ describe('tag observations take precedence (MODEL-SERVE-009-T04)', () => {
       featureColumns: ['FC-310.PV'],
       versionId: VERSION_ID,
       points: [],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
       tagObservations: [observation()],
@@ -304,7 +309,7 @@ describe('tag observations take precedence (MODEL-SERVE-009-T04)', () => {
       featureColumns: ['FC-310.PV'],
       versionId: VERSION_ID,
       points: [],
-      drift: null,
+      psi: null,
       // PI's snapshot says Good...
       piStatus: {
         features: [{ column: 'FC-310.PV', status: 'Good' }],
@@ -325,7 +330,7 @@ describe('tag observations take precedence (MODEL-SERVE-009-T04)', () => {
       featureColumns: ['FC-310.PV'],
       versionId: VERSION_ID,
       points: [],
-      drift: null,
+      psi: null,
       piStatus: null,
       derivedFeatures: null,
       tagObservations: [observation({ lastFetchOutcome: 'FAILED' })],

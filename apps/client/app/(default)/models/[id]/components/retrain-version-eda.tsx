@@ -29,17 +29,27 @@ import type { EdaWindowControl, TimeWindow } from '@/lib/time-window'
  * Collapsed by default. The retrain dialog's job is the decision; the charts
  * are for the moment the operator wants to check one, and four tabs of
  * analysis unfurled above the Start button would bury it.
+ *
+ * `collapsible={false}` drops the disclosure and renders the card open — for
+ * a host that gives the EDA its own full-width section (the Data Studio
+ * dataset detail dialog), where a second click to see it is pure friction.
  */
 export function RetrainVersionEda({
   datasetId,
   artifactId,
   tags,
+  collapsible = true,
+  defaultCompareMode,
 }: {
   datasetId: string | null
   artifactId: string | null
   tags: string[]
+  collapsible?: boolean
+  /** Forwarded to `DataAnalysisCard`: which comparison Histogram/Box Plot open in. */
+  defaultCompareMode?: 'tag' | 'month'
 }) {
-  const [open, setOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const open = !collapsible || expanded
   const [period, setPeriod] = useState<TimeWindow | null>(null)
 
   // Nothing is fetched until the section is opened — an operator who never
@@ -72,6 +82,25 @@ export function RetrainVersionEda({
 
   if (!datasetId || !artifactId) return null
 
+  const card = (
+    <DataAnalysisCard
+      dataset={boundedSample}
+      // Only the trend chart's x-axis tick format. This panel has no
+      // range of its own — the period picker inside owns the real window.
+      range="7d"
+      datasetId={datasetId}
+      artifactId={artifactId}
+      showTransforms={false}
+      // The only visibility control available here: there is no wizard
+      // tag sidebar in a dialog.
+      showTagSelector
+      edaWindow={edaWindow}
+      defaultCompareMode={defaultCompareMode}
+    />
+  )
+
+  if (!collapsible) return card
+
   return (
     <div className="space-y-2 border-t border-border pt-3">
       <Button
@@ -80,7 +109,7 @@ export function RetrainVersionEda({
         size="sm"
         className="h-auto w-full justify-between px-0 py-1 text-xs font-medium"
         aria-expanded={open}
-        onClick={() => setOpen(o => !o)}
+        onClick={() => setExpanded(o => !o)}
       >
         Explore this data
         <ChevronDown
@@ -89,21 +118,7 @@ export function RetrainVersionEda({
         />
       </Button>
 
-      {open && (
-        <DataAnalysisCard
-          dataset={boundedSample}
-          // Only the trend chart's x-axis tick format. This panel has no
-          // range of its own — the period picker inside owns the real window.
-          range="7d"
-          datasetId={datasetId}
-          artifactId={artifactId}
-          showTransforms={false}
-          // The only visibility control available here: there is no wizard
-          // tag sidebar in a dialog.
-          showTagSelector
-          edaWindow={edaWindow}
-        />
-      )}
+      {open && card}
     </div>
   )
 }

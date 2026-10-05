@@ -4,12 +4,12 @@ import { CncMachineSvg } from './machines/cnc-machine'
 import { RobotArmSvg } from './machines/robot-arm'
 import { SensorSvg } from './machines/sensor'
 import { ConveyorSvg } from './machines/conveyor'
-import { ControllerSvg } from './machines/controller'
+import { ReactorSvg } from './machines/reactor'
 import { type NodeStatus } from '../../../../../store/status-colors'
 import { cn } from '@/lib/utils'
 
 interface MachineNodeProps {
-  type: 'machine' | 'sensor' | 'controller'
+  type: 'reactor' | 'machine' | 'sensor'
   icon: string | undefined
   status: NodeStatus
   label: string
@@ -28,8 +28,8 @@ function pickMachineSvg(
 ) {
   if (type === 'sensor')
     return <SensorSvg status={status} selected={selected} />
-  if (type === 'controller')
-    return <ControllerSvg status={status} selected={selected} />
+  if (type === 'reactor')
+    return <ReactorSvg status={status} selected={selected} />
   if (icon === 'arm') return <RobotArmSvg status={status} selected={selected} />
   if (icon === 'conveyor')
     return <ConveyorSvg status={status} selected={selected} />

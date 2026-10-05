@@ -9,13 +9,14 @@ import {
 import type { AIModel } from '@/types'
 
 /**
- * MODEL-SERVE-014-T05. Drift/PSI context beside the Retrain decision —
+ * MODEL-SERVE-014-T05. Input-drift (PSI) context beside the Retrain
+ * decision —
  * CONTEXT ONLY. Nothing here gates, blocks or auto-triggers a retrain: no
  * product decision exists for an automatic drift-driven retrain, so this
  * states what monitoring currently measures and stops there.
  *
  * Sourced entirely from `usePredictionMonitoring` — the SAME hook and the
- * same `[from, to]` the Monitoring tab's own `DriftPanel`/`PsiPanel` read,
+ * same `[from, to]` the Monitoring tab's own `PsiPanel` reads,
  * and the same `MONITORING_STATUS_CLASS` palette. No second
  * drift computation is introduced client-side, and no figure here is
  * derived from anything this component fetched on its own.
@@ -33,28 +34,20 @@ import type { AIModel } from '@/types'
  */
 export function RetrainMonitoringContext({ model }: { model: AIModel }) {
   const {
-    drift,
-    driftLoading,
-    driftUnavailableReason,
     psi,
-    psiLoading,
+    psiLoading: loading,
     psiUnavailableReason,
   } = usePredictionMonitoring(model, '24h')
 
-  const loading = driftLoading || psiLoading
-
-  // The window the reports were ACTUALLY computed over — the backend's own
+  // The window the report was ACTUALLY computed over — the backend's own
   // `basis.from`/`basis.to`, never a client-side "last 24h" label that would
   // be false whenever the pool holds a shorter span.
-  const basis = drift?.basis ?? psi?.basis ?? null
+  const basis = psi?.basis ?? null
   const period =
     basis?.from && basis.to
       ? `${new Date(basis.from).toLocaleString()} — ${new Date(basis.to).toLocaleString()}`
       : null
 
-  const driftFlagged =
-    drift?.columns.filter(c => c.status === 'WARN' || c.status === 'CRITICAL')
-      .length ?? 0
   const psiFlagged =
     psi?.columns.filter(c => c.status === 'WARN' || c.status === 'CRITICAL')
       .length ?? 0
@@ -73,33 +66,9 @@ export function RetrainMonitoringContext({ model }: { model: AIModel }) {
       {!loading && (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11px] text-muted-foreground">Drift</span>
-            {driftUnavailableReason ? (
-              <span className="text-[11px] text-muted-foreground">
-                {driftUnavailableReason}
-              </span>
-            ) : drift ? (
-              <>
-                <Badge
-                  className={`${MONITORING_STATUS_CLASS[drift.status]} border-0 text-[10px]`}
-                >
-                  {MONITORING_STATUS_LABEL[drift.status]}
-                </Badge>
-                {driftFlagged > 0 && (
-                  <span className="text-[11px] text-muted-foreground">
-                    {driftFlagged} of {drift.columns.length} inputs flagged
-                  </span>
-                )}
-              </>
-            ) : (
-              <span className="text-[11px] text-muted-foreground">
-                No drift report available
-              </span>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11px] text-muted-foreground">PSI</span>
+            <span className="text-[11px] text-muted-foreground">
+              Input drift (PSI)
+            </span>
             {psiUnavailableReason ? (
               <span className="text-[11px] text-muted-foreground">
                 {psiUnavailableReason}

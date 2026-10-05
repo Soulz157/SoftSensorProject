@@ -67,7 +67,7 @@ function splitVerdict(
 }
 
 /**
- * The status badge shared by the Distribution Drift and PSI cards: the
+ * The status badge shared by the PSI card and inline drift badges: the
  * verdict, plus a tooltip saying what that verdict MEANS and which
  * comparison produced it.
  *

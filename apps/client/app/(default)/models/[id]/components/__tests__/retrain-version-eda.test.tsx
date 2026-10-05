@@ -107,4 +107,47 @@ describe('RetrainVersionEda', () => {
     // only visibility control available.
     expect(props.showTagSelector).toBe(true)
   })
+
+  it('collapsible={false} renders the card open, with no toggle, and fetches at once', () => {
+    render(
+      <RetrainVersionEda
+        datasetId="ds-1"
+        artifactId="art-1"
+        tags={['TI-101']}
+        collapsible={false}
+      />,
+    )
+
+    expect(
+      screen.queryByRole('button', { name: /Explore this data/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByTestId('analysis-card')).toBeInTheDocument()
+    expect(h.rowsArgs.at(-1)?.slice(0, 2)).toEqual(['ds-1', 'art-1'])
+    // The store-safety rule holds in this mode too.
+    expect(h.cardProps.at(-1)?.showTransforms).toBe(false)
+  })
+
+  it('forwards defaultCompareMode to the card, and leaves it unset by default', () => {
+    render(
+      <RetrainVersionEda
+        datasetId="ds-1"
+        artifactId="art-1"
+        tags={['TI-101']}
+        collapsible={false}
+        defaultCompareMode="month"
+      />,
+    )
+    expect(h.cardProps.at(-1)?.defaultCompareMode).toBe('month')
+
+    h.cardProps.length = 0
+    render(
+      <RetrainVersionEda
+        datasetId="ds-1"
+        artifactId="art-1"
+        tags={['TI-101']}
+        collapsible={false}
+      />,
+    )
+    expect(h.cardProps.at(-1)?.defaultCompareMode).toBeUndefined()
+  })
 })

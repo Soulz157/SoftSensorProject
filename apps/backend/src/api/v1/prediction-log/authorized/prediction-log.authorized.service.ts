@@ -7,21 +7,12 @@ import {
   predictionLogSeries,
 } from '@/lib/python-preprocess-client';
 import {
-  applyConsecutiveBreachRule,
-  computeDrift,
-  poolFeatureStats,
-  type FeatureStatsMap,
-} from '@/lib/prediction-drift';
-import {
   computePsi,
   poolHistograms,
   PSI_EPSILON,
   type FeatureHistogramMap,
 } from '@/lib/prediction-psi';
-import {
-  resolveColumnBaseline,
-  resolvePsiReference,
-} from '@/lib/artifact-baseline';
+import { resolvePsiReference } from '@/lib/artifact-baseline';
 import { InferenceWindowMonitoringService } from '@/api/v1/inference-window/authorized/inference-window-monitoring.authorized.service';
 import type {
   IngestPredictionLogDto,
@@ -30,7 +21,7 @@ import type {
 
 /**
  * MODEL-SERVE-005. Sampled synchronous-/predict logging (T01) and the
- * distribution-drift signal (T02) built on it.
+ * input-drift signal built on it (PSI only since MODEL-SERVE-028).
  *
  * Its own module rather than folded into model-serving/model-version,
  * matching this codebase's established one-feature-per-module convention
@@ -43,7 +34,7 @@ export class PredictionLogAuthorizedService {
 
   constructor(
     private readonly prisma: PrismaService,
-    // MODEL-SERVE-001-T17. `getDriftService`/`getPsiService` dispatch to
+    // MODEL-SERVE-001-T17. `getPsiService` dispatches to
     // this for a model with an InferenceSchedule — see
     // `InferenceWindowMonitoringService.hasSchedule`'s own doc comment for
     // the full plane-selection rule.
@@ -256,245 +247,24 @@ export class PredictionLogAuthorizedService {
   }
 
   /**
-   * MODEL-SERVE-005-T02. The current PRODUCTION version's live inputs,
-   * pooled from PredictionLog's own sufficient-statistics aggregates over
-   * [from, to], compared against the training artifact's own
-   * column_stats.json — never a separately-computed baseline (the
-   * acceptance criterion this ledger states verbatim).
+   * MODEL-SERVE-001-T13. PSI over the current PRODUCTION version's live
+   * inputs — the ONLY input-drift metric since MODEL-SERVE-028 removed the
+   * z-score `/drift` and `/live-drift` routes this used to sit beside.
+   * Pools `PredictionLog.featureHistograms` over `[from, to]` against the
+   * training artifact's frozen `feature_spec.json` reference. PSI needs
+   * `binCount * PSI_MIN_SAMPLES_PER_BIN` live samples before a figure is
+   * even computed, so the CALLER is expected to request a wide range (the
+   * client defaults this to a rolling 24h window; this endpoint itself
+   * enforces no particular range, only the sample floor).
    *
    * MODEL-SERVE-001-T17. PLANE DISPATCH, decided with the user 2026-09-15:
-   * a model with an InferenceSchedule reads `InferenceWindow.featureStats`
-   * instead — the SAME reason MODEL-SERVE-001-T10 had to state on the
-   * client (`DriftPanel`'s own empty-state copy): `PredictionLog` is
-   * written by `/predict` ONLY, so a scheduled-only model's PredictionLog
-   * is empty BY CONSTRUCTION, and everything below this check would
-   * correctly compute nothing forever. See `InferenceWindowMonitoring
-   * Service.hasSchedule`'s own doc comment for the full rule. Everything
-   * from here down is the ORIGINAL, UNCHANGED `/predict`-plane
-   * implementation — reached only for a model with no schedule.
-   */
-  async getDriftService(
-    modelId: string,
-    query: PredictionLogRangeQueryDto,
-    user: Auth.UserPayload,
-  ) {
-    await this.assertModelAccess(modelId, user);
-
-    if (await this.windowMonitoring.hasSchedule(modelId)) {
-      return this.windowMonitoring.getDriftReport(
-        modelId,
-        query.from,
-        query.to,
-      );
-    }
-
-    const production = await this.prisma.modelVersion.findFirst({
-      where: { modelId, stage: 'PRODUCTION' },
-    });
-    if (!production) {
-      throw new AppException({
-        statusCode: 404,
-        message: `Model ${modelId} has no PRODUCTION version. Nothing to compare live traffic against.`,
-        type: 'ERROR',
-      });
-    }
-
-    const rows = await this.prisma.predictionLog.findMany({
-      where: {
-        modelVersionId: production.id,
-        requestedAt: { gte: new Date(query.from), lte: new Date(query.to) },
-      },
-      select: { featureStats: true },
-    });
-
-    const pooled = poolFeatureStats(
-      rows.map((r) => r.featureStats as unknown as FeatureStatsMap),
-    );
-
-    const baseline = await resolveColumnBaseline(production.goldObjectKey);
-
-    const report = computeDrift(pooled, baseline, {
-      warnSd: env.DRIFT_WARN_SD,
-      criticalSd: env.DRIFT_CRITICAL_SD,
-    });
-
-    return {
-      statusCode: 200,
-      message: 'Drift report fetched',
-      type: 'SUCCESS' as const,
-      data: {
-        ...report,
-        // MODEL-SERVE-018-D05. A /predict payload carries no y.
-        targetColumn: null,
-        target: null,
-        basis: {
-          modelVersionId: production.id,
-          version: production.version,
-          goldArtifactId: production.goldArtifactId,
-          goldObjectKey: production.goldObjectKey,
-          sampleRequests: rows.length,
-          from: query.from,
-          to: query.to,
-          // MODEL-SERVE-001-T17. Named on every basis, on both planes —
-          // see InferenceWindowMonitoringService's own basisOf for the
-          // window-plane counterpart.
-          plane: 'predict' as const,
-          // The thresholds `computeDrift` was ACTUALLY called with, echoed
-          // for the same reason `PsiReport.basis.thresholds` already is
-          // (see its own doc comment): the panel now explains a verdict by
-          // naming the number that produced it, and a client-side literal
-          // would silently disagree with this service the moment
-          // DRIFT_WARN_SD moves. Additive — no existing reader breaks.
-          thresholds: {
-            warnSd: env.DRIFT_WARN_SD,
-            criticalSd: env.DRIFT_CRITICAL_SD,
-          },
-        },
-      },
-    };
-  }
-
-  /**
-   * MODEL-SERVE-008-T03. The DENSE drift signal — the same z-score, the same
-   * thresholds, evaluated per short bucket and gated by a consecutive-breach
-   * rule.
-   *
-   * ITS OWN ROUTE, NEVER A REPLACEMENT FOR `/drift`. `getDriftService`
-   * dispatches on InferenceSchedule ROW PRESENCE (MODEL-SERVE-001-T17, whose
-   * tests assert PredictionLog is never touched when a schedule exists) and
-   * that dispatch is deliberately unchanged: a model running BOTH planes
-   * keeps a window-plane drift panel that answers exactly the question its
-   * caption claims. Folding a 10-minute signal into that hourly table would
-   * put two metrics with different cadences in one place, which
-   * MODEL-SERVE-001-T16 already refused for PSI. Two readouts, two cadences,
-   * two captions.
-   *
-   * WHY BUCKETS AND NOT ONE POOL: pooling the whole range into a single
-   * `computeDrift` answers "was the average of this range drifted", which
-   * hides a breach that started twenty minutes ago inside hours of healthy
-   * traffic. Bucketing at the model's own live cadence is what makes
-   * "sustained right now" a question the data can answer at all.
-   *
-   * THE BASELINE IS THE SAME SIDECAR THE WINDOW PLANE READS — `resolve
-   * ColumnBaseline` over the production version's own `goldObjectKey`. T17
-   * extracted it for exactly this: a second plane reads the identical
-   * sidecar the identical way, so the two signals can never disagree about
-   * what "training distribution" means. NOTE THE DILUTION IT INHERITS
-   * (MODEL-SERVE-001-T13, measured): `column_stats.json` spans the WHOLE
-   * committed artifact rather than the train split, so the reference is
-   * systematically wider and this signal UNDER-flags. A denser cadence does
-   * not fix that and this endpoint must not be described as more sensitive
-   * than it is.
-   */
-  async getLiveDriftService(
-    modelId: string,
-    query: PredictionLogRangeQueryDto,
-    user: Auth.UserPayload,
-  ) {
-    await this.assertModelAccess(modelId, user);
-
-    const production = await this.prisma.modelVersion.findFirst({
-      where: { modelId, stage: 'PRODUCTION' },
-    });
-    if (!production) {
-      throw new AppException({
-        statusCode: 404,
-        message: `Model ${modelId} has no PRODUCTION version. Nothing to compare live traffic against.`,
-        type: 'ERROR',
-      });
-    }
-
-    const schedule = await this.prisma.inferenceSchedule.findUnique({
-      where: { modelId },
-      select: { livePredictEnabled: true, livePredictCadenceMinutes: true },
-    });
-
-    const rows = await this.prisma.predictionLog.findMany({
-      where: {
-        modelVersionId: production.id,
-        requestedAt: { gte: new Date(query.from), lte: new Date(query.to) },
-      },
-      select: { featureStats: true, requestedAt: true },
-      orderBy: { requestedAt: 'asc' },
-    });
-
-    const baseline = await resolveColumnBaseline(production.goldObjectKey);
-    const thresholds = {
-      warnSd: env.DRIFT_WARN_SD,
-      criticalSd: env.DRIFT_CRITICAL_SD,
-    };
-
-    // One bucket per live cadence, so a "consecutive bucket" means one
-    // scoring interval and the rule counts the thing the operator set.
-    const bucketMs =
-      Math.max(1, schedule?.livePredictCadenceMinutes ?? 10) * 60_000;
-    const byBucket = new Map<number, FeatureStatsMap[]>();
-    for (const row of rows) {
-      const slot = Math.floor(row.requestedAt.getTime() / bucketMs) * bucketMs;
-      const list = byBucket.get(slot) ?? [];
-      list.push(row.featureStats as unknown as FeatureStatsMap);
-      byBucket.set(slot, list);
-    }
-
-    // Oldest-first: `applyConsecutiveBreachRule` reads from the NEWEST
-    // backwards, because the question is "is this breach sustained right
-    // now", never "was there ever a run of breaches in this range".
-    const buckets = [...byBucket.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([slot, stats]) => ({
-        at: new Date(slot).toISOString(),
-        report: computeDrift(poolFeatureStats(stats), baseline, thresholds),
-      }));
-
-    const report = applyConsecutiveBreachRule(
-      buckets,
-      env.LIVE_DRIFT_CONSECUTIVE_BREACHES,
-    );
-
-    return {
-      statusCode: 200,
-      message: 'Live drift report fetched',
-      type: 'SUCCESS' as const,
-      data: {
-        ...report,
-        basis: {
-          modelVersionId: production.id,
-          version: production.version,
-          goldArtifactId: production.goldArtifactId,
-          goldObjectKey: production.goldObjectKey,
-          sampleRequests: rows.length,
-          bucketMinutes: bucketMs / 60_000,
-          // So a reader can tell "no breach" from "the driver is off and
-          // this readout is describing nothing".
-          livePredictEnabled: schedule?.livePredictEnabled ?? false,
-          from: query.from,
-          to: query.to,
-          // A THIRD plane label, not a reuse of 'predict': these are the
-          // same rows as /drift's predict plane but evaluated on a
-          // different cadence under a different rule, and a caller that
-          // cannot tell them apart will eventually render one as the other.
-          plane: 'predict-live' as const,
-        },
-      },
-    };
-  }
-
-  /**
-   * MODEL-SERVE-001-T13. The second drift metric, published ALONGSIDE
-   * `getDriftService`'s z-score, never replacing it — same `[from, to]`
-   * query contract as `/drift`, the SAME `PredictionLog` rows (pooled
-   * differently: `featureHistograms`, not `featureStats`), the SAME
-   * PRODUCTION-version resolution. SEPARATE CADENCE (T13's own resolved
-   * openDecision #2): PSI needs `binCount * PSI_MIN_SAMPLES_PER_BIN` live
-   * samples before a figure is even computed, which one z-score request's
-   * `[from, to]` will often not clear — the CALLER is expected to request a
-   * wider range (the client defaults this to a rolling 24h window; this
-   * endpoint itself enforces no particular range, only the sample floor).
-   *
-   * MODEL-SERVE-001-T17. PLANE DISPATCH — see `getDriftService`'s own doc
-   * comment immediately above for the full rule and its reason; identical
-   * here. Everything from here down is the ORIGINAL, UNCHANGED `/predict`-
-   * plane implementation, reached only for a model with no schedule.
+   * a model with an InferenceSchedule reads `InferenceWindow.featureHistograms`
+   * instead — `PredictionLog` is written by `/predict` ONLY, so a
+   * scheduled-only model's PredictionLog is empty BY CONSTRUCTION, and
+   * everything below this check would correctly compute nothing forever.
+   * See `InferenceWindowMonitoringService.hasSchedule`'s own doc comment for
+   * the full rule. Everything from here down is the `/predict`-plane
+   * implementation, reached only for a model with no schedule.
    */
   async getPsiService(
     modelId: string,
@@ -563,7 +333,7 @@ export class PredictionLogAuthorizedService {
           goldObjectKey: production.goldObjectKey,
           // MODEL-SERVE-001-T16. `rows.length` is captured BEFORE the
           // null-`featureHistograms` filter above — it overstates what
-          // actually fed `poolHistograms`. Kept for parity with `/drift`'s
+          // actually fed `poolHistograms`. Kept for parity with the removed `/drift`'s
           // own `sampleRequests`; `histogramRequests` below is the honest
           // figure a "computed over" readout should actually print.
           sampleRequests: rows.length,

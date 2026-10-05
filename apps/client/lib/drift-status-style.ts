@@ -2,7 +2,7 @@ import type { PsiStatus } from '@/services/model-monitoring'
 
 /**
  * The ONE treatment for every drift and PSI status badge in the app — the
- * Monitoring tab's Distribution Drift and PSI cards, the Input Data tab's
+ * Monitoring tab's PSI card (the only drift signal since MODEL-SERVE-028), the Input Data tab's
  * feature table, and the retrain dialog's monitoring context.
  *
  * WHY ONE MAP. This started as two: a traffic light for the monitoring

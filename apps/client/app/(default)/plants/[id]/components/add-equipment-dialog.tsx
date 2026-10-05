@@ -24,9 +24,9 @@ interface Props {
 }
 
 const EQUIPMENT_TYPES = [
+  { value: 'reactor', label: 'Reactor' },
   { value: 'machine', label: 'Machine' },
   { value: 'sensor', label: 'Sensor' },
-  { value: 'controller', label: 'Controller' },
 ] as const
 
 const STATUS_ORDER: NodeStatus[] = ['normal', 'warning', 'alarm', 'offline']

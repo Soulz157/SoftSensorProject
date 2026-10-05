@@ -35,20 +35,6 @@ export interface PredictionSeriesResult {
   livePredictEnabled: boolean
 }
 
-export type DriftStatus = 'OK' | 'WARN' | 'CRITICAL' | 'UNKNOWN'
-
-export interface DriftColumn {
-  column: string
-  n: number
-  liveMean: number
-  liveStd: number
-  trainMean: number | null
-  trainStd: number | null
-  z: number | null
-  status: DriftStatus
-  reason?: string
-}
-
 /**
  * MODEL-SERVE-001-T17. `plane` names which live data source produced this
  * report — `'window'` for a model with an `InferenceSchedule` (pooled from
@@ -79,47 +65,10 @@ export interface MonitoringBasis {
   totalInputRows?: number
 }
 
-export interface DriftReport {
-  status: DriftStatus
-  columns: DriftColumn[]
-  /** MODEL-SERVE-018. The model's TARGET tag (y), computed apart from
-   *  `columns` — display-only, never part of `status`. Null/absent on the
-   *  /predict plane, on an older backend, and when no window in range
-   *  recorded the target. */
-  targetColumn?: string | null
-  target?: DriftColumn | null
-  basis: MonitoringBasis & {
-    modelVersionId: string
-    version: number
-    goldArtifactId: string
-    goldObjectKey: string
-    sampleRequests: number
-    from: string
-    to: string
-    /** Windows in the pool whose `featureStats` was non-null and actually
-     *  fed `poolFeatureStats` — window plane only, mirroring `PsiReport`'s
-     *  own `histogramRequests`. `windowsUsed` can exceed this whenever a
-     *  window predates T17 or had no coverable feature column. */
-    statsWindows?: number
-    /** The thresholds `computeDrift` was ACTUALLY called with, on both
-     *  planes. Read these for the status tooltip rather than a hardcoded
-     *  1.5/3.0/10, exactly as `PsiReport.basis.thresholds`'s own comment
-     *  instructs for PSI — otherwise moving `DRIFT_WARN_SD` would leave
-     *  the panel explaining a verdict with a number that did not produce
-     *  it. OPTIONAL: a backend deployed before this field shipped sends
-     *  nothing, and the tooltip must then explain the status without
-     *  inventing criteria. */
-    thresholds?: {
-      warnSd: number
-      criticalSd: number
-    }
-  }
-}
-
 /**
- * MODEL-SERVE-001-T13. PSI (Population Stability Index) — published
- * ALONGSIDE `DriftReport`'s z-score, never replacing it. A DIFFERENT set
- * of statuses from `DriftStatus`: `INSUFFICIENT_DATA` is real information
+ * MODEL-SERVE-001-T13. PSI (Population Stability Index) — the ONLY input
+ * drift signal since MODEL-SERVE-028 removed the z-score report it was first
+ * published beside. `INSUFFICIENT_DATA` is real information
  * (a reference exists, live traffic just has not cleared the sample floor
  * yet) distinct from `UNKNOWN` (no reference at all) — see
  * `apps/backend/src/lib/prediction-psi.ts`'s own module docstring.
@@ -191,7 +140,9 @@ export interface PsiColumn {
 export interface PsiReport {
   status: PsiStatus
   columns: PsiColumn[]
-  /** MODEL-SERVE-018. Same contract as `DriftReport.target`. */
+  /** MODEL-SERVE-018. The model's TARGET tag (y), computed apart from
+   *  `columns` — display-only, never part of `status`. Null/absent on the
+   *  /predict plane and when no window in range recorded the target. */
   targetColumn?: string | null
   target?: PsiColumn | null
   basis: MonitoringBasis & {
@@ -202,7 +153,7 @@ export interface PsiReport {
     /** WINDOW PLANE: windows fetched in [from, to] for the PRODUCTION
      *  version (≤24), same value as `windowsUsed`. PREDICT PLANE: requests
      *  found in [from, to], BEFORE the null-`featureHistograms` filter —
-     *  kept for parity with `DriftReport`'s own `sampleRequests`. Either
+     *  kept for parity with the removed drift report's `sampleRequests`. Either
      *  way, overstates what actually fed the PSI pool whenever a row
      *  predates T13/T17 or was served under a pre-T13 spec;
      *  `histogramRequests` below is the honest count for that. */
@@ -339,27 +290,11 @@ export const modelMonitoringService = {
       signal,
     }),
 
-  /** Live inputs vs. the PRODUCTION version's own training distribution.
-   *  404s when the model has no PRODUCTION version — callers should treat
-   *  that as "nothing to show", not an error toast. */
-  drift: (
-    modelId: string,
-    from: string,
-    to: string,
-    signal?: AbortSignal,
-  ): Promise<ApiResponse<DriftReport>> =>
-    fetchClient(`${base(modelId)}/drift?${rangeQuery(from, to)}`, {
-      method: 'GET',
-      signal,
-    }),
-
-  /** MODEL-SERVE-001-T13. SEPARATE CADENCE from `drift` above (T13's own
-   *  resolved openDecision #2): PSI needs `binCount * PSI_MIN_SAMPLES_PER_BIN`
-   *  live samples before a figure is computed at all, which usually needs a
-   *  wider `[from, to]` than the z-score's own request — callers should
-   *  default this range wider (e.g. a rolling 24h) rather than reusing
-   *  whatever range `drift` was just called with. 404s the same way
-   *  `drift` does when the model has no PRODUCTION version. */
+  /** MODEL-SERVE-001-T13. Input drift, PSI only (MODEL-SERVE-028). PSI
+   *  needs `binCount * PSI_MIN_SAMPLES_PER_BIN` live samples before a figure
+   *  is computed at all, so callers should default this range wide (e.g. a
+   *  rolling 24h). 404s when the model has no PRODUCTION version — callers
+   *  should treat that as "nothing to show", not an error toast. */
   psi: (
     modelId: string,
     from: string,
@@ -372,7 +307,7 @@ export const modelMonitoringService = {
     }),
 
   /** The trained X/Y schema for the Input Data tab — does not vary with a
-   *  time range, unlike `predictions`/`drift` above. Never 404s for "no
+   *  time range, unlike `predictions`/`psi` above. Never 404s for "no
    *  PRODUCTION version": falls back to the model's latest version, since
    *  Save Model always mints at least one. */
   inputSchema: (
@@ -387,7 +322,7 @@ export const modelMonitoringService = {
   /** MODEL-SERVE-001-T15. Live PI quality per feature tag. A SEPARATE call
    *  from `inputSchema` on purpose: this one reaches PI, so it must be able
    *  to fail without taking the feature list down with it. Takes no time
-   *  range — it is a "right now" snapshot, unlike `drift`/`psi` above. */
+   *  range — it is a "right now" snapshot, unlike `psi` above. */
   inputStatus: (
     modelId: string,
     signal?: AbortSignal,

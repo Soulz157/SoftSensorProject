@@ -2,12 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { env } from '@/config/env.config';
-import {
-  computeDrift,
-  poolFeatureStats,
-  type ColumnAggregate,
-  type FeatureStatsMap,
-} from '@/lib/prediction-drift';
+import type { FeatureStatsMap } from '@/lib/feature-stats';
 import {
   computePsi,
   poolHistograms,
@@ -22,7 +17,6 @@ import {
 import { flatMinutes } from '@/lib/tag-observation';
 import {
   classifyModelHealth,
-  thresholdsFromSchedule,
   type HealthStatus,
   type HealthReason,
 } from '@/lib/model-health';
@@ -32,7 +26,7 @@ import { isStale } from '@/lib/deploy-status';
 // MODEL-SERVE-001-T29. The frozen-tag detector, pure and co-located with its
 // own spec like the other 13 modules in lib/.
 import { detectFrozenColumns } from '@/lib/sensor-frozen';
-import { computeTargetDrift, computeTargetPsi } from '@/lib/target-monitoring';
+import { computeTargetPsi } from '@/lib/target-monitoring';
 import {
   classifyResidualSd,
   truthPoolSince,
@@ -49,16 +43,17 @@ import { baselineResidualSd } from '@/lib/model-version-residual-sd';
 const PRODUCTION_WINDOW_TAKE = 24;
 
 /**
- * MODEL-SERVE-001-T17. Drift/PSI, computed from `InferenceWindow`'s own
- * `featureStats`/`featureHistograms` — the WINDOW plane, for a model with a
- * scheduled `InferenceSchedule`. The `/predict`-only counterpart lives in
- * `PredictionLogAuthorizedService.getDriftService`/`getPsiService`, which
+ * MODEL-SERVE-001-T17. PSI, computed from `InferenceWindow`'s own
+ * `featureHistograms` — the WINDOW plane, for a model with a scheduled
+ * `InferenceSchedule`. The `/predict`-only counterpart lives in
+ * `PredictionLogAuthorizedService.getPsiService`, which
  * calls `hasSchedule` below to decide which plane a model reads from — see
  * that service's own doc comment for the full dispatch rule. Both planes
- * run the SAME pure comparison functions (`computeDrift`/`computePsi` from
- * `lib/prediction-drift.ts`/`lib/prediction-psi.ts`) and the SAME artifact
- * baseline reads (`lib/artifact-baseline.ts`) — only WHERE the live side of
- * the comparison is read from differs.
+ * run the SAME pure comparison function (`computePsi` from
+ * `lib/prediction-psi.ts`) and the SAME artifact reference reads
+ * (`lib/artifact-baseline.ts`) — only WHERE the live side of the
+ * comparison is read from differs. (MODEL-SERVE-028 removed the z-score
+ * drift report that used to sit beside it.)
  *
  * No `user`/access-check methods here: the caller (`PredictionLogAuthorized
  * Service`) already ran `assertModelAccess` once before dispatching:
@@ -97,7 +92,7 @@ export class InferenceWindowMonitoringService {
    * to compare against") plus its most recent windows in `[from, to]`.
    *
    * ROLLING 24, NOT A SAMPLE-COUNT CAP CHOSEN FOR COST: per-window
-   * sufficient statistics pool ADDITIVELY (the same trick `poolFeatureStats`
+   * sufficient statistics pool ADDITIVELY (the same trick `poolHistograms`
    * and `InferenceWindowTruth` already use elsewhere in this system), so a
    * rolling figure over the most recent 24 windows is EXACT, never an
    * average of averages — T17's own resolved cadence decision.
@@ -109,8 +104,8 @@ export class InferenceWindowMonitoringService {
    * cleaned input evidence. Status is DISCLOSURE (`basisOf`'s own
    * `statusBreakdown`), never a filter on which rows count.
    *
-   * `from`/`to` OPTIONAL — MODEL-SERVE-001-T21's own addition. The two
-   * existing callers (`getDriftReport`/`getPsiReport`) always pass an
+   * `from`/`to` OPTIONAL — MODEL-SERVE-001-T21's own addition. The
+   * report caller (`getPsiReport`) always passes an
    * explicit user-chosen range; `getHealthStatus` below has none to pass
    * (it is not answering "how did drift look in this window", it is
    * answering "what is the CURRENT health reading"), so it calls this with
@@ -225,72 +220,6 @@ export class InferenceWindowMonitoringService {
     };
   }
 
-  async getDriftReport(modelId: string, from: string, to: string) {
-    const { production, windows } = await this.resolveProductionWindows(
-      modelId,
-      from,
-      to,
-    );
-
-    // MODEL-SERVE-001-T17. `featureStats` is nullable at the ROW level (a
-    // window written before this task, or one whose spec carried no
-    // usable scalingParams for any feature column) — filtered out BEFORE
-    // `poolFeatureStats`, same discipline `getPsiReport`/the existing
-    // /predict-plane `getPsiService` already apply to `featureHistograms`.
-    const statsRows = windows
-      .map((w) => w.featureStats)
-      .filter((s): s is NonNullable<typeof s> => s !== null);
-
-    const pooled = poolFeatureStats(
-      statsRows.map((s) => s as unknown as FeatureStatsMap),
-    );
-    const baseline = await resolveColumnBaseline(production.goldObjectKey);
-    const thresholds = {
-      warnSd: env.DRIFT_WARN_SD,
-      criticalSd: env.DRIFT_CRITICAL_SD,
-    };
-    const report = computeDrift(pooled, baseline, thresholds);
-    // MODEL-SERVE-018. Computed apart from `report`, so it can never move
-    // `report.status` (display-only, MODEL-SERVE-018-D01).
-    const targetColumn = production.sourceRun.targetY || null;
-    const target = computeTargetDrift(
-      targetColumn,
-      windows.map((w) => w.targetStats as unknown as ColumnAggregate | null),
-      baseline,
-      thresholds,
-    );
-
-    return {
-      statusCode: 200,
-      message: 'Drift report fetched',
-      type: 'SUCCESS' as const,
-      data: {
-        ...report,
-        targetColumn,
-        target,
-        basis: {
-          ...this.basisOf(production, windows, from, to),
-          // The honest "actually contributed" count, mirroring the
-          // /predict-plane PSI basis's own `histogramRequests` — windows
-          // fetched (`windowsUsed`) can exceed this whenever a window
-          // predates T17 or had no coverable feature column.
-          statsWindows: statsRows.length,
-          // Echoed for the panel's status tooltip, exactly as the
-          // /predict plane does — see that service's own note. These are
-          // the env thresholds `computeDrift` ran with; deliberately NOT
-          // the schedule's `warnSd`/`criticalSd`, which carry the same
-          // names but threshold a DIFFERENT metric (the residual-SD ratio
-          // in lib/residual-sd-health.ts) and must never be printed as
-          // this z-score's criteria.
-          thresholds: {
-            warnSd: env.DRIFT_WARN_SD,
-            criticalSd: env.DRIFT_CRITICAL_SD,
-          },
-        },
-      },
-    };
-  }
-
   async getPsiReport(modelId: string, from: string, to: string) {
     const { production, windows } = await this.resolveProductionWindows(
       modelId,
@@ -312,7 +241,8 @@ export class InferenceWindowMonitoringService {
       minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
     };
     const report = computePsi(pooled, reference, thresholds);
-    // MODEL-SERVE-018. Same separation as getDriftReport's target.
+    // MODEL-SERVE-018. Computed apart from `report`, so it can never move
+    // `report.status` (display-only, MODEL-SERVE-018-D01).
     const targetColumn = production.sourceRun.targetY || null;
     const target = computeTargetPsi(
       targetColumn,
@@ -347,14 +277,11 @@ export class InferenceWindowMonitoringService {
 
   /**
    * MODEL-SERVE-001-T21. The health axis — SEPARATE from `deployStatus`,
-   * per `lib/model-health.ts`'s own doc comment. Reuses `computeDrift`
-   * unchanged; the only thing this method changes from `getDriftReport`
-   * above is WHERE the thresholds come from (this schedule's own
-   * warnSd/criticalSd, `lib/model-health.ts`'s
-   * `thresholdsFromSchedule`) rather than the system-wide env vars — the
-   * existing Drift tab/report keeps reading those, untouched by this task.
+   * per `lib/model-health.ts`'s own doc comment. Reuses `computePsi`
+   * unchanged, with the same env thresholds `getPsiReport` above uses.
+   * MODEL-SERVE-028: PSI is the only input-drift axis.
    *
-   * NEVER THROWS. `getDriftReport`/`getPsiReport` are explicit,
+   * NEVER THROWS. `getPsiReport` is an explicit,
    * user-requested reports, so a 404 for "no PRODUCTION version" is the
    * right response; this is a badge fed by every model detail page load,
    * decided PURELY INFORMATIONAL by the user (2026-09-15) — a hard error
@@ -367,7 +294,10 @@ export class InferenceWindowMonitoringService {
     status: HealthStatus;
     reason: HealthReason | null;
     frozenColumns: string[];
-    thresholds: ReturnType<typeof thresholdsFromSchedule> | null;
+    /** MODEL-SERVE-028. The schedule's residual-SD bands (lib/residual-sd-
+     *  health.ts). Since the z-score drift axis was removed these are the
+     *  ONLY thing `warnSd`/`criticalSd` threshold. Null when no schedule. */
+    thresholds: { warnSd: number; criticalSd: number } | null;
     /** MODEL-SERVE-009-T03. SINCE WHEN each badged column last changed —
      *  evidence beside T29's badge, never a second detector. ANNOTATED
      *  rather than inferred, and present-and-empty on every early-return
@@ -418,9 +348,10 @@ export class InferenceWindowMonitoringService {
     // — `driftMonitor` defaults to false, and gating liveness behind it would
     // re-create exactly the calm-dashboard blindness T26 exists to remove.
     const faults = await this.resolveLivenessFaults(schedule);
-    const thresholds = schedule.driftMonitor
-      ? thresholdsFromSchedule(schedule)
-      : null;
+    const thresholds = {
+      warnSd: schedule.warnSd,
+      criticalSd: schedule.criticalSd,
+    };
 
     // T27/T28's own bands, read off the schedule rather than env — see
     // schema.prisma's doc comment for why one global constant is evaluated
@@ -431,7 +362,7 @@ export class InferenceWindowMonitoringService {
       missingPctAlert: schedule.missingPctAlert,
     };
 
-    // T27/T29. RESOLVED ONCE, feeding BOTH drift and frozen — the previous
+    // T27/T29. RESOLVED ONCE, feeding BOTH PSI and frozen — the previous
     // shape returned early when driftMonitor was off and never looked at a
     // window at all, which would have made Sensor Frozen invisible for every
     // model that had not opted into drift watching (the majority: it defaults
@@ -463,10 +394,9 @@ export class InferenceWindowMonitoringService {
       .map((s) => s as unknown as FeatureStatsMap);
 
     // The BASELINE IS FETCHED ONLY WHEN THERE IS SOMETHING TO COMPARE IT TO.
-    // It is an HTTP round trip to apps/python, and both consumers below need
-    // window stats to say anything at all — so a model with no stats costs
-    // nothing extra, which today is every model (no window has succeeded
-    // since T17 added the column).
+    // It is an HTTP round trip to apps/python, and frozen detection below
+    // needs window stats to say anything at all — so a model with no stats
+    // costs nothing extra.
     const baseline =
       production && statsRows.length > 0
         ? await resolveColumnBaseline(production.goldObjectKey)
@@ -485,29 +415,17 @@ export class InferenceWindowMonitoringService {
       frozenTolerancePct: schedule.frozenTolerancePct,
     });
 
-    // T27 RULE (2), THE DARK-SHIP GATE. Drift may only speak when there IS
-    // evidence: a non-empty baseline AND at least one window carrying stats.
-    // `resolveColumnBaseline` returns `{}` from its SUCCESS path as well as
-    // its catch path, so without this an artifact whose column_stats read
-    // failed would report healthy.
-    const driftEvidence =
-      statsRows.length > 0 && Object.keys(baseline).length > 0;
-
-    const driftStatus =
-      schedule.driftMonitor && driftEvidence && thresholds
-        ? computeDrift(poolFeatureStats(statsRows), baseline, thresholds).status
-        : null;
-
-    // MODEL-SERVE-001-T32. THE SECOND INPUT AXIS, resolved here rather than
-    // left to the report path. Until T32 `computePsi` ran ONLY inside
-    // `getPsiService` — the call that renders the PSI card — so every column
-    // could be PSI-CRITICAL while this method handed `classifyModelHealth` a
-    // `driftStatus` alone and the badge read Normal. PSI was decoration.
+    // MODEL-SERVE-001-T32, sole input-drift axis since MODEL-SERVE-028.
+    // Resolved here rather than left to the report path, so the badge and
+    // the PSI card grade the same rolling-24 windows.
     //
-    // Its OWN evidence gate, never `driftEvidence`: that flag asks whether
-    // the Z-SCORE baseline exists, and a model can hold one while carrying
-    // no frozen `psiRefEdges` reference at all (T17 confirmed live that
-    // today's specs carry none). The reference read is an HTTP round trip,
+    // T27 RULE (2), THE DARK-SHIP GATE: PSI may only speak when there IS
+    // evidence — a non-empty frozen `psiRefEdges` reference AND at least one
+    // window carrying a histogram. `resolvePsiReference` returns `{}` from
+    // its SUCCESS path as well as its catch path, so without this an
+    // artifact whose feature_spec read failed would report healthy. Live
+    // 2026-10-04: 2 of 3 scheduled models carry no histograms at all, so
+    // this is the live case. The reference read is an HTTP round trip,
     // so it is skipped entirely unless drift watching is on AND some window
     // actually carried a histogram — the same "fetch only when there is
     // something to compare" discipline the baseline above follows.
@@ -577,7 +495,7 @@ export class InferenceWindowMonitoringService {
         : [];
 
     // MODEL-SERVE-012. THE OUTPUT-ERROR AXIS. One query over the SAME
-    // production version the drift half already resolved —
+    // production version the PSI half already resolved —
     // `InferenceWindowTruth` carries sufficient statistics per window, so the
     // pooled live residual SD needs no object read and no second HTTP round
     // trip.
@@ -630,8 +548,6 @@ export class InferenceWindowMonitoringService {
       ...classifyModelHealth({
         enabled: schedule.enabled,
         driftMonitor: schedule.driftMonitor,
-        driftStatus,
-        driftEvidence,
         psiStatus,
         psiEvidence,
         frozenColumns,

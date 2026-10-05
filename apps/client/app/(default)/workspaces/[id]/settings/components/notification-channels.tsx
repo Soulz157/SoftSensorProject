@@ -181,12 +181,9 @@ export function NotificationChannels({ workspaceId }: Props) {
               model.
             </li>
             <li>
-              Input-drift and distribution alerts only fire when a schedule has
-              Drift Monitor enabled.
-            </li>
-            <li>
-              Input-distribution (PSI) alerts also need a frozen reference from
-              the model&apos;s training run.
+              Input-drift (PSI) alerts fire only when a schedule has Drift
+              Monitor enabled and the model has a frozen PSI reference from its
+              training run.
             </li>
           </ul>
         </AlertDescription>

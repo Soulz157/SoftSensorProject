@@ -60,8 +60,9 @@ export interface ResidualSdVerdict {
 }
 
 export interface ResidualSdThresholds {
-  /** Ratio at or above which the spread is a WARNING. Same column
-   *  `prediction-drift.ts` already reads as an SD multiple. */
+  /** Ratio at or above which the spread is a WARNING. The schedule's
+   *  `warnSd` column — residual-SD is its only reader since MODEL-SERVE-028
+   *  removed the z-score drift signal. */
   warnSd: number;
   /** Ratio at or above which it is an ALERT. */
   criticalSd: number;

@@ -5,8 +5,8 @@ import { env } from '@/config/env.config';
 import type { InferenceWindowMonitoringService } from '@/api/v1/inference-window/authorized/inference-window-monitoring.authorized.service';
 
 jest.mock('@/lib/python-preprocess-client');
-// `postToPython` is never called by getPsiService/getDriftService directly
-// (both go through `readFeatureSpec`/`resolveColumnBaseline`'s own
+// `postToPython` is never called by getPsiService directly
+// (it goes through `readFeatureSpec`'s own
 // postToPython call inside python-preprocess-client/lib/artifact-baseline,
 // already covered by the mock above) — mocked here only so importing
 // '@/lib/python-client' at all (a transitive import of the service under
@@ -30,7 +30,6 @@ const mockedReadFeatureSpec = pythonClient.readFeatureSpec as jest.Mock;
 // value — one cast, not eight.
 const mockWindowMonitoring = {
   hasSchedule: jest.fn().mockResolvedValue(false),
-  getDriftReport: jest.fn(),
   getPsiReport: jest.fn(),
 } as unknown as InferenceWindowMonitoringService;
 
@@ -67,8 +66,7 @@ function makePrisma(overrides: {
       findMany: jest.fn().mockResolvedValue(predictionLogs),
       create: jest.fn().mockResolvedValue({ id: 'log-1' }),
     },
-    // MODEL-SERVE-008-T03/T06. Both the live-drift readout and the
-    // prediction series read this row now; `null` is the honest default —
+    // MODEL-SERVE-008-T06. The prediction series reads this row; `null` is the honest default —
     // a model with no schedule at all.
     inferenceSchedule: {
       findUnique: jest
@@ -101,8 +99,8 @@ function createCallArgs(prisma: ReturnType<typeof makePrisma>): {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // `resolveColumnBaseline`'s cache is MODULE-LEVEL and outlives per-test
-  // mock clearing. Every drift test in this file reuses one literal
+  // `resolvePsiReference`'s cache is MODULE-LEVEL and outlives per-test
+  // mock clearing. Every PSI test in this file reuses one literal
   // `goldObjectKey` (`PRODUCTION_VERSION.goldObjectKey`) — see the same
   // note in inference-window-monitoring.authorized.service.spec.ts.
   resetColumnBaselineCacheForTests();
@@ -321,26 +319,25 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
 // ── MODEL-SERVE-001-T17: plane dispatch ────────────────────────────────────
 
 describe('PredictionLogAuthorizedService plane dispatch', () => {
-  it('getDriftService delegates to the window plane when a schedule exists, and never touches PredictionLog', async () => {
+  it('getPsiService delegates to the window plane when a schedule exists, and never touches PredictionLog', async () => {
     const prisma = makePrisma({});
     const windowMonitoring = {
       hasSchedule: jest.fn().mockResolvedValue(true),
-      getDriftReport: jest.fn().mockResolvedValue({
+      getPsiReport: jest.fn().mockResolvedValue({
         statusCode: 200,
-        message: 'Drift report fetched',
+        message: 'PSI report fetched',
         type: 'SUCCESS',
         data: { status: 'OK', columns: [], basis: { plane: 'window' } },
       }),
-      getPsiReport: jest.fn(),
     } as unknown as InferenceWindowMonitoringService;
 
     const service = new PredictionLogAuthorizedService(
       prisma as never,
       windowMonitoring,
     );
-    const result = await service.getDriftService('model-1', RANGE, ADMIN);
+    const result = await service.getPsiService('model-1', RANGE, ADMIN);
 
-    expect(windowMonitoring.getDriftReport).toHaveBeenCalledWith(
+    expect(windowMonitoring.getPsiReport).toHaveBeenCalledWith(
       'model-1',
       RANGE.from,
       RANGE.to,
@@ -362,7 +359,6 @@ describe('PredictionLogAuthorizedService plane dispatch', () => {
     });
     const windowMonitoring = {
       hasSchedule: jest.fn().mockResolvedValue(false),
-      getDriftReport: jest.fn(),
       getPsiReport: jest.fn(),
     } as unknown as InferenceWindowMonitoringService;
 
@@ -374,222 +370,5 @@ describe('PredictionLogAuthorizedService plane dispatch', () => {
 
     expect(windowMonitoring.getPsiReport).not.toHaveBeenCalled();
     expect(prisma.predictionLog.findMany).toHaveBeenCalled();
-  });
-
-  // The drift basis echoes the thresholds `computeDrift` actually ran
-  // with, exactly as the PSI basis above already does. The panel's status
-  // tooltip reads THESE to explain a verdict, and the client type makes
-  // them optional — so a service that silently stopped sending them would
-  // degrade every tooltip to no criteria at all with nothing failing
-  // anywhere. This is that failure.
-  it('getDriftService publishes the thresholds the comparison used', async () => {
-    const prisma = makePrisma({ predictionLogs: [] });
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-
-    const result = await service.getDriftService('model-1', RANGE, ADMIN);
-
-    expect(result.data.basis.thresholds).toEqual({
-      warnSd: env.DRIFT_WARN_SD,
-      criticalSd: env.DRIFT_CRITICAL_SD,
-    });
-  });
-});
-
-// ── MODEL-SERVE-008-T03: the dense live-drift readout ──────────────────────
-
-/**
- * The consecutive-breach RULE itself is exhaustively covered in
- * `lib/prediction-drift.spec.ts` (10 cases, including every UNKNOWN path).
- * These tests own the part only the service can get wrong: bucketing the
- * dense stream at the model's own live cadence, leaving `/drift`'s plane
- * dispatch alone, and labelling the basis so a caller cannot render this
- * readout as the other one.
- */
-describe('PredictionLogAuthorizedService.getLiveDriftService (MODEL-SERVE-008-T03)', () => {
-  const stats = (mean: number) => ({
-    X: { n: 10, sum: mean * 10, sumsq: mean * mean * 10, min: mean, max: mean },
-  });
-
-  it('buckets the dense stream at the live cadence — four rows ten minutes apart are four buckets, not one pool', async () => {
-    const prisma = makePrisma({
-      schedule: { livePredictEnabled: true, livePredictCadenceMinutes: 10 },
-      predictionLogs: [
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:00:00.000Z'),
-        },
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:10:00.000Z'),
-        },
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:20:00.000Z'),
-        },
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:30:00.000Z'),
-        },
-      ],
-    });
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-
-    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
-
-    // Pooling the range would report ONE bucket and make "sustained right
-    // now" unanswerable — which is the whole reason this route exists.
-    expect(result.data.bucketsEvaluated).toBe(4);
-    expect(result.data.basis.bucketMinutes).toBe(10);
-  });
-
-  it('pools rows that fall INSIDE one cadence into a single bucket', async () => {
-    const prisma = makePrisma({
-      schedule: { livePredictEnabled: true, livePredictCadenceMinutes: 10 },
-      predictionLogs: [
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:01:00.000Z'),
-        },
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:02:00.000Z'),
-        },
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:03:00.000Z'),
-        },
-      ],
-    });
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-
-    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
-
-    expect(result.data.bucketsEvaluated).toBe(1);
-    expect(result.data.basis.sampleRequests).toBe(3);
-  });
-
-  it('NEVER dispatches to the window plane, even when a schedule exists — this route is the dense one by definition', async () => {
-    const prisma = makePrisma({
-      schedule: { livePredictEnabled: true, livePredictCadenceMinutes: 10 },
-      predictionLogs: [
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:00:00.000Z'),
-        },
-      ],
-    });
-    const windowMonitoring = {
-      hasSchedule: jest.fn().mockResolvedValue(true),
-      getDriftReport: jest.fn(),
-      getPsiReport: jest.fn(),
-    } as unknown as InferenceWindowMonitoringService;
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      windowMonitoring,
-    );
-
-    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
-
-    // /drift keeps T17's dispatch; this route must not inherit it, or the
-    // dense signal would silently become the hourly one.
-    expect(windowMonitoring.getDriftReport).not.toHaveBeenCalled();
-    expect(result.data.basis.plane).toBe('predict-live');
-  });
-
-  it('labels a THIRD plane, never reusing the /drift predict label', async () => {
-    const prisma = makePrisma({
-      schedule: { livePredictEnabled: true, livePredictCadenceMinutes: 10 },
-      predictionLogs: [
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:00:00.000Z'),
-        },
-      ],
-    });
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-
-    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
-
-    // Same ROWS as /drift's predict plane, different cadence and rule — a
-    // caller that cannot tell them apart will render one as the other.
-    expect(result.data.basis.plane).not.toBe('predict');
-    expect(result.data.basis.plane).not.toBe('window');
-  });
-
-  it('echoes the rule in force and whether the driver is even on', async () => {
-    const prisma = makePrisma({
-      schedule: { livePredictEnabled: false, livePredictCadenceMinutes: 10 },
-      predictionLogs: [],
-    });
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-
-    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
-
-    expect(result.data.consecutiveRequired).toBe(
-      env.LIVE_DRIFT_CONSECUTIVE_BREACHES,
-    );
-    // Lets a reader tell "no breach" from "this readout is describing
-    // nothing because the driver is off".
-    expect(result.data.basis.livePredictEnabled).toBe(false);
-  });
-
-  it('reports UNKNOWN on an empty range rather than OK — health is never claimed from no data', async () => {
-    const prisma = makePrisma({ predictionLogs: [] });
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-
-    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
-
-    expect(result.data.status).toBe('UNKNOWN');
-    expect(result.data.bucketsEvaluated).toBe(0);
-  });
-
-  it('404s with no PRODUCTION version — nothing to compare live traffic against', async () => {
-    const prisma = makePrisma({ productionVersion: null });
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-
-    await expect(
-      service.getLiveDriftService('model-1', RANGE, ADMIN),
-    ).rejects.toMatchObject({ statusCode: 404 });
-  });
-
-  it('falls back to a 10-minute bucket when the model has no schedule row at all', async () => {
-    const prisma = makePrisma({
-      predictionLogs: [
-        {
-          featureStats: stats(1),
-          requestedAt: new Date('2026-01-01T00:00:00.000Z'),
-        },
-      ],
-    });
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-
-    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
-
-    expect(result.data.basis.bucketMinutes).toBe(10);
-    expect(result.data.basis.livePredictEnabled).toBe(false);
   });
 });

@@ -61,9 +61,25 @@ import {
 } from '@/lib/downsample'
 import {
   describePreviewWindow,
+  monthOptions,
   toWallClock,
   type TimeWindow,
 } from '@/lib/time-window'
+import {
+  mergeMonthlyBoxplots,
+  mergeMonthlyHistograms,
+  monthlyPending,
+  withReferenceBoxplot,
+  withReferenceHistogram,
+} from '@/lib/monthly-compare'
+import { SegmentedToggle } from '@/components/segmented-toggle'
+import { useMonthPicker } from '@/hooks/dataset/use-month-picker'
+import {
+  useMonthlyBoxplots,
+  useMonthlyHistograms,
+  type ArtifactLeg,
+} from '@/hooks/dataset/use-monthly-compare'
+import { CompareMonthsPopover } from '../create/components/processing/compare-months-popover'
 import { useArtifactHistogram } from '@/hooks/dataset/artifact/use-artifact-histogram'
 import { useArtifactBoxplot } from '@/hooks/dataset/artifact/use-artifact-boxplot'
 import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
@@ -791,6 +807,69 @@ function tagColor(index: number): string {
   return chartColorVar(((index % MAX_TAGS) + 1) as 1 | 2 | 3 | 4 | 5)
 }
 
+/**
+ * "By month" caption: what is drawn, on what basis, and anything that did NOT
+ * make it in — a picked month with no readings, or a validation holdout that
+ * has nothing for this tag — named here rather than dropped silently.
+ */
+function MonthCompareNotes({
+  tag,
+  months,
+  spanMonths,
+  missing,
+  referenceMissing,
+  validationMessage,
+  error,
+  countsNote = false,
+  validationRows = null,
+}: {
+  tag: string | null
+  months: string[]
+  /** "All months" scope: months the artifact spans, to say when only the
+   * latest few are drawn. */
+  spanMonths: number | null
+  missing: string[]
+  referenceMissing: boolean
+  validationMessage: string | null
+  error: string | null
+  countsNote?: boolean
+  /** Rows in the validation holdout, so the counts note can say how much
+   * data the Validation curve stands for. */
+  validationRows?: number | null
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] text-muted-foreground">
+        <span className="font-mono">{tag}</span> — the validation holdout (whole
+        holdout, <span className="font-medium">Validation</span>) beside
+        training{' '}
+        {months.length > 5
+          ? `${months.length} months, ${months[0]} – ${months[months.length - 1]}`
+          : months.join(', ')}
+        . Engineering units, computed on the saved artifact one month at a time.
+        {spanMonths !== null &&
+          spanMonths > months.length &&
+          ` Only the latest ${months.length} of ${spanMonths} months are compared.`}
+        {countsNote &&
+          ` Heights are counts, not normalised: Validation${
+            validationRows !== null
+              ? ` (${validationRows.toLocaleString()} rows)`
+              : ''
+          } and each month are drawn as they are, so a series with more Good readings draws taller.`}
+        {missing.length > 0 &&
+          ` No readings for ${tag ?? 'this tag'} in ${missing.join(', ')}.`}
+        {error && ` Could not load any month: ${error}.`}
+      </p>
+      {(validationMessage || referenceMissing) && (
+        <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+          {validationMessage ??
+            'No Validation series — the holdout has no usable readings for this tag.'}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function CompareTooltip({
   active,
   payload,
@@ -1433,6 +1512,10 @@ export function DatasetCompareModal({
 }: Props) {
   const [selected, setSelected] = useState<string[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
+  // "By side" = the original train-vs-validation view per tag. "By month" =
+  // ONE tag: the validation holdout beside each picked training month.
+  const [compareMode, setCompareMode] = useState<'side' | 'month'>('side')
+  const [monthTagPick, setMonthTagPick] = useState<string | null>(null)
   const [draft, setDraft] = useState<string[]>([])
   const [axis, setAxis] = useState<CompareAxis>('time')
   const [tickUnit, setTickUnit] = useState<TickUnit>('auto')
@@ -1538,6 +1621,47 @@ export function DatasetCompareModal({
     open ? datasetId : null,
     open ? artifactId : null,
   )
+
+  // The months the TRAIN artifact spans. Month compare needs at least two.
+  const availableMonths = useMemo(
+    () => monthOptions(trainMeta?.startTime, trainMeta?.endTime),
+    [trainMeta?.startTime, trainMeta?.endTime],
+  )
+  const canCompareMonths = availableMonths.length >= 2
+  const monthly = canCompareMonths && compareMode === 'month'
+  const {
+    pickedMonths,
+    pickedMonthKeys,
+    toggleMonth,
+    compareAllMonths,
+    setCompareAllMonths,
+    resetMonths,
+  } = useMonthPicker(availableMonths)
+
+  // One tag at a time, and only one whose train values can be stated in
+  // engineering units (same rule as `plottableTags`).
+  const monthTag = useMemo(() => {
+    if (monthTagPick && plottableTags.includes(monthTagPick))
+      return monthTagPick
+    return (
+      selected.find(t => plottableTags.includes(t)) ?? plottableTags[0] ?? null
+    )
+  }, [monthTagPick, selected, plottableTags])
+  const monthTagList = useMemo(
+    () => (monthTag ? [monthTag] : EMPTY_TAGS),
+    [monthTag],
+  )
+
+  // A month/tag/mode picked for one dataset must not leak into the next one.
+  const [monthSyncedOpen, setMonthSyncedOpen] = useState(open)
+  if (monthSyncedOpen !== open) {
+    setMonthSyncedOpen(open)
+    if (!open) {
+      setCompareMode('side')
+      setMonthTagPick(null)
+      resetMonths()
+    }
+  }
 
   const {
     sample: trainSample,
@@ -1672,7 +1796,15 @@ export function DatasetCompareModal({
   // handler, so the render that first shows a tab already has its real tag
   // list, not one render behind. Every `useArtifact*` hook already no-ops
   // on an empty tag list, so `[]` is a real idle state, not a workaround.
-  const histogramTags = visitedTabs.has('histogram') ? selected : EMPTY_TAGS
+  const histogramVisited = visitedTabs.has('histogram')
+  // In month mode the side-by-side train request idles (the months replace
+  // it) and validation is asked for the one month-compare tag.
+  const histogramTags = histogramVisited && !monthly ? selected : EMPTY_TAGS
+  const validationHistogramTags = !histogramVisited
+    ? EMPTY_TAGS
+    : monthly
+      ? monthTagList
+      : selected
   const trainHistogram = useArtifactHistogram(
     datasetId,
     trainArtifactId,
@@ -1682,7 +1814,7 @@ export function DatasetCompareModal({
   const validationHistogram = useArtifactValidationHistogram(
     datasetId,
     artifactId,
-    histogramTags,
+    validationHistogramTags,
     CHART_SAMPLE_ROWS,
   )
   // DS-LAKE-025-T06. Train values are min-max scaled to [0,1]; validation is
@@ -1726,7 +1858,13 @@ export function DatasetCompareModal({
   const validationHistogramMessage =
     validationUnavailableMessage(validationHistogram)
 
-  const boxplotTags = visitedTabs.has('boxplot') ? selected : EMPTY_TAGS
+  const boxplotVisited = visitedTabs.has('boxplot')
+  const boxplotTags = boxplotVisited && !monthly ? selected : EMPTY_TAGS
+  const validationBoxplotTags = !boxplotVisited
+    ? EMPTY_TAGS
+    : monthly
+      ? monthTagList
+      : selected
   const trainBoxplot = useArtifactBoxplot(
     datasetId,
     trainArtifactId,
@@ -1736,7 +1874,7 @@ export function DatasetCompareModal({
   const validationBoxplot = useArtifactValidationBoxplot(
     datasetId,
     artifactId,
-    boxplotTags,
+    validationBoxplotTags,
     CHART_SAMPLE_ROWS,
   )
   const trainBoxplotInverted = useMemo(
@@ -1769,6 +1907,74 @@ export function DatasetCompareModal({
         : 'ready'
   const validationBoxplotMessage =
     validationUnavailableMessage(validationBoxplot)
+
+  // "By month": one request per picked month for the ONE month-compare tag,
+  // then the validation holdout's entry for that tag put in front. Train is
+  // stored scaled, so each month is inverted to engineering units first;
+  // validation is raw on disk and needs none (same asymmetry as above).
+  const monthLeg: ArtifactLeg = { kind: 'dataset', datasetId, artifactId }
+  const monthlyHist = useMonthlyHistograms(
+    monthLeg,
+    monthTag,
+    pickedMonths,
+    open && monthly && tab === 'histogram',
+  )
+  const monthlyBox = useMonthlyBoxplots(
+    monthLeg,
+    monthTag,
+    pickedMonths,
+    open && monthly && tab === 'boxplot',
+  )
+  const monthlyHistMerged = useMemo(() => {
+    if (!monthly || !monthTag || !monthlyHist.results) return null
+    const inverted = monthlyHist.results.map(r => ({
+      ...r,
+      data: r.data ? inverseScaleHistogram(r.data, scalingParams) : null,
+    }))
+    return withReferenceHistogram(
+      mergeMonthlyHistograms(inverted, monthTag),
+      validationHistogram.histogram?.tags.find(t => t.tag === monthTag),
+      'Validation',
+    )
+  }, [
+    monthly,
+    monthTag,
+    monthlyHist.results,
+    scalingParams,
+    validationHistogram.histogram,
+  ])
+  const monthlyBoxMerged = useMemo(() => {
+    if (!monthly || !monthTag || !monthlyBox.results) return null
+    const inverted = monthlyBox.results.map(r => ({
+      ...r,
+      data: r.data ? inverseScaleBoxplot(r.data, scalingParams) : null,
+    }))
+    return withReferenceBoxplot(
+      mergeMonthlyBoxplots(inverted, monthTag),
+      validationBoxplot.boxplot?.tags.find(t => t.tag === monthTag),
+      'Validation',
+    )
+  }, [
+    monthly,
+    monthTag,
+    monthlyBox.results,
+    scalingParams,
+    validationBoxplot.boxplot,
+  ])
+  const monthlyReady = Boolean(monthTag && pickedMonths.length > 0)
+  const monthlyHistStatus: ChartTabStatus = !monthlyReady
+    ? 'no-tags'
+    : monthlyPending(monthlyHist) || validationHistogram.loading || specLoading
+      ? 'loading'
+      : 'ready'
+  const monthlyBoxStatus: ChartTabStatus = !monthlyReady
+    ? 'no-tags'
+    : monthlyPending(monthlyBox) || validationBoxplot.loading || specLoading
+      ? 'loading'
+      : 'ready'
+  // When no month produced anything the chart still gets the TAG, so its
+  // insufficient-data message names it rather than rendering a blank.
+  const monthlyFallbackTags = monthTagList
 
   // Correlation needs at least two tags — an empty candidate list keeps
   // both hooks idle rather than firing a request the server would just
@@ -2092,6 +2298,37 @@ export function DatasetCompareModal({
               </TabsTrigger>
             </TabsList>
 
+            {/* Histogram / Box Plot: compare the two SIDES per tag, or the
+                validation holdout against several training MONTHS of one tag.
+                The toggle only appears when the train artifact spans at least
+                two months. */}
+            {(tab === 'histogram' || tab === 'boxplot') && canCompareMonths && (
+              <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+                <SegmentedToggle
+                  ariaLabel="Compare sides or months"
+                  value={monthly ? 'month' : 'side'}
+                  onChange={setCompareMode}
+                  options={[
+                    { value: 'side', label: 'By side' },
+                    { value: 'month', label: 'By month' },
+                  ]}
+                />
+                {monthly && (
+                  <CompareMonthsPopover
+                    tags={plottableTags}
+                    tag={monthTag}
+                    onTagChange={setMonthTagPick}
+                    colorForTag={t => tagColor(plottableTags.indexOf(t))}
+                    months={availableMonths}
+                    picked={pickedMonthKeys}
+                    toggleMonth={toggleMonth}
+                    allMonths={compareAllMonths}
+                    onAllMonthsChange={setCompareAllMonths}
+                  />
+                )}
+              </div>
+            )}
+
             <TabsContent value="line" className="mt-0 space-y-3">
               <ChartBox
                 title="Train vs. validation"
@@ -2210,69 +2447,150 @@ export function DatasetCompareModal({
             </TabsContent>
 
             <TabsContent value="histogram" className="mt-0 space-y-3">
-              <p className="text-[11px] text-muted-foreground">
-                Engineering units · computed on the saved artifact, over up to{' '}
-                {CHART_SAMPLE_ROWS.toLocaleString()} rows per side — a different
-                window than the rows loaded for Line Chart and Raw Table above,
-                and not affected by the period pickers; per-tag statistics
-                elsewhere on this page may differ, since those are computed over
-                the entire artifact.
-              </p>
-              {validationHistogramMessage && (
-                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                  {validationHistogramMessage}
-                </p>
-              )}
-              {trainHistogram.error && (
-                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                  Could not load the train side — {trainHistogram.error}
-                </p>
-              )}
-              <TagHistogramChart
-                data={mergedHistogram.result}
-                tags={mergedHistogram.tags}
-                status={histogramStatus}
-                seriesStyle={tag =>
-                  mergedHistogram.styleMap.get(tag) ?? {
-                    color: 'var(--muted-foreground)',
-                  }
-                }
-              />
-              {!singleTagCompare && selected.length > 1 && (
-                <p className="text-[11px] text-muted-foreground">
-                  Colour separates the two sides only with one tag selected.
-                  With {selected.length}, colour is the tag and the dashed curve
-                  is the validation side — same convention as the Line tab.
-                </p>
+              {monthly ? (
+                <>
+                  <MonthCompareNotes
+                    tag={monthTag}
+                    months={pickedMonths.map(m => m.label)}
+                    spanMonths={
+                      compareAllMonths ? availableMonths.length : null
+                    }
+                    missing={monthlyHistMerged?.missing ?? []}
+                    referenceMissing={
+                      monthlyHistStatus === 'ready' &&
+                      (monthlyHistMerged?.referenceMissing ?? false)
+                    }
+                    validationMessage={
+                      monthlyHistStatus === 'ready'
+                        ? validationHistogramMessage
+                        : null
+                    }
+                    error={monthlyHist.error}
+                    countsNote
+                    validationRows={holdout?.rowCount ?? null}
+                  />
+                  <TagHistogramChart
+                    data={monthlyHistMerged?.result ?? null}
+                    tags={
+                      monthlyHistMerged?.tags.length
+                        ? monthlyHistMerged.tags
+                        : monthlyFallbackTags
+                    }
+                    status={monthlyHistStatus}
+                    seriesStyle={tag =>
+                      monthlyHistMerged?.styleMap.get(tag) ?? {
+                        color: 'var(--muted-foreground)',
+                      }
+                    }
+                  />
+                </>
+              ) : (
+                <>
+                  <p className="text-[11px] text-muted-foreground">
+                    Engineering units · computed on the saved artifact, over up
+                    to {CHART_SAMPLE_ROWS.toLocaleString()} rows per side — a
+                    different window than the rows loaded for Line Chart and Raw
+                    Table above, and not affected by the period pickers; per-tag
+                    statistics elsewhere on this page may differ, since those
+                    are computed over the entire artifact.
+                  </p>
+                  {validationHistogramMessage && (
+                    <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                      {validationHistogramMessage}
+                    </p>
+                  )}
+                  {trainHistogram.error && (
+                    <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                      Could not load the train side — {trainHistogram.error}
+                    </p>
+                  )}
+                  <TagHistogramChart
+                    data={mergedHistogram.result}
+                    tags={mergedHistogram.tags}
+                    status={histogramStatus}
+                    seriesStyle={tag =>
+                      mergedHistogram.styleMap.get(tag) ?? {
+                        color: 'var(--muted-foreground)',
+                      }
+                    }
+                  />
+                  {!singleTagCompare && selected.length > 1 && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Colour separates the two sides only with one tag selected.
+                      With {selected.length}, colour is the tag and the dashed
+                      curve is the validation side — same convention as the Line
+                      tab.
+                    </p>
+                  )}
+                </>
               )}
             </TabsContent>
 
             <TabsContent value="boxplot" className="mt-0 space-y-3">
-              <p className="text-[11px] text-muted-foreground">
-                Engineering units · computed on the saved artifact, over up to{' '}
-                {CHART_SAMPLE_ROWS.toLocaleString()} rows per side. Each tag
-                shows two boxes — train, then validation.
-              </p>
-              {validationBoxplotMessage && (
-                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                  {validationBoxplotMessage}
-                </p>
+              {monthly ? (
+                <>
+                  <MonthCompareNotes
+                    tag={monthTag}
+                    months={pickedMonths.map(m => m.label)}
+                    spanMonths={
+                      compareAllMonths ? availableMonths.length : null
+                    }
+                    missing={monthlyBoxMerged?.missing ?? []}
+                    referenceMissing={
+                      monthlyBoxStatus === 'ready' &&
+                      (monthlyBoxMerged?.referenceMissing ?? false)
+                    }
+                    validationMessage={
+                      monthlyBoxStatus === 'ready'
+                        ? validationBoxplotMessage
+                        : null
+                    }
+                    error={monthlyBox.error}
+                  />
+                  <TagBoxplotChart
+                    data={monthlyBoxMerged?.result ?? null}
+                    tags={
+                      monthlyBoxMerged?.tags.length
+                        ? monthlyBoxMerged.tags
+                        : monthlyFallbackTags
+                    }
+                    status={monthlyBoxStatus}
+                    seriesStyle={tag =>
+                      monthlyBoxMerged?.styleMap.get(tag) ?? {
+                        color: 'var(--muted-foreground)',
+                      }
+                    }
+                  />
+                </>
+              ) : (
+                <>
+                  <p className="text-[11px] text-muted-foreground">
+                    Engineering units · computed on the saved artifact, over up
+                    to {CHART_SAMPLE_ROWS.toLocaleString()} rows per side. Each
+                    tag shows two boxes — train, then validation.
+                  </p>
+                  {validationBoxplotMessage && (
+                    <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                      {validationBoxplotMessage}
+                    </p>
+                  )}
+                  {trainBoxplot.error && (
+                    <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                      Could not load the train side — {trainBoxplot.error}
+                    </p>
+                  )}
+                  <TagBoxplotChart
+                    data={mergedBoxplot.result}
+                    tags={mergedBoxplot.tags}
+                    status={boxplotStatus}
+                    seriesStyle={tag =>
+                      mergedBoxplot.styleMap.get(tag) ?? {
+                        color: 'var(--muted-foreground)',
+                      }
+                    }
+                  />
+                </>
               )}
-              {trainBoxplot.error && (
-                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                  Could not load the train side — {trainBoxplot.error}
-                </p>
-              )}
-              <TagBoxplotChart
-                data={mergedBoxplot.result}
-                tags={mergedBoxplot.tags}
-                status={boxplotStatus}
-                seriesStyle={tag =>
-                  mergedBoxplot.styleMap.get(tag) ?? {
-                    color: 'var(--muted-foreground)',
-                  }
-                }
-              />
             </TabsContent>
 
             <TabsContent value="correlation" className="mt-0 space-y-3">

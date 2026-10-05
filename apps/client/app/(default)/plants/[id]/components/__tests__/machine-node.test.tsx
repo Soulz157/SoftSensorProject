@@ -22,18 +22,18 @@ describe('MachineNode SVG picker', () => {
     expect(paths.length).toBeGreaterThan(0)
   })
 
-  it('controller type → renders ControllerSvg (polyline graph present)', () => {
+  it('reactor type → renders ReactorSvg (domed vessel arc present)', () => {
     const { container } = render(
       <svg>
         <MachineNode
           {...base}
-          type="controller"
+          type="reactor"
           icon={undefined}
           status="normal"
         />
       </svg>,
     )
-    expect(container.querySelector('polyline')).not.toBeNull()
+    expect(container.querySelector('path[d*="A18 13"]')).not.toBeNull()
   })
 
   it('machine type + icon=arm → renders RobotArmSvg (lines for gripper present)', () => {

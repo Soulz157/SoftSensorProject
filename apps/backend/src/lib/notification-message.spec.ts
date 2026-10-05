@@ -188,6 +188,6 @@ describe('monitoringTransitionDetail — five-word vocabulary (D02/D09)', () => 
   it('omits the "from" side on a first-ever notified transition', () => {
     expect(
       monitoringTransitionDetail(null, 'WARN', 'DRIFT_WARN', 'running'),
-    ).toBe('warning (Input drift)');
+    ).toBe('warning (PSI input drift)');
   });
 });

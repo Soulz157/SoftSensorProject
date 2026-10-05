@@ -7,8 +7,8 @@ import { InferenceWindowModule } from '@/api/v1/inference-window/inference-windo
 
 /**
  * MODEL-SERVE-001-T17. `InferenceWindowModule` for `InferenceWindowMonitor
- * ingService` — the window-plane drift/PSI reader `getDriftService`/
- * `getPsiService` dispatch to for a model with an `InferenceSchedule`. The
+ * ingService` — the window-plane PSI reader `getPsiService`
+ * dispatches to for a model with an `InferenceSchedule`. The
  * dependency runs this direction only: `InferenceWindowModule`'s own
  * providers (`TrainningContainerModule`/`ModelServingModule`) reference
  * nothing in this module, so this import does not close a cycle.

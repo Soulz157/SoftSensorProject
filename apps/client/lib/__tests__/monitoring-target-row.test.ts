@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import {
-  explainTargetDrift,
   explainTargetPsi,
   TARGET_NOT_COUNTED_NOTE,
   unrecordedTargetColumn,
@@ -39,15 +38,15 @@ describe('unrecordedTargetColumn', () => {
 })
 
 describe('target tooltips', () => {
-  it('drift: target wording, never "this input" or "predicting on data"', () => {
-    const out = explainTargetDrift(
-      { z: 4, status: 'CRITICAL' },
-      { warnSd: 1.5, criticalSd: 3 },
+  it('psi: target wording at CRITICAL, never "this input" or "predicting on data"', () => {
+    const out = explainTargetPsi(
+      { psi: 0.4, status: 'CRITICAL', liveTotal: 100, bins: null },
+      { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
     )
-    expect(out.meaning).toMatch(/^The target’s live mean/)
+    expect(out.meaning).toMatch(/^The target’s live distribution/)
     expect(out.meaning).not.toMatch(/this input|predicting on data/i)
     expect(out.meaning).toContain(TARGET_NOT_COUNTED_NOTE)
-    expect(out.criteria).toEqual(['|z| 4.00 ≥ 3 → CRITICAL'])
+    expect(out.criteria).toEqual(['PSI 0.400 ≥ 0.25 → CRITICAL'])
   })
 
   it('psi: target wording for every status, including OK', () => {

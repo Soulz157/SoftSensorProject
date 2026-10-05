@@ -1,12 +1,4 @@
 import {
-  computeDrift,
-  poolFeatureStats,
-  type ColumnAggregate,
-  type ColumnBaselineMap,
-  type ColumnDrift,
-  type DriftThresholds,
-} from './prediction-drift';
-import {
   computePsi,
   poolHistograms,
   type ColumnPsi,
@@ -16,8 +8,10 @@ import {
 } from './prediction-psi';
 
 /**
- * MODEL-SERVE-018. The TARGET tag's (y) own drift and PSI verdicts, computed
- * with the unchanged `computeDrift`/`computePsi` over a single-column pool.
+ * MODEL-SERVE-018. The TARGET tag's (y) own PSI verdict, computed with the
+ * unchanged `computePsi` over a single-column pool. (MODEL-SERVE-028
+ * removed its z-score twin, `computeTargetDrift`, with the rest of the
+ * mean-shift drift signal.)
  *
  * Deliberately a SEPARATE computation from the feature report, never a
  * column appended to it: the report-level `status` is a worst-of fold over
@@ -26,23 +20,8 @@ import {
  * (MODEL-SERVE-018-D01), so it must not be able to raise either.
  *
  * `null` means "nothing to show": no target on the source run, or no window
- * in range carried a target aggregate with at least one Good sample.
+ * in range carried a target histogram.
  */
-export function computeTargetDrift(
-  targetColumn: string | null,
-  rows: Array<ColumnAggregate | null>,
-  baseline: ColumnBaselineMap,
-  thresholds: DriftThresholds,
-): ColumnDrift | null {
-  if (!targetColumn) return null;
-  const pooled = poolFeatureStats(
-    rows
-      .filter((r): r is ColumnAggregate => r !== null)
-      .map((r) => ({ [targetColumn]: r })),
-  );
-  return computeDrift(pooled, baseline, thresholds).columns[0] ?? null;
-}
-
 export function computeTargetPsi(
   targetColumn: string | null,
   rows: Array<FeatureHistogram | null>,

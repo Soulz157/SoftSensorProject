@@ -2,7 +2,7 @@ import { fetchClient } from '@/lib/fetcher'
 
 export interface NodeData {
   name: string
-  type: 'machine' | 'sensor' | 'controller'
+  type: 'reactor' | 'machine' | 'sensor'
   status: 'normal' | 'warning' | 'alarm' | 'offline'
   icon?: string
   x: number

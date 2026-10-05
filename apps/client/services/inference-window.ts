@@ -88,9 +88,9 @@ export interface InferenceStatus {
    * MODEL-SERVE-001-T21. A SEPARATE axis from `deployStatus` above, never
    * collapsed into it — a model can be `running` (operationally up) while
    * its inputs drift, and a `stopped` model has no reading at all (`OFF`).
-   * `thresholds` is this schedule's OWN warnSd/criticalSd, not the
-   * system-wide env defaults the separate Drift tab still reads — null exactly when `status` is `OFF`
-   * or `UNKNOWN`.
+   * `thresholds` is this schedule's OWN warnSd/criticalSd — since
+   * MODEL-SERVE-028 these band the residual-SD ratio only (drift is PSI,
+   * thresholded server-side by env). Null only when there is no schedule.
    */
   health: {
     status: 'OFF' | 'UNKNOWN' | 'OK' | 'WARN' | 'CRITICAL' | 'ALERT' | 'FROZEN'
@@ -106,8 +106,8 @@ export interface InferenceStatus {
       | 'NO_PREDICTIONS'
       | 'BAD_DATA'
       | 'SENSOR_FROZEN'
+      /** MODEL-SERVE-028. Input drift, PSI only. */
       | 'DRIFT_CRITICAL'
-      | 'DRIFT_DIST_CRITICAL'
       | 'DRIFT_WARN'
       /** MODEL-SERVE-012. The OUTPUT-ERROR codes: the model's own residual
        *  spread has widened against the error its run was accepted with.

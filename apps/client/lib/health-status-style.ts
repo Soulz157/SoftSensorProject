@@ -37,20 +37,14 @@ export const HEALTH_REASON_LABEL: Record<HealthReason, string> = {
   NO_PREDICTIONS: 'no predictions',
   BAD_DATA: 'bad input data',
   SENSOR_FROZEN: 'tag not moving',
-  // T27: z-score is per-window, PSI is rolling-24. Name WHICH metric fired
-  // rather than printing one merged "drift" figure that would be one metric
-  // wearing another's name.
-  DRIFT_CRITICAL: 'input drift (critical)',
-  DRIFT_WARN: 'input drift',
-  // MODEL-SERVE-001-T32. The SECOND input axis, labelled for what it
-  // measures rather than for its severity: the reader needs to know a
-  // population RESHAPED (retrain territory), not that another critical
-  // fired. Kept distinct from the z-score pair above for the same reason
-  // they are distinct from each other.
-  DRIFT_DIST_CRITICAL: 'input distribution shifted',
+  // MODEL-SERVE-028. PSI is the only input-drift signal; the label names it
+  // so a reader knows which metric fired. KEEP IN SYNC with the backend pin
+  // (apps/backend/src/lib/notification-health-reason-label.ts).
+  DRIFT_CRITICAL: 'PSI input drift (critical)',
+  DRIFT_WARN: 'PSI input drift',
   // MODEL-SERVE-012. Named for the BAND the reader already sees on the
   // Residual chart, so the badge and the chart speak the same language. Two
-  // codes rather than one for the same reason the drift pair is two: 1–2 SD
+  // codes rather than one, like the drift pair: 1–2 SD
   // is "watch this", beyond 3 SD is "act", and a merged label would put both
   // under one word.
   //

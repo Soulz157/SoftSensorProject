@@ -15,7 +15,9 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
     column: 'FI001.PV',
     driftStatus: 'UNKNOWN',
     driftReason: undefined,
-    z: null,
+    psi: null,
+    psiLiveTotal: 0,
+    psiBins: null,
     piStatus: 'UNKNOWN',
     piReason: undefined,
     failingSources: undefined,
@@ -37,15 +39,16 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
 }
 
 describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
-  it('names the drift column Drift, and keeps Status for the real quality reading', () => {
+  it('names the drift column Drift (PSI), and keeps Status for the real quality reading', () => {
     render(<InputFeatureTable rows={[row()]} />)
 
     // T12 renamed this header away from "Status" because a drift verdict is
     // not a data-quality reading, and the old name let a reader mistake one
     // for the other. T15 then gave "Status" back its honest meaning: PI's
     // own Good/Bad flag. Both headers now exist, each saying what it is.
+    // MODEL-SERVE-028: PSI is the only drift signal, so the header names it.
     expect(
-      screen.getByRole('columnheader', { name: 'Drift' }),
+      screen.getByRole('columnheader', { name: 'Drift (PSI)' }),
     ).toBeInTheDocument()
     expect(
       screen.getByRole('columnheader', { name: 'Status' }),
@@ -135,17 +138,18 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
     expect(screen.getByText(/via FI003\.PV/)).toBeVisible()
   })
 
-  it('MODEL-SERVE-001-T15: carries no PSI column — that metric lives on the Monitoring tab', () => {
+  it('MODEL-SERVE-028: the Drift column IS the PSI verdict — no second PSI column', () => {
     render(<InputFeatureTable rows={[row({ driftStatus: 'OK' })]} />)
 
-    // PSI was published here briefly (T13) and deliberately removed: this
-    // tab answers "is this tag's data healthy", not "has the distribution
-    // shifted". The Monitoring tab's Distribution Drift panel keeps both
-    // the z-score and PSI side by side.
+    // The z-score drift verdict this column used to show was removed;
+    // the column now shows PSI, so a separate PSI column would be the same
+    // metric twice.
     expect(
       screen.queryByRole('columnheader', { name: 'PSI' }),
     ).not.toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Drift' })).toBeVisible()
+    expect(
+      screen.getByRole('columnheader', { name: 'Drift (PSI)' }),
+    ).toBeVisible()
   })
 
   // The Drift badge carries the same explanation tooltip, wording and
@@ -155,8 +159,8 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
   it('renders the Drift verdict as a tooltip trigger, worded like the card', () => {
     render(
       <InputFeatureTable
-        rows={[row({ column: 'TI010.PV', driftStatus: 'OK', z: 0.4 })]}
-        driftThresholds={{ warnSd: 1.5, criticalSd: 3 }}
+        rows={[row({ column: 'TI010.PV', driftStatus: 'OK', psi: 0.04 })]}
+        psiThresholds={{ warn: 0.1, critical: 0.25, minSamplesPerBin: 20 }}
       />,
     )
 

@@ -3823,6 +3823,7 @@
       ],
       "description": "Found by MODEL-SERVE-020, confirmed live by MODEL-SERVE-026-T01 (c) on job 8dae4dfb: the trainer re-splits the combined artifact chronologically at the incumbent's own ratio (0.7), so the new rows -- always the newest -- never land in train. On that job, train 2163 / test 928 ended 2025-11-06 18:00, and all 24 new rows (2025-11-07 19:01 to 2025-11-08 18:01) sat in the new-data holdout. The candidate is a fit on the oldest 70% of the old data.",
       "findings": [
+      "LIVE CONFIRMATION 2026-10-02, job 46175e3b (NEW_DATA_ONLY, cvFolds 3, 1 criterion, image 1.0.20, user-run): SUCCEEDED 5/5 -- the null frozen_eval_dropped_rows regression is fixed live. The combine record now stores frozenEvalTo (2025-11-06 19:01) for the first time on this system, with frozenEvalDroppedRows null as New Data Only should; New Data Only runs get no augmentNewDataFrom (splitSpec has no new_train_rows), as designed. All 5 runs logged their CV-gap line. Window 2026-01-01..01-31 (744 rows, 32 lab events). Picked run f6ece304: 'New RMSE < Current RMSE' PASS 9.852 vs 12.105 at lab events (all-row 10.893 vs 12.339).",
       "REGRESSION I CAUSED, found live 2026-10-02 (user, New Data Only on 'Dataset 6 month -- new data (2)'): trigger refused with zod 'frozen_eval_dropped_rows: expected number, received null'. Declaring the three fields on python's CombineForRetrainResponse made them ARRIVE for the first time; New Data Only sends null for frozen_eval_dropped_rows (it carves no frozen slice), and the backend's CombineForRetrainSchema had it as number().optional() -- absent was fine, null was not. Its two siblings were already .nullable(). FIX: .nullable().optional() (apps/backend/src/lib/python-preprocess-client.ts) + src/lib/python-preprocess-client.combine.spec.ts 3/3 (a New Data Only shaped response with nulls parses; an Existing + new one parses; a negative count still refused). LESSON: widening a python response model must be checked against the TS zod mirror field by field, with null as well as absent.",
       "LIVE 2026-10-02, jobs b0f2cd23 and 8289d406 (AUGMENT_DATA, still on 1.0.19 -- default not yet bumped): THE SPLIT FIX ENGAGED -- run c9537524 logged 'Split at 2025-09-29 03:00: 2187 train / 928 test' = 2163 old + 24 NEW rows in train, test = 928 old rows (the old split had 0 new rows in train). Then /complete returned 400: the backend's ChronologicalSplitSpecSchema is .strict() and did not know the trainer's new split fields new_data_from / new_train_rows. MY MISS -- the trainer's split record was widened without its backend mirror. FIX: both fields optional on the schema; model-run.authorized.dto.spec.ts +1 using the exact live record (accepted) and an unknown field (still refused); model-run specs 239/240 (the 1 = pre-existing controller DI spec). Image 1.0.20 (user-built, e27b112f7562) verified 80/80 in-image; default bumped to 1.0.20. THE 1-ROW FROZEN SLICE IS DATA, NOT A BUG: Existing + new compares on [v1 cut 2025-11-06 19:00, new-data start); 'Dataset 6 month -- new data (2)' starts 19:01, so the slice is one row. The user's window on job d2a5fa18 (2026-06-01..06-30, 706 rows) had ONE lab value (96.5) throughout -- no lab measurement that month.",
       "LIVE RUN 2026-10-02 FAILED, three defects found and fixed (job d2a5fa18, AUGMENT_DATA, image 1.0.19): (1) THE FIX NEVER ENGAGED -- the combine record's operations[0].frozenEvalTo was EMPTY, so claim() sent no augmentNewDataFrom and the trainer used the plain split (5628/2412 = 70/30 of all 8040 rows). Cause, older than this entry: python's CombineForRetrainResponse never declared frozen_eval_to, combined_end_time or frozen_eval_dropped_rows; FastAPI's response_model strips undeclared keys, so 0 of 12 real combine records ever stored them (since MODEL-SERVE-019 -- which also means 019-D03's frozenEvalDroppedRows gate has always read 'unrecorded'). FIX: the three fields declared Optional on the response model; test_frozen_eval_dropped_rows_... now asserts every key the service returns survives model_validate().model_dump() (the guard that would have caught it). Python 960 passed / 79 skipped. Takes effect for NEW combines only -- old records stay empty. (2) THE RUN FAILED AT COMPLETION: 'Out of range float values are not JSON compliant: nan'. The frozen slice [incumbent cut, new data start) held ONE row, its r2 is undefined (nan), and requests refused the whole payload. FIX: images/trainer/app/api.py json_safe() turns non-finite floats into null recursively before complete() posts (backend MetricsSchema already accepts null). test/test_api_json_safe.py 2/2; trainer suite 80/80 inside 1.0.19. Needs a new image. (3) UI: the Validating stage box was never active -- lib/retrain.ts retrainPhase jumped training -> evaluating on the first finished candidate. FIX: none finished = training, some finished = validating, all finished while live = Result; lib/retrain.test.ts updated (+ a test walking all three boxes in order); retrain client suites 241/241. ALSO SEEN, NOT FIXED: the frozen slice is 1 row because the new dataset starts one hour after v1's cut; the new-data window scored r2 = 0.0000 on 706 rows, which sklearn returns when y_true is constant -- the window's target may not vary (to check on the rerun).","SECOND LIVE CONFIRMATION, WORSE THAN 020 RECORDED (job 1939ed3e, AUGMENT_DATA, 2026-10-01 17:23, user-run): best run 32efb8b0 splitSpec train 2177 / test 934 / source 3111, cut 2025-09-29 17:00. Its test series spans 2025-09-29 17:00 to 2025-11-18 09:00, so every new row except the last 4 sits in TEST. But the production version v1 it is compared against has cut 2025-11-06 19:00, so the CANDIDATE'S TRAINING DATA ENDS 5.5 WEEKS EARLIER THAN THE INCUMBENT'S. A retrain that adds new data produces a model fitted on OLDER data than the one it is meant to replace. The new-data holdout is the last 4 rows (2025-11-18 10:00 to 13:00) with ONE distinct y_true (101.4); the trainer records r2 = 0 for zero variance and MAE equals RMSE. The tab will show R2 0.00 for a figure that has no defined R2 -- a 026-T02 concern, recorded here because this job is the evidence."],
@@ -3852,6 +3853,69 @@
         }
       ],
       "sourcing_note": "Stub drafted 2026-10-01 from 026-T01's live reads; T01 must re-audit the tree before any fix -- note: the trainer image is not rebuilt by CI, so a trainer-side fix needs a manual rebuild and tag bump."
+    },
+    {
+      "id": "MODEL-SERVE-028",
+      "title": "PSI-only input drift: remove the z-score mean-shift drift signal; PSI alone drives drift display, model health, alerts and notifications",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 80,
+      "dependencies": [],
+      "description": "User request 2026-10-04: remove the z-score mean-shift drift (apps/backend/src/lib/prediction-drift.ts) and use only PSI (lib/prediction-psi.ts) to check input drift and display status, so Data Scientists read one drift signal. This REVERSES MODEL-SERVE-001-T13's instruction to publish PSI alongside z and never replace it, at the user's explicit request.",
+      "findings": [
+        "AUDIT 2026-10-04 (read-only): z drives the Distribution Drift card, the Input Data tab Drift column, the retrain dialog drift row, /drift and /live-drift, and model health (DRIFT_WARN/DRIFT_CRITICAL) on both the detail path (getHealthStatus) and the list path (deploy-status.ts, which passes psiStatus null). PSI reached health only at CRITICAL (DRIFT_DIST_CRITICAL) and only on the detail path.",
+        "InferenceSchedule.warnSd/criticalSd ALSO set the residual-SD bands (deploy-status.ts, getHealthStatus -> classifyResidualSd); they stay, no schema change. featureStats + resolveColumnBaseline stay for frozen-sensor detection.",
+        "Live DB 2026-10-04: 3 scheduled models, all driftMonitor=false; only 85b35299 has featureHistograms (23 windows); 8c2affc6 and 3991c43f have 0, so PSI-only shows their drift as Unknown."
+      ],
+      "userDecisions": [
+        "2026-10-04: full scope (UI + health + alerts + notifications).",
+        "2026-10-04: PSI WARN raises a model-health Warning (overrides the 2026-09-22 ALERT-only decision); PSI CRITICAL raises Alert.",
+        "2026-10-04: models without a PSI reference show Unknown; no backfill.",
+        "2026-10-04: reuse reason codes DRIFT_WARN/DRIFT_CRITICAL (now PSI-backed) and retire DRIFT_DIST_CRITICAL. ModelAlertState rows holding DRIFT_DIST_CRITICAL, if any, fire one transition after deploy."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-028-T01",
+          "title": "Backend: delete z drift, PSI-only classifyModelHealth (WARN + CRITICAL), list path computes PSI with a cached reference, remove /drift and /live-drift",
+          "status": "completed",
+          "progress": 100,
+          "result": "2026-10-04. lib/prediction-drift.ts + spec deleted; stats types moved to lib/feature-stats.ts (frozen detection keeps them). classifyModelHealth reads psiStatus/psiEvidence only: CRITICAL -> ALERT/DRIFT_CRITICAL, WARN -> WARN/DRIFT_WARN, UNKNOWN/INSUFFICIENT_DATA/no evidence -> UNKNOWN; DRIFT_DIST_CRITICAL and thresholdsFromSchedule removed. deploy-status list path: resolveListPsi (newest 24 windows' featureHistograms vs resolvePsiReference) replaces resolveListDrift. resolvePsiReference now cached by goldObjectKey like resolveColumnBaseline. getDriftReport, getDriftService, getLiveDriftService, GET /drift and GET /live-drift removed; computeTargetDrift removed; DRIFT_WARN_SD/DRIFT_CRITICAL_SD/LIVE_DRIFT_CONSECUTIVE_BREACHES env removed. health.thresholds now always echoes the schedule residual-SD bands. Labels: DRIFT_WARN 'PSI input drift', DRIFT_CRITICAL 'PSI input drift (critical)'."
+        },
+        {
+          "id": "MODEL-SERVE-028-T02",
+          "title": "Client: remove Distribution Drift card, Input Data Drift column + retrain dialog read PSI, relabel reasons and wizard SD bands as residual",
+          "status": "completed",
+          "progress": 100,
+          "result": "2026-10-04. drift-panel.tsx deleted; PSI card renamed 'Input Drift (PSI)'. usePredictionMonitoring no longer fetches /drift; DriftReport/DriftColumn/DriftStatus and drift() removed from services/model-monitoring.ts. Input Data column 'Drift (PSI)' left-joins psi.columns and explains via explainPsiColumn (thresholds optional, no invented numbers before load). Retrain dialog shows one 'Input drift (PSI)' row. explainDriftColumn/Report and explainTargetDrift removed. DRIFT_DIST_CRITICAL dropped from client unions; health-status-style labels match backend. Wizard: 'Drift monitor (PSI)', SD inputs relabelled 'Residual warning/critical (±SD)'. Notification-channels copy merged into one PSI line."
+        },
+        {
+          "id": "MODEL-SERVE-028-T03",
+          "title": "Verify: types, lint, touched specs with case counts, live check on 85b35299 and a no-reference model",
+          "status": "in_progress",
+          "progress": 50,
+          "result": "Static half DONE 2026-10-04: backend tsc clean outside pre-existing spec errors (auth/candidate-job/notification-feed/inference-window tagObservation, untouched files); touched backend suites 32/32, 542 tests pass; full backend 1214/1223 with the 9 failures identical on a detached-HEAD worktree baseline. Client tsc clean outside pre-existing dataset-compare-modal + model-evaluation.test; touched client tests 22 files / 204 pass; full client suite's 26 failures identical on the HEAD baseline. Lint/prettier clean on touched files (2 backend unbound-method hits are the same pattern HEAD has). LIVE HALF NOT DONE: no dev servers were running, and starting the backend also starts the scheduler/live-predict driver that write to the dev DB."
+        }
+      ],
+      "acceptance_criteria": [
+        "No z-score drift is computed or rendered anywhere.",
+        "Model health drift reason comes only from PSI: WARN -> Warning/DRIFT_WARN, CRITICAL -> Alert/DRIFT_CRITICAL, no reference or insufficient data -> Unknown.",
+        "List views (Alerts/plant/workspace) and the detail page agree on health for the same model.",
+        "Residual-SD health unchanged."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-028-V01",
+          "status": "completed",
+          "result": "PASS 2026-10-04 -- see T03 result for counts and baseline comparison.",
+          "description": "check-types + lint + touched backend/client specs pass with stated case counts."
+        },
+        {
+          "id": "MODEL-SERVE-028-V02",
+          "status": "pending",
+          "description": "Live: Monitoring tab shows only the PSI card; Input Data Drift column shows PSI; a no-reference model shows Unknown without errors."
+        }
+      ],
+      "sourcing_note": "Drafted 2026-10-04 from a two-agent read-only audit + live DB check; plan at ~/.claude/plans/can-we-remove-a-lovely-thompson.md."
     }
   ],
   "global_definition_of_done": [

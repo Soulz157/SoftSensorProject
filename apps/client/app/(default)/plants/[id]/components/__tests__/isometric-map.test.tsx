@@ -47,8 +47,8 @@ const mockNodes: CanvasNode[] = [
     workspaceId: 'ws2',
     planId: 'plan2',
     data: {
-      name: 'CTRL-01',
-      type: 'controller',
+      name: 'RX-01',
+      type: 'reactor',
       status: 'normal',
       x: 100,
       y: 100,
@@ -108,7 +108,7 @@ describe('IsometricMap', () => {
     )
     expect(getByText('CNC-001')).not.toBeNull()
     expect(getByText('SENSOR-01')).not.toBeNull()
-    expect(getByText('CTRL-01')).not.toBeNull()
+    expect(getByText('RX-01')).not.toBeNull()
   })
 
   it('calls onNodeClick with nodeId when node is clicked', async () => {

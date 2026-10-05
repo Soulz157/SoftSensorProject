@@ -146,28 +146,9 @@ export const env = {
     process.env.LIVE_PREDICT_TICK_INTERVAL_MS ?? 60_000,
   ),
 
-  // MODEL-SERVE-008-T03. How many CONSECUTIVE dense buckets must breach
-  // before the live drift signal changes state. Three, because warnSd/
-  // criticalSd were chosen against HOURLY windows and the dense stream
-  // evaluates them roughly six times as often on the same unchanged
-  // process — the thresholds keep their meaning, and this is how much
-  // evidence a state change costs. NOT a second threshold: it never
-  // changes what "breached" means, only how long a breach must persist.
-  LIVE_DRIFT_CONSECUTIVE_BREACHES: Number(
-    process.env.LIVE_DRIFT_CONSECUTIVE_BREACHES ?? 3,
-  ),
-
-  // MODEL-SERVE-005. Drift thresholds, using the SAME field names the
-  // wizard's own deploy atoms already use (mpRetrainWarnSdAtom/
-  // mpRetrainCriticalSdAtom/mpDriftThresholdPctAtom — MODEL-FLOW-010-T08's
-  // field list) — not persisted per model in this pass (MODEL-SERVE-006-T09
-  // is where those atoms get a real home); these are the system-wide
-  // defaults every drift report uses until then.
-  // MODEL-SERVE-001-T31 removed DRIFT_OUT_OF_RANGE_PCT: the z-score verdict
-  // is mean-shift only now, so a tail-mass threshold has no reader here.
-  // The measured out-of-range share lives on the PSI report instead.
-  DRIFT_WARN_SD: Number(process.env.DRIFT_WARN_SD ?? 1.5),
-  DRIFT_CRITICAL_SD: Number(process.env.DRIFT_CRITICAL_SD ?? 3.0),
+  // MODEL-SERVE-028 removed LIVE_DRIFT_CONSECUTIVE_BREACHES, DRIFT_WARN_SD
+  // and DRIFT_CRITICAL_SD with the z-score mean-shift drift signal. PSI
+  // (below) is the only input-drift metric.
 
   // MODEL-SERVE-001-T13. PSI thresholds — 0.1/0.25 are the CONVENTIONAL
   // credit-scoring cutoffs (commonly cited: <0.1 stable, 0.1-0.25 moderate

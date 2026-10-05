@@ -19,9 +19,8 @@ export const HEALTH_REASON_LABEL: Record<HealthReason, string> = {
   NO_PREDICTIONS: 'no predictions',
   BAD_DATA: 'bad input data',
   SENSOR_FROZEN: 'tag not moving',
-  DRIFT_CRITICAL: 'input drift (critical)',
-  DRIFT_WARN: 'input drift',
-  DRIFT_DIST_CRITICAL: 'input distribution shifted',
+  DRIFT_CRITICAL: 'PSI input drift (critical)',
+  DRIFT_WARN: 'PSI input drift',
   RESIDUAL_SD_WARN: 'residual 1–2SD',
   RESIDUAL_SD_CRITICAL: 'residual beyond 3SD',
 };

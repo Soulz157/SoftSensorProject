@@ -17,7 +17,7 @@ export interface Model {
 export interface Node {
   id: string
   name: string
-  type: 'machine' | 'sensor' | 'controller'
+  type: 'reactor' | 'machine' | 'sensor'
   status: 'normal' | 'warning' | 'alarm' | 'offline'
   models: Model[]
 }
@@ -35,7 +35,7 @@ export interface FlatModel extends Model {
   workspaceName: string
   nodeId: string
   nodeName: string
-  nodeType: 'machine' | 'sensor' | 'controller'
+  nodeType: 'reactor' | 'machine' | 'sensor'
 }
 
 const MODEL_NAMES = [
@@ -93,7 +93,7 @@ const PROD_STATUSES: ProdStatus[] = [
   'running',
   'warning',
 ]
-const NODE_TYPES: NodeType[] = ['machine', 'sensor', 'controller']
+const NODE_TYPES: NodeType[] = ['reactor', 'machine', 'sensor']
 const NODE_STATUSES: NodeStatus[] = [
   'normal',
   'normal',

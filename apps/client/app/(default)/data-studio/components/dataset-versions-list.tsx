@@ -1,9 +1,9 @@
 'use client'
 
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { useDatasetVersions } from '@/hooks/dataset/use-dataset-versions'
 import { isAugmentedVersion } from '@/lib/retrain-handoff'
-import { RetrainVersionEda } from '@/app/(default)/models/[id]/components/retrain-version-eda'
 
 /**
  * MODEL-SERVE-015-T06. The dataset's saved versions, each explorable.
@@ -16,18 +16,22 @@ import { RetrainVersionEda } from '@/app/(default)/models/[id]/components/retrai
  * visible, and the per-row Explore action is what satisfies "the combined
  * dataset is explorable", not merely listed.
  *
- * `RetrainVersionEda` is reused verbatim rather than reimplemented: despite
- * its name it is already store-agnostic, taking `datasetId` + `artifactId`
- * and routing every tab through the dataset-scoped artifact endpoints. Those
- * endpoints do not filter on artifact tier, which is exactly why a combined
- * GOLD/FINAL pair is servable here with no backend change.
+ * The EDA itself no longer renders inside each row: a row's Explore action
+ * hands its artifact to the host (`onExplore`), which shows ONE full-width
+ * "Explore this data" section (`RetrainVersionEda`, collapsible={false}) —
+ * a 20rem side rail was too narrow for the analysis card's charts. The
+ * dataset-scoped artifact endpoints do not filter on tier, which is why a
+ * combined GOLD/FINAL pair is servable there with no backend change.
  */
 export function DatasetVersionsList({
   datasetId,
-  tags,
+  selectedArtifactId,
+  onExplore,
 }: {
   datasetId: string | null
-  tags: string[]
+  /** The artifact the host's Explore section is currently showing. */
+  selectedArtifactId: string | null
+  onExplore: (artifactId: string, label: string) => void
 }) {
   const { versions, loading, error } = useDatasetVersions(datasetId)
 
@@ -88,25 +92,32 @@ export function DatasetVersionsList({
                   {/* A version backfilled without an artifact reference has
                       no bytes to resolve, so it says so rather than offering
                       an Explore that would 404. */}
-                  {version.artifactId === null && (
+                  {version.artifactId === null ? (
                     <span className="ml-auto text-xs text-muted-foreground">
                       No stored data
                     </span>
+                  ) : version.artifactId === selectedArtifactId ? (
+                    <Badge variant="secondary" className="ml-auto">
+                      Viewing
+                    </Badge>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="ml-auto h-6 px-2 text-xs"
+                      onClick={() =>
+                        onExplore(
+                          version.artifactId!,
+                          version.semanticVersion ??
+                            `v${version.versionNumber}`,
+                        )
+                      }
+                    >
+                      Explore
+                    </Button>
                   )}
                 </div>
-
-                {/* No toggle of our own: RetrainVersionEda already owns an
-                    "Explore this data" disclosure and fetches nothing until
-                    it is opened. Wrapping it in a second collapse would make
-                    the operator click twice to see one panel. */}
-                {version.artifactId && (
-                  <RetrainVersionEda
-                    datasetId={datasetId}
-                    artifactId={version.artifactId}
-                    // Tags come off the dataset: a version row carries none.
-                    tags={tags}
-                  />
-                )}
               </li>
             )
           })}

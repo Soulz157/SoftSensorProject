@@ -5,7 +5,6 @@ import type { AIModel } from '@/types'
 import type { TimeRange } from '@/lib/mock-readings'
 import {
   modelMonitoringService,
-  type DriftReport,
   type PredictionSeriesResult,
   type PsiReport,
 } from '@/services/model-monitoring'
@@ -49,27 +48,24 @@ interface UsePredictionMonitoringResult {
    *  landed yet. Defaults false, so a model with no schedule row keeps the
    *  original by-construction sentence. */
   livePredictEnabled: boolean
-  drift: DriftReport | null
-  driftLoading: boolean
-  /** The backend's own message on any drift-fetch failure (most commonly a
-   *  404 "no PRODUCTION version") — an honest empty state naming why, never
-   *  a generic error toast or a stale report. */
-  driftUnavailableReason: string | null
-  /** MODEL-SERVE-001-T13. Published ALONGSIDE `drift`, never replacing it —
-   *  fetched over the SAME `[from, to]` this hook's own `range` prop
-   *  already computes for `drift`/`predictions` above. The smallest
+  /** MODEL-SERVE-001-T13. The only input-drift signal since MODEL-SERVE-028
+   *  removed the z-score report — fetched over the SAME `[from, to]` this
+   *  hook's own `range` prop already computes for `predictions`. The smallest
    *  available `range` ('24h') already satisfies T13's own "rolling 24h"
    *  sample-floor recommendation; a report reading `INSUFFICIENT_DATA` is
    *  itself the signal to widen the range toggle, not a reason to give
    *  this metric a second, independent time control. */
   psi: PsiReport | null
   psiLoading: boolean
+  /** The backend's own message on any PSI-fetch failure (most commonly a
+   *  404 "no PRODUCTION version") — an honest empty state naming why, never
+   *  a generic error toast or a stale report. */
   psiUnavailableReason: string | null
 }
 
 /**
  * MODEL-SERVE-005. Real data for the Monitoring page's "Live Predictions"
- * and "Distribution Drift" panels — the sampled synchronous-/predict
+ * and "Input Drift (PSI)" panels — the sampled synchronous-/predict
  * stream and the drift signal built on it. Deliberately SEPARATE from
  * `useMonitoringData` (the existing Actual-vs-Predict/Residual charts):
  * those charts and their SD-band/residual math require ground truth, which
@@ -128,11 +124,6 @@ export function usePredictionMonitoring(
     toMs: number
   } | null>(null)
   const [livePredictEnabled, setLivePredictEnabled] = useState(false)
-  const [drift, setDrift] = useState<DriftReport | null>(null)
-  const [driftLoading, setDriftLoading] = useState(false)
-  const [driftUnavailableReason, setDriftUnavailableReason] = useState<
-    string | null
-  >(null)
   const [psi, setPsi] = useState<PsiReport | null>(null)
   const [psiLoading, setPsiLoading] = useState(false)
   const [psiUnavailableReason, setPsiUnavailableReason] = useState<
@@ -151,9 +142,6 @@ export function usePredictionMonitoring(
   // `.points`. Regression: use-prediction-monitoring.test.tsx.
   const seriesCacheKey = enabled
     ? `prediction-monitoring|predictions|${model!.id}|${range}|${refreshKey}`
-    : null
-  const driftCacheKey = enabled
-    ? `prediction-monitoring|drift|${model!.id}|${range}|${refreshKey}`
     : null
   const psiCacheKey = enabled
     ? `prediction-monitoring|psi|${model!.id}|${range}|${refreshKey}`
@@ -207,39 +195,6 @@ export function usePredictionMonitoring(
     },
   })
 
-  useDebouncedAbortableRequest<DriftReport>({
-    enabled,
-    cacheKey: driftCacheKey,
-    debounceMs: 0,
-    fetcher: signal => {
-      const to = new Date().toISOString()
-      const from = new Date(Date.now() - RANGE_MS[range]).toISOString()
-      return modelMonitoringService
-        .drift(model!.id, from, to, signal)
-        .then(res => res.data)
-    },
-    onLoading: () => {
-      setDrift(null)
-      setDriftUnavailableReason(null)
-      setDriftLoading(true)
-    },
-    onSettled: result => {
-      if (result.status === 'ready') {
-        setDrift(result.data)
-        setDriftUnavailableReason(null)
-      } else {
-        setDrift(null)
-        setDriftUnavailableReason(result.error)
-      }
-      setDriftLoading(false)
-    },
-    onIdle: () => {
-      setDrift(null)
-      setDriftUnavailableReason(null)
-      setDriftLoading(false)
-    },
-  })
-
   useDebouncedAbortableRequest<PsiReport>({
     enabled,
     cacheKey: psiCacheKey,
@@ -279,9 +234,6 @@ export function usePredictionMonitoring(
     pointsTruncated,
     seriesBounds,
     livePredictEnabled,
-    drift,
-    driftLoading,
-    driftUnavailableReason,
     psi,
     psiLoading,
     psiUnavailableReason,

@@ -253,10 +253,11 @@ export function Phase6Deploy({ nav }: Props) {
         <div className="flex items-center justify-between gap-4">
           <div className="space-y-0.5">
             <Label htmlFor="drift-monitor" className="text-xs font-normal">
-              Drift monitor
+              Drift monitor (PSI)
             </Label>
             <p className="text-xs text-muted-foreground">
-              Flag when live input tags deviate from training.
+              Flag when live input distributions shift from training, measured
+              by PSI.
             </p>
           </div>
           <Switch
@@ -289,7 +290,7 @@ export function Phase6Deploy({ nav }: Props) {
                 htmlFor="warn-sd"
                 className="text-xs font-normal text-muted-foreground"
               >
-                Warning (±SD)
+                Residual warning (±SD)
               </Label>
               <Input
                 id="warn-sd"
@@ -306,7 +307,7 @@ export function Phase6Deploy({ nav }: Props) {
                 htmlFor="critical-sd"
                 className="text-xs font-normal text-muted-foreground"
               >
-                Critical (±SD)
+                Residual critical (±SD)
               </Label>
               <Input
                 id="critical-sd"

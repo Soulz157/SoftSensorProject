@@ -35,7 +35,6 @@ import {
   type ResidualMode,
 } from './residual-chart'
 import { LivePredictionChart } from './live-prediction-chart'
-import { DriftPanel } from './drift-panel'
 import { PsiPanel } from './psi/psi-panel'
 
 /* MODEL-SERVE-009-T05. A local `RANGE_MS` used to live here so the held
@@ -61,7 +60,7 @@ function LegendItem({ color, label }: { color: string; label: string }) {
 
 /**
  * MODEL-SERVE-005-T03. The honest no-data state, following the rule
- * `DriftPanel` already applies to its own no-PRODUCTION-version case: name
+ * `PsiPanel` already applies to its own no-PRODUCTION-version case: name
  * WHY there is nothing, rather than rendering an empty axis that reads as
  * a flat, healthy line.
  *
@@ -70,7 +69,7 @@ function LegendItem({ color, label }: { color: string; label: string }) {
  * the windows exist but the lab has not reported yet, or the read failed.
  */
 // Exported for direct testing, same pattern as this folder's sibling
-// components (LivePredictionChart, DriftPanel) — EmptyTruth itself has no
+// components (LivePredictionChart, PsiPanel) — EmptyTruth itself has no
 // consumer outside this file (models/[id]/page.tsx imports the default
 // ModelMonitoringTab, never this helper directly), so the export exists
 // purely so a test can render one of its four empty-cause branches without
@@ -207,9 +206,6 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
     seriesBounds,
     pointsLoading: livePointsLoading,
     livePredictEnabled,
-    drift,
-    driftLoading,
-    driftUnavailableReason,
     psi,
     psiLoading,
     psiUnavailableReason,
@@ -653,8 +649,8 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
             own recorded error band) is deliberately NOT here — it answers
             "how wrong is this model usually", not "how wrong is it now",
             and putting that band on a chart titled Residual Analysis is
-            the one-name-two-metrics defect MODEL-SERVE-001-T16 refused for
-            PSI-in-the-z-score-table. It stays blocked on openDecisions[1]
+            the one-name-two-metrics defect MODEL-SERVE-001-T16 refused.
+            It stays blocked on openDecisions[1]
             and, if adopted, gets its own title. */}
         <p className="mb-3 text-xs text-muted-foreground">
           {residualDensityNote(coverage?.cadenceMinutes ?? null)}
@@ -709,7 +705,7 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
       </div>
 
       {/* MODEL-SERVE-005-T01/T02. The sampled synchronous-/predict stream
-          and the drift signal built on it. A DIFFERENT stream from the
+          and the PSI drift signal built on it. A DIFFERENT stream from the
           charts above, not a lesser one: these are per-request samples with
           no lab counterpart, where those are scheduled windows paired with
           a lab measurement. Neither fabricates an "actual". */}
@@ -745,42 +741,22 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
         )}
       </div>
 
+      {/* MODEL-SERVE-001-T13/T16, sole drift card since MODEL-SERVE-028
+          (2026-10-04): the z-score "Distribution Drift" card that sat above
+          was removed so a reader sees one drift signal, and this one drives
+          the model's drift status too. Pooled over the selected range and
+          recomputed on load — not a scheduled rolling 24h job — so
+          "Computed over" inside the card states the real window rather than
+          a cadence word here that could go stale. */}
       <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
         <div className="mb-4 space-y-1">
           <h2 className="text-sm font-semibold text-foreground">
-            Distribution Drift
+            Input Drift (PSI)
           </h2>
           <p className="text-xs text-muted-foreground">
-            Live inputs vs. the production version&apos;s own training
-            distribution (column_stats.json).
-          </p>
-        </div>
-        <DriftPanel
-          report={drift}
-          loading={driftLoading}
-          unavailableReason={driftUnavailableReason}
-        />
-      </div>
-
-      {/* MODEL-SERVE-001-T13/T16. A SEPARATE card from Distribution Drift
-          above, per T13's own DISPLAY SPEC — never a column bolted onto
-          that table (REJECTED there for mixing two different threshold
-          vocabularies under one Status colour). Independent loading/empty
-          state: this metric has its own sample floor the z-score above has
-          no equivalent of, so the two can genuinely disagree on
-          availability for the identical range. Pooled over the selected
-          range and recomputed on load — not a scheduled rolling 24h job —
-          so "Computed over" inside the card states the real window rather
-          than a cadence word here that could go stale. */}
-      <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
-        <div className="mb-4 space-y-1">
-          <h2 className="text-sm font-semibold text-foreground">
-            Population Stability Index (PSI)
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            Live inputs vs. the production version&apos;s frozen training bins
-            (feature_spec.json) — pooled over the selected range, recomputed on
-            load.
+            Population Stability Index: live inputs vs. the production
+            version&apos;s frozen training bins (feature_spec.json) — pooled
+            over the selected range, recomputed on load.
           </p>
         </div>
         <PsiPanel

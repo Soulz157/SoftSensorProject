@@ -1,9 +1,4 @@
 import {
-  computeDrift,
-  type ColumnBaselineMap,
-  type FeatureStatsMap,
-} from './prediction-drift';
-import {
   computePsi,
   poolHistograms,
   type FeatureHistogramMap,
@@ -211,9 +206,9 @@ describe('computePsi', () => {
     expect(report.status).toBe('CRITICAL');
   });
 
-  // ── V16: PSI catches a shape change the z-score cannot ──────────────────
+  // ── V16: PSI catches a shape change a mean shift cannot ─────────────────
 
-  it('V16: same mean, different shape (bimodal) — z-score stays low while PSI rises', () => {
+  it('V16: same mean, different shape (bimodal) — PSI rises to CRITICAL', () => {
     // Reference: a tight unimodal population centred on 50, spread 0-100.
     // 10 equal-frequency bins, each holding 100 training points.
     const refEdges = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
@@ -233,43 +228,11 @@ describe('computePsi', () => {
       X: { counts: liveCounts, below: 0, above: 0 },
     };
 
-    // z-score side: reconstruct the same live population's mean/std as
-    // computeDrift would see it, using bin MIDPOINTS as a stand-in for the
-    // underlying values (400 points at bin0's midpoint=5, 400 at bin9's
-    // midpoint=95 — mean is exactly 50, matching the reference mean).
-    const liveStats: FeatureStatsMap = {
-      X: {
-        n: 800,
-        sum: 400 * 5 + 400 * 95,
-        sumsq: 400 * 5 * 5 + 400 * 95 * 95,
-        min: 5,
-        max: 95,
-      },
-    };
-    const baseline: ColumnBaselineMap = {
-      X: { mean: 50, std: 28.87, percentiles: { p1: 1, p99: 99 } }, // ~Uniform(0,100) std
-    };
-    const driftReport = computeDrift(liveStats, baseline, {
-      warnSd: 1.5,
-      criticalSd: 3.0,
-    });
-
     const psiReport = computePsi(live, reference, THRESHOLDS);
 
-    // The demonstration, precisely: the Z-SCORE stays at exactly 0 (same
-    // mean as training — z is blind to shape by construction) while PSI
-    // rises to CRITICAL.
-    //
-    // MODEL-SERVE-001-T31 made this cleaner than it used to be. The drift
-    // report's own STATUS could not be asserted here before: it folded in
-    // `outOfRangePct`, a parametric estimate assuming the live population
-    // was itself normal, and this bimodal fixture's wide std read
-    // tail-heavy against that model — so the z-score card said WARN for a
-    // reason that had nothing to do with z. With that clause deleted the
-    // two metrics finally disagree cleanly, which is the whole point of
-    // running both: OK on mean, CRITICAL on shape.
-    expect(driftReport.columns[0].z as number).toBeCloseTo(0, 10);
-    expect(driftReport.columns[0].status).toBe('OK');
+    // A reshaped population with an unchanged mean (~50) — the case a
+    // mean-shift metric is blind to by construction, and the reason
+    // MODEL-SERVE-028 kept PSI as the single drift signal.
     expect(psiReport.columns[0].psi as number).toBeGreaterThan(
       THRESHOLDS.critical,
     );

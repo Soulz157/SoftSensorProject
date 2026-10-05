@@ -11,18 +11,17 @@ import {
 } from '@/components/ui/table'
 import { PI_STATUS_CLASS } from '@/lib/pi-status-style'
 import type { InputFeatureRow } from '@/lib/model-input-features'
-import { explainDriftColumn } from '@/lib/monitoring-status-explain'
-import type { DriftReport } from '@/services/model-monitoring'
+import { explainPsiColumn } from '@/lib/monitoring-status-explain'
+import type { PsiReport } from '@/services/model-monitoring'
 import { StatusBadgeWithExplanation } from '../monitoring/status-badge-with-explanation'
 
 interface Props {
   rows: InputFeatureRow[]
-  /** The drift report's OWN thresholds, for the Drift badge's tooltip.
-   *  Optional at two levels — the tab may not have loaded a report yet,
-   *  and a pre-`basis.thresholds` backend sends none — and in either case
-   *  `explainDriftColumn` prints the meaning with NO criteria rather than
-   *  inventing 1.5/3.0. */
-  driftThresholds?: DriftReport['basis']['thresholds']
+  /** MODEL-SERVE-028. The PSI report's OWN thresholds, for the Drift
+   *  badge's tooltip. Undefined until the report loads, and then
+   *  `explainPsiColumn` prints the meaning with NO criteria rather than
+   *  inventing 0.1/0.25. */
+  psiThresholds?: PsiReport['basis']['thresholds']
 }
 
 function fmtValue(row: InputFeatureRow): string {
@@ -62,19 +61,18 @@ function formatFlatDuration(minutes: number): string {
   return m === 0 ? `${h}h` : `${h}h${m}m`
 }
 
-export function InputFeatureTable({ rows, driftThresholds }: Props) {
+export function InputFeatureTable({ rows, psiThresholds }: Props) {
   return (
     <Table>
       <TableHeader>
         <TableRow>
           <TableHead className="w-10">#</TableHead>
           <TableHead>Feature</TableHead>
-          {/* T12. This column reports DRIFT (OK/WARN/CRITICAL/UNKNOWN vs.
-              training distribution), never per-tag data quality — the old
-              "Status" header let a reader reasonably mistake one for the
-              other. The `/predict` stream carries no per-tag Good/Bad at
-              all (see input-data-tab.tsx's own note above the table). */}
-          <TableHead>Drift</TableHead>
+          {/* T12. This column reports DRIFT vs. the training distribution,
+              never per-tag data quality — the old "Status" header let a
+              reader reasonably mistake one for the other. MODEL-SERVE-028:
+              PSI is the only drift signal, so the header names it. */}
+          <TableHead>Drift (PSI)</TableHead>
           {/* MODEL-SERVE-001-T15. PI's OWN quality flag, read live — a
               different question from Drift, and the one an operator opens
               this tab to ask. For a derived feature it is its source tags'
@@ -110,7 +108,7 @@ export function InputFeatureTable({ rows, driftThresholds }: Props) {
             </TableCell>
             <TableCell>
               {/* The SAME label, palette and explanation the Monitoring
-                  tab's drift card shows. This badge briefly kept a
+                  tab's PSI card shows. This badge briefly kept a
                   neutral/purple treatment and the raw `OK` token, to stay
                   clear of the PI health badge in the next cell — but that
                   only made one verdict render two ways on two tabs. The
@@ -120,13 +118,15 @@ export function InputFeatureTable({ rows, driftThresholds }: Props) {
                   body, which the native attribute could never render. */}
               <StatusBadgeWithExplanation
                 status={row.driftStatus}
-                explanation={explainDriftColumn(
+                explanation={explainPsiColumn(
                   {
-                    z: row.z,
+                    psi: row.psi,
                     status: row.driftStatus,
                     reason: row.driftReason,
+                    liveTotal: row.psiLiveTotal,
+                    bins: row.psiBins,
                   },
-                  driftThresholds,
+                  psiThresholds,
                 )}
               />
             </TableCell>

@@ -1,34 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import {
   CRITERIA_VERDICT_SEPARATOR,
-  explainDriftColumn,
-  explainDriftReport,
   explainPsiColumn,
   explainPsiReport,
 } from '@/lib/monitoring-status-explain'
-import type { DriftReport, PsiReport } from '@/services/model-monitoring'
+import type { PsiReport } from '@/services/model-monitoring'
 
-const DRIFT_THRESHOLDS = { warnSd: 1.5, criticalSd: 3.0 }
 const PSI_THRESHOLDS = { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 }
-
-function driftReport(overrides: Partial<DriftReport> = {}): DriftReport {
-  return {
-    status: 'OK',
-    columns: [],
-    basis: {
-      plane: 'predict',
-      modelVersionId: 'v1',
-      version: 1,
-      goldArtifactId: 'a1',
-      goldObjectKey: 'k1',
-      sampleRequests: 10,
-      from: '2026-01-01T00:00:00.000Z',
-      to: '2026-01-01T01:00:00.000Z',
-      thresholds: DRIFT_THRESHOLDS,
-    },
-    ...overrides,
-  }
-}
 
 function psiReport(overrides: Partial<PsiReport> = {}): PsiReport {
   return {
@@ -51,72 +29,31 @@ function psiReport(overrides: Partial<PsiReport> = {}): PsiReport {
   }
 }
 
-describe('explainDriftColumn', () => {
+describe('explainPsiColumn', () => {
   // `status-badge-with-explanation.tsx` splits each line on this to bold
   // the verdict half. That makes the separator a CONTRACT between the two
   // files, not a formatting detail — changing it here without the
   // component would silently stop the highlighting, with the tooltip
   // still rendering a correct-looking line.
   it('separates condition from verdict with the exported separator', () => {
-    const { criteria } = explainDriftColumn(
-      { z: 2.14, status: 'WARN' },
-      DRIFT_THRESHOLDS,
+    const { criteria } = explainPsiColumn(
+      { psi: 0.3, status: 'CRITICAL', liveTotal: 300, bins: null },
+      PSI_THRESHOLDS,
     )
 
     expect(CRITERIA_VERDICT_SEPARATOR).toBe(' → ')
     expect(criteria[0]?.split(CRITERIA_VERDICT_SEPARATOR)).toEqual([
-      '|z| 2.14 ≥ 1.5',
-      'WARN',
+      'PSI 0.300 ≥ 0.25',
+      'CRITICAL',
     ])
   })
 
-  it('names the z rule when z is what breached', () => {
-    const { criteria } = explainDriftColumn(
-      { z: 2.14, status: 'WARN' },
-      DRIFT_THRESHOLDS,
-    )
-
-    expect(criteria[0]).toBe('|z| 2.14 ≥ 1.5 → WARN')
-  })
-
-  it('names the CRITICAL line, not the warn line, past 3 SD', () => {
-    const { criteria } = explainDriftColumn(
-      { z: -3.42, status: 'CRITICAL' },
-      DRIFT_THRESHOLDS,
-    )
-
-    // |z|, so the sign is dropped — the backend's `statusFor` tests
-    // `Math.abs(z)`, and a tooltip printing "-3.42 ≥ 3" would be nonsense.
-    expect(criteria[0]).toBe('|z| 3.42 ≥ 3 → CRITICAL')
-  })
-
-  // WAS "THE TRAP THIS MODULE EXISTS FOR": until MODEL-SERVE-001-T31,
-  // `statusFor` was `absZ >= warnSd || outOfRangePct >= threshold`, so a
-  // column could be WARN with a perfectly calm z and this test asserted the
-  // tooltip blamed out-of-range rather than z. That second rule is gone —
-  // tail mass is PSI's to report — so the assertion INVERTS: a calm z is
-  // simply Good, whatever the tail is doing, and drift never quotes an
-  // out-of-range line at all.
-  it('quotes z alone, and reads Good at a calm z', () => {
-    const { criteria } = explainDriftColumn(
-      { z: 0.3, status: 'OK' },
-      DRIFT_THRESHOLDS,
-    )
-
-    // A passing comparison ends in the OK label ("Good"), so the tooltip
-    // can badge it green — it used to read "(warn line)", which named a
-    // threshold instead of stating the result.
-    expect(criteria[0]).toBe('|z| 0.30 < 1.5 → Good')
-    // Exactly one line now. Pins out both the deleted out-of-range criterion
-    // and the "(this rule never reaches CRITICAL)" suffix cut earlier.
-    expect(criteria).toHaveLength(1)
-  })
-
-  it('prints no criteria at all when the backend sent no thresholds', () => {
-    // A backend deployed before `basis.thresholds` shipped. Inventing
-    // 1.5/3.0 here would render a confident number nothing produced.
-    const { meaning, criteria } = explainDriftColumn(
-      { z: 2.14, status: 'WARN' },
+  it('prints no criteria at all before a report has loaded', () => {
+    // The Input Data table can render before the PSI fetch settles.
+    // Inventing 0.1/0.25 here would render a confident number nothing
+    // produced.
+    const { meaning, criteria } = explainPsiColumn(
+      { psi: 0.15, status: 'WARN', liveTotal: 300, bins: null },
       undefined,
     )
 
@@ -124,61 +61,6 @@ describe('explainDriftColumn', () => {
     expect(meaning).not.toBe('')
   })
 
-  it('explains UNKNOWN as an absence and folds in the backend reason', () => {
-    const { meaning, criteria } = explainDriftColumn(
-      {
-        z: null,
-        status: 'UNKNOWN',
-        reason: 'no training baseline for this column',
-      },
-      DRIFT_THRESHOLDS,
-    )
-
-    expect(criteria).toEqual([])
-    expect(meaning).toContain('no training baseline for this column')
-    // Never phrased as health — UNKNOWN is missing information.
-    expect(meaning).toContain('not a clean bill of health')
-  })
-})
-
-describe('explainDriftReport', () => {
-  it('describes the roll-up rather than one column’s arithmetic', () => {
-    const report = driftReport({
-      status: 'CRITICAL',
-      columns: [
-        {
-          column: 'A',
-          n: 1,
-          liveMean: 0,
-          liveStd: 1,
-          trainMean: 0,
-          trainStd: 1,
-          z: 0.1,
-          status: 'OK',
-        },
-        {
-          column: 'B',
-          n: 1,
-          liveMean: 0,
-          liveStd: 1,
-          trainMean: 0,
-          trainStd: 1,
-          z: 4,
-          status: 'CRITICAL',
-        },
-      ],
-    })
-
-    const { meaning, criteria } = explainDriftReport(report)
-
-    expect(meaning).toContain('Worst verdict across 2 inputs')
-    expect(criteria[0]).toBe('1 of 2 inputs at CRITICAL')
-    // No |z| line: the header badge is not about any single column.
-    expect(criteria.join(' ')).not.toContain('|z|')
-  })
-})
-
-describe('explainPsiColumn', () => {
   it('quotes the PSI value against the warn line', () => {
     const { criteria } = explainPsiColumn(
       { psi: 0.15, status: 'WARN', liveTotal: 300, bins: null },

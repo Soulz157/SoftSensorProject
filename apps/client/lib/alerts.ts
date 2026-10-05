@@ -23,7 +23,7 @@ export type AlertStatus = 'alert' | 'failed' | 'warning' | 'offline'
 export type AlertNodeType =
   | 'sensor'
   | 'machine'
-  | 'controller'
+  | 'reactor'
   | 'model'
   | 'gateway'
   | 'unknown'

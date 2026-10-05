@@ -8,6 +8,8 @@ import {
   mergeMonthlyBoxplots,
   mergeMonthlyHistograms,
   monthColor,
+  withReferenceBoxplot,
+  withReferenceHistogram,
   type MonthResult,
 } from './monthly-compare'
 import { correlationsWith } from './data-quality'
@@ -132,6 +134,74 @@ describe('mergeMonthlyBoxplots', () => {
     expect(merged.tags).toEqual(['Jan 2026', 'Mar 2026'])
     expect(merged.missing).toEqual(['Feb 2026'])
     expect(merged.styleMap.get('Mar 2026')).toEqual({ color: monthColor(2) })
+  })
+})
+
+describe('withReferenceHistogram', () => {
+  const months: MonthResult<DraftHistogramResult>[] = [
+    { month: JAN!, data: histResult(hist('T', 10, 20)), error: null },
+    { month: FEB!, data: histResult(hist('T', 12, 22)), error: null },
+  ]
+
+  it('puts the reference first, relabelled, and widens the domain over both', () => {
+    const merged = mergeMonthlyHistograms(months, 'T')
+    const out = withReferenceHistogram(merged, hist('T', 5, 40), 'Validation')
+
+    expect(out.tags).toEqual(['Validation', JAN!.label, FEB!.label])
+    expect(out.result.domain_min).toBe(5)
+    expect(out.result.domain_max).toBe(40)
+    expect(out.referenceMissing).toBe(false)
+  })
+
+  it('styles the reference neutral and dashed, leaving month colours alone', () => {
+    const merged = mergeMonthlyHistograms(months, 'T')
+    const out = withReferenceHistogram(merged, hist('T', 5, 40), 'Validation')
+
+    expect(out.styleMap.get('Validation')).toEqual({
+      color: 'var(--foreground)',
+      dashed: true,
+    })
+    expect(out.styleMap.get(JAN!.label)).toEqual(
+      merged.styleMap.get(JAN!.label),
+    )
+  })
+
+  it('returns the months untouched, flagged, when there is no reference', () => {
+    const merged = mergeMonthlyHistograms(months, 'T')
+    const out = withReferenceHistogram(merged, null, 'Validation')
+
+    expect(out.tags).toEqual(merged.tags)
+    expect(out.result.domain_min).toBe(merged.result.domain_min)
+    expect(out.referenceMissing).toBe(true)
+  })
+})
+
+function boxResult(...tags: DraftTagBoxplot[]): DraftBoxplotResult {
+  return { source_key: 'k', tags, insufficient_tags: [] }
+}
+
+describe('withReferenceBoxplot', () => {
+  it('puts the reference first and keeps the months', () => {
+    const merged = mergeMonthlyBoxplots(
+      [{ month: JAN!, data: boxResult(box('T')), error: null }],
+      'T',
+    )
+    const out = withReferenceBoxplot(merged, box('T'), 'Validation')
+
+    expect(out.tags).toEqual(['Validation', JAN!.label])
+    expect(out.styleMap.get('Validation')?.color).toBe('var(--foreground)')
+    expect(out.referenceMissing).toBe(false)
+  })
+
+  it('is flagged, and unchanged, with no reference', () => {
+    const merged = mergeMonthlyBoxplots(
+      [{ month: JAN!, data: boxResult(box('T')), error: null }],
+      'T',
+    )
+    const out = withReferenceBoxplot(merged, undefined, 'Validation')
+
+    expect(out.tags).toEqual(merged.tags)
+    expect(out.referenceMissing).toBe(true)
   })
 })
 

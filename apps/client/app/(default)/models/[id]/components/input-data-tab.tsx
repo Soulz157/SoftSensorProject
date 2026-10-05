@@ -41,8 +41,8 @@ interface Props {
 
 /**
  * The trained X feature list (`featureColumns`, from `GET
- * .../input-schema`) plus the Y target, each X row carrying a live drift
- * status, its last logged value, and when it was last seen.
+ * .../input-schema`) plus the Y target, each X row carrying a live PSI
+ * drift status, its last logged value, and when it was last seen.
  *
  * This used to read ONLY `points[].features` off the single most recent
  * `/predict` request (see git history) — a model with no served traffic
@@ -57,7 +57,7 @@ interface Props {
  * failure — both wrong for a display read on a model that may not be
  * deployed yet.
  *
- * `usePredictionMonitoring`'s `drift`/`points` are still the traffic side:
+ * `usePredictionMonitoring`'s `psi`/`points` are still the traffic side:
  * they answer "is this feature's live input healthy" and "what was its
  * last value", overlaid onto the schema's authoritative column list by
  * `buildInputFeatureRows` — a left join, so a column with no traffic still
@@ -65,7 +65,7 @@ interface Props {
  */
 export function InputDataTab({ model, frozenColumns, frozenSince }: Props) {
   const [range, setRange] = useState<TimeRange>('24h')
-  const { points, pointsLoading, pointsTruncated, drift } =
+  const { points, pointsLoading, pointsTruncated, psi } =
     usePredictionMonitoring(model, range)
   const {
     schema,
@@ -111,14 +111,14 @@ export function InputDataTab({ model, frozenColumns, frozenSince }: Props) {
       featureColumns: schema.featureColumns,
       versionId: schema.versionId,
       points,
-      drift,
+      psi,
       piStatus,
       derivedFeatures: schema.derivedFeatures,
       frozenColumns,
       tagObservations,
       frozenSince,
     })
-  }, [schema, points, drift, piStatus, frozenColumns])
+  }, [schema, points, psi, piStatus, frozenColumns])
 
   const latest = points[points.length - 1] ?? null
 
@@ -170,9 +170,9 @@ export function InputDataTab({ model, frozenColumns, frozenSince }: Props) {
       {schema?.featureColumns && (
         <p className="text-xs text-muted-foreground">
           Status is PI&apos;s own quality flag for each tag, read live — for a
-          derived feature, its source tags&apos; verdict. Drift is a separate
-          question: how far live inputs have moved from this version&apos;s
-          training distribution.
+          derived feature, its source tags&apos; verdict. Drift (PSI) is a
+          separate question: how far live inputs have moved from this
+          version&apos;s training distribution.
           {piStatus?.unavailableReason
             ? ` Status unavailable: ${piStatus.unavailableReason}`
             : ''}
@@ -208,13 +208,13 @@ export function InputDataTab({ model, frozenColumns, frozenSince }: Props) {
           </div>
         ) : (
           // `rows` is already the full `featureColumns` list at this point
-          // — a left join, never conditioned on `points`/`drift` having
+          // — a left join, never conditioned on `points`/`psi` having
           // resolved — so the table renders immediately and its status
-          // column fills in as drift/traffic loads, rather than blocking
+          // column fills in as PSI/traffic loads, rather than blocking
           // the whole X list behind a second spinner.
           <InputFeatureTable
             rows={rows}
-            driftThresholds={drift?.basis.thresholds}
+            psiThresholds={psi?.basis.thresholds}
           />
         )}
       </Card>

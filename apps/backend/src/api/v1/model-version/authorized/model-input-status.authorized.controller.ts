@@ -11,7 +11,7 @@ import { ModelInputStatusAuthorizedService } from './model-input-status.authoriz
  * blanking the whole feature list — see the service's own doc comment.
  *
  * Takes no time range: this is a "right now" snapshot read, unlike the
- * sibling `/drift` and `/psi` reads which pool a [from, to] window.
+ * sibling `/psi` read, which pools a [from, to] window.
  */
 @Controller('authorized/model/:modelId')
 @UseGuards(JwtAccessGuard)

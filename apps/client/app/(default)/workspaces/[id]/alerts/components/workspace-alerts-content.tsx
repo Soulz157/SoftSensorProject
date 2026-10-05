@@ -28,7 +28,7 @@ import {
   CheckCircle2,
   Activity,
   Cpu,
-  Gauge,
+  FlaskConical,
   Thermometer,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -37,7 +37,7 @@ import AlertsWorkspaceLoading from '../loading'
 import { useWorkspaceNodes } from '@/hooks/workspace/use-workspace-nodes'
 import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 
-type NodeType = 'machine' | 'sensor' | 'controller'
+type NodeType = 'reactor' | 'machine' | 'sensor'
 type AlertStatus = 'warning' | 'alarm' | 'offline'
 
 interface AlertRow {
@@ -53,8 +53,8 @@ function getNodeTypeIcon(type: NodeType) {
       return Cpu
     case 'sensor':
       return Thermometer
-    case 'controller':
-      return Gauge
+    case 'reactor':
+      return FlaskConical
     default:
       return Activity
   }

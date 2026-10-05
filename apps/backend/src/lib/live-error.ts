@@ -1,6 +1,6 @@
 /**
  * MODEL-SERVE-005-T03. Live error over joined (actual, predicted) pairs —
- * pure functions, no I/O, the same shape `lib/prediction-drift.ts` takes
+ * pure functions, no I/O, the same shape `lib/prediction-psi.ts` takes
  * for the drift half of this feature.
  *
  * WHY SUFFICIENT STATISTICS AND NOT PER-WINDOW METRICS. Lab truth arrives

@@ -24,36 +24,10 @@ export class PredictionLogAuthorizedController {
     return this.service.getPredictionSeriesService(modelId, query, user);
   }
 
-  @Get('/drift')
-  getDriftController(
-    @Param('modelId') modelId: string,
-    @Query() query: PredictionLogRangeQueryDto,
-    @Users() user: Auth.UserPayload,
-  ) {
-    return this.service.getDriftService(modelId, query, user);
-  }
-
-  /**
-   * MODEL-SERVE-008-T03. The DENSE drift readout — its own route, beside
-   * `/drift`, never instead of it. `/drift` keeps MODEL-SERVE-001-T17's
-   * plane dispatch and keeps answering the question its caption claims;
-   * this one evaluates the same thresholds per live-cadence bucket under a
-   * consecutive-breach rule. Two cadences must not share one table
-   * (MODEL-SERVE-001-T16), so they do not share one route either.
-   */
-  @Get('/live-drift')
-  getLiveDriftController(
-    @Param('modelId') modelId: string,
-    @Query() query: PredictionLogRangeQueryDto,
-    @Users() user: Auth.UserPayload,
-  ) {
-    return this.service.getLiveDriftService(modelId, query, user);
-  }
-
-  // MODEL-SERVE-001-T13. Same query contract as /drift (a caller passes
-  // whatever [from, to] it wants) — the SEPARATE CADENCE this metric needs
-  // (a wider window to clear the sample floor) is a client-side default
-  // range, not a server-side behaviour difference between the two routes.
+  // MODEL-SERVE-001-T13. The only input-drift route since MODEL-SERVE-028
+  // removed the z-score `/drift` and `/live-drift`. A caller passes whatever
+  // [from, to] it wants; the wider window this metric needs to clear its
+  // sample floor is a client-side default range.
   @Get('/psi')
   getPsiController(
     @Param('modelId') modelId: string,

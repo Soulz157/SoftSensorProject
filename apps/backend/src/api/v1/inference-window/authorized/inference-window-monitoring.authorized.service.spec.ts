@@ -1,6 +1,5 @@
 import { InferenceWindowMonitoringService } from './inference-window-monitoring.authorized.service';
 import { postToPython } from '@/lib/python-client';
-import { env } from '@/config/env.config';
 import { resetColumnBaselineCacheForTests } from '@/lib/artifact-baseline';
 
 // MODEL-SERVE-001-T21. `resolveColumnBaseline` (lib/artifact-baseline.ts)
@@ -158,7 +157,9 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       // discipline T29's own review follow-up applied to frozenColumns
       // after an inferred return type let a branch omit it.
       frozenSince: [],
-      thresholds: null,
+      // MODEL-SERVE-028. The schedule residual-SD bands, echoed whether or
+      // not drift watching is on (residual-SD is not gated by it).
+      thresholds: { warnSd: 1.5, criticalSd: 3.0 },
       // MODEL-SERVE-012. UNKNOWN with nulls, never a zero ratio: nothing has
       // been scored, so there is no spread to report.
       residualSd: {
@@ -232,9 +233,9 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     // The baseline IS fetched with monitoring off — frozen needs it for
     // guard (1) and for the eps range.
     expect(mockedPostToPython).toHaveBeenCalled();
-    // ...but no drift claim rides along: `thresholds` is null exactly when
-    // `driftMonitor` is false.
-    expect(result.thresholds).toBeNull();
+    // MODEL-SERVE-028. `thresholds` are the residual-SD bands now, not a
+    // drift claim, so they ride along with monitoring off too.
+    expect(result.thresholds).toEqual({ warnSd: 1.5, criticalSd: 3.0 });
   });
 
   it('is UNKNOWN when monitoring is on but there is no PRODUCTION version — never throws', async () => {
@@ -270,7 +271,7 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     });
   });
 
-  it('is UNKNOWN when monitoring is on but no window carries usable featureStats yet', async () => {
+  it('is UNKNOWN when monitoring is on but no window carries featureStats or histograms yet', async () => {
     const prisma = buildPrisma({
       inferenceSchedule: {
         findUnique: jest.fn().mockResolvedValue({
@@ -309,30 +310,36 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     expect(mockedPostToPython).not.toHaveBeenCalled();
   });
 
-  it("uses THIS schedule's own thresholds, not env defaults, to classify a real comparison", async () => {
-    mockedPostToPython.mockResolvedValue(COLUMN_STATS_RESPONSE);
+  it('grades drift by PSI alone: a PSI WARN over the rolling windows reads WARN/DRIFT_WARN (MODEL-SERVE-028)', async () => {
+    mockedPostToPython.mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/v1/preprocess/feature-spec'
+          ? {
+              source_key: PRODUCTION_VERSION.goldObjectKey,
+              feature_spec_key: 'feature_spec.json',
+              spec: {
+                psiRefEdges: { tag_a: [0, 1, 2] },
+                psiBinCount: { tag_a: 2 },
+                psiBinMode: { tag_a: 'continuous' },
+                psiRefCounts: { tag_a: [50, 50] },
+              },
+            }
+          : COLUMN_STATS_RESPONSE,
+      ),
+    );
     const prisma = buildPrisma({
       inferenceSchedule: {
         findUnique: jest.fn().mockResolvedValue({
-          // MODEL-SERVE-001-T26: an ENABLED schedule, with the cadence/lag
-          // `isStale` needs. Absent before, because nothing on this axis
-          // read them until liveness moved here.
           enabled: true,
           cadenceMinutes: 60,
           lagMinutes: 15,
-          // MODEL-SERVE-001-T28's bands. Quiet defaults, so every case below
-          // still asserts the drift verdict it was written for.
           skipStreakAlert: 3,
           missingPctWarn: 5,
           missingPctAlert: 20,
           frozenWindows: 3,
           frozenTolerancePct: 0,
           driftMonitor: true,
-          // Deliberately tight — a live mean of 12 against a baseline
-          // mean 10 / std 2 is z=1; warnSd here is 0.5, well below env's
-          // own 1.5 default, so this only reads WARN because the
-          // PER-SCHEDULE threshold was actually used.
-          warnSd: 0.5,
+          warnSd: 1.5,
           criticalSd: 3.0,
         }),
       },
@@ -343,8 +350,14 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
         findMany: jest.fn().mockResolvedValue([
           {
             windowStart: new Date(),
+            // A large mean shift on featureStats. It must NOT matter: the
+            // z-score axis is gone, and only the histogram below grades.
             featureStats: {
-              tag_a: { n: 10, sum: 120, sumsq: 1480, min: 8, max: 16 },
+              tag_a: { n: 10, sum: 1000, sumsq: 100_010, min: 99, max: 101 },
+            },
+            // 70/30 against a 50/50 reference -> PSI ~0.17, WARN (0.1-0.25).
+            featureHistograms: {
+              tag_a: { counts: [70, 30], below: 0, above: 0 },
             },
           },
         ]),
@@ -353,20 +366,39 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     });
     const service = makeService(prisma);
     const result = await service.getHealthStatus('model-1');
-    expect(result.status).toBe('WARN');
+    expect(result).toMatchObject({ status: 'WARN', reason: 'DRIFT_WARN' });
+    // The schedule bands are echoed as the residual-SD thresholds.
+    expect(result.thresholds).toEqual({ warnSd: 1.5, criticalSd: 3.0 });
   });
-});
 
-describe('InferenceWindowMonitoringService.getDriftReport', () => {
-  // The window-plane twin of the assertion in
-  // prediction-log.authorized.service.spec.ts. The panel's status tooltip
-  // explains a verdict by naming the threshold that produced it, and the
-  // client type makes `basis.thresholds` optional — so a plane that
-  // quietly stopped sending them would leave every tooltip on THIS plane
-  // (the one a scheduled model uses) with no criteria and no failure.
-  it('publishes the thresholds the comparison used', async () => {
-    mockedPostToPython.mockResolvedValue(COLUMN_STATS_RESPONSE);
+  it('is UNKNOWN when windows carry histograms but the artifact has no PSI reference', async () => {
+    mockedPostToPython.mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/v1/preprocess/feature-spec'
+          ? {
+              source_key: PRODUCTION_VERSION.goldObjectKey,
+              feature_spec_key: 'feature_spec.json',
+              spec: {},
+            }
+          : COLUMN_STATS_RESPONSE,
+      ),
+    );
     const prisma = buildPrisma({
+      inferenceSchedule: {
+        findUnique: jest.fn().mockResolvedValue({
+          enabled: true,
+          cadenceMinutes: 60,
+          lagMinutes: 15,
+          skipStreakAlert: 3,
+          missingPctWarn: 5,
+          missingPctAlert: 20,
+          frozenWindows: 3,
+          frozenTolerancePct: 0,
+          driftMonitor: true,
+          warnSd: 1.5,
+          criticalSd: 3.0,
+        }),
+      },
       modelVersion: {
         findFirst: jest.fn().mockResolvedValue(PRODUCTION_VERSION),
       },
@@ -374,26 +406,17 @@ describe('InferenceWindowMonitoringService.getDriftReport', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             windowStart: new Date(),
-            featureStats: {
-              tag_a: { n: 10, sum: 100, sumsq: 1040, min: 8, max: 12 },
+            featureStats: null,
+            featureHistograms: {
+              tag_a: { counts: [70, 30], below: 0, above: 0 },
             },
           },
         ]),
         findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
       },
     });
-
-    const service = makeService(prisma);
-    const result = await service.getDriftReport(
-      'model-1',
-      '2026-01-01T00:00:00.000Z',
-      '2026-01-01T01:00:00.000Z',
-    );
-
-    expect(result.data.basis.thresholds).toEqual({
-      warnSd: env.DRIFT_WARN_SD,
-      criticalSd: env.DRIFT_CRITICAL_SD,
-    });
+    const result = await makeService(prisma).getHealthStatus('model-1');
+    expect(result).toMatchObject({ status: 'UNKNOWN', reason: null });
   });
 });
 
@@ -417,51 +440,6 @@ describe('InferenceWindowMonitoringService target row (MODEL-SERVE-018)', () => 
       tag_a: { n: 10, sum: 100, sumsq: 1040, min: 8, max: 12 },
     },
   };
-
-  it('returns the target drift apart from the feature columns', async () => {
-    mockedPostToPython.mockResolvedValue(COLUMN_STATS_RESPONSE);
-    // live mean 51 vs train 50 +/- 5 -> z = 0.2
-    const service = makeService(
-      prismaWith([
-        {
-          ...WINDOW,
-          targetStats: { n: 2, sum: 102, sumsq: 5202, min: 51, max: 51 },
-        },
-      ]),
-    );
-
-    const { data } = await service.getDriftReport(
-      'model-1',
-      '2026-01-01T00:00:00.000Z',
-      '2026-01-01T01:00:00.000Z',
-    );
-
-    expect(data.targetColumn).toBe('y_lab');
-    expect(data.target?.column).toBe('y_lab');
-    expect(data.target?.z).toBeCloseTo(0.2);
-    expect(data.columns.map((c) => c.column)).toEqual(['tag_a']);
-  });
-
-  it('a CRITICAL target never raises the report status (display-only)', async () => {
-    mockedPostToPython.mockResolvedValue(COLUMN_STATS_RESPONSE);
-    const without = await makeService(
-      prismaWith([{ ...WINDOW, targetStats: null }]),
-    ).getDriftReport('model-1', '2026-01-01', '2026-01-02');
-    // live mean 100 vs train 50 +/- 5 -> z = 10
-    const withTarget = await makeService(
-      prismaWith([
-        {
-          ...WINDOW,
-          targetStats: { n: 1, sum: 100, sumsq: 10000, min: 100, max: 100 },
-        },
-      ]),
-    ).getDriftReport('model-1', '2026-01-01', '2026-01-02');
-
-    expect(withTarget.data.target?.status).toBe('CRITICAL');
-    expect(withTarget.data.status).toBe(without.data.status);
-    expect(withTarget.data.columns).toEqual(without.data.columns);
-    expect(without.data.target).toBeNull();
-  });
 
   it('PSI target is null when no window carries a target histogram', async () => {
     mockedPostToPython.mockRejectedValue(new Error('no spec'));

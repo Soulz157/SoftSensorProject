@@ -8,13 +8,11 @@ import type {
 } from '@/services/model-monitoring'
 
 /**
- * MODEL-SERVE-001-T13/T16. `PsiPanel` is a card fully independent of
- * `DriftPanel` — it takes no drift-related props at all (see
- * `empty-states.test.tsx`'s own negative-space check that `DriftPanel` no
- * longer accepts PSI props). That independence is the structural fix this
- * rebuild makes: the previous merged component gated a perfectly good PSI
- * report behind the Z-SCORE's own loading/empty/unavailable rungs, so this
- * file never needs to render `DriftPanel` at all to prove PSI's own states.
+ * MODEL-SERVE-001-T13/T16. `PsiPanel` owns its own loading/empty/
+ * unavailable rungs — the original merged component gated a PSI report
+ * behind the z-score's rungs. Since MODEL-SERVE-028 it is the only drift
+ * card (the z-score `DriftPanel` was removed), so these tests are the whole
+ * of the drift card's state coverage.
  */
 
 function makeBins(overrides: Partial<ColumnBins> = {}): ColumnBins {
@@ -89,13 +87,10 @@ describe('PsiPanel', () => {
     ).toBeVisible()
   })
 
-  // The monitoring tab's two cards were given the traffic-light vocabulary
-  // (Good / WARN / CRITICAL) while the INLINE badges — the Input Data
-  // feature table, the retrain dialog's context strip — deliberately kept
-  // the raw `OK` token, because there a drift badge sits beside a PI health
-  // badge that already owns the word "Good". Nothing else pins the card's
-  // side of that split, so a revert to the old pass-through label would
-  // have shipped silently.
+  // Every monitoring badge (card, Input Data table, retrain dialog) shares
+  // one vocabulary from `lib/drift-status-style.ts`, where the wire `OK`
+  // displays as "Good". This pins the card's use of it, so a revert to the
+  // old pass-through label would not ship silently.
   it('renders the wire status OK as "Good" on the card', () => {
     render(
       <PsiPanel
