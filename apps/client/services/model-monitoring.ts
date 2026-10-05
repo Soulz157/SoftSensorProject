@@ -172,6 +172,10 @@ export interface PsiReport {
       warn: number
       critical: number
       minSamplesPerBin: number
+      /** MODEL-SERVE-029. `outOfRangePct` cutoffs (percent of liveTotal)
+       *  — graded beside PSI; the column status is the worse of the two. */
+      outOfRangeWarnPct: number
+      outOfRangeCriticalPct: number
     }
     /** The floor substituted for a zero bin proportion before `ln` — T13's
      *  own instruction that this must be STATED, never hidden in a

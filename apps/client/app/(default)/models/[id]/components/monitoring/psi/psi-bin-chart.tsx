@@ -48,9 +48,8 @@ const config = {
  * `<lo`/`>hi` render as FLANKING bars, separated from the frozen bins by a
  * blank category (a `null`-valued row draws no bar but still reserves the
  * axis slot) — reference is 0% there BY CONSTRUCTION, since every training
- * value sits inside its own derived edges. Omitted entirely for a
- * categorical tag (`resolvePsiOverflow` returns `null`): that bucketing has
- * no "out of range" concept, so a flanking bar would be noise.
+ * value sits inside its own derived edges. Shown for categorical tags too
+ * (MODEL-SERVE-029): an unseen state past either end is overflow there.
  *
  * NO STATUS COLORS in the bars. The summary card's badge now DOES carry
  * the traffic-light vocabulary (`MONITORING_STATUS_CLASS`), which makes

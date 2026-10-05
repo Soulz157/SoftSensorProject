@@ -36,7 +36,7 @@ function psiReport(target: PsiColumn | null): PsiReport {
       histogramRequests: 3,
       from: '2026-01-01T00:00:00.000Z',
       to: '2026-01-01T01:00:00.000Z',
-      thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
+      thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
       epsilon: 0.0001,
     },
   }

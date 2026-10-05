@@ -87,17 +87,15 @@ export interface PsiOverflowSide {
 }
 
 /**
- * `null` for a categorical tag — `psi.py`'s own bucketing has no
- * "out of range" concept there (the nearest trained value is always a
- * match, by construction), so `below`/`above` are structurally always
- * zero and a flanking bar for them would be noise, not information.
+ * Both bin modes (MODEL-SERVE-029): a categorical tag now has real
+ * overflow too — `psi.py` counts a value further than half the smallest
+ * gap between trained states past either end (or, for a single-value tag,
+ * any other value) as `below`/`above` rather than its nearest state.
  */
 export function resolvePsiOverflow(
   bins: ColumnBins,
   liveTotal: number,
-): { below: PsiOverflowSide; above: PsiOverflowSide } | null {
-  if (bins.binMode === 'categorical') return null
-
+): { below: PsiOverflowSide; above: PsiOverflowSide } {
   return {
     below: {
       label: '<lo',

@@ -93,17 +93,22 @@ describe('RetrainEventMetricGrid (MODEL-SERVE-026-T03)', () => {
     // Candidate RMSE at 2 lab events: sqrt((0 + 100) / 2) = 7.0711 — NOT the
     // server's diluted 3.1623, which stays beneath it as "all rows".
     expect(await screen.findByText('7.0711')).toBeInTheDocument()
-    expect(screen.getAllByText('at 2 lab events')).toHaveLength(3)
+    // Both columns, all three cards: "at 2 lab events" under each figure.
+    expect(screen.getAllByText('at 2 lab events')).toHaveLength(6)
     expect(screen.getByText('all rows 3.1623')).toBeInTheDocument()
-    // RMSE and MAE are both 5 for a constant 5-off prediction: two cells.
-    expect(
-      screen.getAllByText('current v1 5.0000 at lab events · 5.0000 all rows'),
-    ).toHaveLength(2)
+    // New and current sit side by side under their own headers, same size.
+    expect(screen.getAllByText('New')).toHaveLength(3)
+    expect(screen.getAllByText('Current v1')).toHaveLength(3)
+    // RMSE and MAE are both 5 for a constant 5-off prediction: two cells
+    // with that all-row figure beneath the current version's.
+    expect(screen.getAllByText('all rows 5.0000')).toHaveLength(2)
     // The headline flips: all rows said improved; at lab events it regressed.
     expect(
       screen.getByText(/At lab events, RMSE regressed by/),
     ).toBeInTheDocument()
-    expect(screen.getByText('2.0711')).toBeInTheDocument()
+    // The RMSE card says the same, in words, from the same lab-event figures.
+    expect(screen.getAllByText('2.0711').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('New worse').length).toBeGreaterThanOrEqual(1)
   })
 
   it('shows no lab-event delta when the server did not call the two comparable', async () => {
@@ -120,5 +125,34 @@ describe('RetrainEventMetricGrid (MODEL-SERVE-026-T03)', () => {
     )
     expect(await screen.findByText('7.0711')).toBeInTheDocument()
     expect(screen.queryByText(/At lab events, RMSE/)).toBeNull()
+  })
+
+  it('shows no card verdict when the two sides stand on different bases', async () => {
+    // New version at lab events; current version has no source run, so its
+    // figure falls back to all rows. A verdict from the all-row pair
+    // (3.1623 vs 5.0000, "better") would contradict the 7.0711 on screen.
+    render(
+      <RetrainEventMetricGrid
+        view={{
+          ...view(true),
+          incumbentMetricsBasis: {
+            ...windowBasis,
+            frame: 'INCUMBENT_TEST_SPLIT',
+          },
+        }}
+        currentVersion={1}
+        candidateVersion={2}
+        ids={{
+          modelId: 'm-c',
+          candidateRunId: 'cand',
+          incumbentSourceRunId: null,
+        }}
+      />,
+    )
+    expect(await screen.findByText('7.0711')).toBeInTheDocument()
+    expect(screen.getAllByText('New v2')).toHaveLength(3)
+    expect(screen.getAllByText('all rows')).toHaveLength(3)
+    expect(screen.queryByText(/New (better|worse)/)).toBeNull()
+    expect(screen.queryByText('No change')).toBeNull()
   })
 })

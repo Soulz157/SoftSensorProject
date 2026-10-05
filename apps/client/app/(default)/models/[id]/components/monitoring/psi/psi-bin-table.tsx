@@ -23,7 +23,7 @@ interface Props {
  * (`lib/psi-bins.ts`) already branch on `binMode` for edge semantics — this
  * component only renders their result, never re-derives a range itself.
  *
- * Overflow rows (continuous only) are visually set apart (`bg-muted/10`)
+ * Overflow rows (both bin modes since MODEL-SERVE-029) are visually set apart (`bg-muted/10`)
  * and their own footnote states the DIFFERENT denominator explicitly:
  * `liveTotal` (the column's full population) for `<lo`/`>hi`, vs.
  * `liveInRangeTotal` (bins only) for every bin row — the two must never be
@@ -159,9 +159,7 @@ export function PsiBinTable({ bins, liveTotal }: Props) {
         </tbody>
       </table>
       <p className="border-t border-border px-3 py-2 text-[10px] text-muted-foreground/70">
-        {overflow
-          ? `Overflow rows (<lo/>hi) are a percentage of all ${liveTotal} live rows. Bin rows are a percentage of the ${bins.liveInRangeTotal} rows that fell inside the trained range — the two denominators differ.`
-          : `Percentages are of the ${bins.liveInRangeTotal} live rows for this categorical tag.`}
+        {`Overflow rows (<lo/>hi) are a percentage of all ${liveTotal} live rows. Bin rows are a percentage of the ${bins.liveInRangeTotal} rows that fell inside the trained range — the two denominators differ.`}
       </p>
     </div>
   )

@@ -1,17 +1,25 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import { ArrowUpCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatMetricValue } from '@/lib/model-evaluation'
 import type { ComparisonView } from '@/lib/retrain'
 import {
+  CURRENT_USED_FOR,
+  describeCurrentBasis,
   describeEvalBasis,
   describeTrainingComposition,
   describeUsedFor,
 } from '@/lib/retrain-basis'
+import { compareMetric } from '@/lib/retrain-metric-compare'
 import type { ModelVersionNumber } from '@/lib/model-version-number'
 import { BasisLabEvents, type LabEventIds } from './basis-lab-events'
 import { RetrainEventMetricGrid } from './retrain-event-metric-grid'
+import {
+  RetrainMetricCompareCard,
+  versionColumnLabel,
+} from './retrain-metric-compare-card'
 import { RetrainPairedEvents } from './retrain-paired-events'
 import { RetrainCvGap } from './retrain-cv-gap'
 import { RetrainAttribution } from './retrain-attribution'
@@ -136,25 +144,53 @@ export function RetrainCompareSection({
         </p>
       )}
 
-      {/* MODEL-SERVE-019-D02/T04. Every metric panel names its own basis —
-          range and row count — and which role it plays
-          (COMPARE_TO_PRODUCTION here). A candidate whose basis was never
-          recorded (a job created before that feature) shows no label rather
-          than a fabricated one. */}
-      {view.candidateMetricsBasis && (
-        <p className="text-[10px] text-muted-foreground">
-          {describeEvalBasis(view.candidateMetricsBasis, versionLabel)}
-          {labEventIds && (
-            <BasisLabEvents
-              basis={view.candidateMetricsBasis}
-              role="candidate"
-              ids={labEventIds}
-            />
-          )}
-          {' · '}
-          {describeUsedFor(view.candidateMetricsBasis.usedFor)}
+      {/* MODEL-SERVE-019-D02/T04 + AC3. Every metric panel names its own
+          basis — range and row count — and which role it plays, for BOTH
+          versions, paired in one block above the grid so the two can be
+          read against each other (they used to sit above and below the
+          grid). A candidate whose basis was never recorded (a job created
+          before that feature) shows no row rather than a fabricated one;
+          the current version's row is always present — buildComparison
+          always resolves its basis. */}
+      <div className="space-y-1 rounded-md border border-border bg-muted/10 p-2.5">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          Scored on
         </p>
-      )}
+        {view.candidateMetricsBasis && (
+          <BasisRow
+            label={versionColumnLabel('New', candidateVersion)}
+            description={
+              <>
+                {describeEvalBasis(view.candidateMetricsBasis, versionLabel)}
+                {labEventIds && (
+                  <BasisLabEvents
+                    basis={view.candidateMetricsBasis}
+                    role="candidate"
+                    ids={labEventIds}
+                  />
+                )}
+              </>
+            }
+            usedFor={describeUsedFor(view.candidateMetricsBasis.usedFor)}
+          />
+        )}
+        <BasisRow
+          label={versionColumnLabel('Current', currentVersion)}
+          description={
+            <>
+              {describeCurrentBasis(view.incumbentMetricsBasis, versionLabel)}
+              {labEventIds && (
+                <BasisLabEvents
+                  basis={view.incumbentMetricsBasis}
+                  role="incumbent"
+                  ids={labEventIds}
+                />
+              )}
+            </>
+          }
+          usedFor={CURRENT_USED_FOR}
+        />
+      </div>
       {/* MODEL-SERVE-026-T03. With ids, the lab-event figure leads and the
           all-row figure sits beneath it, labelled; without, today's grid. */}
       {labEventIds ? (
@@ -162,6 +198,7 @@ export function RetrainCompareSection({
           <RetrainEventMetricGrid
             view={view}
             currentVersion={currentVersion}
+            candidateVersion={candidateVersion}
             ids={labEventIds}
           />
           {/* MODEL-SERVE-026-T04. Only where both versions were scored on
@@ -199,44 +236,28 @@ export function RetrainCompareSection({
           ) : null}
         </>
       ) : (
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           {METRICS.map(({ key, label }) => (
-            <div
+            <RetrainMetricCompareCard
               key={key}
-              className="flex flex-col gap-1 rounded-md bg-muted/30 p-3 ring-1 ring-foreground/20"
-            >
-              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                {label}
-              </p>
-              <p className="text-lg font-semibold tabular-nums text-foreground">
-                {formatMetricValue(view.candidateMetrics[key])}
-              </p>
-              <p className="text-[10px] text-muted-foreground">
-                current v{currentVersion}{' '}
-                {formatMetricValue(view.incumbentMetrics[key])}
-              </p>
-            </div>
+              label={label}
+              newLabel={versionColumnLabel('New', candidateVersion)}
+              currentLabel={versionColumnLabel('Current', currentVersion)}
+              newValue={view.candidateMetrics[key]}
+              currentValue={view.incumbentMetrics[key]}
+              comparison={
+                view.comparable
+                  ? compareMetric(
+                      key,
+                      view.candidateMetrics[key],
+                      view.incumbentMetrics[key],
+                    )
+                  : null
+              }
+            />
           ))}
         </div>
       )}
-      {/* MODEL-SERVE-019 AC3. The current version's OWN figure names its
-          basis too — not only the candidate's. Always present (unlike the
-          candidate's basis fields, which are null for a legacy job):
-          buildComparison always resolves this one. */}
-      <p className="text-[10px] text-muted-foreground">
-        {describeEvalBasis(
-          view.incumbentMetricsBasis,
-          versionLabel,
-          'incumbent',
-        )}
-        {labEventIds && (
-          <BasisLabEvents
-            basis={view.incumbentMetricsBasis}
-            role="incumbent"
-            ids={labEventIds}
-          />
-        )}
-      </p>
 
       {/* MODEL-SERVE-015-T04 / MODEL-SERVE-020. The new version's OWN test
           data over the combined (existing + new) data — the score that picks
@@ -314,6 +335,28 @@ export function RetrainCompareSection({
           </Button>
         </div>
       )}
+    </div>
+  )
+}
+
+/** One row of the "Scored on" block: a fixed-width version label, then
+ *  what that version's figure was computed on and what it is used for. */
+function BasisRow({
+  label,
+  description,
+  usedFor,
+}: {
+  label: string
+  description: ReactNode
+  usedFor: string | null
+}) {
+  return (
+    <div className="grid grid-cols-[5.5rem_1fr] gap-2 text-[10px]">
+      <p className="font-medium text-foreground">{label}</p>
+      <div className="min-w-0 text-muted-foreground">
+        <p>{description}</p>
+        {usedFor && <p>{usedFor}</p>}
+      </div>
     </div>
   )
 }

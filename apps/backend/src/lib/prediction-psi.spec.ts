@@ -10,6 +10,8 @@ const THRESHOLDS: PsiThresholds = {
   warn: 0.1,
   critical: 0.25,
   minSamplesPerBin: 20,
+  outOfRangeWarnPct: 5,
+  outOfRangeCriticalPct: 20,
 };
 
 describe('poolHistograms', () => {
@@ -153,6 +155,8 @@ describe('computePsi', () => {
     const report = computePsi(live, reference, THRESHOLDS);
     expect(report.columns[0].outOfRangePct).toBeCloseTo(10, 5);
     expect(report.columns[0].psi).toBeCloseTo(0, 5); // in-range shape unchanged
+    // MODEL-SERVE-029: 10% out of range is graded on its own (>= 5% warn).
+    expect(report.columns[0].status).toBe('WARN');
 
     // T16: ONE fact, one representation — `outOfRangePct` and
     // `bins.below`/`bins.above` are the same measurement. A drill-down
@@ -291,5 +295,79 @@ describe('computePsi', () => {
     expect(report.columns[0].bins?.edges).toBe(frozenEdges);
     expect(report.columns[0].bins?.refCounts).toBe(frozenRefCounts);
     expect(report.columns[0].bins?.liveCounts).toBe(live.X?.counts);
+  });
+});
+
+describe('computePsi out-of-range grading (MODEL-SERVE-029)', () => {
+  const reference: PsiReferenceMap = {
+    X: {
+      binMode: 'continuous',
+      binCount: 2,
+      edges: [0, 1, 2],
+      refCounts: [50, 50],
+    },
+  };
+
+  it('every live sample outside the trained range is CRITICAL with psi null, never OK', () => {
+    // The exact Bins.md R1 repro: liveInRangeTotal 0 used to give NaN -> OK.
+    const report = computePsi(
+      { X: { counts: [0, 0], below: 0, above: 300 } },
+      reference,
+      THRESHOLDS,
+    );
+    const col = report.columns[0];
+    expect(col.status).toBe('CRITICAL');
+    expect(col.psi).toBeNull();
+    expect(col.outOfRangePct).toBe(100);
+    expect(col.reason).toBe(
+      'all 300 live sample(s) fell outside the trained range',
+    );
+    expect(col.bins?.liveInRangeTotal).toBe(0);
+    expect(report.status).toBe('CRITICAL');
+  });
+
+  it('below the out-of-range warn threshold, the PSI verdict stands alone', () => {
+    // 4% out of range, in-range shape identical to the reference.
+    const col = computePsi(
+      { X: { counts: [48, 48], below: 4, above: 0 } },
+      reference,
+      THRESHOLDS,
+    ).columns[0];
+    expect(col.outOfRangePct).toBeCloseTo(4, 10);
+    expect(col.status).toBe('OK');
+    expect(col.reason).toBeUndefined();
+  });
+
+  it('out-of-range share >= warn raises an otherwise-OK column to WARN, with a reason', () => {
+    const col = computePsi(
+      { X: { counts: [47, 47], below: 6, above: 0 } },
+      reference,
+      THRESHOLDS,
+    ).columns[0];
+    expect(col.psi).toBeCloseTo(0, 10);
+    expect(col.status).toBe('WARN');
+    expect(col.reason).toBe('6.0% of live samples outside the trained range');
+  });
+
+  it('out-of-range share >= critical raises the column to CRITICAL', () => {
+    const col = computePsi(
+      { X: { counts: [40, 35], below: 0, above: 25 } },
+      reference,
+      THRESHOLDS,
+    ).columns[0];
+    expect(col.status).toBe('CRITICAL');
+    expect(col.psi).not.toBeNull();
+  });
+
+  it('a worse PSI verdict is kept, with no out-of-range reason', () => {
+    // PSI CRITICAL on shape alone; 6% out of range would only be WARN.
+    const col = computePsi(
+      { X: { counts: [90, 4], below: 6, above: 0 } },
+      reference,
+      THRESHOLDS,
+    ).columns[0];
+    expect(col.psi).toBeGreaterThanOrEqual(0.25);
+    expect(col.status).toBe('CRITICAL');
+    expect(col.reason).toBeUndefined();
   });
 });

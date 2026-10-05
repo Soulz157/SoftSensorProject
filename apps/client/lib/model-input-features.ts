@@ -35,6 +35,8 @@ export interface InputFeatureRow {
    *  rows-vs-floor line on INSUFFICIENT_DATA. */
   psiLiveTotal: number
   psiBins: ColumnBins | null
+  /** MODEL-SERVE-029. Graded beside PSI — the tooltip quotes it. */
+  psiOutOfRangePct: number | null
   /** MODEL-SERVE-001-T15. PI's OWN quality flag for this tag, read live —
    *  a different question from `driftStatus` ("has the distribution moved
    *  since training"), and the one this tab is actually for. `UNKNOWN`
@@ -220,6 +222,7 @@ export function buildInputFeatureRows({
       psi: psiCol?.psi ?? null,
       psiLiveTotal: psiCol?.liveTotal ?? 0,
       psiBins: psiCol?.bins ?? null,
+      psiOutOfRangePct: psiCol?.outOfRangePct ?? null,
       piStatus: piCol?.status ?? 'UNKNOWN',
       piReason: piCol?.reason,
       failingSources: piCol?.failingSources,

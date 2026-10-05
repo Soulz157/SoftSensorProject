@@ -9,7 +9,12 @@ import {
   type LabEventSource,
 } from '@/lib/retrain-lab-events'
 import { useLabEventCount } from '@/hooks/model/use-lab-event-count'
+import { compareMetric } from '@/lib/retrain-metric-compare'
 import type { LabEventIds } from './basis-lab-events'
+import {
+  RetrainMetricCompareCard,
+  versionColumnLabel,
+} from './retrain-metric-compare-card'
 
 const METRICS: { key: 'rmse' | 'r2' | 'mae'; label: string }[] = [
   { key: 'rmse', label: 'RMSE' },
@@ -32,10 +37,13 @@ const NOT_REQUESTED: LabEventSource = {
 export function RetrainEventMetricGrid({
   view,
   currentVersion,
+  candidateVersion = null,
   ids,
 }: {
   view: ComparisonView
   currentVersion: number | null
+  /** The new version's number for its column header; null = "New". */
+  candidateVersion?: number | null
   ids: LabEventIds
 }) {
   const candidate = useLabEventCount(
@@ -52,40 +60,54 @@ export function RetrainEventMetricGrid({
 
   return (
     <>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         {METRICS.map(({ key, label }) => {
           const cand = primaryFigure(candidate, key, view.candidateMetrics[key])
           const inc = primaryFigure(incumbent, key, view.incumbentMetrics[key])
+          // The delta is taken ONLY from the two figures on screen, and only
+          // when both stand on the same basis. With one side at lab events
+          // and the other on all rows, a verdict from the all-row pair could
+          // contradict the two numbers the reader is looking at — so the
+          // card shows none, and the all-row sentence below the grid speaks
+          // for that comparison instead.
+          const sameBasis = cand.basis !== 'pending' && cand.basis === inc.basis
+          const comparison =
+            view.comparable && sameBasis
+              ? compareMetric(key, cand.value, inc.value)
+              : null
           return (
-            <div
+            <RetrainMetricCompareCard
               key={key}
-              className="flex flex-col gap-1 rounded-md bg-muted/30 p-3 ring-1 ring-foreground/20"
-            >
-              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                {label}
-              </p>
-              <p className="text-lg font-semibold tabular-nums text-foreground">
-                {cand.basis === 'pending' ? '…' : formatMetricValue(cand.value)}
-              </p>
-              <p className="text-[10px] text-muted-foreground">
-                {cand.basis === 'events'
-                  ? `at ${cand.events.toLocaleString()} lab events`
+              label={label}
+              newLabel={versionColumnLabel('New', candidateVersion)}
+              currentLabel={versionColumnLabel('Current', currentVersion)}
+              newValue={cand.basis === 'pending' ? 'pending' : cand.value}
+              currentValue={inc.basis === 'pending' ? 'pending' : inc.value}
+              newNotes={
+                cand.basis === 'events'
+                  ? [
+                      `at ${cand.events.toLocaleString()} lab events`,
+                      `all rows ${formatMetricValue(view.candidateMetrics[key])}`,
+                    ]
                   : cand.basis === 'all-rows'
-                    ? `all rows — lab events unavailable (${cand.reason})`
-                    : 'scoring at lab events…'}
-              </p>
-              {cand.basis === 'events' && (
-                <p className="text-[10px] text-muted-foreground">
-                  all rows {formatMetricValue(view.candidateMetrics[key])}
-                </p>
-              )}
-              <p className="text-[10px] text-muted-foreground">
-                current v{currentVersion}{' '}
-                {inc.basis === 'events'
-                  ? `${formatMetricValue(inc.value)} at lab events · ${formatMetricValue(view.incumbentMetrics[key])} all rows`
-                  : `${formatMetricValue(view.incumbentMetrics[key])} all rows`}
-              </p>
-            </div>
+                    ? [`all rows — lab events unavailable (${cand.reason})`]
+                    : ['scoring at lab events…']
+              }
+              currentNotes={
+                inc.basis === 'events'
+                  ? [
+                      `at ${inc.events.toLocaleString()} lab events`,
+                      `all rows ${formatMetricValue(view.incumbentMetrics[key])}`,
+                    ]
+                  : inc.basis === 'all-rows'
+                    ? ['all rows']
+                    : ['scoring at lab events…']
+              }
+              comparison={comparison}
+              comparisonNote={
+                cand.basis === 'events' ? 'at lab events' : 'all rows'
+              }
+            />
           )
         })}
       </div>

@@ -68,7 +68,7 @@ const PSI_REPORT = {
     histogramRequests: 1,
     from: '2026-09-03T10:00:00.000Z',
     to: '2026-09-04T10:00:00.000Z',
-    thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
+    thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
     epsilon: 1e-4,
   },
 }

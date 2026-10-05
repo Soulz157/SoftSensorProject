@@ -41,7 +41,7 @@ describe('target tooltips', () => {
   it('psi: target wording at CRITICAL, never "this input" or "predicting on data"', () => {
     const out = explainTargetPsi(
       { psi: 0.4, status: 'CRITICAL', liveTotal: 100, bins: null },
-      { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
+      { warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
     )
     expect(out.meaning).toMatch(/^The target’s live distribution/)
     expect(out.meaning).not.toMatch(/this input|predicting on data/i)
@@ -52,7 +52,7 @@ describe('target tooltips', () => {
   it('psi: target wording for every status, including OK', () => {
     const out = explainTargetPsi(
       { psi: 0.01, status: 'OK', liveTotal: 100, bins: null },
-      { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
+      { warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
     )
     expect(out.meaning).toMatch(/^The target’s live distribution/)
     expect(out.meaning).not.toMatch(/this input/i)

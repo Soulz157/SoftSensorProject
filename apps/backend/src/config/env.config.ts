@@ -163,6 +163,16 @@ export const env = {
   PSI_WARN: Number(process.env.PSI_WARN ?? 0.1),
   PSI_CRITICAL: Number(process.env.PSI_CRITICAL ?? 0.25),
   PSI_MIN_SAMPLES_PER_BIN: Number(process.env.PSI_MIN_SAMPLES_PER_BIN ?? 20),
+  // MODEL-SERVE-029. Out-of-range grading — the share of live samples
+  // (percent of liveTotal) outside a tag's frozen trained edges, graded by
+  // its own rule beside PSI because PSI's formula cannot see that mass at
+  // all (the reference has no below/above bin to compare against). 5/20
+  // are a CONVENTIONAL starting point chosen 2026-10-05, not measured
+  // against this plant's data — label them as convention, like PSI_WARN.
+  PSI_OUT_OF_RANGE_WARN_PCT: Number(process.env.PSI_OUT_OF_RANGE_WARN_PCT ?? 5),
+  PSI_OUT_OF_RANGE_CRITICAL_PCT: Number(
+    process.env.PSI_OUT_OF_RANGE_CRITICAL_PCT ?? 20,
+  ),
 
   // MODEL-SERVE-006. The scheduler tick — same `<= 0` disables / `.unref()`
   // shape ModelDraftCleanupAdminService's own MODEL_DRAFT_SWEEP_INTERVAL_MS

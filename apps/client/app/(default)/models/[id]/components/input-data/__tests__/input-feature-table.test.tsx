@@ -18,6 +18,7 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
     psi: null,
     psiLiveTotal: 0,
     psiBins: null,
+    psiOutOfRangePct: null,
     piStatus: 'UNKNOWN',
     piReason: undefined,
     failingSources: undefined,
@@ -160,7 +161,7 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
     render(
       <InputFeatureTable
         rows={[row({ column: 'TI010.PV', driftStatus: 'OK', psi: 0.04 })]}
-        psiThresholds={{ warn: 0.1, critical: 0.25, minSamplesPerBin: 20 }}
+        psiThresholds={{ warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 }}
       />,
     )
 

@@ -650,7 +650,8 @@ describe('RetrainProgress — result (T04/T06)', () => {
       />,
     )
 
-    expect(screen.getByText('current v3 1.2500')).toBeInTheDocument()
+    expect(screen.getAllByText('Current v3').length).toBeGreaterThanOrEqual(3)
+    expect(screen.getByText('1.2500')).toBeInTheDocument()
     expect(screen.queryByText(/incumbent/i)).not.toBeInTheDocument()
   })
 
@@ -664,9 +665,13 @@ describe('RetrainProgress — result (T04/T06)', () => {
     )
 
     expect(screen.getByText('0.7500')).toBeInTheDocument()
-    expect(screen.getByText('current v3 1.2500')).toBeInTheDocument()
+    expect(screen.getByText('1.2500')).toBeInTheDocument()
     expect(screen.getByText(/improved/i)).toBeInTheDocument()
-    expect(screen.getByText('0.5000')).toBeInTheDocument()
+    // The RMSE card carries the 0.5000 difference too, and says which side
+    // it favours in words, not color.
+    expect(
+      screen.getAllByText('New better').map(el => el.closest('p')?.textContent),
+    ).toContain('▼ 0.5000 lower — New better')
   })
 
   it('states the reason and shows no delta when the bases are not comparable', () => {
@@ -698,7 +703,8 @@ describe('RetrainProgress — result (T04/T06)', () => {
     expect(screen.queryByText(/improved|regressed/i)).not.toBeInTheDocument()
     // Both raw metric triples stay on screen even with no delta.
     expect(screen.getByText('0.7500')).toBeInTheDocument()
-    expect(screen.getByText('current v3 1.2500')).toBeInTheDocument()
+    expect(screen.getByText('1.2500')).toBeInTheDocument()
+    expect(screen.queryByText(/New (better|worse)/)).not.toBeInTheDocument()
   })
 
   // MODEL-SERVE-019. User rule (2026-09-28): none of these words ever reach

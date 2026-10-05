@@ -57,11 +57,33 @@ def test_bucket_value_categorical_matches_nearest_trained_value() -> None:
     assert bucket_value(0.9, edges, "categorical") == (1, None)
 
 
-def test_bucket_value_categorical_never_reports_overflow() -> None:
-    """Some trained value is always nearest — no "out of range" concept."""
+def test_bucket_value_categorical_overflow_past_half_the_smallest_gap() -> None:
+    """MODEL-SERVE-029: a state never seen in training (a valve trained on
+    {0, 1} now reading 2) is overflow, not silently its nearest state. The
+    tolerance past either end is half the smallest gap (0.5 here)."""
     edges = [0.0, 1.0]
-    assert bucket_value(999.0, edges, "categorical") == (1, None)
-    assert bucket_value(-999.0, edges, "categorical") == (0, None)
+    assert bucket_value(2.0, edges, "categorical") == (None, "above")
+    assert bucket_value(-999.0, edges, "categorical") == (None, "below")
+    assert bucket_value(1.5, edges, "categorical") == (1, None)
+    assert bucket_value(-0.5, edges, "categorical") == (0, None)
+    assert bucket_value(1.5001, edges, "categorical") == (None, "above")
+
+
+def test_bucket_value_categorical_tolerance_uses_the_smallest_gap() -> None:
+    edges = [0.0, 1.0, 10.0]
+    assert bucket_value(10.5, edges, "categorical") == (2, None)
+    assert bucket_value(10.6, edges, "categorical") == (None, "above")
+    # Between two trained states: still the nearest one, by design.
+    assert bucket_value(4.0, edges, "categorical") == (1, None)
+
+
+def test_bucket_value_single_value_categorical_needs_an_exact_match() -> None:
+    """A single-value tag has no gap: anything else is overflow, so its PSI
+    can no longer be 0 forever."""
+    edges = [5.0]
+    assert bucket_value(5.0, edges, "categorical") == (0, None)
+    assert bucket_value(5.1, edges, "categorical") == (None, "above")
+    assert bucket_value(4.9, edges, "categorical") == (None, "below")
 
 
 # ── bucket_histogram ─────────────────────────────────────────────────────
@@ -181,3 +203,42 @@ def test_quantile_edges_continuous_ref_counts_reflect_real_skew_not_uniform() ->
 
 def test_quantile_edges_min_psi_bins_is_two() -> None:
     assert MIN_PSI_BINS == 2
+
+
+# ── MODEL-SERVE-029: edges cover the train range; bounded fallback ──────
+
+
+def test_quantile_edges_rounding_never_drops_the_train_min_or_max() -> None:
+    """6dp rounding moved edges[0] to 1.234568 (above the 1.2345678 min) and
+    edges[-1] to 12.987654 (below the max): 10 of 12 values were counted."""
+    values = np.array([1.2345678] + [float(i) for i in range(2, 12)] + [12.9876543])
+    result = quantile_edges(values)
+    assert result["binMode"] == "continuous"
+    assert sum(result["refCounts"]) == values.size
+    assert result["edges"][0] <= values.min()
+    assert result["edges"][-1] >= values.max()
+    assert all(bucket_value(v, result["edges"], "continuous")[1] is None for v in values)
+
+
+def test_quantile_edges_point_mass_with_long_tail_stays_continuous() -> None:
+    """95% at one value + a long tail collapses the quantile split; it used
+    to fall to categorical with one bin per distinct value (51 here, so a
+    1,020-row floor). Now: continuous, at most `bin_count` bins, no empty
+    reference bin, the whole population counted."""
+    values = np.array([0.0] * 950 + [float(i) for i in range(1, 51)])
+    result = quantile_edges(values, bin_count=10)
+    assert result["binMode"] == "continuous"
+    assert 2 <= result["binCount"] <= 10
+    assert all(c > 0 for c in result["refCounts"])
+    assert sum(result["refCounts"]) == values.size
+
+
+def test_quantile_edges_categorical_only_up_to_bin_count_distinct_values() -> None:
+    values = np.array([0.0] * 8 + [1.0] * 2)
+    result = quantile_edges(values)
+    assert result == {
+        "binMode": "categorical",
+        "binCount": 2,
+        "edges": [0.0, 1.0],
+        "refCounts": [8, 2],
+    }

@@ -56,6 +56,9 @@ export interface PsiThresholds {
   warn: number;
   critical: number;
   minSamplesPerBin: number;
+  /** MODEL-SERVE-029. `outOfRangePct` cutoffs (percent of `liveTotal`). */
+  outOfRangeWarnPct: number;
+  outOfRangeCriticalPct: number;
 }
 
 export type PsiStatus =
@@ -114,23 +117,28 @@ export interface ColumnPsi {
   /** Live samples pooled for this column, INCLUDING below/above overflow —
    *  what `minSamplesPerBin * binCount` is compared against. */
   liveTotal: number;
-  /** Null exactly when `status` is `UNKNOWN` or `INSUFFICIENT_DATA` — a
-   *  number here always means a real, computed PSI, never a placeholder
-   *  (T13's own instruction: "publish 'insufficient data', never a numeric
-   *  PSI"). */
+  /** Null exactly when `status` is `UNKNOWN` or `INSUFFICIENT_DATA`, or
+   *  when EVERY live sample fell outside the trained edges (CRITICAL with
+   *  a `reason` — no in-range sample leaves PSI's live% term undefined,
+   *  MODEL-SERVE-029). A number here always means a real, computed PSI,
+   *  never a placeholder (T13's own instruction: "publish 'insufficient
+   *  data', never a numeric PSI"). */
   psi: number | null;
   /** Live mass that fell OUTSIDE the trained edge range, as a percentage
    *  of `liveTotal` — a REAL measured count, straight from the live
    *  histogram's below/above bins. (MODEL-SERVE-001-T31: the since-removed `prediction-drift`
    *  once published a rival PARAMETRIC estimate of this same quantity, and
    *  even let it raise a z-score WARN; it was deleted, and this is now the
-   *  only out-of-range figure in the app.) Reported but never
-   *  folded into `psi` itself: the reference has no defined below/above
-   *  mass at all (every training value is within its own derived edges by
-   *  construction), so there is no expected% to compare it against. This
-   *  stays the one RENDERED overflow figure — `bins.below`/`bins.above`
-   *  below are for a drill-down's own display, derived from the SAME
-   *  counts, never a second independently-computed percentage. */
+   *  only out-of-range figure in the app.) Never folded into `psi`
+   *  itself: the reference has no below/above mass to compare against
+   *  (every training value lies within its own derived edges — guaranteed
+   *  for models fitted after MODEL-SERVE-029, whose outer edges cover the
+   *  train min/max). GRADED by its own thresholds instead
+   *  (`PsiThresholds.outOfRange*Pct`, MODEL-SERVE-029): `status` is the
+   *  worse of the PSI verdict and this one. This stays the one RENDERED
+   *  overflow figure — `bins.below`/`bins.above` below are for a
+   *  drill-down's own display, derived from the SAME counts, never a
+   *  second independently-computed percentage. */
   outOfRangePct: number | null;
   status: PsiStatus;
   reason?: string;
@@ -230,6 +238,18 @@ function statusFor(psi: number, thresholds: PsiThresholds): PsiStatus {
   return 'OK';
 }
 
+/** MODEL-SERVE-029. The out-of-range share graded on its own — PSI cannot
+ *  see below/above mass, so without this a tag drifting PAST its trained
+ *  range reads only as well as whatever is left inside it. */
+function outOfRangeStatusFor(
+  outOfRangePct: number,
+  thresholds: PsiThresholds,
+): PsiStatus {
+  if (outOfRangePct >= thresholds.outOfRangeCriticalPct) return 'CRITICAL';
+  if (outOfRangePct >= thresholds.outOfRangeWarnPct) return 'WARN';
+  return 'OK';
+}
+
 /** Severity order for rolling per-column statuses into one report status.
  *  UNKNOWN (no reference at all) never masks a worse KNOWN status, and
  *  INSUFFICIENT_DATA (a real reference, just not enough live volume yet)
@@ -322,13 +342,51 @@ export function computePsi(
       continue;
     }
 
+    // MODEL-SERVE-029. Every live sample outside the trained edges is the
+    // WORST drift there is, not an absence of it: PSI's live% term has no
+    // denominator (0/0 = NaN, and `statusFor(NaN)` used to read OK).
+    if (liveInRangeTotal === 0) {
+      columns.push({
+        column,
+        liveTotal,
+        psi: null,
+        outOfRangePct,
+        status: 'CRITICAL',
+        reason: `all ${liveTotal} live sample(s) fell outside the trained range`,
+        bins,
+      });
+      continue;
+    }
+
     const psi = psiForColumn(hist, ref);
+    // Defensive: a non-finite PSI (a reference with zero total count, which
+    // `quantile_edges` never writes) must never be graded — NaN compares
+    // false against every threshold and would read OK.
+    if (!Number.isFinite(psi)) {
+      columns.push({
+        column,
+        liveTotal,
+        psi: null,
+        outOfRangePct,
+        status: 'UNKNOWN',
+        reason: 'PSI is not computable against this reference',
+        bins,
+      });
+      continue;
+    }
+
+    const psiStatus = statusFor(psi, thresholds);
+    const rangeStatus = outOfRangeStatusFor(outOfRangePct ?? 0, thresholds);
+    const rangeIsWorse = SEVERITY[rangeStatus] > SEVERITY[psiStatus];
     columns.push({
       column,
       liveTotal,
       psi,
       outOfRangePct,
-      status: statusFor(psi, thresholds),
+      status: rangeIsWorse ? rangeStatus : psiStatus,
+      ...(rangeIsWorse && {
+        reason: `${(outOfRangePct ?? 0).toFixed(1)}% of live samples outside the trained range`,
+      }),
       bins,
     });
   }

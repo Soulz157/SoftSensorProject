@@ -6,7 +6,7 @@ import {
 } from '@/lib/monitoring-status-explain'
 import type { PsiReport } from '@/services/model-monitoring'
 
-const PSI_THRESHOLDS = { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 }
+const PSI_THRESHOLDS = { warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 }
 
 function psiReport(overrides: Partial<PsiReport> = {}): PsiReport {
   return {
@@ -30,6 +30,41 @@ function psiReport(overrides: Partial<PsiReport> = {}): PsiReport {
 }
 
 describe('explainPsiColumn', () => {
+  // MODEL-SERVE-029. Out-of-range is graded beside PSI; each rule gets its
+  // own line so the tooltip names whichever one decided the status.
+  it('quotes the out-of-range share as its own criterion beside PSI', () => {
+    const { criteria } = explainPsiColumn(
+      {
+        psi: 0.02,
+        status: 'WARN',
+        liveTotal: 300,
+        bins: null,
+        outOfRangePct: 6,
+      },
+      PSI_THRESHOLDS,
+    )
+
+    expect(criteria).toEqual([
+      'PSI 0.020 < 0.1 → Good',
+      'Out of range 6.0% ≥ 5% → WARN (critical at 20%)',
+    ])
+  })
+
+  it('all samples out of range: no PSI line, the out-of-range line is the criterion', () => {
+    const { criteria } = explainPsiColumn(
+      {
+        psi: null,
+        status: 'CRITICAL',
+        liveTotal: 300,
+        bins: null,
+        outOfRangePct: 100,
+      },
+      PSI_THRESHOLDS,
+    )
+
+    expect(criteria).toEqual(['Out of range 100.0% ≥ 20% → CRITICAL'])
+  })
+
   // `status-badge-with-explanation.tsx` splits each line on this to bold
   // the verdict half. That makes the separator a CONTRACT between the two
   // files, not a formatting detail — changing it here without the
@@ -125,7 +160,7 @@ describe('explainPsiReport', () => {
       ],
       basis: {
         ...base.basis,
-        thresholds: { warn: 0.2, critical: 0.5, minSamplesPerBin: 20 },
+        thresholds: { warn: 0.2, critical: 0.5, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
       },
     })
 

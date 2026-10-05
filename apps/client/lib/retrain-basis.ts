@@ -76,6 +76,40 @@ export function describeEvalBasis(
   }
 }
 
+/**
+ * The CURRENT version's side of the paired "Scored on" block — written to
+ * sit under a "Current v3" label, so it does not repeat the version as its
+ * subject the way `describeEvalBasis` does. It states WHEN the figure was
+ * produced, which is what a reader cannot otherwise tell: on its own test
+ * split the current version's score is the one stored when it was trained
+ * (AUGMENT_DATA), while on the new-data window it was scored fresh on the
+ * very rows the new version was scored on (NEW_DATA_ONLY, MODEL-SERVE-021).
+ * Same fallbacks as `describeEvalBasis`; any other frame defers to it.
+ */
+export function describeCurrentBasis(
+  basis: EvalBasis | null,
+  versionLabel: string | null,
+): string {
+  if (!basis) return 'Not recorded for this retrain'
+  if (basis.rowCount === null) {
+    return basis.unavailableReason ?? 'Not recorded for this retrain'
+  }
+  const range = rangeText(basis.from, basis.to)
+  const rows = `${basis.rowCount.toLocaleString()} row${basis.rowCount === 1 ? '' : 's'}`
+  const tail = [range, rows].filter(Boolean).join(' · ')
+  switch (basis.frame) {
+    case 'INCUMBENT_TEST_SPLIT':
+      return `Its own test data, scored when ${versionLabel ?? 'it'} was trained · ${tail}`
+    case 'NEW_DATA_WINDOW':
+      return `The same new-data window as the new version, scored during this retrain · ${tail}`
+    default:
+      return describeEvalBasis(basis, versionLabel, 'incumbent')
+  }
+}
+
+/** The current version's figure always plays one role in the comparison. */
+export const CURRENT_USED_FOR = 'Used to compare with the new version'
+
 /** What a figure is FOR, in one short plain phrase — never the raw
  *  `usedFor` code. */
 export function describeUsedFor(

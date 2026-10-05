@@ -239,6 +239,8 @@ export class InferenceWindowMonitoringService {
       warn: env.PSI_WARN,
       critical: env.PSI_CRITICAL,
       minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+      outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
+      outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
     };
     const report = computePsi(pooled, reference, thresholds);
     // MODEL-SERVE-018. Computed apart from `report`, so it can never move
@@ -268,6 +270,8 @@ export class InferenceWindowMonitoringService {
             warn: env.PSI_WARN,
             critical: env.PSI_CRITICAL,
             minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+            outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
+            outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
           },
           epsilon: PSI_EPSILON,
         },
@@ -453,6 +457,8 @@ export class InferenceWindowMonitoringService {
           warn: env.PSI_WARN,
           critical: env.PSI_CRITICAL,
           minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+          outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
+          outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
         }).status
       : null;
 

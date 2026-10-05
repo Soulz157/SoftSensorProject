@@ -61,15 +61,18 @@ const PSI_MEANING: Record<PsiStatus, string> = {
  * Per-column PSI explanation. `thresholds` is `report.basis.thresholds`; it
  * is undefined only when no report has loaded yet (the Input Data table can
  * render before the PSI fetch settles), and every numeric line is then
- * dropped rather than guessed. PSI has exactly ONE numeric rule — the index
- * against warn/critical. `outOfRangePct` rides the same column but is never
- * quoted as a criterion: the backend deliberately keeps it out of `psi`
- * (the reference has no defined mass outside its own edges), so it is
- * evidence beside the verdict, not part of it. The tooltip must not imply
- * otherwise.
+ * dropped rather than guessed. TWO numeric rules decide the status
+ * (MODEL-SERVE-029), and the status is the worse of the two: the PSI index
+ * against warn/critical, and `outOfRangePct` (live mass outside the trained
+ * edges, which PSI's formula cannot see) against its own cutoffs. Each gets
+ * its own line. When EVERY live sample fell outside the range there is no
+ * PSI to quote, so the out-of-range line is the only criterion.
+ * `outOfRangePct` is optional only so a caller without it renders the PSI
+ * line alone, never an invented percentage.
  */
 export function explainPsiColumn(
-  col: Pick<PsiColumn, 'psi' | 'status' | 'reason' | 'liveTotal' | 'bins'>,
+  col: Pick<PsiColumn, 'psi' | 'status' | 'reason' | 'liveTotal' | 'bins'> &
+    Partial<Pick<PsiColumn, 'outOfRangePct'>>,
   thresholds: PsiReport['basis']['thresholds'] | undefined,
 ): StatusExplanation {
   const meaning = col.reason
@@ -93,27 +96,44 @@ export function explainPsiColumn(
     }
   }
 
-  if (col.status === 'UNKNOWN' || col.psi === null) {
+  if (col.status === 'UNKNOWN') {
     return { meaning, criteria: [] }
   }
 
-  const value = col.psi.toFixed(3)
   const criteria: string[] = []
-  if (col.psi >= thresholds.critical) {
-    criteria.push(
-      `PSI ${value} ≥ ${thresholds.critical}${CRITERIA_VERDICT_SEPARATOR}CRITICAL`,
-    )
-  } else if (col.psi >= thresholds.warn) {
-    criteria.push(
-      `PSI ${value} ≥ ${thresholds.warn}${CRITERIA_VERDICT_SEPARATOR}WARN (critical at ${thresholds.critical})`,
-    )
-  } else {
-    criteria.push(
-      `PSI ${value} < ${thresholds.warn}${CRITERIA_VERDICT_SEPARATOR}${MONITORING_STATUS_LABEL.OK}`,
-    )
+  if (col.psi !== null) criteria.push(psiCriterion(col.psi, thresholds))
+  if (col.outOfRangePct != null) {
+    criteria.push(outOfRangeCriterion(col.outOfRangePct, thresholds))
   }
-
   return { meaning, criteria }
+}
+
+function psiCriterion(
+  psi: number,
+  thresholds: PsiReport['basis']['thresholds'],
+): string {
+  const value = psi.toFixed(3)
+  if (psi >= thresholds.critical) {
+    return `PSI ${value} ≥ ${thresholds.critical}${CRITERIA_VERDICT_SEPARATOR}CRITICAL`
+  }
+  if (psi >= thresholds.warn) {
+    return `PSI ${value} ≥ ${thresholds.warn}${CRITERIA_VERDICT_SEPARATOR}WARN (critical at ${thresholds.critical})`
+  }
+  return `PSI ${value} < ${thresholds.warn}${CRITERIA_VERDICT_SEPARATOR}${MONITORING_STATUS_LABEL.OK}`
+}
+
+function outOfRangeCriterion(
+  pct: number,
+  thresholds: PsiReport['basis']['thresholds'],
+): string {
+  const value = `Out of range ${pct.toFixed(1)}%`
+  if (pct >= thresholds.outOfRangeCriticalPct) {
+    return `${value} ≥ ${thresholds.outOfRangeCriticalPct}%${CRITERIA_VERDICT_SEPARATOR}CRITICAL`
+  }
+  if (pct >= thresholds.outOfRangeWarnPct) {
+    return `${value} ≥ ${thresholds.outOfRangeWarnPct}%${CRITERIA_VERDICT_SEPARATOR}WARN (critical at ${thresholds.outOfRangeCriticalPct}%)`
+  }
+  return `${value} < ${thresholds.outOfRangeWarnPct}%${CRITERIA_VERDICT_SEPARATOR}${MONITORING_STATUS_LABEL.OK}`
 }
 
 /** The PSI card header. The report status is the WORST column status, so

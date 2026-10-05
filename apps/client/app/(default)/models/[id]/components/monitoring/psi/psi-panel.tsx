@@ -221,8 +221,12 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
       <p className="text-[11px] text-muted-foreground/70">
         PSI thresholds ({report.basis.thresholds.warn} warn /{' '}
         {report.basis.thresholds.critical} critical) are conventional cutoffs,
-        not measured against this plant&apos;s own data. A zero-proportion bin
-        is floored at {report.basis.epsilon} before comparison.
+        not measured against this plant&apos;s own data, as are the
+        out-of-range cutoffs ({report.basis.thresholds.outOfRangeWarnPct}% warn
+        / {report.basis.thresholds.outOfRangeCriticalPct}% critical of live
+        rows outside the trained range), which grade a column alongside PSI.
+        A zero-proportion bin is floored at {report.basis.epsilon} before
+        comparison.
       </p>
     </div>
   )

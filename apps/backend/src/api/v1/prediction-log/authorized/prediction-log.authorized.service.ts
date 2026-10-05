@@ -315,6 +315,8 @@ export class PredictionLogAuthorizedService {
       warn: env.PSI_WARN,
       critical: env.PSI_CRITICAL,
       minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+      outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
+      outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
     });
 
     return {
@@ -347,6 +349,8 @@ export class PredictionLogAuthorizedService {
             warn: env.PSI_WARN,
             critical: env.PSI_CRITICAL,
             minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+            outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
+            outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
           },
           // MODEL-SERVE-001-T17. Named on every basis, on both planes —
           // see InferenceWindowMonitoringService's own basisOf for the

@@ -213,7 +213,13 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
       // raw row count here — the two only diverge once a null row exists
       // (see the null-filtering test below).
       histogramRequests: 2,
-      thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
+      thresholds: {
+        warn: 0.1,
+        critical: 0.25,
+        minSamplesPerBin: 20,
+        outOfRangeWarnPct: 5,
+        outOfRangeCriticalPct: 20,
+      },
     });
     expect(result.data.basis.epsilon).toBeGreaterThan(0);
     // The disclaimer text reads these numbers rather than a literal — they
@@ -223,6 +229,12 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
     expect(result.data.basis.thresholds.critical).toBe(env.PSI_CRITICAL);
     expect(result.data.basis.thresholds.minSamplesPerBin).toBe(
       env.PSI_MIN_SAMPLES_PER_BIN,
+    );
+    expect(result.data.basis.thresholds.outOfRangeWarnPct).toBe(
+      env.PSI_OUT_OF_RANGE_WARN_PCT,
+    );
+    expect(result.data.basis.thresholds.outOfRangeCriticalPct).toBe(
+      env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
     );
   });
 

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
+  CURRENT_USED_FOR,
+  describeCurrentBasis,
   describeEvalBasis,
   describeUsedFor,
   describeTrainingComposition,
@@ -212,5 +214,58 @@ describe('legacyStrategyLabel', () => {
     expect(legacyStrategyLabel('NEW_DATA_ONLY')).toBe('new data only')
     expect(legacyStrategyLabel('KEEP_EXISTING')).toBe('same data as before')
     expect(legacyStrategyLabel(null)).toBe('same data as before')
+  })
+})
+
+describe('describeCurrentBasis', () => {
+  it('own test split: says the score is the one stored when it was trained', () => {
+    const text = describeCurrentBasis(
+      basis({ frame: 'INCUMBENT_TEST_SPLIT', to: null, rowCount: 911 }),
+      'v3',
+    )
+    expect(text).toBe(
+      'Its own test data, scored when v3 was trained · from 2026-06-01 · 911 rows',
+    )
+  })
+
+  it('new-data window: says it is the same rows the new version was scored on', () => {
+    expect(
+      describeCurrentBasis(basis({ frame: 'NEW_DATA_WINDOW' }), 'v3'),
+    ).toBe(
+      'The same new-data window as the new version, scored during this retrain · 2026-06-01 – 2026-07-01 · 40 rows',
+    )
+  })
+
+  it('never prints "vnull" when the version is unknown', () => {
+    const text = describeCurrentBasis(
+      basis({ frame: 'INCUMBENT_TEST_SPLIT' }),
+      null,
+    )
+    expect(text).toContain('scored when it was trained')
+    expect(text).not.toMatch(/vnull|undefined/)
+  })
+
+  it('falls back to the unavailable reason, or the not-recorded text', () => {
+    expect(
+      describeCurrentBasis(
+        basis({ rowCount: null, unavailableReason: 'not recorded for v3' }),
+        'v3',
+      ),
+    ).toBe('not recorded for v3')
+    expect(describeCurrentBasis(null, 'v3')).toBe(
+      'Not recorded for this retrain',
+    )
+  })
+
+  it('no internal vocabulary in any frame', () => {
+    for (const frame of [
+      'INCUMBENT_TEST_SPLIT',
+      'FROZEN_INCUMBENT_TEST',
+      'MERGED_TEST_SPLIT',
+      'NEW_DATA_WINDOW',
+    ] as const) {
+      expect(describeCurrentBasis(basis({ frame }), 'v3')).not.toMatch(JARGON)
+    }
+    expect(CURRENT_USED_FOR).not.toMatch(JARGON)
   })
 })

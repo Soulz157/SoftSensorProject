@@ -3916,6 +3916,86 @@
         }
       ],
       "sourcing_note": "Drafted 2026-10-04 from a two-agent read-only audit + live DB check; plan at ~/.claude/plans/can-we-remove-a-lovely-thompson.md."
+    },
+    {
+      "id": "MODEL-SERVE-029",
+      "title": "PSI correctness: grade out-of-range mass (all-out-of-range read OK), keep train min/max inside rounded edges, categorical overflow + bounded fallback bin count",
+      "priority": "high",
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-SERVE-028"
+      ],
+      "description": "User request 2026-10-05 (fix R1/R2/R3 from Bins.md recheck). R1: every live value outside the trained edges gives liveInRangeTotal=0 -> PSI NaN -> statusFor(NaN) = OK; out-of-range mass was reported but never graded. R2: quantile_edges rounds edges to 6dp, which can push edges[0] above the train min / edges[-1] below the train max, dropping those train values from refCounts. R3: categorical bucketing never reports overflow (unseen state silently matched to nearest; single-value tag PSI always 0), and a continuous-looking tag whose quantile split fails falls back to categorical with binCount = distinct count, so its sample floor is unreachable.",
+      "findings": [
+        "REPRO 2026-10-05 R1: computePsi({counts:[0,0],below:0,above:300}, refCounts [50,50]) -> psi null (NaN serialized), outOfRangePct 100, status OK.",
+        "REPRO 2026-10-05 R2: quantile_edges([1.2345678, 2..11, 12.9876543]) -> edges[0]=1.234568, edges[-1]=12.987654, sum(refCounts)=10 of 12.",
+        "ROLLOUT 2026-10-05: R2/R3.3 apply only to models trained after this (frozen feature_spec.json is never re-fit). R3.1/R3.2 apply to live histograms written after deploy; the apps/serving Docker image COPYs py-scaling and must be rebuilt by hand. R1 grading is read-time and applies to every model immediately.",
+        "OBSERVATION 2026-10-05 (out of scope): 85b35299 PSI of 2.2-8.3 on every continuous tag is the shape of each tag's live mass sitting in ONE bin (all-in-one-bin vs 10% reference = (0.9)ln(10) + 9*(0.1)ln(1000) = 8.28). Worth checking whether its live inputs are frozen/stale rather than a real process shift."
+      ],
+      "userDecisions": [
+        "2026-10-05: out-of-range graded by its OWN rule (PSI formula unchanged); column status = worse of PSI status and out-of-range status; all-out-of-range = CRITICAL with psi null.",
+        "2026-10-05: out-of-range defaults 5% warn / 20% critical of liveTotal, env-overridable (PSI_OUT_OF_RANGE_WARN_PCT / PSI_OUT_OF_RANGE_CRITICAL_PCT); conventional, not measured.",
+        "2026-10-05: categorical overflow beyond half the smallest gap between trained states at either end; single-value tag must match exactly, else below/above."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-029-T01",
+          "title": "py-scaling psi.py: outer edges cover train min/max (R2), distinct-value fallback before categorical for continuous-looking tags (R3.3), categorical half-gap overflow (R3.1/R3.2) + tests",
+          "status": "completed",
+          "progress": 100,
+          "result": "2026-10-05. psi.py: _continuous widens outer edges to train min/max (R2); distinct-value rank split before categorical when distinct > bin_count (R3.3); categorical bucket_value overflows past half the smallest state gap, tolerance 0 for a single value (R3.1/R3.2). test_psi.py 23 passed (5 new cases confirmed FAILING against HEAD psi.py). apps/serving 41 passed; apps/python full suite 960 passed / 79 skipped."
+        },
+        {
+          "id": "MODEL-SERVE-029-T02",
+          "title": "Backend prediction-psi.ts: out-of-range thresholds + grading, all-out-of-range CRITICAL, NaN guard; env + every thresholds call site + spec",
+          "status": "completed",
+          "progress": 100,
+          "result": "2026-10-05. computePsi: liveInRangeTotal 0 -> CRITICAL psi null with reason; non-finite psi -> UNKNOWN (never graded); status = worse of PSI and out-of-range (reason when out-of-range decides). env PSI_OUT_OF_RANGE_WARN_PCT 5 / CRITICAL_PCT 20; all 6 thresholds sites + both basis.thresholds. jest 8 suites / 234 passed (prediction-psi.spec 19). tsc build config clean; tsc full config errors are all in untouched spec files (pre-existing)."
+        },
+        {
+          "id": "MODEL-SERVE-029-T03",
+          "title": "Client: basis thresholds type, out-of-range criterion in PSI explanation, categorical overflow rows, footnote + tests",
+          "status": "completed",
+          "progress": 100,
+          "result": "2026-10-05. basis.thresholds type + 2 fields; explainPsiColumn prints a separate out-of-range criterion (only criterion when psi null + CRITICAL); Input Data row carries psiOutOfRangePct; resolvePsiOverflow returns overflow for categorical too; panel footnote states the out-of-range cutoffs. vitest 61 files / 973 passed. eslint on touched files clean; tsc errors only in untouched dataset-compare-modal.tsx and model-evaluation.test.ts (pre-existing)."
+        },
+        {
+          "id": "MODEL-SERVE-029-T04",
+          "title": "Bins.md updated to the fixed rules",
+          "status": "completed",
+          "progress": 100,
+          "result": "2026-10-05. Bins.md rewritten to the fixed rules (3 reference methods, categorical tolerance, out-of-range grading table, R1-R3 marked fixed, remaining limit: an unseen value BETWEEN categorical states still maps to nearest)."
+        }
+      ],
+      "acceptance_criteria": [
+        "All live values out of range never reads OK; it reads CRITICAL with psi null and a reason.",
+        "outOfRangePct >= warn/critical raises the column to at least WARN/CRITICAL.",
+        "Every train value lands inside its own frozen edges (sum(refCounts) == population).",
+        "A continuous-looking tag never gets more than DEFAULT_PSI_BIN_COUNT bins.",
+        "A categorical live value beyond half the smallest state gap past either end counts as below/above; a single-value tag counts any other value as below/above."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-029-V01",
+          "status": "completed",
+          "description": "py-scaling, serving and apps/python PSI tests + backend prediction-psi spec + client psi tests pass with stated case counts; check-types + lint.",
+          "result": "PASS 2026-10-05 -- counts in T01-T03 results."
+        },
+        {
+          "id": "MODEL-SERVE-029-V02",
+          "status": "completed",
+          "description": "The two 2026-10-05 repros rerun against the real functions give CRITICAL and 12 of 12.",
+          "result": "PASS 2026-10-05 -- real computePsi: CRITICAL / psi null / 100% / reason; real quantile_edges: 12 of 12; long-tail tag continuous 10 bins [954,5,...,6]; categorical 2.0 vs {0,1} -> above."
+        },
+        {
+          "id": "MODEL-SERVE-029-V03",
+          "status": "completed",
+          "result": "PASS 2026-10-05 (services not running, so run offline against live data): 85b35299 PRODUCTION f33c52ee, its 23 stored windows pooled + its real feature_spec.json reference, old vs new computePsi. No status change: 20 tags already CRITICAL on PSI alone (psi 2.2-8.3); out-of-range now graded on TI202.PV 13.0%, TI205.PV 5.4%, AI001B2.PV 84.7% but PSI was already worse. FIC107R.PV is the R3.3 case in the wild: categorical/262 bins, INSUFFICIENT_DATA (1380 of 5240) -- fixed only by a retrain, since references are frozen. No single-value categorical tags in this reference. Stored windows were bucketed by the OLD bucket_value, so R3.1/R3.2 cannot show until new windows are written. Not run: browser check of the Monitoring tab.",
+          "description": "Live data: production model's real windows + reference through old and new computePsi; report status changes."
+        }
+      ],
+      "sourcing_note": "Drafted 2026-10-05 from Bins.md recheck; plan at ~/.claude/plans/fix-bug-r1-r2-floating-breeze.md."
     }
   ],
   "global_definition_of_done": [

@@ -594,6 +594,8 @@ async function resolveListPsi(
       warn: env.PSI_WARN,
       critical: env.PSI_CRITICAL,
       minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+      outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
+      outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
     }).status,
     psiEvidence: true,
   };

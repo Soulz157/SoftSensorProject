@@ -125,6 +125,7 @@ export function InputFeatureTable({ rows, psiThresholds }: Props) {
                     reason: row.driftReason,
                     liveTotal: row.psiLiveTotal,
                     bins: row.psiBins,
+                    outOfRangePct: row.psiOutOfRangePct,
                   },
                   psiThresholds,
                 )}

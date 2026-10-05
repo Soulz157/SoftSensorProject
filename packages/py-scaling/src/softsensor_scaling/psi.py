@@ -57,10 +57,25 @@ def bucket_value(
     CATEGORICAL: `edges` holds the distinct TRAINED values themselves, one
     bin per value. Matched to the NEAREST trained value rather than an
     exact match — real telemetry on a state tag can read 0.998 instead of
-    exactly 1.0. No "out of range" concept in this mode (some trained value
-    is always nearest), so this branch never returns an overflow.
+    exactly 1.0. MODEL-SERVE-029: a value further than half the smallest
+    gap between adjacent trained values PAST EITHER END is overflow — a
+    state the tag never held in training (a valve trained on {0, 1} now
+    reading 2) must not be silently counted as its nearest neighbour. A
+    single-value tag has no gap, so its tolerance is 0: anything other than
+    the trained value itself is overflow (otherwise its PSI is 0 forever).
+    An unseen value BETWEEN two trained values is still matched to the
+    nearest one — this mode has no notion of "between states".
     """
     if bin_mode == "categorical":
+        tolerance = (
+            min(b - a for a, b in zip(edges, edges[1:])) / 2
+            if len(edges) >= 2
+            else 0.0
+        )
+        if value < edges[0] - tolerance:
+            return None, "below"
+        if value > edges[-1] + tolerance:
+            return None, "above"
         nearest = min(range(len(edges)), key=lambda i: abs(edges[i] - value))
         return nearest, None
 
@@ -120,26 +135,28 @@ def quantile_edges(
     as there are distinct values, still produces a bin with ZERO reference
     count: PSI's expected% term cannot be zero (`ln(actual/0)` is
     undefined), so an empty reference bin disqualifies that split rather
-    than being smoothed over. Categorical mode is the guaranteed-safe floor
-    for this case — built directly from `np.unique`, every bin there holds
-    at least 1 count by construction. This can occasionally put a
-    continuous-looking tag into categorical mode with a high bin count (a
-    real but rare cost of preferring a measured, always-correct reference
-    over a slightly more compressed one that might not be).
+    than being smoothed over.
+
+    DISTINCT-VALUE FALLBACK (MODEL-SERVE-029): when that quantile split
+    fails on a CONTINUOUS-LOOKING tag (more distinct values than
+    `bin_count` — typically a heavy point mass plus a long tail, which
+    collapses most quantiles onto one edge), the edges are taken from the
+    sorted distinct values instead, evenly spaced by rank. Every such bin
+    starts at a real observed value, so none is empty, and the bin count
+    stays at most `bin_count`. Falling straight to categorical there gave
+    one bin per distinct value — thousands for a real sensor — and a
+    sample floor (`binCount * PSI_MIN_SAMPLES_PER_BIN`) live traffic could
+    never clear. Categorical mode is therefore reached only with at most
+    `bin_count` distinct values, and stays the guaranteed-safe floor —
+    built directly from `np.unique`, every bin there holds at least 1
+    count by construction.
     """
     if good.size == 0:
         return None
 
     distinct = np.unique(good)
     if distinct.size < MIN_PSI_BINS:
-        cat_edges = [float(v) for v in distinct]
-        hist = bucket_histogram(good, cat_edges, "categorical")
-        return {
-            "binMode": "categorical",
-            "binCount": int(distinct.size),
-            "edges": cat_edges,
-            "refCounts": hist["counts"],
-        }
+        return _categorical(good, distinct)
 
     # `min(bin_count, distinct.size)` rather than asserting: a tag with
     # fewer distinct values than the requested bin count cannot support
@@ -154,19 +171,49 @@ def quantile_edges(
     # that differ only in float noise collapse too, matching the 6dp
     # convention `column_stats_service`/`scalingParams` both already use.
     edges = sorted({round(float(edge), 6) for edge in raw_edges})
+    fitted = _continuous(good, edges)
+    if fitted is not None:
+        return fitted
 
-    if len(edges) - 1 >= MIN_PSI_BINS:
-        hist = bucket_histogram(good, edges, "continuous")
-        if 0 not in hist["counts"]:
-            return {
-                "binMode": "continuous",
-                "binCount": len(edges) - 1,
-                "edges": edges,
-                "refCounts": hist["counts"],
-            }
-        # Falls through to the categorical floor below — see this
-        # function's own docstring on the zero-reference-count rule.
+    if distinct.size > bin_count:
+        ranks = np.linspace(
+            0, distinct.size - 1, min(bin_count, distinct.size - 1) + 1
+        )
+        rank_edges = sorted({float(distinct[int(round(r))]) for r in ranks})
+        fitted = _continuous(good, rank_edges)
+        if fitted is not None:
+            return fitted
 
+    return _categorical(good, distinct)
+
+
+def _continuous(good: np.ndarray, edges: list[float]) -> dict[str, Any] | None:
+    """A continuous reference over `edges`, or `None` when the split is
+    unusable (fewer than `MIN_PSI_BINS` bins, or an empty reference bin).
+
+    The outer edges are widened to the train min/max first (MODEL-SERVE-029):
+    rounding to 6dp can move `edges[0]` just ABOVE the smallest training
+    value (1.2345678 -> 1.234568) or `edges[-1]` just BELOW the largest,
+    and that value would then be counted as overflow against its own
+    reference and left out of `refCounts`. After widening, every training
+    value lies inside its own edges, so `sum(refCounts) == good.size`."""
+    if len(edges) - 1 < MIN_PSI_BINS:
+        return None
+    edges = list(edges)
+    edges[0] = min(edges[0], float(good.min()))
+    edges[-1] = max(edges[-1], float(good.max()))
+    hist = bucket_histogram(good, edges, "continuous")
+    if 0 in hist["counts"]:
+        return None
+    return {
+        "binMode": "continuous",
+        "binCount": len(edges) - 1,
+        "edges": edges,
+        "refCounts": hist["counts"],
+    }
+
+
+def _categorical(good: np.ndarray, distinct: np.ndarray) -> dict[str, Any]:
     cat_edges = [float(v) for v in distinct]
     hist = bucket_histogram(good, cat_edges, "categorical")
     return {

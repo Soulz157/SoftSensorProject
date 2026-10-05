@@ -59,7 +59,7 @@ function makeReport(
       histogramRequests: 100,
       from: '2026-01-01T00:00:00.000Z',
       to: '2026-01-01T01:00:00.000Z',
-      thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 },
+      thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
       epsilon: 0.0001,
       ...basisOverrides,
     },
@@ -251,7 +251,7 @@ describe('PsiPanel', () => {
     expect(screen.queryByRole('columnheader', { name: 'Bin' })).toBeNull()
   })
 
-  it('categorical tag: no <lo/>hi overflow bars, a MEASURED (non-flat) reference, and the last bin label matches edges.length === binCount', () => {
+  it('categorical tag: real <lo/>hi overflow rows, a MEASURED (non-flat) reference, and the last bin label matches edges.length === binCount', () => {
     const col = makeColumn({
       status: 'WARN',
       psi: 0.12,
@@ -262,9 +262,10 @@ describe('PsiPanel', () => {
         refCounts: [90, 10],
         liveCounts: [70, 30],
         below: 0,
-        above: 0,
+        above: 4,
         liveInRangeTotal: 100,
       }),
+      liveTotal: 104,
     })
     render(
       <PsiPanel
@@ -276,10 +277,12 @@ describe('PsiPanel', () => {
 
     fireEvent.click(screen.getByText('TI-101'))
 
-    // No overflow rows for a categorical tag — that bucketing has no
-    // "out of range" concept (psi.py).
-    expect(screen.queryByText('<lo')).toBeNull()
-    expect(screen.queryByText('>hi')).toBeNull()
+    // MODEL-SERVE-029: a categorical tag has real overflow now — an unseen
+    // state past either end is counted below/above, not as its nearest
+    // trained state (psi.py), so the table shows both overflow rows.
+    expect(screen.getByText('<lo')).toBeVisible()
+    expect(screen.getByText('>hi')).toBeVisible()
+    expect(screen.getByText('above trained range')).toBeVisible()
 
     // Reference is a REAL measured 90/10 split, never an assumed flat 50/50
     // — `psi.py`'s own module docstring: a categorical split is not
@@ -299,7 +302,13 @@ describe('PsiPanel', () => {
     render(
       <PsiPanel
         report={makeReport([makeColumn()], {
-          thresholds: { warn: 0.15, critical: 0.4, minSamplesPerBin: 30 },
+          thresholds: {
+            warn: 0.15,
+            critical: 0.4,
+            minSamplesPerBin: 30,
+            outOfRangeWarnPct: 7,
+            outOfRangeCriticalPct: 30,
+          },
           epsilon: 0.0002,
         })}
         loading={false}
@@ -310,6 +319,9 @@ describe('PsiPanel', () => {
     expect(screen.getByText(/0\.15 warn/)).toBeVisible()
     expect(screen.getByText(/0\.4 critical/)).toBeVisible()
     expect(screen.getByText(/0\.0002/)).toBeVisible()
+    // MODEL-SERVE-029: the out-of-range cutoffs come from basis too.
+    expect(screen.getByText(/7% warn/)).toBeVisible()
+    expect(screen.getByText(/30% critical/)).toBeVisible()
     // The old hardcoded literal must NOT also appear.
     expect(screen.queryByText(/0\.1 warn \/ 0\.25 critical/)).toBeNull()
   })
