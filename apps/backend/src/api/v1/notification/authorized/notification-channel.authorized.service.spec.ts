@@ -4,7 +4,9 @@ import type { NotificationDeliveryService } from '../core/notification-delivery.
 /**
  * Read vs write access to a workspace's notification channels (2026-10-01):
  * the owner and STAFF members may VIEW channels and delivery history; only
- * the owner may create, edit, delete or test-send. VIEWER sees neither.
+ * the owner may create, edit, delete or test-send. A VIEWER sees neither
+ * unless an OWNER granted NOTIFICATIONS_VIEW (2026-10-07) — and then may
+ * view only, never write.
  */
 const user = {
   id: 'user-1',
@@ -18,6 +20,7 @@ const user = {
 function build(
   memberRole: 'OWNER' | 'STAFF' | 'VIEWER' | null,
   ownerId = 'someone-else',
+  permissions: string[] = [],
 ) {
   const prisma = {
     workspace: {
@@ -26,7 +29,9 @@ function build(
     workspaceMember: {
       findUnique: jest
         .fn()
-        .mockResolvedValue(memberRole ? { role: memberRole } : null),
+        .mockResolvedValue(
+          memberRole ? { role: memberRole, permissions } : null,
+        ),
     },
     notificationChannel: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -71,6 +76,23 @@ describe('NotificationChannelAuthorizedService — read access', () => {
     ).resolves.toMatchObject({ statusCode: 200 });
   });
 
+  it('lets a VIEWER granted NOTIFICATIONS_VIEW list channels and history', async () => {
+    const { service } = build('VIEWER', 'someone-else', ['NOTIFICATIONS_VIEW']);
+    await expect(
+      service.listChannelsService('ws-1', user as never),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    await expect(
+      service.listDeliveriesService('ws-1', 'ch-1', user as never, 1, 20),
+    ).resolves.toMatchObject({ statusCode: 200 });
+  });
+
+  it('refuses a VIEWER granted only MONITORING_VIEW', async () => {
+    const { service } = build('VIEWER', 'someone-else', ['MONITORING_VIEW']);
+    await expect(
+      service.listChannelsService('ws-1', user as never),
+    ).rejects.toMatchObject({ statusCode: 403 });
+  });
+
   it.each([['VIEWER'], [null]] as const)(
     'refuses %s with a 403',
     async (role) => {
@@ -85,6 +107,16 @@ describe('NotificationChannelAuthorizedService — read access', () => {
 describe('NotificationChannelAuthorizedService — writes stay owner-only', () => {
   it('refuses a STAFF member deleting a channel', async () => {
     const { service, prisma } = build('STAFF');
+    await expect(
+      service.deleteChannelService('ws-1', 'ch-1', user as never),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(prisma.notificationChannel.delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses a VIEWER granted NOTIFICATIONS_VIEW deleting a channel', async () => {
+    const { service, prisma } = build('VIEWER', 'someone-else', [
+      'NOTIFICATIONS_VIEW',
+    ]);
     await expect(
       service.deleteChannelService('ws-1', 'ch-1', user as never),
     ).rejects.toMatchObject({ statusCode: 403 });

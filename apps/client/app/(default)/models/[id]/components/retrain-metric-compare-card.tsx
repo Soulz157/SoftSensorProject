@@ -3,6 +3,8 @@
 import type { ReactNode } from 'react'
 import { formatMetricValue } from '@/lib/model-evaluation'
 import type { MetricComparison } from '@/lib/retrain-metric-compare'
+import { COMPARISON_VERDICT_CLASS } from '@/lib/retrain-verdict-style'
+import { cn } from '@/lib/utils'
 
 /** "New v4" / "Current v3" — or the bare role when the number is unknown,
  *  never "vnull". */
@@ -17,9 +19,9 @@ export function versionColumnLabel(
  * One metric, the new and the current version side by side at the SAME
  * size, so the current figure reads as half of the comparison rather than
  * a footnote under the new one. The delta line says which side the
- * difference favours in words (no status color — red/green stay reserved
- * for status, and the acceptance-criteria Pass/Fail beside this is
- * uncolored too).
+ * difference favours in words, and the ▲/▼ plus the verdict are coloured
+ * green (better) / red (worse) — see `COMPARISON_VERDICT_CLASS` for why
+ * that carve-out exists. The delta figure itself stays muted.
  *
  * The caller decides whether a delta may be shown at all (`comparison`
  * null = none): this card never compares two figures the server did not
@@ -61,15 +63,29 @@ export function RetrainMetricCompareCard({
       {comparison && (
         <p className="border-t border-border pt-1.5 text-[10px] text-muted-foreground">
           {comparison.verdict === 'same' ? (
-            <span className="font-medium text-foreground">No change</span>
+            <span
+              className={cn(
+                'font-medium',
+                COMPARISON_VERDICT_CLASS[comparison.verdict],
+              )}
+            >
+              No change
+            </span>
           ) : (
             <>
-              {comparison.delta < 0 ? '▼' : '▲'}{' '}
+              <span className={COMPARISON_VERDICT_CLASS[comparison.verdict]}>
+                {comparison.delta < 0 ? '▼' : '▲'}
+              </span>{' '}
               <span className="tabular-nums">
                 {formatMetricValue(Math.abs(comparison.delta))}
               </span>{' '}
               {comparison.delta < 0 ? 'lower' : 'higher'} —{' '}
-              <span className="font-medium text-foreground">
+              <span
+                className={cn(
+                  'font-medium',
+                  COMPARISON_VERDICT_CLASS[comparison.verdict],
+                )}
+              >
                 New {comparison.verdict}
               </span>
             </>

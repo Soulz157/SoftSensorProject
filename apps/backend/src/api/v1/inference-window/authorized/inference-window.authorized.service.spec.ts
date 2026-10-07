@@ -1996,7 +1996,9 @@ describe('InferenceWindowAuthorizedService.listLogsService — one endpoint serv
       {
         workspace: { findFirst: jest.fn().mockResolvedValue(null) },
         workspaceMember: {
-          findFirst: jest.fn().mockResolvedValue({ role: 'VIEWER' }),
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ role: 'VIEWER', permissions: [] }),
         },
       },
     );

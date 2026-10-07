@@ -10,6 +10,7 @@ import type {
   WorkspaceLog,
   WorkspaceMember,
   WorkspaceModel,
+  WorkspacePermission,
   WorkspaceRole,
 } from '@/types'
 
@@ -130,10 +131,12 @@ export const workspaceService = {
     workspaceId: string,
     memberId: string,
     role: WorkspaceRole,
+    // Omitted → the backend keeps the member's current grants.
+    permissions?: WorkspacePermission[],
   ): Promise<{ data: WorkspaceMember }> =>
     fetchClient(
       `/api/v1/authorized/workspace/${workspaceId}/members/${memberId}`,
-      { method: 'PATCH', body: JSON.stringify({ role }) },
+      { method: 'PATCH', body: JSON.stringify({ role, permissions }) },
     ),
 
   removeMember: (workspaceId: string, memberId: string): Promise<unknown> =>

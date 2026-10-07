@@ -5,6 +5,7 @@ import {
   getRunManifest,
   readFeatureSpec,
 } from '@/lib/python-preprocess-client';
+import { canReadWithGrant } from '@/lib/workspace-permission';
 
 /**
  * The Input Data tab's read of a saved Model's trained schema — the
@@ -44,11 +45,19 @@ export class ModelInputSchemaAuthorizedService {
 
   /** Same duplication rationale `PredictionLogAuthorizedService` and four
    *  other authorized services already state for their own copy of this
-   *  check — no shared helper across modules. VIEWER is rejected, same as
-   *  the sibling `/predictions` and `/psi` reads this tab also calls —
-   *  opening only this one read to VIEWER would produce a tab whose
-   *  feature list loads while every status column still 403s. */
-  private async assertModelAccess(modelId: string, user: Auth.UserPayload) {
+   *  check — no shared helper across modules. A VIEWER is rejected unless
+   *  granted MONITORING_VIEW, same as the sibling `/predictions` and `/psi`
+   *  reads this tab also calls — the grant opens every monitoring read at
+   *  once, never just this one (a tab whose feature list loads while every
+   *  status column still 403s). */
+  private async assertModelAccess(
+    modelId: string,
+    user: Auth.UserPayload,
+    // 'edit' (default) is every mutating route: OWNER/STAFF only.
+    // 'monitoring-read' is a read a VIEWER may make once an OWNER granted
+    // MONITORING_VIEW. Never pass it from a route that changes anything.
+    access: 'edit' | 'monitoring-read' = 'edit',
+  ) {
     const model = await this.prisma.model.findUnique({
       where: { id: modelId },
       select: { id: true, workspaceId: true },
@@ -70,10 +79,17 @@ export class ModelInputSchemaAuthorizedService {
     const member = await this.prisma.workspaceMember.findFirst({
       where: { workspaceId: model.workspaceId, userId: user.id },
     });
-    if (!member || member.role === 'VIEWER') {
+    const allowed =
+      access === 'monitoring-read'
+        ? canReadWithGrant(member, 'MONITORING_VIEW')
+        : !!member && member.role !== 'VIEWER';
+    if (!allowed) {
       throw new AppException({
         statusCode: 403,
-        message: 'Forbidden: editor access required',
+        message:
+          access === 'monitoring-read'
+            ? 'Forbidden: monitoring access required'
+            : 'Forbidden: editor access required',
         type: 'ERROR',
       });
     }
@@ -81,7 +97,7 @@ export class ModelInputSchemaAuthorizedService {
   }
 
   async getInputSchemaService(modelId: string, user: Auth.UserPayload) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     const sourceRunSelect = {
       select: { targetY: true, manifestKey: true },

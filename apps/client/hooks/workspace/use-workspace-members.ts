@@ -34,11 +34,16 @@ export function useWorkspaceMembers(
 ) {
   const [state, dispatch] = useReducer(reducer, initialState)
 
-  const isOwner = state.members.some(
-    m => m.userId === currentUserId && m.role === 'OWNER',
-  )
+  // The caller's own member row (role + feature grants), or null when they
+  // have none — e.g. the workspace creator without a member row.
+  const currentMember =
+    state.members.find(m => m.userId === currentUserId) ?? null
+  const isOwner = currentMember?.role === 'OWNER'
 
   const fetchMembers = useCallback(async () => {
+    // No workspace yet (e.g. the model page before its model loads): stay in
+    // the initial loading state rather than requesting `/workspace//members`.
+    if (!workspaceId) return
     dispatch({ type: 'FETCH_START' })
     try {
       const res = await workspaceService.listMembers(workspaceId)
@@ -52,5 +57,5 @@ export function useWorkspaceMembers(
     fetchMembers()
   }, [fetchMembers])
 
-  return { ...state, isOwner, fetchMembers }
+  return { ...state, isOwner, currentMember, fetchMembers }
 }

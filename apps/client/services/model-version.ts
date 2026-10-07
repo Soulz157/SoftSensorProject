@@ -25,6 +25,9 @@ interface ApiResponse<T> {
 export interface ModelVersionRow {
   id: string
   version: number
+  /** Operator label beside `v{version}`; null = none. Renameable while
+   *  STAGING only — the server refuses otherwise. */
+  name: string | null
   stage: 'STAGING' | 'PRODUCTION' | 'ARCHIVED'
   algorithm: string
   retrainStrategy: string | null
@@ -67,6 +70,24 @@ export const modelVersionService = {
           body: JSON.stringify(override ? { override } : {}),
         },
       )
+    return res.data
+  },
+
+  /** Label a STAGING version; null or blank clears it. The server refuses
+   *  (422) any other stage. */
+  async rename(
+    modelId: string,
+    version: ModelVersionNumber,
+    name: string | null,
+  ): Promise<{ id: string; version: number; name: string | null }> {
+    const res: ApiResponse<{
+      id: string
+      version: number
+      name: string | null
+    }> = await fetchClient(
+      `/api/v1/authorized/model/${modelId}/versions/${version}`,
+      { method: 'PATCH', body: JSON.stringify({ name }) },
+    )
     return res.data
   },
 

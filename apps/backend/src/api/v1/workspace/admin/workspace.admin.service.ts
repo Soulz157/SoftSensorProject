@@ -10,6 +10,7 @@ import {
   DeleteWorkspaceRequestDto,
   UpdateWorkspaceRequestDto,
 } from './dto/workspace.admin.dto';
+import { normalizePermissions } from '@/lib/workspace-permission';
 
 @Injectable()
 export class WorkspaceAdminService {
@@ -290,7 +291,12 @@ export class WorkspaceAdminService {
 
     const updated = await this.prisma.workspaceMember.update({
       where: { id: memberId },
-      data: { role: dto.role },
+      // Grants only mean something for a VIEWER: a role change away from
+      // VIEWER clears them; staying VIEWER keeps them.
+      data: {
+        role: dto.role,
+        permissions: normalizePermissions(dto.role, member.permissions),
+      },
       select: {
         id: true,
         userId: true,
@@ -414,7 +420,8 @@ export class WorkspaceAdminService {
 
     const moved = await this.prisma.workspaceMember.update({
       where: { id: memberId },
-      data: { workspaceId: targetWorkspaceId },
+      // Grants were given by the SOURCE workspace's owner; they do not travel.
+      data: { workspaceId: targetWorkspaceId, permissions: [] },
       select: {
         id: true,
         userId: true,

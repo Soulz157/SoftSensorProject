@@ -41,6 +41,7 @@ import type {
   InferenceWindowUploadUrlsDto,
   PutInferenceScheduleDto,
 } from './dto/inference-window.authorized.dto';
+import { canReadWithGrant } from '@/lib/workspace-permission';
 
 /**
  * MODEL-SERVE-013-T01. One data source, as a SETTINGS surface may see it.
@@ -208,7 +209,14 @@ export class InferenceWindowAuthorizedService {
    *  Mirrors `PredictionJobAuthorizedService.assertModelAccess` — a fourth
    *  copy following the established convention rather than a new shared
    *  helper for four call sites. */
-  private async assertModelAccess(modelId: string, user: Auth.UserPayload) {
+  private async assertModelAccess(
+    modelId: string,
+    user: Auth.UserPayload,
+    // 'edit' (default) is every mutating route: OWNER/STAFF only.
+    // 'monitoring-read' is a read a VIEWER may make once an OWNER granted
+    // MONITORING_VIEW. Never pass it from a route that changes anything.
+    access: 'edit' | 'monitoring-read' = 'edit',
+  ) {
     const model = await this.prisma.model.findUnique({
       where: { id: modelId },
       select: { id: true, workspaceId: true },
@@ -230,10 +238,17 @@ export class InferenceWindowAuthorizedService {
     const member = await this.prisma.workspaceMember.findFirst({
       where: { workspaceId: model.workspaceId, userId: user.id },
     });
-    if (!member || member.role === 'VIEWER') {
+    const allowed =
+      access === 'monitoring-read'
+        ? canReadWithGrant(member, 'MONITORING_VIEW')
+        : !!member && member.role !== 'VIEWER';
+    if (!allowed) {
       throw new AppException({
         statusCode: 403,
-        message: 'Forbidden: editor access required',
+        message:
+          access === 'monitoring-read'
+            ? 'Forbidden: monitoring access required'
+            : 'Forbidden: editor access required',
         type: 'ERROR',
       });
     }
@@ -319,7 +334,7 @@ export class InferenceWindowAuthorizedService {
   }
 
   async getScheduleService(modelId: string, user: Auth.UserPayload) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
     });
@@ -994,7 +1009,7 @@ export class InferenceWindowAuthorizedService {
     query: { status?: string; from?: string; to?: string },
     user: Auth.UserPayload,
   ) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
     const windows = await this.prisma.inferenceWindow.findMany({
       where: {
         modelId,
@@ -1024,7 +1039,7 @@ export class InferenceWindowAuthorizedService {
    * incident) without ever counting as a live prediction.
    */
   async getStatusService(modelId: string, user: Auth.UserPayload) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
     });
@@ -1529,7 +1544,7 @@ export class InferenceWindowAuthorizedService {
     windowId: string,
     user: Auth.UserPayload,
   ) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
     const window = await this.prisma.inferenceWindow.findFirst({
       where:
         windowId === LATEST_WINDOW ? { modelId } : { id: windowId, modelId },
@@ -1694,7 +1709,7 @@ export class InferenceWindowAuthorizedService {
     query: InferenceTruthRangeQueryDto,
     user: Auth.UserPayload,
   ) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     const from = new Date(query.from);
     const to = new Date(query.to);
@@ -1772,7 +1787,7 @@ export class InferenceWindowAuthorizedService {
     query: InferenceTruthRangeQueryDto,
     user: Auth.UserPayload,
   ) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     const from = new Date(query.from);
     const to = new Date(query.to);
@@ -2119,7 +2134,7 @@ export class InferenceWindowAuthorizedService {
    * two_fields exists to prevent.
    */
   async getTagObservationsService(modelId: string, user: Auth.UserPayload) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     const rows = await this.prisma.tagObservation.findMany({
       where: { modelId },

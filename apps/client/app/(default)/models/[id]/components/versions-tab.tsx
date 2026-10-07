@@ -18,7 +18,9 @@ import { legacyStrategyLabel } from '@/lib/retrain-basis'
 import { useModelVersions } from '@/hooks/model/use-model-versions'
 import { useModelPromote } from '@/hooks/model/use-model-promote'
 import { useModelRemoveVersion } from '@/hooks/model/use-model-remove-version'
+import { useModelRenameVersion } from '@/hooks/model/use-model-rename-version'
 import type { ModelVersionRow } from '@/services/model-version'
+import { VersionRenameDialog } from './version-rename-dialog'
 
 interface Props {
   modelId: string
@@ -75,6 +77,12 @@ export function VersionsTab({ modelId }: Props) {
     setRemoveTarget(null)
     void refetch()
   })
+  const [renameTarget, setRenameTarget] = useState<ModelVersionRow | null>(null)
+  const renaming = useModelRenameVersion(() => {
+    setRenameTarget(null)
+    void refetch()
+  })
+  const busy = promote.busy || removal.busy || renaming.busy
 
   const current = versions.find(v => v.stage === 'PRODUCTION') ?? null
 
@@ -125,7 +133,17 @@ export function VersionsTab({ modelId }: Props) {
           <tbody>
             {versions.map(v => (
               <tr key={v.id} className="border-t border-border">
-                <td className="px-3 py-2 font-mono">v{v.version}</td>
+                <td className="px-3 py-2">
+                  <span className="font-mono">v{v.version}</span>
+                  {v.name && (
+                    <span
+                      className="ml-2 inline-block max-w-[16rem] truncate align-bottom text-foreground"
+                      title={v.name}
+                    >
+                      {v.name}
+                    </span>
+                  )}
+                </td>
                 <td className="px-3 py-2">
                   <StageChip stage={v.stage} />
                 </td>
@@ -159,10 +177,24 @@ export function VersionsTab({ modelId }: Props) {
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs"
-                        disabled={promote.busy || removal.busy}
+                        disabled={busy}
                         onClick={() => setConfirm(v)}
                       >
                         Make production
+                      </Button>
+                    )}
+                    {/* STAGING only, same population as Remove: a version
+                        that has served keeps the name history saw it by.
+                        The server enforces this too. */}
+                    {v.stage === 'STAGING' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-xs text-muted-foreground"
+                        disabled={busy}
+                        onClick={() => setRenameTarget(v)}
+                      >
+                        Rename
                       </Button>
                     )}
                     {/* STAGING only, not `!== 'PRODUCTION'`. An ARCHIVED
@@ -178,7 +210,7 @@ export function VersionsTab({ modelId }: Props) {
                         size="sm"
                         variant="ghost"
                         className="h-7 text-xs text-muted-foreground hover:text-destructive"
-                        disabled={promote.busy || removal.busy}
+                        disabled={busy}
                         onClick={() => setRemoveTarget(v)}
                       >
                         Remove
@@ -191,6 +223,21 @@ export function VersionsTab({ modelId }: Props) {
           </tbody>
         </table>
       </div>
+
+      <VersionRenameDialog
+        key={renameTarget?.id ?? 'closed'}
+        target={renameTarget}
+        busy={renaming.busy}
+        onClose={() => setRenameTarget(null)}
+        onSave={name => {
+          if (!renameTarget) return
+          void renaming.rename(
+            modelId,
+            brandModelVersionNumber(renameTarget.version),
+            name,
+          )
+        }}
+      />
 
       <AlertDialog
         open={confirm !== null}

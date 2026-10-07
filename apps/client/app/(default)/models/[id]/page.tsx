@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import { useSession } from 'next-auth/react'
 import { useAtomValue } from 'jotai'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -80,6 +81,9 @@ import { useModelPromote } from '@/hooks/model/use-model-promote'
 import { useModelInputSchema } from '@/hooks/model/use-model-input-schema'
 import { useInferenceStatus } from '@/hooks/model/use-inference-status'
 import { useRunPredict } from '@/hooks/model/use-run-predict'
+import { useWorkspaceMembers } from '@/hooks/workspace/use-workspace-members'
+import { isMonitoringDenied } from '@/lib/workspace-access'
+import { MonitoringAccessNotice } from './components/monitoring-access-notice'
 import LoadingModelPage from './loading'
 import ErrorModelPage from './error'
 
@@ -222,6 +226,24 @@ export default function ModelDetailPage({
   const retrain = useModelRetrain({ model, onUpdated: refresh })
   const refreshModels = useRefreshModels()
   const [overrideReason, setOverrideReason] = useState('')
+
+  // Workspace feature grants: a VIEWER sees the monitoring tabs only once an
+  // OWNER granted MONITORING_VIEW. Locks only when that is KNOWN — see
+  // `isMonitoringDenied`; the backend enforces it either way.
+  const { data: session } = useSession()
+  const { currentMember, loading: membersLoading } = useWorkspaceMembers(
+    model?.workspaceId ?? '',
+    session?.user?.id,
+  )
+  const monitoringDenied = isMonitoringDenied({
+    member: currentMember,
+    membersLoading: !model || membersLoading,
+    isWorkspaceCreator:
+      !!session?.user?.id &&
+      workspaces.find(w => w.id === model?.workspaceId)?.ownerId ===
+        session.user.id,
+    isAdmin: session?.user?.role === 'ADMIN',
+  })
 
   /**
    * MODEL-SERVE-001-T04/T06. Promotion is the step between a saved model and
@@ -922,11 +944,17 @@ export default function ModelDetailPage({
 
           {/* ── Input Data ── */}
           <TabsContent value="input" className="mt-0">
-            <InputDataTab
-              model={model}
-              frozenColumns={inferenceStatus?.health.frozenColumns ?? []}
-              frozenSince={inferenceStatus?.health.frozenSince ?? []}
-            />
+            {monitoringDenied ? (
+              <div className="mt-4">
+                <MonitoringAccessNotice />
+              </div>
+            ) : (
+              <InputDataTab
+                model={model}
+                frozenColumns={inferenceStatus?.health.frozenColumns ?? []}
+                frozenSince={inferenceStatus?.health.frozenSince ?? []}
+              />
+            )}
           </TabsContent>
 
           {/* ── Edit History ── */}
@@ -977,7 +1005,11 @@ export default function ModelDetailPage({
 
           {/* ── Monitoring ── */}
           <TabsContent value="monitoring" className="mt-4">
-            <ModelMonitoringTab model={model} refreshKey={monitoringKey} />
+            {monitoringDenied ? (
+              <MonitoringAccessNotice />
+            ) : (
+              <ModelMonitoringTab model={model} refreshKey={monitoringKey} />
+            )}
           </TabsContent>
 
           {/* ── Evaluation ── */}
@@ -987,37 +1019,45 @@ export default function ModelDetailPage({
 
           {/* ── Versions ── */}
           <TabsContent value="versions" className="mt-4">
-            <VersionsTab modelId={model.id} />
+            {monitoringDenied ? (
+              <MonitoringAccessNotice />
+            ) : (
+              <VersionsTab modelId={model.id} />
+            )}
           </TabsContent>
 
           {/* ── Retrain ── MODEL-SERVE-020 */}
           <TabsContent value="retrain" className="mt-4">
-            <RetrainTab
-              modelId={model.id}
-              currentSettings={
-                retrain.incumbent
-                  ? {
-                      algorithm: retrain.incumbent.algorithm,
-                      hyperparameters: retrain.incumbent.hyperparameters,
-                    }
-                  : null
-              }
-              // Not the per-viewer `dismissed` pair the old panel used: that was
-              // a way to close a panel sitting above the whole page. Here the
-              // finished result IS the tab's content — hiding it would leave an
-              // empty tab with no way to bring it back.
-              job={retrain.job}
-              phase={retrain.phase}
-              logs={retrain.logs}
-              isRetraining={retrain.isRetraining}
-              onStartRetrain={() => setRetrainOpen(true)}
-              applying={promote.busy}
-              onApplyToProduction={version => {
-                // The SAME promote flow the header's own Promote button uses
-                // — including its 422 override dialog, already mounted below.
-                void promote.promote(model.id, version)
-              }}
-            />
+            {monitoringDenied ? (
+              <MonitoringAccessNotice />
+            ) : (
+              <RetrainTab
+                modelId={model.id}
+                currentSettings={
+                  retrain.incumbent
+                    ? {
+                        algorithm: retrain.incumbent.algorithm,
+                        hyperparameters: retrain.incumbent.hyperparameters,
+                      }
+                    : null
+                }
+                // Not the per-viewer `dismissed` pair the old panel used: that was
+                // a way to close a panel sitting above the whole page. Here the
+                // finished result IS the tab's content — hiding it would leave an
+                // empty tab with no way to bring it back.
+                job={retrain.job}
+                phase={retrain.phase}
+                logs={retrain.logs}
+                isRetraining={retrain.isRetraining}
+                onStartRetrain={() => setRetrainOpen(true)}
+                applying={promote.busy}
+                onApplyToProduction={version => {
+                  // The SAME promote flow the header's own Promote button uses
+                  // — including its 422 override dialog, already mounted below.
+                  void promote.promote(model.id, version)
+                }}
+              />
+            )}
           </TabsContent>
 
           {/* ── Logs ── */}
@@ -1026,7 +1066,11 @@ export default function ModelDetailPage({
               permanently empty on every model. Now the container's own
               stdout, per inference window. */}
           <TabsContent value="logs" className="mt-4">
-            <WindowLogsTab modelId={model.id} />
+            {monitoringDenied ? (
+              <MonitoringAccessNotice />
+            ) : (
+              <WindowLogsTab modelId={model.id} />
+            )}
           </TabsContent>
         </Tabs>
       </div>

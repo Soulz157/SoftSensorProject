@@ -10,6 +10,8 @@ import {
 } from '@/lib/retrain-lab-events'
 import { useLabEventCount } from '@/hooks/model/use-lab-event-count'
 import { compareMetric } from '@/lib/retrain-metric-compare'
+import { rmseDeltaClass } from '@/lib/retrain-verdict-style'
+import { cn } from '@/lib/utils'
 import type { LabEventIds } from './basis-lab-events'
 import {
   RetrainMetricCompareCard,
@@ -113,7 +115,11 @@ export function RetrainEventMetricGrid({
       </div>
       {delta !== null && (
         <p className="text-xs text-muted-foreground">
-          At lab events, RMSE {delta < 0 ? 'improved' : 'regressed'} by{' '}
+          At lab events, RMSE{' '}
+          <span className={cn('font-medium', rmseDeltaClass(delta))}>
+            {delta < 0 ? 'improved' : 'regressed'}
+          </span>{' '}
+          by{' '}
           <span className="font-medium text-foreground">
             {Math.abs(delta).toFixed(4)}
           </span>{' '}

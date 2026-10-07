@@ -6,8 +6,10 @@ import { isPromotable } from '@/lib/model-version-transitions';
 import { NotificationOutboxService } from '@/api/v1/notification/core/notification-outbox.service';
 import type {
   PromoteVersionDto,
+  RenameVersionDto,
   RollbackModelDto,
 } from './dto/model-version.authorized.dto';
+import { canReadWithGrant } from '@/lib/workspace-permission';
 
 /** MODEL-SERVE-001-T06. `r2 <= 0` is a hard block; `null`/unreadable (no
  *  `metrics`, or `metrics.r2` not a finite number) is treated the SAME as a
@@ -101,7 +103,14 @@ export class ModelVersionAuthorizedService {
   /** Editor-level, same rule `ModelAuthorizedService.assertCanEdit` applies
    *  to every other mutating Model route — promoting or rolling back what
    *  answers live traffic is not a read. */
-  private async assertModelAccess(modelId: string, user: Auth.UserPayload) {
+  private async assertModelAccess(
+    modelId: string,
+    user: Auth.UserPayload,
+    // 'edit' (default) is every mutating route: OWNER/STAFF only.
+    // 'monitoring-read' is a read a VIEWER may make once an OWNER granted
+    // MONITORING_VIEW. Never pass it from a route that changes anything.
+    access: 'edit' | 'monitoring-read' = 'edit',
+  ) {
     const model = await this.prisma.model.findUnique({
       where: { id: modelId },
       select: { id: true, workspaceId: true },
@@ -123,10 +132,17 @@ export class ModelVersionAuthorizedService {
     const member = await this.prisma.workspaceMember.findFirst({
       where: { workspaceId: model.workspaceId, userId: user.id },
     });
-    if (!member || member.role === 'VIEWER') {
+    const allowed =
+      access === 'monitoring-read'
+        ? canReadWithGrant(member, 'MONITORING_VIEW')
+        : !!member && member.role !== 'VIEWER';
+    if (!allowed) {
       throw new AppException({
         statusCode: 403,
-        message: 'Forbidden: editor access required',
+        message:
+          access === 'monitoring-read'
+            ? 'Forbidden: monitoring access required'
+            : 'Forbidden: editor access required',
         type: 'ERROR',
       });
     }
@@ -318,7 +334,7 @@ export class ModelVersionAuthorizedService {
    * render for "we do not know".
    */
   async listVersionsService(user: Auth.UserPayload, modelId: string) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     const versions = await this.prisma.modelVersion.findMany({
       where: { modelId },
@@ -326,6 +342,7 @@ export class ModelVersionAuthorizedService {
       select: {
         id: true,
         version: true,
+        name: true,
         stage: true,
         algorithm: true,
         metrics: true,
@@ -343,6 +360,7 @@ export class ModelVersionAuthorizedService {
         versions: versions.map((v) => ({
           id: v.id,
           version: v.version,
+          name: v.name,
           stage: v.stage,
           algorithm: v.algorithm,
           retrainStrategy: v.retrainStrategy,
@@ -524,6 +542,60 @@ export class ModelVersionAuthorizedService {
       message: `Version ${version.version} removed`,
       type: 'SUCCESS' as const,
       data: { id: version.id, version: version.version },
+    };
+  }
+
+  /**
+   * Label a version on the Versions tab. STAGING only: once a version has
+   * served (PRODUCTION, or ARCHIVED after serving) its name is part of what
+   * notifications and history already showed, so it is not rewritten.
+   *
+   * The stage guard lives in the UPDATE's own WHERE, not only in the read
+   * before it — a promote landing between the two would otherwise let a
+   * rename through onto a version that is now serving. Zero rows updated
+   * after the read found it STAGING means exactly that race.
+   */
+  async renameVersionService(
+    user: Auth.UserPayload,
+    modelId: string,
+    versionNumber: number,
+    dto: RenameVersionDto,
+  ) {
+    await this.assertModelAccess(modelId, user);
+
+    const version = await this.prisma.modelVersion.findFirst({
+      where: { modelId, version: versionNumber },
+      select: { id: true, version: true, stage: true },
+    });
+    if (!version) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Model version ${versionNumber} not found`,
+        type: 'ERROR',
+      });
+    }
+
+    const notStaging = () =>
+      new AppException({
+        statusCode: 422,
+        message: `Cannot rename v${version.version}: only staging versions can be renamed.`,
+        type: 'ERROR',
+      });
+    if (version.stage !== 'STAGING') throw notStaging();
+
+    // Blank clears the label back to the bare `v{version}`.
+    const name = dto.name ? dto.name : null;
+    const { count } = await this.prisma.modelVersion.updateMany({
+      where: { id: version.id, stage: 'STAGING' },
+      data: { name },
+    });
+    if (count === 0) throw notStaging();
+
+    return {
+      statusCode: 200,
+      message: `Version ${version.version} renamed`,
+      type: 'SUCCESS' as const,
+      data: { id: version.id, version: version.version, name },
     };
   }
 

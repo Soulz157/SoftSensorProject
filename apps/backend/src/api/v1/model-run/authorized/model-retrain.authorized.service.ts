@@ -8,6 +8,7 @@ import { usesNewData } from './dto/model-retrain.authorized.dto';
 import type { DatasetSize } from '@/lib/tuning-grid';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import { PythonSplitStatsSchema } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
+import { canReadWithGrant } from '@/lib/workspace-permission';
 
 /** The split a retrain reuses. `chronological` carries the ratio the
  *  incumbent was actually fitted on; `cv_expanding` is refused (see
@@ -191,7 +192,14 @@ export class ModelRetrainAuthorizedService {
    *  ts`'s own note records why a shared helper was not extracted for three
    *  call sites, and that reasoning is unchanged at four — extracting it
    *  touches four modules and is not part of this feature. */
-  private async assertModelAccess(modelId: string, user: Auth.UserPayload) {
+  private async assertModelAccess(
+    modelId: string,
+    user: Auth.UserPayload,
+    // 'edit' (default) is every mutating route: OWNER/STAFF only.
+    // 'monitoring-read' is a read a VIEWER may make once an OWNER granted
+    // MONITORING_VIEW. Never pass it from a route that changes anything.
+    access: 'edit' | 'monitoring-read' = 'edit',
+  ) {
     const model = await this.prisma.model.findUnique({
       where: { id: modelId },
       select: { id: true, workspaceId: true },
@@ -213,10 +221,17 @@ export class ModelRetrainAuthorizedService {
     const member = await this.prisma.workspaceMember.findFirst({
       where: { workspaceId: model.workspaceId, userId: user.id },
     });
-    if (!member || member.role === 'VIEWER') {
+    const allowed =
+      access === 'monitoring-read'
+        ? canReadWithGrant(member, 'MONITORING_VIEW')
+        : !!member && member.role !== 'VIEWER';
+    if (!allowed) {
       throw new AppException({
         statusCode: 403,
-        message: 'Forbidden: editor access required',
+        message:
+          access === 'monitoring-read'
+            ? 'Forbidden: monitoring access required'
+            : 'Forbidden: editor access required',
         type: 'ERROR',
       });
     }
@@ -837,7 +852,7 @@ export class ModelRetrainAuthorizedService {
    * before the existing reconcile-and-compare path.
    */
   async getCurrentRetrainJobService(modelId: string, user: Auth.UserPayload) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     // Resolved independently of any job: the Retrain dialog needs the
     // incumbent's algorithm to build a Custom fine-tune form, and needs to
@@ -970,7 +985,7 @@ export class ModelRetrainAuthorizedService {
     jobId: string,
     user: Auth.UserPayload,
   ) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
     const found = await this.prisma.modelCandidateJob.findFirst({
       where: { id: jobId, modelId },
     });

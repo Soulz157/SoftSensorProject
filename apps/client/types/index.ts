@@ -346,10 +346,15 @@ export interface AdminUser {
 
 export type WorkspaceRole = 'OWNER' | 'VIEWER' | 'STAFF'
 
+/** Read-only feature grants an OWNER can give a VIEWER. Always empty for
+ *  OWNER and STAFF, who already have both. */
+export type WorkspacePermission = 'MONITORING_VIEW' | 'NOTIFICATIONS_VIEW'
+
 export interface WorkspaceMember {
   id: string
   userId: string
   role: WorkspaceRole
+  permissions: WorkspacePermission[]
   createdAt: string
   user: {
     id: string

@@ -20,5 +20,14 @@ export const RollbackModelSchema = z.object({
   override: PromoteOverrideSchema.optional(),
 });
 
+/**
+ * Label for a STAGING version. Trimmed; an empty string or null clears it
+ * back to the bare `v{version}`.
+ */
+export const RenameVersionSchema = z.object({
+  name: z.string().trim().max(100).nullable(),
+});
+
 export class PromoteVersionDto extends createZodDto(PromoteVersionSchema) {}
+export class RenameVersionDto extends createZodDto(RenameVersionSchema) {}
 export class RollbackModelDto extends createZodDto(RollbackModelSchema) {}

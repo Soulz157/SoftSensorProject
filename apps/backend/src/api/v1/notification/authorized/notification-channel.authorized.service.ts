@@ -7,6 +7,7 @@ import {
   NOTIFICATION_EVENT_KINDS,
 } from '@/lib/notification-events';
 import { buildNotificationMessage } from '@/lib/notification-message';
+import { canReadWithGrant } from '@/lib/workspace-permission';
 import { NotificationDeliveryService } from '../core/notification-delivery.service';
 import type {
   CreateNotificationChannelDto,
@@ -18,7 +19,8 @@ import type {
  * settings UI (event defaults per row, delivery-history filters, "why can't
  * this alert fire yet" copy) is T05, not built here. Every mutating route
  * is OWNER-only (D-user-decision, 2026-09-29); the two READ routes (list
- * channels, delivery history) also admit STAFF (`assertCanView`, 2026-10-01).
+ * channels, delivery history) also admit STAFF (`assertCanView`, 2026-10-01)
+ * and a VIEWER granted NOTIFICATIONS_VIEW (2026-10-07).
  * `assertIsOwner` below is a
  * COPY of `workspace.authorized.service.ts`'s own private helper, verbatim
  * down to not special-casing ADMIN — this codebase's own existing
@@ -61,8 +63,10 @@ export class NotificationChannelAuthorizedService {
   /**
    * READ access to a workspace's channels and delivery history: the owner, or
    * a member with role OWNER or STAFF (user's call, 2026-10-01 — staff see
-   * their own workspace's notifications). VIEWER stays out: channel rows name
-   * recipients and targets. Every MUTATING route keeps `assertIsOwner`. Same
+   * their own workspace's notifications). A VIEWER stays out by default —
+   * channel rows name recipients and targets — unless an OWNER granted them
+   * NOTIFICATIONS_VIEW (user's call, 2026-10-07: the grant is that explicit
+   * opt-in). Every MUTATING route keeps `assertIsOwner`. Same
    * not-special-casing-ADMIN convention as `assertIsOwner` above.
    */
   private async assertCanView(workspaceId: string, userId: string) {
@@ -80,9 +84,9 @@ export class NotificationChannelAuthorizedService {
     if (workspace.ownerId === userId) return;
     const member = await this.prisma.workspaceMember.findUnique({
       where: { workspaceId_userId: { workspaceId, userId } },
-      select: { role: true },
+      select: { role: true, permissions: true },
     });
-    if (!member || (member.role !== 'OWNER' && member.role !== 'STAFF')) {
+    if (!canReadWithGrant(member, 'NOTIFICATIONS_VIEW')) {
       throw new AppException({
         statusCode: 403,
         message: 'Only workspace owners and staff can view notifications',

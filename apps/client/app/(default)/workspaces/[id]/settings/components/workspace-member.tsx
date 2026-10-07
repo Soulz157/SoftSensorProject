@@ -32,7 +32,9 @@ import {
 import { cn } from '@/lib/utils'
 import { workspaceService } from '@/services/workspace'
 import { useWorkspaceMembers } from '@/hooks/workspace/use-workspace-members'
+import { grantedPermissionLabels } from '@/lib/workspace-access'
 import type { WorkspaceMember, WorkspaceRole } from '@/types'
+import { MemberAccessDialog } from './member-access-dialog'
 
 interface WorkspaceMembersProps {
   workspaceId: string
@@ -99,6 +101,7 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
   const [isInviting, setIsInviting] = useState(false)
 
   const [mutatingId, setMutatingId] = useState<string | null>(null)
+  const [accessMember, setAccessMember] = useState<WorkspaceMember | null>(null)
 
   async function handleInvite() {
     if (!inviteEmail.trim()) return
@@ -119,23 +122,6 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
       toast.error(msg)
     } finally {
       setIsInviting(false)
-    }
-  }
-
-  async function handleRoleChange(
-    member: WorkspaceMember,
-    role: WorkspaceRole,
-  ) {
-    setMutatingId(member.id)
-    try {
-      await workspaceService.updateMemberRole(workspaceId, member.id, role)
-      toast.success(`Role updated to ${role}`)
-      await fetchMembers()
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to update role'
-      toast.error(msg)
-    } finally {
-      setMutatingId(null)
     }
   }
 
@@ -241,14 +227,24 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                     </TableCell>
 
                     <TableCell>
-                      <span
-                        className={cn(
-                          'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-                          roleBadge(member.role),
-                        )}
-                      >
-                        {member.role}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span
+                          className={cn(
+                            'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
+                            roleBadge(member.role),
+                          )}
+                        >
+                          {member.role}
+                        </span>
+                        {grantedPermissionLabels(member).map(label => (
+                          <span
+                            key={label}
+                            className="inline-flex h-5 items-center rounded-full border border-border px-2 text-xs text-muted-foreground"
+                          >
+                            + {label}
+                          </span>
+                        ))}
+                      </div>
                     </TableCell>
 
                     <TableCell>
@@ -268,24 +264,12 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                               )}
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            {member.role !== 'OWNER' ? (
-                              <DropdownMenuItem
-                                onClick={() =>
-                                  handleRoleChange(member, 'OWNER')
-                                }
-                              >
-                                Make OWNER
-                              </DropdownMenuItem>
-                            ) : (
-                              <DropdownMenuItem
-                                onClick={() =>
-                                  handleRoleChange(member, 'VIEWER')
-                                }
-                              >
-                                Make VIEWER
-                              </DropdownMenuItem>
-                            )}
+                          <DropdownMenuContent align="end" className='w-full'>
+                            <DropdownMenuItem
+                              onClick={() => setAccessMember(member)}
+                            >
+                              Manage access…
+                            </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                               className="text-destructive focus:text-destructive"
@@ -304,6 +288,24 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
           </TableBody>
         </Table>
       </div>
+
+      {accessMember && (
+        <MemberAccessDialog
+          key={accessMember.id}
+          workspaceId={workspaceId}
+          member={accessMember}
+          memberName={
+            [accessMember.user.firstName, accessMember.user.lastName]
+              .filter(Boolean)
+              .join(' ') || accessMember.user.email
+          }
+          open
+          onOpenChange={open => {
+            if (!open) setAccessMember(null)
+          }}
+          onSaved={() => void fetchMembers()}
+        />
+      )}
 
       <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
         <DialogContent className="max-w-sm">

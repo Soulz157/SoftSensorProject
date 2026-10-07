@@ -46,7 +46,7 @@ const STAGING_VERSION = {
 function buildPrisma(options: {
   model?: { id: string; workspaceId: string } | null;
   workspaceOwned?: boolean;
-  member?: { role: string } | null;
+  member?: { role: string; permissions?: string[] } | null;
   productionVersion?: typeof PRODUCTION_VERSION | null;
   latestVersion?: typeof STAGING_VERSION | null;
 }) {
@@ -184,7 +184,7 @@ describe('ModelInputSchemaAuthorizedService.getInputSchemaService', () => {
   it('403s a VIEWER, matching the /predictions and /psi reads', async () => {
     const prisma = buildPrisma({
       workspaceOwned: false,
-      member: { role: 'VIEWER' },
+      member: { role: 'VIEWER', permissions: [] },
       productionVersion: null,
       latestVersion: STAGING_VERSION,
     });

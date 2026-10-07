@@ -77,8 +77,11 @@ export function NotificationChannels({ workspaceId }: Props) {
   const { data: session } = useSession()
   const currentUserId = session?.user?.id
 
-  const { channels, knownEvents, loading, isFetching, fetchChannels } =
+  const { channels, knownEvents, loading, isFetching, error, fetchChannels } =
     useNotificationChannels(workspaceId)
+  // A failed FIRST load must not read as "this workspace has no channels".
+  // A failed REFRESH keeps the list already on screen (plus the toast).
+  const loadFailed = error !== null && channels.length === 0
   const { members, isOwner } = useWorkspaceMembers(workspaceId, currentUserId)
   const { models } = useWorkspaceModels(workspaceId)
 
@@ -140,7 +143,7 @@ export function NotificationChannels({ workspaceId }: Props) {
           <h3 className="text-sm font-medium text-foreground">
             Notification channels
           </h3>
-          {!loading && (
+          {!loading && !loadFailed && (
             <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground font-medium">
               {channels.length}
             </span>
@@ -207,6 +210,23 @@ export function NotificationChannels({ workspaceId }: Props) {
           >
             {loading ? (
               <ChannelsSkeleton />
+            ) : loadFailed ? (
+              <TableRow>
+                <TableCell
+                  colSpan={4}
+                  className="py-6 text-center text-xs text-muted-foreground"
+                >
+                  <p role="alert">{error}</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-2 h-7 text-xs"
+                    onClick={() => void fetchChannels()}
+                  >
+                    Retry
+                  </Button>
+                </TableCell>
+              </TableRow>
             ) : channels.length === 0 ? (
               <TableRow>
                 <TableCell

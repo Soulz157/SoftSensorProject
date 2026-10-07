@@ -53,7 +53,7 @@ export function NotificationDeliveryHistoryDialog({
       }),
     [workspaceId, channel.id, page],
   )
-  const { data, loading, isFetching } = usePaginatedFetch(
+  const { data, loading, isFetching, error } = usePaginatedFetch(
     fetcher,
     [open, page],
     'Failed to load delivery history',
@@ -98,6 +98,17 @@ export function NotificationDeliveryHistoryDialog({
                     className="py-6 text-center text-xs text-muted-foreground"
                   >
                     <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+                  </TableCell>
+                </TableRow>
+              ) : error && !data ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={5}
+                    className="py-6 text-center text-xs text-muted-foreground"
+                  >
+                    {/* Never "No deliveries yet" for a load that FAILED —
+                        see lib/notification-load-error.ts for why. */}
+                    <p role="alert">{error}</p>
                   </TableCell>
                 </TableRow>
               ) : !data || data.items.length === 0 ? (

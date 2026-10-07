@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import { Users } from '@/common/decorators/user.decorator';
 import { ModelVersionAuthorizedService } from './model-version.authorized.service';
 import {
   PromoteVersionDto,
+  RenameVersionDto,
   RollbackModelDto,
 } from './dto/model-version.authorized.dto';
 
@@ -54,6 +56,18 @@ export class ModelVersionAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.service.removeVersionService(user, modelId, version);
+  }
+
+  // Label a version that has not served yet. STAGING only — the service
+  // refuses anything else, so a served version's name cannot be rewritten.
+  @Patch('/versions/:version')
+  renameVersionController(
+    @Param('modelId') modelId: string,
+    @Param('version', ParseIntPipe) version: number,
+    @Body() dto: RenameVersionDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.renameVersionService(user, modelId, version, dto);
   }
 
   @Post('/rollback')

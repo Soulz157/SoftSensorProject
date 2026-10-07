@@ -30,6 +30,7 @@ const row = (over: object = {}) => ({
   id: 'v-id',
   version: 1,
   stage: 'ARCHIVED',
+  name: null,
   algorithm: 'xgboost',
   metrics: { rmse: 1.5, r2: 0.9, mae: 1.1 },
   retrainStrategy: null,
@@ -118,6 +119,17 @@ describe('listVersionsService — ordering and stage (MODEL-SERVE-016-V02)', () 
     ]);
     // Serialized for the wire, not handed over as a Date.
     expect(typeof res.data.versions[0]?.createdAt).toBe('string');
+  });
+
+  it('passes the version label through, null when unset', async () => {
+    const { service } = makeService([
+      row({ id: 'v2', version: 2, stage: 'STAGING', name: 'Winter data' }),
+      row({ id: 'v1', version: 1 }),
+    ]);
+
+    const res = await service.listVersionsService(user, 'm-1');
+
+    expect(res.data.versions.map((v) => v.name)).toEqual(['Winter data', null]);
   });
 
   it('404s for a model the caller cannot reach, without listing versions', async () => {

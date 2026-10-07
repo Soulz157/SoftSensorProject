@@ -10,6 +10,7 @@ import {
   type FeatureSpecEntry,
 } from '@/lib/feature-sources';
 import { DataSourceConnectService } from '@/api/v1/data-source/authorized/data-source.connect.service';
+import { canReadWithGrant } from '@/lib/workspace-permission';
 
 /**
  * MODEL-SERVE-001-T15. The Input Data tab's per-tag data-quality column —
@@ -81,7 +82,14 @@ export class ModelInputStatusAuthorizedService {
    *  see `ModelInputSchemaAuthorizedService`'s own note on why no shared
    *  helper exists across modules. VIEWER is rejected, matching the sibling
    *  `/input-schema` this tab calls beside this one. */
-  private async assertModelAccess(modelId: string, user: Auth.UserPayload) {
+  private async assertModelAccess(
+    modelId: string,
+    user: Auth.UserPayload,
+    // 'edit' (default) is every mutating route: OWNER/STAFF only.
+    // 'monitoring-read' is a read a VIEWER may make once an OWNER granted
+    // MONITORING_VIEW. Never pass it from a route that changes anything.
+    access: 'edit' | 'monitoring-read' = 'edit',
+  ) {
     const model = await this.prisma.model.findUnique({
       where: { id: modelId },
       select: { id: true, workspaceId: true },
@@ -103,10 +111,17 @@ export class ModelInputStatusAuthorizedService {
     const member = await this.prisma.workspaceMember.findFirst({
       where: { workspaceId: model.workspaceId, userId: user.id },
     });
-    if (!member || member.role === 'VIEWER') {
+    const allowed =
+      access === 'monitoring-read'
+        ? canReadWithGrant(member, 'MONITORING_VIEW')
+        : !!member && member.role !== 'VIEWER';
+    if (!allowed) {
       throw new AppException({
         statusCode: 403,
-        message: 'Forbidden: editor access required',
+        message:
+          access === 'monitoring-read'
+            ? 'Forbidden: monitoring access required'
+            : 'Forbidden: editor access required',
         type: 'ERROR',
       });
     }
@@ -191,7 +206,7 @@ export class ModelInputStatusAuthorizedService {
     user: Auth.UserPayload,
     sourceIdOverride?: string,
   ) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     const version =
       (await this.prisma.modelVersion.findFirst({

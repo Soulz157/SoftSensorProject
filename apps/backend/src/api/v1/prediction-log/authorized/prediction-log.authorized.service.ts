@@ -18,6 +18,7 @@ import type {
   IngestPredictionLogDto,
   PredictionLogRangeQueryDto,
 } from './dto/prediction-log.authorized.dto';
+import { canReadWithGrant } from '@/lib/workspace-permission';
 
 /**
  * MODEL-SERVE-005. Sampled synchronous-/predict logging (T01) and the
@@ -48,7 +49,14 @@ export class PredictionLogAuthorizedService {
    *  prediction-job, model-retrain all hold an identical copy — see
    *  ModelRetrainAuthorizedService's own note on why a shared helper has
    *  not been extracted for four call sites, unchanged at five). */
-  private async assertModelAccess(modelId: string, user: Auth.UserPayload) {
+  private async assertModelAccess(
+    modelId: string,
+    user: Auth.UserPayload,
+    // 'edit' (default) is every mutating route: OWNER/STAFF only.
+    // 'monitoring-read' is a read a VIEWER may make once an OWNER granted
+    // MONITORING_VIEW. Never pass it from a route that changes anything.
+    access: 'edit' | 'monitoring-read' = 'edit',
+  ) {
     const model = await this.prisma.model.findUnique({
       where: { id: modelId },
       select: { id: true, workspaceId: true },
@@ -70,10 +78,17 @@ export class PredictionLogAuthorizedService {
     const member = await this.prisma.workspaceMember.findFirst({
       where: { workspaceId: model.workspaceId, userId: user.id },
     });
-    if (!member || member.role === 'VIEWER') {
+    const allowed =
+      access === 'monitoring-read'
+        ? canReadWithGrant(member, 'MONITORING_VIEW')
+        : !!member && member.role !== 'VIEWER';
+    if (!allowed) {
       throw new AppException({
         statusCode: 403,
-        message: 'Forbidden: editor access required',
+        message:
+          access === 'monitoring-read'
+            ? 'Forbidden: monitoring access required'
+            : 'Forbidden: editor access required',
         type: 'ERROR',
       });
     }
@@ -187,7 +202,7 @@ export class PredictionLogAuthorizedService {
     query: PredictionLogRangeQueryDto,
     user: Auth.UserPayload,
   ) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     const versions = await this.prisma.predictionLog.findMany({
       where: {
@@ -271,7 +286,7 @@ export class PredictionLogAuthorizedService {
     query: PredictionLogRangeQueryDto,
     user: Auth.UserPayload,
   ) {
-    await this.assertModelAccess(modelId, user);
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     if (await this.windowMonitoring.hasSchedule(modelId)) {
       return this.windowMonitoring.getPsiReport(modelId, query.from, query.to);

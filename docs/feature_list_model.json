@@ -3996,6 +3996,109 @@
         }
       ],
       "sourcing_note": "Drafted 2026-10-05 from Bins.md recheck; plan at ~/.claude/plans/fix-bug-r1-r2-floating-breeze.md."
+    },
+    {
+      "id": "MODEL-SERVE-030",
+      "title": "Workspace member feature grants: an OWNER can give a VIEWER read-only Model monitoring and/or Notifications access (Manage access dialog)",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-022",
+        "MODEL-SERVE-028"
+      ],
+      "description": "User request 2026-10-07: add a section to the workspace member role change to grant a VIEWER access to other features. Before this the only access control was WorkspaceMember.role; every model-monitoring read (versions, input schema/status, inference windows/logs/series/truth/tag observations, predictions, PSI, retrain status) 403'd a VIEWER, and notification channel/delivery reads were OWNER/STAFF only.",
+      "findings": [
+        "2026-10-07: WorkspaceAdminController had @Roles('ADMIN') commented out and RolesGuard admits when no roles are set -- any USER could invite/re-role/move/remove members of any workspace via /api/v1/admin/workspace/*. Class-level restore would break onboarding: create-workspace-form calls POST /admin/workspace/create as a USER.",
+        "2026-10-07: workspaces/[id]/components/workspace-members.tsx was a byte-identical copy of settings/components/workspace-member.tsx.",
+        "2026-10-07: VIEWER could already create datasets, data sources and model drafts (any-member checks) -- unchanged by this feature."
+      ],
+      "userDecisions": [
+        "2026-10-07: surface = workspace OWNER's Members settings (Manage access dialog), not the global admin page.",
+        "2026-10-07: grantable = MONITORING_VIEW and NOTIFICATIONS_VIEW, both read-only. Every write stays editor/OWNER only.",
+        "2026-10-07: enforced in the backend, reflected in the UI.",
+        "2026-10-07: NOTIFICATIONS_VIEW deliberately reverses the 2026-10-01 'VIEWER stays out of channels' rule for a VIEWER an OWNER explicitly grants; ungranted VIEWER is still refused.",
+        "2026-10-07: fix the admin controller hole first, per route, leaving POST /create open."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-030-T01",
+          "title": "Per-route @Roles('ADMIN') on WorkspaceAdminController except POST /create",
+          "status": "completed",
+          "progress": 100,
+          "result": "workspace.admin.controller.roles.spec.ts: 17 cases with the REAL Roles + RolesGuard (USER refused on 8 routes, ADMIN admitted, USER may still create)."
+        },
+        {
+          "id": "MODEL-SERVE-030-T02",
+          "title": "Schema: enum WorkspacePermission + WorkspaceMember.permissions[] default []",
+          "status": "completed",
+          "progress": 100,
+          "result": "Migration 20261007090000_workspace_member_permissions hand-written from migrate diff (unrelated pending driftThresholdPct drop excluded), applied with db execute, recorded with migrate resolve --applied. Never migrate dev."
+        },
+        {
+          "id": "MODEL-SERVE-030-T03",
+          "title": "lib/workspace-permission.ts: canReadWithGrant + normalizePermissions (pure)",
+          "status": "completed",
+          "progress": 100,
+          "result": "workspace-permission.spec.ts 8 cases."
+        },
+        {
+          "id": "MODEL-SERVE-030-T04",
+          "title": "Split each monitoring service's assertModelAccess into edit (default) vs 'monitoring-read'; only read routes pass 'monitoring-read'",
+          "status": "completed",
+          "progress": 100,
+          "result": "model-version, model-input-schema, model-input-status, inference-window, prediction-log, model-retrain. prediction-job untouched (submit + job status stay editor). workspace-permission.routes.spec.ts 38 cases: granted VIEWER passes the gate on 14 reads and gets 'editor access required' 403 on 10 writes; ungranted VIEWER gets 'monitoring access required' 403 on the 14 reads."
+        },
+        {
+          "id": "MODEL-SERVE-030-T05",
+          "title": "Notification channel assertCanView admits a VIEWER with NOTIFICATIONS_VIEW; mutations keep assertIsOwner",
+          "status": "completed",
+          "progress": 100,
+          "result": "notification-channel.authorized.service.spec.ts: +3 cases (granted list+history 200, MONITORING_VIEW-only 403, granted delete 403)."
+        },
+        {
+          "id": "MODEL-SERVE-030-T06",
+          "title": "PATCH /authorized/workspace/:id/members/:mid accepts optional permissions; grants cleared for non-VIEWER; admin role change normalizes; admin move clears grants",
+          "status": "completed",
+          "progress": 100,
+          "result": "workspace.authorized.member-permissions.spec.ts 7 cases (store, keep-when-omitted, clear-on-STAFF, STAFF/VIEWER/non-member caller 403, last-owner guard)."
+        },
+        {
+          "id": "MODEL-SERVE-030-T07",
+          "title": "Client: types, lib/workspace-access.ts, useUpdateMemberAccess, MemberAccessDialog, members table chips + 'Manage access' item, duplicate members file -> re-export",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/workspace-access.test.ts 16 cases, member-access-dialog.test.tsx 4 cases."
+        },
+        {
+          "id": "MODEL-SERVE-030-T08",
+          "title": "Model page: neutral 'Monitoring access needed' notice in input/monitoring/versions/retrain/logs tabs only when KNOWN ungranted VIEWER (never while loading, for creator, ADMIN or no member row)",
+          "status": "completed",
+          "progress": 100,
+          "result": "isMonitoringDenied in lib/workspace-access.ts, covered by its tests."
+        },
+        {
+          "id": "MODEL-SERVE-030-T09",
+          "title": "Manual e2e in the running app",
+          "status": "pending",
+          "progress": 0,
+          "result": "Not yet run."
+        }
+      ],
+      "acceptance_criteria": [
+        "A VIEWER with MONITORING_VIEW can read every monitoring route and is still refused every write route with 403.",
+        "A VIEWER without MONITORING_VIEW is refused every monitoring read with 403.",
+        "A VIEWER with NOTIFICATIONS_VIEW can list channels and delivery history and cannot create/edit/delete/test a channel.",
+        "Only a workspace OWNER can change a member's role or grants; the last OWNER cannot be demoted.",
+        "A member who is not a VIEWER stores no grants.",
+        "A USER is refused every /admin/workspace route except POST /create."
+      ],
+      "verification": [
+        "pnpm --filter backend test: workspace-permission*.spec, workspace.admin.controller.roles.spec, workspace.authorized.member-permissions.spec, notification-channel.authorized.service.spec all green with non-zero case counts.",
+        "vitest: lib/workspace-access.test.ts, settings/components/__tests__/member-access-dialog.test.tsx green.",
+        "PENDING: manual e2e -- OWNER grants Monitoring to a VIEWER; that VIEWER loads Monitoring/Versions/Logs tabs; promote/run-now 403; grant Notifications shows the channel list without edit buttons; VIEWER->STAFF->VIEWER clears grants; onboarding workspace creation still works as a USER."
+      ],
+      "sourcing_note": "Drafted 2026-10-07 from the approved plan at ~/.claude/plans/can-we-add-another-refactored-teacup.md and a code read; every task result above is from a test run in this session."
     }
   ],
   "global_definition_of_done": [

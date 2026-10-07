@@ -24,6 +24,8 @@ import {
   type RetrainOperand,
 } from '@/lib/acceptance-criteria'
 import type { LabEventSource } from '@/lib/retrain-lab-events'
+import { CRITERION_VERDICT_CLASS } from '@/lib/retrain-verdict-style'
+import { cn } from '@/lib/utils'
 
 const R2_FLOOR: RetrainCriterion = { kind: 'retrain-r2-floor' }
 
@@ -80,7 +82,9 @@ export function RetrainCriteriaPicker({
     ? { kind: 'retrain-comparison', left, operator, right }
     : null
   const presets = presetCriteria()
-  const custom = value.filter(v => !presets.some(p => retrainCriterionKey(p) === retrainCriterionKey(v)))
+  const custom = value.filter(
+    v => !presets.some(p => retrainCriterionKey(p) === retrainCriterionKey(v)),
+  )
 
   return (
     <div className="space-y-1.5">
@@ -185,11 +189,11 @@ export function RetrainCriteriaPicker({
       <p className="text-xs text-muted-foreground">
         Judged at lab events on the validation window both versions are scored
         on. &ldquo;SD of lab values&rdquo; is the spread of the measured target
-        there — RMSE below it means the model beats always guessing the
-        average. Comparisons that could only ever come out one way (a
-        version&apos;s RMSE against its own MAE or error SD) are not offered.
-        The result states pass or fail with both numbers; it never stops the
-        retrain or Apply to Production.
+        there — RMSE below it means the model beats always guessing the average.
+        Comparisons that could only ever come out one way (a version&apos;s RMSE
+        against its own MAE or error SD) are not offered. The result states pass
+        or fail with both numbers; it never stops the retrain or Apply to
+        Production.
       </p>
     </div>
   )
@@ -255,7 +259,12 @@ export function RetrainCriteriaVerdicts({
         const label = retrainCriterionLabel(c)
         return (
           <p key={label} className="text-xs text-foreground">
-            <span className="font-medium">
+            <span
+              className={cn(
+                'font-medium',
+                CRITERION_VERDICT_CLASS[result.verdict],
+              )}
+            >
               {result.verdict === 'pass'
                 ? 'Pass'
                 : result.verdict === 'fail'

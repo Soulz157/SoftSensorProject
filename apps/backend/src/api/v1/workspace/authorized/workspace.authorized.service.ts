@@ -12,6 +12,7 @@ import type {
   UpdateMemberRoleDto,
 } from './dto/workspace.authorized.dto';
 import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
+import { normalizePermissions } from '@/lib/workspace-permission';
 
 @Injectable()
 export class WorkspaceAuthorizedService {
@@ -381,7 +382,13 @@ export class WorkspaceAuthorizedService {
 
     const updated = await this.prisma.workspaceMember.update({
       where: { id: memberId },
-      data: { role: dto.role },
+      data: {
+        role: dto.role,
+        permissions: normalizePermissions(
+          dto.role,
+          dto.permissions ?? member.permissions,
+        ),
+      },
       include: {
         user: {
           select: { id: true, firstName: true, lastName: true, email: true },

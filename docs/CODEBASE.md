@@ -644,7 +644,7 @@ packages/prisma/
 | `Workspace`          | User workspace — name, icon, color, owner. Has nodes, models, edges, plans, members                        |
 | `WorkspacePlan`      | Sub-floor/zone within a canvas workspace. Nodes belong to a plan. **Not** a subscription plan              |
 | `Nodes`              | Canvas node — `data: Json` (`NodeData` shape: `{name,type,status,icon?,x,y}`). Belongs to workspace + plan |
-| `WorkspaceMember`    | Workspace membership — role `OWNER\|STAFF\|VIEWER`. `@@unique([workspaceId, userId])`                      |
+| `WorkspaceMember`    | Workspace membership — role `OWNER\|STAFF\|VIEWER`, `permissions WorkspacePermission[]` (VIEWER-only read grants `MONITORING_VIEW\|NOTIFICATIONS_VIEW`, rule in `apps/backend/src/lib/workspace-permission.ts`). `@@unique([workspaceId, userId])` |
 | `Model`              | ML model attached to a workspace/node. `data: Json?`                                                       |
 | `Edge`               | Canvas edge between nodes. `@@unique([workspaceId, sourceId, targetId, sourceHandle, targetHandle])`       |
 | `Plan`               | Subscription tier — name, maxWorkspaces, price, durationMonths. **Not** a workspace plan                   |

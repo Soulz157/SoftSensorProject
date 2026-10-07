@@ -103,12 +103,19 @@ describe('RetrainEventMetricGrid (MODEL-SERVE-026-T03)', () => {
     // with that all-row figure beneath the current version's.
     expect(screen.getAllByText('all rows 5.0000')).toHaveLength(2)
     // The headline flips: all rows said improved; at lab events it regressed.
+    // The verb is its own coloured span, so match the whole sentence.
     expect(
-      screen.getByText(/At lab events, RMSE regressed by/),
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === 'P' &&
+          /At lab events, RMSE regressed by/.test(el.textContent ?? ''),
+      ),
     ).toBeInTheDocument()
+    expect(screen.getByText('regressed')).toHaveClass('text-red-600')
     // The RMSE card says the same, in words, from the same lab-event figures.
     expect(screen.getAllByText('2.0711').length).toBeGreaterThanOrEqual(2)
     expect(screen.getAllByText('New worse').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('New worse')[0]).toHaveClass('text-red-600')
   })
 
   it('shows no lab-event delta when the server did not call the two comparable', async () => {

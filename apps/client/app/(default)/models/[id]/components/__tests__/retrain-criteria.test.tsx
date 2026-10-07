@@ -95,5 +95,9 @@ describe('RetrainCriteriaVerdicts (MODEL-SERVE-026-T07)', () => {
     )
     // R² at 2 events: SS_tot = 50, SS_res = 2 -> 0.96.
     expect(screen.getByText(/R² ≥ 0/)).toHaveTextContent('Pass')
+    // A held criterion reads green; the word stays beside the colour.
+    for (const pass of screen.getAllByText('Pass')) {
+      expect(pass).toHaveClass('text-green-600')
+    }
   })
 })

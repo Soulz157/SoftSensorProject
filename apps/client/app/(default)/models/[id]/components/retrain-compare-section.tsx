@@ -13,6 +13,8 @@ import {
   describeUsedFor,
 } from '@/lib/retrain-basis'
 import { compareMetric } from '@/lib/retrain-metric-compare'
+import { rmseDeltaClass } from '@/lib/retrain-verdict-style'
+import { cn } from '@/lib/utils'
 import type { ModelVersionNumber } from '@/lib/model-version-number'
 import { BasisLabEvents, type LabEventIds } from './basis-lab-events'
 import { RetrainEventMetricGrid } from './retrain-event-metric-grid'
@@ -301,7 +303,10 @@ export function RetrainCompareSection({
       {view.comparable && view.rmseDelta !== null && (
         <p className="text-xs text-muted-foreground">
           {labEventIds ? 'Over all rows, RMSE' : 'RMSE'}{' '}
-          {view.rmseDelta < 0 ? 'improved' : 'regressed'} by{' '}
+          <span className={cn('font-medium', rmseDeltaClass(view.rmseDelta))}>
+            {view.rmseDelta < 0 ? 'improved' : 'regressed'}
+          </span>{' '}
+          by{' '}
           <span className="font-medium text-foreground">
             {Math.abs(view.rmseDelta).toFixed(4)}
           </span>{' '}

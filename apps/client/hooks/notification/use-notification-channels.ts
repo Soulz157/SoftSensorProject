@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer } from 'react'
 import { toast } from 'sonner'
 import { notificationService } from '@/services/notification'
+import { describeNotificationLoadError } from '@/lib/notification-load-error'
 import type { NotificationChannel } from '@/types'
 
 type State = {
@@ -10,6 +11,9 @@ type State = {
   knownEvents: string[]
   loading: boolean
   isFetching: boolean
+  /** Set when the last load FAILED — the table must say so rather than
+   *  render its empty state, which reads as "this workspace has none". */
+  error: string | null
 }
 
 type Action =
@@ -19,7 +23,7 @@ type Action =
       channels: NotificationChannel[]
       knownEvents: string[]
     }
-  | { type: 'FETCH_ERROR' }
+  | { type: 'FETCH_ERROR'; error: string }
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -28,6 +32,7 @@ function reducer(state: State, action: Action): State {
         ...state,
         loading: state.channels.length === 0,
         isFetching: true,
+        error: null,
       }
     case 'FETCH_SUCCESS':
       return {
@@ -35,9 +40,15 @@ function reducer(state: State, action: Action): State {
         knownEvents: action.knownEvents,
         loading: false,
         isFetching: false,
+        error: null,
       }
     case 'FETCH_ERROR':
-      return { ...state, loading: false, isFetching: false }
+      return {
+        ...state,
+        loading: false,
+        isFetching: false,
+        error: action.error,
+      }
   }
 }
 
@@ -46,6 +57,7 @@ const initialState: State = {
   knownEvents: [],
   loading: true,
   isFetching: false,
+  error: null,
 }
 
 /** MODEL-SERVE-022-T05. Mirrors `useWorkspaceMembers`'s own shape — one
@@ -64,8 +76,11 @@ export function useNotificationChannels(workspaceId: string) {
         channels: res.data.channels,
         knownEvents: res.data.knownEvents,
       })
-    } catch {
-      dispatch({ type: 'FETCH_ERROR' })
+    } catch (err: unknown) {
+      dispatch({
+        type: 'FETCH_ERROR',
+        error: describeNotificationLoadError(err, 'notification channels'),
+      })
       toast.error('Failed to load notification channels')
     }
   }, [workspaceId])
