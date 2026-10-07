@@ -264,7 +264,7 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                               )}
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className='w-full'>
+                          <DropdownMenuContent align="end" className="w-full">
                             <DropdownMenuItem
                               onClick={() => setAccessMember(member)}
                             >

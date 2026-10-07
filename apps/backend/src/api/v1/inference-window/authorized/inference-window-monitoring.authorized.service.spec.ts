@@ -110,6 +110,8 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       // after an inferred return type let a branch omit it.
       frozenSince: [],
       thresholds: null,
+      // MODEL-SERVE-031. No PSI evidence on this branch.
+      psiSummary: null,
       // MODEL-SERVE-012. UNKNOWN with nulls, never a zero ratio: nothing has
       // been scored, so there is no spread to report.
       residualSd: {
@@ -160,6 +162,8 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       // MODEL-SERVE-028. The schedule residual-SD bands, echoed whether or
       // not drift watching is on (residual-SD is not gated by it).
       thresholds: { warnSd: 1.5, criticalSd: 3.0 },
+      // MODEL-SERVE-031. driftMonitor off means no PSI evidence.
+      psiSummary: null,
       // MODEL-SERVE-012. UNKNOWN with nulls, never a zero ratio: nothing has
       // been scored, so there is no spread to report.
       residualSd: {

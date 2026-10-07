@@ -1,6 +1,7 @@
 // components/layout/sidebar/sidebar-header.tsx
 import Link from 'next/link'
-import { Box, PanelLeftClose, PanelLeft, X } from 'lucide-react'
+import { PanelLeftClose, PanelLeft, X } from 'lucide-react'
+import { BrandMark } from '@/components/brand/brand-mark'
 import { cn } from '@/lib/utils'
 
 interface SidebarHeaderProps {
@@ -31,9 +32,7 @@ export function SidebarHeader({
             isCollapsed && 'lg:justify-center',
           )}
         >
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary">
-            <Box className="h-4 w-4 text-primary-foreground" />
-          </div>
+          <BrandMark wordmark={false} size={28} surface="var(--sidebar)" />
           <span
             className={cn(
               'text-lg font-semibold tracking-tight transition-opacity',

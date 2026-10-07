@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
-import { buildNotificationMessage } from '@/lib/notification-message';
+import {
+  buildDigestMessage,
+  buildNotificationMessage,
+} from '@/lib/notification-message';
+import type { DigestData } from '@/lib/notification-digest';
 
 /** Same order every severity comparison in this feature uses — a channel's
  *  `minSeverity` is a FLOOR, so an event ranked below it is silently
@@ -47,7 +51,27 @@ export interface EnqueueParams {
    * one under the unique constraint.
    */
   eventKeySeed: string;
+  /**
+   * MODEL-SERVE-031. False writes the `NotificationEvent` (the navbar bell
+   * still reads it) but NO per-model `NotificationDelivery` — the evaluator
+   * sends one workspace digest per channel instead (`enqueueDigest`).
+   * Defaults to true, so every discrete write site is unchanged.
+   */
+  deliver?: boolean;
 }
+
+export interface EnqueueDigestParams {
+  channelId: string;
+  workspaceId: string;
+  digest: DigestData;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  at: Date;
+  /** Unique per channel per sweep — `NotificationDelivery`'s
+   *  `(channelId, eventKey)` unique index makes a replay harmless. */
+  eventKeySeed: string;
+}
+
+export const MONITORING_DIGEST_EVENT = 'MONITORING_DIGEST';
 
 /**
  * MODEL-SERVE-022-D04/D10/T03/T07. THE OUTBOX WRITER — never sends anything
@@ -141,7 +165,7 @@ export class NotificationOutboxService {
     const eligible = channels.filter(
       (c) => SEVERITY_RANK[params.severity] >= SEVERITY_RANK[c.minSeverity],
     );
-    if (eligible.length === 0) return;
+    if (eligible.length === 0 || params.deliver === false) return;
 
     const rows = eligible.map((c) => ({
       channelId: c.id,
@@ -173,6 +197,43 @@ export class NotificationOutboxService {
     } catch (err) {
       this.log.warn(
         `notification enqueue failed for model ${params.modelId} event ${params.event}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /** MODEL-SERVE-031. One workspace-digest delivery for ONE channel. No
+   *  `NotificationEvent` and no model: the per-model events already exist
+   *  (the bell reads those), this row only carries the table. Best-effort
+   *  like `enqueueDiscrete` — a failure must never fail the sweep. */
+  async enqueueDigest(params: EnqueueDigestParams): Promise<void> {
+    try {
+      const msg = buildDigestMessage({
+        digest: params.digest,
+        workspaceId: params.workspaceId,
+        at: params.at,
+      });
+      await this.prisma.notificationDelivery.createMany({
+        data: [
+          {
+            channelId: params.channelId,
+            modelId: null,
+            axis: 'MONITORING',
+            event: MONITORING_DIGEST_EVENT,
+            severity: params.severity,
+            eventKey: `digest:${params.workspaceId}:${params.eventKeySeed}`,
+            payload: {
+              title: msg.title,
+              bodyText: msg.bodyText,
+              modelUrl: msg.modelUrl,
+              digest: msg.digest,
+            } as unknown as PrismaTypes.InputJsonValue,
+          },
+        ],
+        skipDuplicates: true,
+      });
+    } catch (err) {
+      this.log.warn(
+        `digest enqueue failed for channel ${params.channelId}: ${(err as Error).message}`,
       );
     }
   }

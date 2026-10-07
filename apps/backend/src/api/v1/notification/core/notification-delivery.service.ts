@@ -9,13 +9,15 @@ import { PrismaService, PrismaModels } from '@softsensor/prisma';
 import { env } from '@/config/env.config';
 import { decryptSecret } from '@/lib/crypto';
 import { redactUrls } from '@/lib/redact-urls';
-import { renderEmail, renderTeamsCard } from '@/lib/notification-message';
+import {
+  renderEmail,
+  renderTeamsCard,
+  type RenderedMessage,
+} from '@/lib/notification-message';
 
-interface StoredPayload {
-  title: string;
-  bodyText: string;
-  modelUrl: string;
-}
+/** `digest` is absent on every payload written before MODEL-SERVE-031 and
+ *  on every non-digest event — the renderers fall back to `bodyText`. */
+type StoredPayload = RenderedMessage;
 
 /**
  * MODEL-SERVE-022-D04/T04. THE DRAIN — the only place in this feature that

@@ -2324,6 +2324,13 @@ model ModelAlertState {
   reason        String?
   frozenColumns String[]
 
+  /// MODEL-SERVE-031. The numbers behind `status` as of the LAST evaluation
+  /// (worst-column PSI, max out-of-range %, residual-SD ratio + the schedule's
+  /// warn/crit bands) — written on EVERY pass, not only on a status change,
+  /// so the workspace digest can be built from persisted state instead of
+  /// whichever subset of models one sweep covered. Null until first written.
+  metrics Json?
+
   updatedAt DateTime @updatedAt
 
   @@id([modelId, axis])

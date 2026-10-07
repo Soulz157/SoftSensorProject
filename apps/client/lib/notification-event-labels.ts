@@ -19,6 +19,9 @@ export const NOTIFICATION_EVENT_LABEL: Record<string, string> = {
   ROLLED_BACK: 'Version rolled back',
   RETRAIN_SUCCEEDED: 'Retrain succeeded',
   RETRAIN_FAILED: 'Retrain failed',
+  // MODEL-SERVE-031. Delivery-history only: never subscribed to directly, it
+  // rides on a channel's existing monitoring events.
+  MONITORING_DIGEST: 'Monitoring digest',
 }
 
 export function notificationEventLabel(event: string): string {

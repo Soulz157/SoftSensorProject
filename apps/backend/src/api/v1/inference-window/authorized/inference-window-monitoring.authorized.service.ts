@@ -33,6 +33,7 @@ import {
   type ResidualSdVerdict,
 } from '@/lib/residual-sd-health';
 import { baselineResidualSd } from '@/lib/model-version-residual-sd';
+import { summarizePsi, type PsiSummary } from '@/lib/notification-digest';
 
 /**
  * `resolveProductionWindows`'s own `take`. Named because T29's
@@ -322,6 +323,10 @@ export class InferenceWindowMonitoringService {
      *  required. A no-schedule model reports UNKNOWN with nulls, never a
      *  zero ratio. */
     residualSd: ResidualSdVerdict;
+    /** MODEL-SERVE-031. The worst-column PSI and the largest out-of-range
+     *  share beside the verdict, so a digest can show the numbers. Null when
+     *  there is no PSI evidence (no schedule, drift off, no reference). */
+    psiSummary: PsiSummary | null;
   }> {
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
@@ -333,6 +338,7 @@ export class InferenceWindowMonitoringService {
         frozenColumns: [],
         thresholds: null,
         frozenSince: [],
+        psiSummary: null,
         // No schedule means nothing has ever been scored, so there is no
         // spread to report — UNKNOWN with nulls, never a zero.
         residualSd: {
@@ -452,15 +458,16 @@ export class InferenceWindowMonitoringService {
     // themselves and raise nothing there — `computePsi` publishes no numeric
     // PSI below its sample floor, and this method must not turn that silence
     // into either an alarm or a clean bill of health.
-    const psiStatus = psiEvidence
+    const psiReport = psiEvidence
       ? computePsi(poolHistograms(healthHistogramRows), psiReference, {
           warn: env.PSI_WARN,
           critical: env.PSI_CRITICAL,
           minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
           outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
           outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-        }).status
+        })
       : null;
+    const psiStatus = psiReport ? psiReport.status : null;
 
     // MODEL-SERVE-009-T03. EVIDENCE BESIDE THE BADGE, NOT A SECOND DETECTOR.
     // MODEL-SERVE-001-T29 still decides WHICH columns are frozen, by its own
@@ -563,6 +570,7 @@ export class InferenceWindowMonitoringService {
       }),
       thresholds,
       frozenSince,
+      psiSummary: psiReport ? summarizePsi(psiReport) : null,
       // The two halves of the comparison, beside the verdict — a reader can
       // see WHICH numbers produced it rather than being handed a word.
       residualSd,

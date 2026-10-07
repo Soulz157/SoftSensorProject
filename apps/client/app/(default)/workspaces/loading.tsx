@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react'
 /**
  * Route-level fallback for the View All Workspaces segment: shown while the
  * route itself is being streamed in, BEFORE the client page mounts. The
- * in-page `WorkspaceCardSkeleton` grid is a separate thing — it covers the
+ * in-page `WorkspaceRowSkeleton` list is a separate thing — it covers the
  * client-side workspace fetch once the page is running.
  */
 export default function WorkspacesLoading() {

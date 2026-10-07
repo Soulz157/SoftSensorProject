@@ -4099,6 +4099,108 @@
         "PENDING: manual e2e -- OWNER grants Monitoring to a VIEWER; that VIEWER loads Monitoring/Versions/Logs tabs; promote/run-now 403; grant Notifications shows the channel list without edit buttons; VIEWER->STAFF->VIEWER clears grants; onboarding workspace creation still works as a USER."
       ],
       "sourcing_note": "Drafted 2026-10-07 from the approved plan at ~/.claude/plans/can-we-add-another-refactored-teacup.md and a code read; every task result above is from a test run in this session."
+    },
+    {
+      "id": "MODEL-SERVE-031",
+      "title": "Workspace monitoring digest: Teams/e-mail notifications become one table per channel (N of M models with issues, PSI, out-of-range %, residual-SD ratio vs warn/crit band, green/yellow/red legend)",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": [
+        "MODEL-SERVE-022",
+        "MODEL-SERVE-028",
+        "MODEL-SERVE-029"
+      ],
+      "description": "User request 2026-10-07: the notification message should be a table saying how many models have an issue and the drift % / SD band, with the band colours explained. Before this every monitoring alert was one model per plain-text message with no numbers: getHealthStatus kept only the PSI status word and the evaluator dropped residualSd/thresholds.",
+      "findings": [
+        "2026-10-07: one sweep evaluates at most NOTIFY_EVAL_MAX_PER_SWEEP (50) models, so a digest built from the sweep's own evaluations would under-count. The digest is built from persisted ModelAlertState rows instead, hence ModelAlertState.metrics written on every pass.",
+        "2026-10-07: writing metrics every pass bumps updatedAt, which selectCandidates sorts on -- evaluation order is now true round-robin (was: a stable model never moved).",
+        "2026-10-07: NotificationEvent.modelId is required and the navbar bell reads it per model, so the digest is delivery-only (NotificationDelivery.modelId/eventId are already nullable); per-model events are still written, with deliver:false.",
+        "2026-10-07: InferenceWindowTruth is empty locally, so the SD-ratio column shows a dash on real local data; it is verified with fixtures only.",
+        "2026-10-07: formatHealthReason says 'residual 1-2SD' / 'residual beyond 3SD', which contradicts a 1.5x / 3.0x band printed beside it; the digest uses short labels (Drift, Residual SD) instead."
+      ],
+      "userDecisions": [
+        "2026-10-07: shape = workspace digest (one message per channel), not per-model messages with a count.",
+        "2026-10-07: channels = Email (HTML table) and Teams (Adaptive Card ColumnSet rows, v1.4).",
+        "2026-10-07: show the band legend (green/yellow/red) under the table, built from the real thresholds."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-031-T01",
+          "title": "Schema: ModelAlertState.metrics Json? (hand-written migration 20261007140000, applied by hand -- never migrate dev)",
+          "status": "completed",
+          "progress": 100,
+          "result": "Column added on the dev DB; packages/prisma dist rebuilt."
+        },
+        {
+          "id": "MODEL-SERVE-031-T02",
+          "title": "getHealthStatus returns psiSummary (worst PSI column + max out-of-range %); evaluator upserts metrics every pass",
+          "status": "completed",
+          "progress": 100,
+          "result": "notification-evaluator.service.spec.ts + the two getHealthStatus OFF cases updated."
+        },
+        {
+          "id": "MODEL-SERVE-031-T03",
+          "title": "lib/notification-digest.ts: band grading, row derivation, counts",
+          "status": "completed",
+          "progress": 100,
+          "result": "notification-digest.spec.ts."
+        },
+        {
+          "id": "MODEL-SERVE-031-T04",
+          "title": "buildDigestMessage + Teams ColumnSet + HTML table renderers; legacy payload without digest still renders",
+          "status": "completed",
+          "progress": 100,
+          "result": "notification-message.spec.ts digest cases incl. HTML escaping of a <script> model name."
+        },
+        {
+          "id": "MODEL-SERVE-031-T05",
+          "title": "Outbox: deliver:false for monitoring transitions + enqueueDigest; evaluator sends one digest per channel filtered by events / minSeverity / focusModelIds",
+          "status": "completed",
+          "progress": 100,
+          "result": "notification-outbox.service.spec.ts and notification-evaluator.service.spec.ts."
+        },
+        {
+          "id": "MODEL-SERVE-031-T06",
+          "title": "Client: 'Monitoring digest' label in delivery history",
+          "status": "completed",
+          "progress": 100,
+          "result": "notification-event-labels.test.ts."
+        },
+        {
+          "id": "MODEL-SERVE-031-T07",
+          "title": "Live verification: a real sweep writes a MONITORING_DIGEST delivery and Teams/e-mail show the table",
+          "status": "completed",
+          "progress": 100,
+        "result": "Live 2026-10-07 on the dev stack, TS (offline: data source missing) seeded OK then swept: a MONITORING_DIGEST delivery was written and SENT to the Teams Test channel (webhook accepted). Found and fixed a live-only defect: row said ALERT while the Changed line said offline; the deploy-aware status word is now persisted in metrics and used for rows (OFFLINE). A real WARN with PSI/SD numbers was NOT reachable locally (no drift data, truth rows empty), so those columns were verified with fixtures only. Side effect: enabling TS schedule created 47 extra InferenceWindow rows (102 to 149); schedule disabled again."
+      },
+        {
+          "id": "MODEL-SERVE-031-T08",
+          "title": "Per-model Open buttons UNDER the table, each after a one-line description (status, reason, worst-graded metric)",
+          "status": "completed",
+          "progress": 100,
+          "result": "User request 2026-10-07. A concurrent session first put an Open button in each table row; moved under the table per the user's choice. Teams: Container (TextBlock + ActionSet) per model; e-mail: description + button per model after </table>; text: Models: block. notification-message.spec.ts 93/93 across notification suites. Not re-sent live."
+        },
+        {
+          "id": "MODEL-SERVE-031-T09",
+          "title": "Since column + Longest line: how long each model has been in its current status, and which open issue is oldest",
+          "status": "completed",
+          "progress": 100,
+          "result": "User request 2026-10-07. statusSince (ISO) stored inside ModelAlertState.metrics (no migration): carried forward while the deploy-aware status word is unchanged, reset on change; a pre-031 row with an unchanged raw status uses its updatedAt (which only moved on change back then). Digest shows Since column (2d 3h), since-time in each model description, and a Longest line under the headline (Teams Attention colour, e-mail red). Also removed a leftover empty spacer column from the Teams header so header and rows have equal width. 631/631 across lib, notification and inference-window suites. Mock sent to Teams 16:31. Follow-up: Teams card merged Status and Reason into one cell ('ALERT · Drift'); split into separate columns in the text-table order Model, Status, Since, Reason, PSI, OoR %, SD ratio."
+        }
+      ],
+      "acceptance": [
+        "A status change sends ONE message per eligible channel, not one per model.",
+        "The message states N of M models need attention and lists each with status, PSI, out-of-range % and SD ratio against the model's warn/crit band.",
+        "A green/yellow/red legend with the real cutoffs sits under the table; colour is always paired with an OK/WARN/CRIT label.",
+        "The navbar bell is unchanged (per-model NotificationEvent rows still written).",
+        "A channel's focus list, minSeverity and event subscriptions all still apply."
+      ],
+      "verification": [
+        "Backend jest: 35 suites / 618 tests pass across inference-window, lib and notification.",
+        "Example rendered from fixtures (text, e-mail HTML, Teams card JSON).",
+        "NOT YET: live sweep on the dev stack; real Teams/SMTP rendering."
+      ]
     }
   ],
   "global_definition_of_done": [

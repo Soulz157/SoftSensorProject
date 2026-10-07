@@ -3,14 +3,9 @@ import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { signIn, signOut, useSession } from 'next-auth/react'
 import { toast } from 'sonner'
-import * as z from 'zod'
+import type { LoginValues } from '@/lib/auth-schemas'
 
-export const loginSchema = z.object({
-  email: z.string().email('รูปแบบอีเมลไม่ถูกต้อง'),
-  password: z.string().min(1, 'กรุณากรอกรหัสผ่าน'),
-})
-
-export type LoginFormValues = z.infer<typeof loginSchema>
+export type LoginFormValues = LoginValues
 
 export const useAuth = () => {
   const { data: session, status } = useSession({ required: false })
@@ -21,8 +16,8 @@ export const useAuth = () => {
 
   useEffect(() => {
     if (session?.error === 'RefreshTokenExpired') {
-      toast.error('Session หมดอายุ', {
-        description: 'กรุณาเข้าสู่ระบบใหม่อีกครั้ง',
+      toast.error('Your session expired', {
+        description: 'Sign in again to continue.',
       })
       signOut({ callbackUrl: '/login' })
     }
@@ -37,19 +32,20 @@ export const useAuth = () => {
       })
 
       if (res?.error) {
-        console.log('Login error:', res.error)
-        toast.error('เข้าสู่ระบบไม่สำเร็จ', {
-          description: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง',
+        toast.error("Couldn't sign in", {
+          description: 'Check your email and password, then try again.',
         })
       } else {
-        toast.success('เข้าสู่ระบบสำเร็จ')
+        toast.success('Signed in')
         router.refresh()
       }
     } catch (error) {
       if (error instanceof Error) {
         toast.error(error.message)
       } else {
-        toast.error('เกิดข้อผิดพลาดในการเชื่อมต่อ')
+        toast.error(
+          "Couldn't reach the server. Check your connection and try again.",
+        )
       }
     }
   }

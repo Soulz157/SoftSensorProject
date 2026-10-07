@@ -42,6 +42,14 @@ describe('NotificationOutboxService.enqueueInTx (MODEL-SERVE-022-T03/T07)', () =
     expect(call.data.map((r) => r.channelId)).toEqual(['ch-1', 'ch-2']);
   });
 
+  it('writes the event but no deliveries when deliver is false (digest path)', async () => {
+    const tx = buildTx([{ id: 'ch-1', minSeverity: 'INFO' }]);
+    const outbox = new NotificationOutboxService({} as never);
+    await outbox.enqueueInTx(tx as never, { ...baseParams, deliver: false });
+    expect(tx.notificationEvent.upsert).toHaveBeenCalledTimes(1);
+    expect(tx.notificationDelivery.createMany).not.toHaveBeenCalled();
+  });
+
   it("drops a channel whose minSeverity is above this event's severity", async () => {
     const tx = buildTx([{ id: 'ch-1', minSeverity: 'CRITICAL' }]);
     const outbox = new NotificationOutboxService({} as never);
@@ -167,5 +175,71 @@ describe('NotificationOutboxService.enqueueDiscrete (best-effort)', () => {
     };
     const outbox = new NotificationOutboxService(prisma as never);
     await expect(outbox.enqueueDiscrete(baseParams)).resolves.toBeUndefined();
+  });
+});
+
+describe('NotificationOutboxService.enqueueDigest (MODEL-SERVE-031)', () => {
+  const digest = {
+    workspaceName: 'Plant A',
+    total: 3,
+    alertCount: 0,
+    warningCount: 0,
+    frozenCount: 0,
+    offlineCount: 0,
+    rows: [],
+    legend: {
+      warn: 0.1,
+      critical: 0.25,
+      outOfRangeWarnPct: 5,
+      outOfRangeCriticalPct: 20,
+    },
+    changes: [],
+    longest: null,
+  };
+
+  it('writes one model-less delivery keyed per channel and sweep, with the table rows in the payload', async () => {
+    const createMany = jest.fn().mockResolvedValue({ count: 1 });
+    const outbox = new NotificationOutboxService({
+      notificationDelivery: { createMany },
+    } as never);
+    await outbox.enqueueDigest({
+      channelId: 'ch-1',
+      workspaceId: 'ws-1',
+      digest,
+      severity: 'CRITICAL',
+      at: new Date('2026-10-07T09:15:00.000Z'),
+      eventKeySeed: '99',
+    });
+    const arg = (createMany.mock.calls as unknown[][])[0][0] as {
+      data: Record<string, unknown>[];
+      skipDuplicates: boolean;
+    };
+    expect(arg.skipDuplicates).toBe(true);
+    expect(arg.data[0]).toMatchObject({
+      channelId: 'ch-1',
+      modelId: null,
+      event: 'MONITORING_DIGEST',
+      severity: 'CRITICAL',
+      eventKey: 'digest:ws-1:99',
+    });
+    expect(arg.data[0].payload).toHaveProperty('digest');
+  });
+
+  it('never throws when the write fails', async () => {
+    const outbox = new NotificationOutboxService({
+      notificationDelivery: {
+        createMany: jest.fn().mockRejectedValue(new Error('db down')),
+      },
+    } as never);
+    await expect(
+      outbox.enqueueDigest({
+        channelId: 'ch-1',
+        workspaceId: 'ws-1',
+        digest,
+        severity: 'INFO',
+        at: new Date(),
+        eventKeySeed: '1',
+      }),
+    ).resolves.toBeUndefined();
   });
 });

@@ -19,6 +19,9 @@ Design system reference for the SoftSensor client app (`apps/client`).
 9. [Dark Mode](#9-dark-mode)
 10. [Custom Utilities](#10-custom-utilities)
 11. [Rules & Constraints](#11-rules--constraints)
+12. [Laws of UX Conventions](#12-laws-of-ux-conventions)
+13. [Brand & Public Surfaces](#13-brand--public-surfaces)
+14. [All Workspaces list](#14-all-workspaces-list)
 
 ---
 
@@ -570,14 +573,113 @@ Badge count = sum of `alarmCount` per workspace from `useAlertCount()` hook. Mus
 
 ## 11. Rules & Constraints
 
-| Rule                            | Detail                                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| No hardcoded colors             | Use CSS variable tokens only. `bg-[#hex]` is forbidden.                                                                        |
-| No `any` or `@ts-ignore`        | Zero tolerance in TypeScript.                                                                                                  |
-| No editing `components/ui/`     | Add via `npx shadcn@latest add`.                                                                                               |
-| Tailwind v4 display conflict    | Never combine `lg:flex` + `lg:hidden` on one element — `lg:flex` wins. Use conditional rendering instead.                      |
-| `cn()` for conditionals         | Import from `@/lib/utils`. Don't use template literals for conditional classes.                                                |
-| Inline style for dynamic colors | When color value is runtime-dynamic, set a CSS variable via `style` and read it in a CSS class.                                |
-| Array lookup with `.find()`     | When querying `workspaceColors` or `workspaceIcons` by `id`, always use `.find(c => c.id === value)` — never bracket indexing. |
-| Status color consistency        | Use the established status color table in §5. Don't create new status color mappings.                                          |
-| Server Components by default    | Only add `"use client"` when hooks or event listeners are required. Never on layouts.                                          |
+| Rule                                      | Detail                                                                                                                                                                                         |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No hardcoded colors                       | Use CSS variable tokens only. `bg-[#hex]` is forbidden.                                                                                                                                        |
+| No `any` or `@ts-ignore`                  | Zero tolerance in TypeScript.                                                                                                                                                                  |
+| No editing `components/ui/`               | Add via `npx shadcn@latest add`.                                                                                                                                                               |
+| Tailwind v4 display conflict              | Never combine `lg:flex` + `lg:hidden` on one element — `lg:flex` wins. Use conditional rendering instead.                                                                                      |
+| `cn()` for conditionals                   | Import from `@/lib/utils`. Don't use template literals for conditional classes.                                                                                                                |
+| Inline style for dynamic colors           | When color value is runtime-dynamic, set a CSS variable via `style` and read it in a CSS class.                                                                                                |
+| Array lookup with `.find()`               | When querying `workspaceColors` or `workspaceIcons` by `id`, always use `.find(c => c.id === value)` — never bracket indexing.                                                                 |
+| Status color consistency                  | Use the established status color table in §5. Don't create new status color mappings.                                                                                                          |
+| Server Components by default              | Only add `"use client"` when hooks or event listeners are required. Never on layouts.                                                                                                          |
+| No real plant identifiers on public pages | Signed-out pages (landing, auth) show illustrative data only — mock tag names (`TEMP-01`, `FLOW-02` …), never real PI tags or model names. See §13.4.                                          |
+| Theme-dependent UI after mount            | Anything that reads the theme (`useTheme`) renders its selected state only after mount (`useSyncExternalStore` guard) — the server cannot know the theme, and a mismatch is a hydration error. |
+
+---
+
+## 13. Brand & Public Surfaces
+
+Added 2026-10-07 with the auth and landing redesign. Covers the logo and the pages a signed-out visitor sees. Everything here uses the tokens in §2 — no new colours.
+
+### 13.1 Logo — `BrandMark`
+
+`components/brand/brand-mark.tsx`. A calm predicted curve with a lab sample (diamond) on it — what the product does, drawn once. The curve follows `currentColor`; the diamond is `--primary`, cut out of the line by a thin ring in the surface colour so the two never merge.
+
+| Prop       | Use                                                                                                                                            |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `variant`  | `line` (default, used everywhere), `framed`, `tile` (on `--primary`)                                                                           |
+| `wordmark` | `true` adds "SoftSensor" (600, tracking-tight). Sidebars pass `false` and render their own label so collapse works.                            |
+| `surface`  | Colour behind the mark, for the diamond's ring: `var(--card)` default, `var(--sidebar)` in sidebars, `var(--background)` on the landing header |
+| `size`     | px, default 28                                                                                                                                 |
+
+Used in: auth shell, landing header, app sidebar and admin sidebar. Don't recolour it, don't put it on a coloured tile outside the `tile` variant, and don't replace it with a Lucide icon.
+
+### 13.2 Signal trace — `SignalTrace`
+
+`components/auth/signal-trace.tsx` + pure maths in `lib/signal-trace.ts` (deterministic, tested). The one moving element on public pages: a soft-sensor prediction drifting left, with lab samples as diamonds (the same mark as the Actual vs Predict chart).
+
+| Variant | Where                       | Behaviour                                                                                                                              |
+| ------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `chart` | Auth trend panel            | Gridlines; hover scrubs a crosshair and reads `value · time` in mono                                                                   |
+| `line`  | Landing, auth `card` layout | No grid; bends gently toward the pointer. `readout` + `model` add a fit panel; `labHover` shows lab vs predicted vs error on a diamond |
+
+- Colours: line `--primary`, diamonds `--foreground`, grid `--border`. Never status colours.
+- Draws by mutating SVG attributes in a `requestAnimationFrame` loop — no React re-render per frame.
+- `prefers-reduced-motion`: drawn once, no drift, no pull. Hover readouts still work (they answer the user).
+
+### 13.3 Auth shell and form parts
+
+`components/auth/auth-shell.tsx` wraps every auth page (login, register, reset request, set new password, change password).
+
+- `AUTH_LAYOUT` (one constant) picks the layout for every page: `split` (current — trend panel left, form right, strip on phones) or `card` (centred card, line through its top border).
+- The logo links home; the theme switcher sits top-right (§13.6).
+- Title is Display (`clamp(1.5rem, 2.5vw, 2rem)`, 600, −0.02em), once per page.
+
+| Part               | File                                    | Rule                                                                                                                                                                                         |
+| ------------------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FormField`        | `components/auth/form-field.tsx`        | Label (`htmlFor`) + control + one-sentence error (`text-xs text-destructive`, `id={id}-error`)                                                                                               |
+| `PasswordField`    | `components/auth/password-field.tsx`    | Show/hide toggle with `aria-pressed` and an accessible name                                                                                                                                  |
+| `PasswordStrength` | `components/auth/password-strength.tsx` | One segment per rule, `bg-muted` → `bg-primary` + text checklist. **No amber or green** — those are plant status. Rules live in `lib/password-rules.ts` and are shared with the zod schemas. |
+| `TextLink`         | `components/auth/text-link.tsx`         | Inline footer link, visible focus ring                                                                                                                                                       |
+
+Copy: English, sentence case, buttons name the action ("Sign in", "Send reset link", "Update password"). Errors say what's wrong and how to fix it ("Use at least 8 characters."), never apologise.
+
+### 13.4 Landing page (`/`, signed out)
+
+- **Full screen:** `AppLayout` renders only `children` when `pathname === '/'` and the session is `unauthenticated` — no sidebar, search or system-health badge for guests. Signed-in users are unchanged.
+- `components/landing/landing-hero.tsx`, `layout="tags"` (current): copy left; input tags → model → prediction line right (`components/landing/tag-feed.tsx`). `layout="line"` is the alternative (line across the lower third). Both are kept in the preview at `/design-preview/landing`.
+- **Hero type exception:** the landing headline may use `clamp(2.25rem, 4.5vw, 3.5rem)` at weight 600 (still never 700). DESIGN.md's 2rem Display cap applies inside the app; this page is outside it.
+- **Demo data rule:** every number and name on the landing comes from `lib/landing-demo.ts` and is illustrative — mock tags `TEMP-01`, `FLOW-02`, `PRESS-03`, `RATIO-04`, target `RVP-DEMO`. Never a real PI tag or model name; `components/landing/__tests__/landing-hero.test.tsx` fails on a `XX000.PV`-style tag.
+- **Drift on the landing** reuses the in-app Drift badge exactly (`MONITORING_STATUS_CLASS` / `MONITORING_STATUS_LABEL` from `lib/drift-status-style.ts`) with the backend's PSI cutoffs (WARN ≥ 0.10, CRITICAL ≥ 0.25). This is the existing monitoring-drift carve-out from the status-colour reservation, not a new use of status colour.
+
+### 13.5 Aura — `CursorAura` (documented exception)
+
+`components/landing/cursor-aura.tsx`. A soft light behind the landing that trails the pointer and rests beside the model diagram. **This is a deliberate, user-requested exception to DESIGN.md's no-glow rule**, and it is only allowed under these limits:
+
+- `--primary` only, mixed into transparency (`color-mix(in oklch, var(--primary) 16%, transparent)`); `opacity-70` light / `opacity-100` dark.
+- A plain `radial-gradient` — never `filter: blur` or `backdrop-filter`.
+- Signed-out pages only (currently the landing). Never inside the app shell.
+- Reduced motion: holds still at its rest point. Touch input: ignored (rests).
+- Switchable: `LandingHero aura={false}`.
+
+### 13.6 Theme switcher — `ThemeSwitcher`
+
+`components/landing/theme-switcher.tsx`. Light / Dark / Match system — the same three choices, icons (Sun / Moon / Monitor) and order as Settings → Appearance. A `radiogroup` of icon buttons with accessible names.
+
+- On the landing header and top-right of every auth page. Inside the app, theme stays in Settings → Appearance.
+- Shows no selection until mounted (rule in §11) — keeps hydration clean.
+
+### 13.7 Motion on public pages
+
+- One continuous motion per page (the signal trace; the aura only follows the user). No entrance animations, no hover lift.
+- Every animation has a `prefers-reduced-motion` path, and loops stop when there's nothing to move.
+
+---
+
+## 14. All Workspaces list
+
+Added 2026-10-07. `/workspaces` (`app/(default)/workspaces/`). The instrument-list direction was chosen over cards.
+
+- **Header:** `WorkspacesHeader` — Display title (sentence case, 600), a one-line summary in mono (`5 workspaces · 2 need attention · 46 models`) instead of KPI cards, and "Create workspace".
+- **Toolbar:** search (name + description) and a status filter, a real radio group (one Tab stop, arrow keys select). Option names include the count ("Needs attention, 2").
+- **List:** one dense row per workspace (`WorkspaceRow`) — icon on its workspace colour (§6), status pill, models (with "N models need attention"), plants, datasets, updated, Settings, Models. The row links to `/plants/{id}` through a stretched link; actions sit above it (`z-10`) and are named after the workspace.
+- **Order:** always by name — the server sends no order — with workspaces needing attention first (Serial Position). A workspace with an alerting node leads from the first paint; one that is Abnormal only through a model moves up once the models load. Nothing else moves.
+- **Pagination:** 15 per page (`WORKSPACES_PAGE_SIZE`), Previous / Next and "16–30 of 50". Hidden for one page. A new search or filter returns to page 1; the stored page is clamped when the list shrinks; a page change scrolls the list back into view. The ends are `aria-disabled` (not `disabled`) so keyboard focus is never dropped.
+- **Unknown is not zero:** an absent count renders "—" (screen readers hear "plants unknown"). The abnormal-model count is `null` until `useAllModels` has loaded. While it is `null` a workspace without an alerting node reads a neutral **Checking** pill (no status colour — never a green Normal that may flip), belongs to neither the Needs attention nor the Normal filter, and the summary and filter counts show "—". If the model list fails to load, an inline note offers "Try again".
+- **Empty results** say why, by cause (`noMatchMessage`): a search that matches nothing blames the search; an empty "Needs attention" says "No workspace needs attention." Announced with `role="status"`.
+- **Attention text** uses `BINARY_STATUS_META.abnormal.text` (`text-red-700 dark:text-red-400`), not `text-destructive`, which is too dim on the dark surface.
+- **Models button** opens `/models/views?workspace={id}`. That page keeps its workspace filter in step with the URL (`hooks/workspace/use-workspace-url-filter.ts`): it follows the param when it changes on a mounted page, writes it back when the user picks a workspace, and falls back to All for an id the user does not have (`resolveWorkspaceFilter`).
+- **Entry from Overview:** the Overview map header has a "View all workspaces" button (outline, solid surface so it reads on both map themes) linking here.
+- **Pure logic** lives in `lib/workspace-list.ts` (status rule, payload mapping, search/filter, ordering, summary, empty-state wording, `paginate`, `resolveWorkspaceFilter`) and is unit-tested.

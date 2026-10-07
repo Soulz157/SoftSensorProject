@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic'
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { CreateWorkspaceForm } from '@/components/auth/create-workspace-form'
-import { AuthPanel } from '@/components/auth/auth-panel'
+import { LandingHero } from '@/components/landing/landing-hero'
 import { useSession } from 'next-auth/react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { Spinner } from '@/components/ui/spinner'
@@ -37,10 +37,17 @@ export default function LandingPage() {
     return <Spinner />
   }
 
+  // Signed out: the full-screen landing (AppLayout drops its shell on `/`
+  // for guests). Direction C chosen 2026-10-07; the A/C preview stays at
+  // /design-preview/landing.
+  if (status !== 'authenticated') {
+    return <LandingHero layout="tags" />
+  }
+
   return (
     <div className="flex h-full font-sans">
       <div className="relative z-10 flex w-full items-center justify-center p-8 font-sans">
-        {status === 'authenticated' ? <CreateWorkspaceForm /> : <AuthPanel />}
+        <CreateWorkspaceForm />
       </div>
     </div>
   )

@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Activity,
@@ -40,6 +40,7 @@ import {
   CommandList,
 } from '@/components/ui/command'
 import { workspacesAtom } from '@/store/workspace'
+import { useWorkspaceUrlFilter } from '@/hooks/workspace/use-workspace-url-filter'
 import {
   useAllModels,
   useRefreshModels,
@@ -66,18 +67,40 @@ function inScope(m: ModelWithWorkspace, scope: TreeScope | null): boolean {
   return m.id === scope.id
 }
 
+// `useSearchParams` (inside useWorkspaceUrlFilter) needs a Suspense boundary
+// or the production build fails. A boundary inside the page is not covered by
+// loading.tsx, so it renders the same skeleton itself.
 export default function ModelsPage() {
+  return (
+    <Suspense fallback={<LoadingModelsViewPage />}>
+      <ModelsPageContent />
+    </Suspense>
+  )
+}
+
+function ModelsPageContent() {
   const router = useRouter()
   const workspaces = useAtomValue(workspacesAtom)
 
-  // '' = All Workspaces
-  const [workspaceId, setWorkspaceId] = useState<string>('')
+  // '' = All Workspaces. Follows and writes `?workspace=` (the All
+  // Workspaces page's Models button links here with it).
+  const { workspaceId, selectWorkspace } = useWorkspaceUrlFilter(workspaces)
   const [plantFilter, setPlantFilter] = useState<string[]>([])
+  // Plants belong to one workspace: whenever the workspace changes — from the
+  // select or from the URL — drop the plant filter.
+  const [plantsFor, setPlantsFor] = useState(workspaceId)
+  if (plantsFor !== workspaceId) {
+    setPlantsFor(workspaceId)
+    setPlantFilter([])
+  }
   const [scope, setScope] = useState<TreeScope | null>(null)
 
   const { models: allModels, loading, isFetching, refetch } = useAllModels()
   const refreshModels = useRefreshModels()
-  const { plants } = useWorkspacePlants(workspaceId || null)
+  // Don't fetch plants for a URL id that can't be checked yet.
+  const { plants } = useWorkspacePlants(
+    workspaces.length > 0 && workspaceId ? workspaceId : null,
+  )
 
   const [search, setSearch] = useState('')
   const [deployFilter, setDeployFilter] = useState<string | null>(null)
@@ -241,10 +264,9 @@ export default function ModelsPage() {
               {/* Workspace selector */}
               <Select
                 value={workspaceId || '__all__'}
-                onValueChange={val => {
-                  setWorkspaceId(val === '__all__' ? '' : val)
-                  setPlantFilter([])
-                }}
+                onValueChange={val =>
+                  selectWorkspace(val === '__all__' ? '' : val)
+                }
               >
                 <SelectTrigger className="h-9 w-48">
                   <SelectValue placeholder="All Workspaces" />

@@ -18,9 +18,14 @@ export const useChangePassword = () => {
     try {
       await authService.changePassword(data)
       setIsSuccess(true)
-      toast.success('เปลี่ยนรหัสผ่านสำเร็จ')
+      toast.success('Password updated')
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'เกิดข้อผิดพลาด')
+      toast.error("Couldn't update your password", {
+        description:
+          error instanceof Error
+            ? error.message
+            : 'Check your connection and try again.',
+      })
     } finally {
       setIsLoading(false)
     }

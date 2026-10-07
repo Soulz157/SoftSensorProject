@@ -11,10 +11,10 @@ import {
   X,
   PanelLeftClose,
   PanelLeft,
-  ShieldAlert,
   LogOut,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { BrandMark } from '@/components/brand/brand-mark'
 import { useSession, signOut } from 'next-auth/react'
 
 interface NavItem {
@@ -130,9 +130,7 @@ export function AdminSidebar({
               isCollapsed && 'lg:justify-center',
             )}
           >
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary shrink-0">
-              <ShieldAlert className="h-4 w-4 text-primary-foreground" />
-            </div>
+            <BrandMark wordmark={false} size={28} surface="var(--sidebar)" />
             <span
               className={cn(
                 'text-lg font-semibold tracking-tight transition-opacity',

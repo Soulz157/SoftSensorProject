@@ -232,7 +232,7 @@ function psiForColumn(live: FeatureHistogram, ref: PsiReference): number {
  *
  * If that rolling window ever narrows, revisit this comment first.
  */
-function statusFor(psi: number, thresholds: PsiThresholds): PsiStatus {
+export function statusFor(psi: number, thresholds: PsiThresholds): PsiStatus {
   if (psi >= thresholds.critical) return 'CRITICAL';
   if (psi >= thresholds.warn) return 'WARN';
   return 'OK';
@@ -241,7 +241,7 @@ function statusFor(psi: number, thresholds: PsiThresholds): PsiStatus {
 /** MODEL-SERVE-029. The out-of-range share graded on its own — PSI cannot
  *  see below/above mass, so without this a tag drifting PAST its trained
  *  range reads only as well as whatever is left inside it. */
-function outOfRangeStatusFor(
+export function outOfRangeStatusFor(
   outOfRangePct: number,
   thresholds: PsiThresholds,
 ): PsiStatus {

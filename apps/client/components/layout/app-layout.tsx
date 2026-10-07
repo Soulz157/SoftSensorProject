@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useAtom } from 'jotai'
 import { useRouter, usePathname } from 'next/navigation'
+import { useSession } from 'next-auth/react'
 import { Navbar } from '@/components/layout/navbar'
 import { Sidebar } from '@/components/layout/sidebar'
 import { sidebarCollapsedAtom } from '@/store/workspace'
@@ -18,6 +19,7 @@ export function AppLayout({ children }: AppLayoutProps) {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useAtom(sidebarCollapsedAtom)
+  const { status } = useSession()
 
   useEffect(() => {
     if (sessionStorage.getItem('came-from-404')) {
@@ -25,6 +27,12 @@ export function AppLayout({ children }: AppLayoutProps) {
       router.refresh()
     }
   }, [pathname, router])
+
+  // A signed-out visitor on `/` gets the full-screen landing page — the
+  // sidebar, search and system-health badge mean nothing without an account.
+  if (pathname === '/' && status === 'unauthenticated') {
+    return <>{children}</>
+  }
 
   return (
     <div className="flex h-screen bg-background">
