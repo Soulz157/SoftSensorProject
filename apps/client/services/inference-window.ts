@@ -478,7 +478,32 @@ export interface ScheduledSeriesResult {
   missing: number
 }
 
+/** One Run Predict press that produced a score. `at` is the scored source
+ *  row's time (the chart x position), not when the button was pressed. */
+export interface ManualPredictionPoint {
+  at: string
+  predicted: number
+  modelVersionId: string
+}
+
 export const inferenceWindowService = {
+  /** The operator's own Run Predict scores in a range, for the Actual vs
+   *  Predict chart. */
+  async manualPredictions(
+    modelId: string,
+    from: string,
+    to: string,
+    signal?: AbortSignal,
+  ): Promise<{ points: ManualPredictionPoint[] }> {
+    const query = new URLSearchParams({ from, to })
+    const res: ApiResponse<{ points: ManualPredictionPoint[] }> =
+      await fetchClient(
+        `${base(modelId)}/inference/manual-predictions?${query.toString()}`,
+        { signal },
+      )
+    return res.data
+  },
+
   /** MODEL-SERVE-009-T04. Never goes blank during a PI outage — unlike
    *  `/input-status`, which is a live snapshot and blanks by design. */
   async getTagObservations(modelId: string): Promise<TagObservation[]> {

@@ -7,6 +7,7 @@ import type { AIModel } from '@/types'
 import { useLiveError } from '@/hooks/model/use-live-error'
 import { usePredictionMonitoring } from '@/hooks/model/use-prediction-monitoring'
 import { useScheduledSeries } from '@/hooks/model/use-scheduled-series'
+import { useManualPredictions } from '@/hooks/model/use-manual-predictions'
 import type { TimeRange } from '@/lib/mock-readings'
 import type { LiveErrorCoverage } from '@/services/inference-window'
 import {
@@ -17,6 +18,7 @@ import {
   heldDeviationStats,
   heldEvalPoints,
   mergeLivePredictions,
+  mergeManualPredictions,
   mergeScheduledPredictions,
   residualDensityNote,
   windowStats,
@@ -34,7 +36,6 @@ import {
   SD3_COLOR,
   type ResidualMode,
 } from './residual-chart'
-import { LivePredictionChart } from './live-prediction-chart'
 import { PsiPanel } from './psi/psi-panel'
 
 /* MODEL-SERVE-009-T05. A local `RANGE_MS` used to live here so the held
@@ -69,7 +70,7 @@ function LegendItem({ color, label }: { color: string; label: string }) {
  * the windows exist but the lab has not reported yet, or the read failed.
  */
 // Exported for direct testing, same pattern as this folder's sibling
-// components (LivePredictionChart, PsiPanel) — EmptyTruth itself has no
+// components (PsiPanel) — EmptyTruth itself has no
 // consumer outside this file (models/[id]/page.tsx imports the default
 // ModelMonitoringTab, never this helper directly), so the export exists
 // purely so a test can render one of its four empty-cause branches without
@@ -176,8 +177,8 @@ interface Props {
  *
  * The two charts therefore render SPARSELY — one point per lab measurement,
  * not one per scored interval — which is what a lab-sampled target honestly
- * looks like. Live Predictions beside them still shows the dense
- * prediction stream with no counterpart.
+ * looks like. Run Predict presses are drawn on Actual vs Predict as
+ * markers; the dense /predict stream is no longer shown.
  */
 export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
   const [range, setRange] = useState<TimeRange>('24h')
@@ -204,8 +205,6 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
   const {
     points: livePoints,
     seriesBounds,
-    pointsLoading: livePointsLoading,
-    livePredictEnabled,
     psi,
     psiLoading,
     psiUnavailableReason,
@@ -220,6 +219,14 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
    */
   const { points: scheduledPoints, missing: scheduledMissing } =
     useScheduledSeries(model, range, refreshKey)
+
+  // The operator's own Run Predict presses, drawn as markers on the chart.
+  // `refreshKey` is bumped by the page when a press lands.
+  const { points: manualPoints } = useManualPredictions(
+    model,
+    range,
+    refreshKey,
+  )
 
   const start = brush.startIndex ?? 0
   const end = brush.endIndex ?? Math.max(0, points.length - 1)
@@ -260,13 +267,26 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
     // hour of predictions summarised by one number is not the same thing as
     // a joined pair's `predict` or a single instant's `live`.
     const withScheduled = mergeScheduledPredictions(withLive, scheduledPoints)
-    const withHeld = applyHeldValue(
+    // Before the held step, like every other series: the held Actual must be
+    // drawn over the FINAL axis so a press always sits beside an Actual.
+    const withManual = mergeManualPredictions(
       withScheduled,
+      manualPoints.map(p => ({ at: p.at, predicted: p.predicted })),
+    )
+    const withHeld = applyHeldValue(
+      withManual,
       targetHeld?.value ?? null,
       bounds,
     )
     return withHeld
-  }, [rows, livePoints, targetHeld, seriesBounds, scheduledPoints])
+  }, [
+    rows,
+    livePoints,
+    targetHeld,
+    seriesBounds,
+    scheduledPoints,
+    manualPoints,
+  ])
 
   /**
    * MODEL-SERVE-011-T15/T16. ONE spread, shared by both charts: the band on
@@ -326,7 +346,7 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
         actual = { value: r.actual, at: r.timestamp }
       }
       if (!predict) {
-        const p = [r.predict, r.scheduled, r.live].find(
+        const p = [r.manual, r.predict, r.scheduled, r.live].find(
           (v): v is number => typeof v === 'number' && Number.isFinite(v),
         )
         if (p !== undefined) predict = { value: p, at: r.timestamp }
@@ -483,7 +503,8 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
 
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
             <LegendItem color="var(--chart-1)" label="Actual" />
-            <LegendItem color="var(--foreground)" label="Predict" />
+            <LegendItem color="var(--foreground)" label="Predict (hourly)" />
+            <LegendItem color="var(--chart-3)" label="Run Predict" />
             <LegendItem color={SD1_COLOR} label="±1 SD" />
           </div>
           <ChartZoomControls
@@ -495,7 +516,13 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
         <p className="mb-2 text-xs text-muted-foreground">
           Actual comes from the data source; Predict comes from the model. The
           shaded ±1 SD band around them is the monitoring threshold — a point
-          drifting outside it is the signal to look at.
+          drifting outside it is the signal to look at. Diamonds are on-demand
+          predictions from Run Predict, placed at the time of the data they
+          scored
+          {targetHeld?.value == null
+            ? ' — no Actual has been reported yet, so there is nothing beside them to compare'
+            : ''}
+          .
           {/* MODEL-SERVE-011-T18. The sentence above describes the band a
       JOINED range has. With no pairs the band is drawn from a
       different spread entirely, and leaving the original wording
@@ -702,43 +729,6 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
             />
           )}
         </div>
-      </div>
-
-      {/* MODEL-SERVE-005-T01/T02. The sampled synchronous-/predict stream
-          and the PSI drift signal built on it. A DIFFERENT stream from the
-          charts above, not a lesser one: these are per-request samples with
-          no lab counterpart, where those are scheduled windows paired with
-          a lab measurement. Neither fabricates an "actual". */}
-      <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
-        <div className="mb-4 space-y-1">
-          <h2 className="text-sm font-semibold text-foreground">
-            Live Predictions (sampled)
-          </h2>
-          {/* MODEL-SERVE-008-T06. The caption states WHO writes this
-              stream, because that changed: until T02's driver, only an
-              external caller did, and MODEL-SERVE-001-T10 Part A's copy was
-              written on that basis. The planes still do not merge — a
-              window's predictions.parquet and a /predict row remain
-              different artifacts, and nothing pools them into one feed. */}
-          <p className="text-xs text-muted-foreground">
-            The synchronous /predict stream, sampled
-            {livePredictEnabled
-              ? ' — fed by this model’s live prediction driver'
-              : ''}
-            . No lab counterpart is joined to these — ground truth is joined to
-            scheduled windows, which is what the two charts above show.
-          </p>
-        </div>
-        {livePointsLoading ? (
-          <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
-            Loading…
-          </div>
-        ) : (
-          <LivePredictionChart
-            points={livePoints}
-            livePredictEnabled={livePredictEnabled}
-          />
-        )}
       </div>
 
       {/* MODEL-SERVE-001-T13/T16, sole drift card since MODEL-SERVE-028

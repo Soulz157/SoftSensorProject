@@ -8,6 +8,7 @@ import {
   heldDeviationStats,
   heldEvalPoints,
   mergeLivePredictions,
+  mergeManualPredictions,
   mergeScheduledPredictions,
   residualDensityNote,
   windowStats,
@@ -732,5 +733,53 @@ describe('heldEvalPoints (MODEL-SERVE-011-T22)', () => {
     ]
 
     expect(heldEvalPoints(rows)).toEqual([])
+  })
+})
+
+describe('mergeManualPredictions (Run Predict presses)', () => {
+  const press = { at: '2026-09-17T04:59:00.000Z', predicted: 42.5 }
+
+  it('gives a press its own row on its own key, feeding no pair', () => {
+    const out = mergeManualPredictions([], [press])
+
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ manual: 42.5 })
+    expect(out[0]?.actual).toBeUndefined()
+    expect(out[0]?.predict).toBeUndefined()
+  })
+
+  it('lands on an existing row at the exact same instant', () => {
+    const t = Date.parse(press.at)
+    const out = mergeManualPredictions(
+      [{ t, timestamp: press.at, scheduled: 41 }],
+      [press],
+    )
+
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ scheduled: 41, manual: 42.5 })
+  })
+
+  it('reads a timestamp with no timezone as UTC and sorts the axis', () => {
+    const out = mergeManualPredictions(
+      [{ t: Date.parse('2026-09-17T06:00:00.000Z'), timestamp: 'x' }],
+      [{ at: '2026-09-17 04:59:00', predicted: 1 }],
+    )
+
+    expect(out.map(r => r.t)).toEqual([
+      Date.parse('2026-09-17T04:59:00.000Z'),
+      Date.parse('2026-09-17T06:00:00.000Z'),
+    ])
+  })
+
+  it('lets the held Actual span a press when held runs after it', () => {
+    const merged = mergeManualPredictions([], [press])
+    const out = applyHeldValue(merged, 41.2, null)
+
+    expect(out[0]).toMatchObject({ manual: 42.5, held: 41.2 })
+  })
+
+  it('returns the rows untouched when there are no presses', () => {
+    const rows = [{ t: 1, timestamp: 'a' }]
+    expect(mergeManualPredictions(rows, [])).toBe(rows)
   })
 })

@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { LivePredictionChart } from '../live-prediction-chart'
 import { EmptyTruth } from '../model-monitoring-tab'
 import type { LiveErrorCoverage } from '@/services/inference-window'
 
@@ -16,73 +15,6 @@ import type { LiveErrorCoverage } from '@/services/inference-window'
  * assertion below is on the DISTINGUISHING sentence, never on "some empty
  * state rendered".
  */
-
-describe('LivePredictionChart empty state (MODEL-SERVE-001-T10)', () => {
-  it('names the stream it reads rather than saying only "no predictions"', () => {
-    render(<LivePredictionChart points={[]} />)
-
-    expect(screen.getByText(/synchronous \/predict traffic/i)).toBeVisible()
-  })
-
-  it('says scheduled inference does not write here', () => {
-    render(<LivePredictionChart points={[]} />)
-
-    expect(
-      screen.getByText(/scheduled inference does not write here/i),
-    ).toBeVisible()
-  })
-
-  it('points the reader at the sections that DO have data for such a model', () => {
-    render(<LivePredictionChart points={[]} />)
-
-    expect(screen.getByText(/actual vs\. predict and residual/i)).toBeVisible()
-  })
-
-  it('no longer renders the old undifferentiated sentence', () => {
-    render(<LivePredictionChart points={[]} />)
-
-    expect(
-      screen.queryByText('No sampled predictions in this range yet.'),
-    ).toBeNull()
-  })
-
-  /**
-   * MODEL-SERVE-008-T06. T02's live driver made the by-construction claim
-   * FALSE for any model whose driver is on: scheduled inference still never
-   * writes this stream, but the driver does. A section naming a cause that
-   * no longer applies is worse than one saying nothing, because a reader
-   * trusts it.
-   */
-  it('does NOT claim the stream is empty by construction when the driver is on', () => {
-    render(<LivePredictionChart points={[]} livePredictEnabled />)
-
-    expect(
-      screen.queryByText(/scheduled inference does not write here/i),
-    ).toBeNull()
-    expect(
-      screen.getByText(/live prediction is on for this model/i),
-    ).toBeVisible()
-  })
-
-  it('says why an enabled driver can still show nothing, without blaming the model', () => {
-    render(<LivePredictionChart points={[]} livePredictEnabled />)
-
-    expect(
-      screen.getByText(/scoring pauses whenever the historian is unreachable/i),
-    ).toBeVisible()
-  })
-
-  it('keeps the by-construction sentence when the driver is OFF — the default is unchanged', () => {
-    // No prop at all: a caller that never opted into the new state must not
-    // silently get a different message.
-    render(<LivePredictionChart points={[]} />)
-
-    expect(
-      screen.getByText(/scheduled inference does not write here/i),
-    ).toBeVisible()
-    expect(screen.queryByText(/live prediction is on/i)).toBeNull()
-  })
-})
 
 function coverage(over: Partial<LiveErrorCoverage> = {}): LiveErrorCoverage {
   return {

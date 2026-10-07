@@ -109,6 +109,10 @@ const READ_ROUTES: Route[] = [
     'getScheduledSeries',
     (p) => windows(p).getScheduledSeriesService('model-1', range, user),
   ],
+  [
+    'getManualPredictions',
+    (p) => windows(p).getManualPredictionsService('model-1', range, user),
+  ],
   ['getTruth', (p) => windows(p).getTruthService('model-1', range, user)],
   [
     'getTagObservations',

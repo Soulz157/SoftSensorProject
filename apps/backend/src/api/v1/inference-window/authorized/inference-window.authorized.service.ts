@@ -1385,7 +1385,7 @@ export class InferenceWindowAuthorizedService {
     // retry path that does not carry `attempts` forward.
     if (window.status !== 'PENDING') {
       const stamp = window.windowStart.toISOString();
-      const live = await this.scoreLive(modelId);
+      const live = await this.scoreLiveAndRecord(modelId, version.id, user.id);
       return {
         statusCode: 200,
         message:
@@ -1422,7 +1422,7 @@ export class InferenceWindowAuthorizedService {
     // /predict, seconds, no container. Firing it and forgetting would let
     // the client's own refetch race the prediction, which is the entire
     // reason an operator pressed the button.
-    const live = await this.scoreLive(modelId);
+    const live = await this.scoreLiveAndRecord(modelId, version.id, user.id);
 
     return {
       statusCode: 202,
@@ -1463,6 +1463,49 @@ export class InferenceWindowAuthorizedService {
       this.log.warn(`Live score failed for model ${modelId}: ${reason}`);
       return { ok: false, reason };
     }
+  }
+
+  /**
+   * One live score for a Run Predict press, remembered so the Monitoring tab
+   * can draw it on Actual vs Predict. Recording CANNOT fail the request, for
+   * the same reason `scoreLive` cannot: the window is already queued.
+   *
+   * `live.at` is the newest SOURCE ROW's timestamp (data time, the chart's
+   * x position) and may arrive without a timezone. It is read as UTC, the
+   * same way the client's `parseServerTimestamp` reads it, or every marker
+   * would shift by the server's UTC offset.
+   */
+  private async scoreLiveAndRecord(
+    modelId: string,
+    modelVersionId: string,
+    userId: string,
+  ): Promise<LiveScoreOutcome> {
+    const live = await this.scoreLive(modelId);
+    if (!live.ok) return live;
+    try {
+      const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(live.at);
+      const predictedAt = new Date(
+        hasZone ? live.at : `${live.at.replace(' ', 'T')}Z`,
+      );
+      if (Number.isNaN(predictedAt.getTime())) {
+        throw new Error(`unparseable timestamp "${live.at}"`);
+      }
+      await this.prisma.manualPrediction.create({
+        data: {
+          modelId,
+          modelVersionId,
+          predicted: live.predicted,
+          predictedAt,
+          requestedById: userId,
+        },
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log.warn(
+        `Could not record Run Predict score for model ${modelId}: ${reason}`,
+      );
+    }
+    return live;
   }
 
   /** D9: FAILED is terminal; a retry is explicit and carries `attempts`
@@ -1778,6 +1821,41 @@ export class InferenceWindowAuthorizedService {
         })),
         windows: windows.length,
         missing: series.missing,
+      },
+    };
+  }
+
+  /**
+   * The operator's own Run Predict scores in a range, for the Actual vs
+   * Predict chart. A read route, so the same `monitoring-read` grant as the
+   * scheduled series — never reachable by a write-only permission.
+   */
+  async getManualPredictionsService(
+    modelId: string,
+    query: InferenceTruthRangeQueryDto,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user, 'monitoring-read');
+
+    const rows = await this.prisma.manualPrediction.findMany({
+      where: {
+        modelId,
+        predictedAt: { gte: new Date(query.from), lte: new Date(query.to) },
+      },
+      orderBy: { predictedAt: 'asc' },
+      select: { predictedAt: true, predicted: true, modelVersionId: true },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Run Predict scores',
+      type: 'SUCCESS' as const,
+      data: {
+        points: rows.map((r) => ({
+          at: r.predictedAt.toISOString(),
+          predicted: r.predicted,
+          modelVersionId: r.modelVersionId,
+        })),
       },
     };
   }

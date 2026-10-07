@@ -20,7 +20,7 @@ import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debou
  *
  *  `features`/`modelVersionId` are carried straight through from
  *  `PredictionSeriesPoint` (the raw logged row) for the Input Data tab,
- *  which needs the real X tag names — `LivePredictionChart` ignores both. */
+ *  which needs the real X tag names — the Monitoring charts ignore both. */
 export interface LivePredictionPoint {
   timestamp: string
   predicted: number

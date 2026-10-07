@@ -30,6 +30,12 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     },
     workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'ws-1' }) },
     workspaceMember: { findFirst: jest.fn().mockResolvedValue(null) },
+    // Run Predict presses: written by runNowService, read by the
+    // Monitoring chart's manual-predictions route.
+    manualPrediction: {
+      create: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     modelVersion: {
       findFirst: jest.fn().mockResolvedValue(null),
       findFirstOrThrow: jest.fn(),
@@ -2432,6 +2438,68 @@ describe('InferenceWindowAuthorizedService.runNowService — live score (MODEL-S
     expect(live.scoreOne).toHaveBeenCalledWith('model-1');
   });
 
+  it('records a press that produced a score, at the scored row time', async () => {
+    const prisma = readyPrisma();
+    await serviceWith(prisma, buildLivePredict()).runNowService(
+      'model-1',
+      user,
+    );
+
+    expect(prisma.manualPrediction.create).toHaveBeenCalledWith({
+      data: {
+        modelId: 'model-1',
+        modelVersionId: 'ver-1',
+        predicted: 42.5,
+        predictedAt: new Date('2026-09-17T04:59:00.000Z'),
+        requestedById: 'user-1',
+      },
+    });
+  });
+
+  it('reads a timestamp with no timezone as UTC, like the client does', async () => {
+    const prisma = readyPrisma();
+    const live = buildLivePredict({
+      scoreOne: jest.fn().mockResolvedValue({
+        ok: true,
+        predicted: 1,
+        at: '2026-09-17 04:59:00',
+      }),
+    });
+    await serviceWith(prisma, live).runNowService('model-1', user);
+
+    expect(prisma.manualPrediction.create).toHaveBeenCalledWith({
+      data: {
+        modelId: 'model-1',
+        modelVersionId: 'ver-1',
+        predicted: 1,
+        predictedAt: new Date('2026-09-17T04:59:00.000Z'),
+        requestedById: 'user-1',
+      },
+    });
+  });
+
+  it('records nothing when the live plane produced no point', async () => {
+    const prisma = readyPrisma();
+    const live = buildLivePredict({
+      scoreOne: jest.fn().mockResolvedValue({ ok: false, reason: 'quiet' }),
+    });
+    await serviceWith(prisma, live).runNowService('model-1', user);
+
+    expect(prisma.manualPrediction.create).not.toHaveBeenCalled();
+  });
+
+  it('a failed record cannot fail the request', async () => {
+    const prisma = readyPrisma();
+    prisma.manualPrediction.create.mockRejectedValue(new Error('db down'));
+    const res = await serviceWith(prisma, buildLivePredict()).runNowService(
+      'model-1',
+      user,
+    );
+
+    expect(res.statusCode).toBe(202);
+    expect(res.data.live).toMatchObject({ ok: true, predicted: 42.5 });
+  });
+
   it('still queues the window when the live plane produced no point', async () => {
     const live = buildLivePredict({
       scoreOne: jest
@@ -2798,5 +2866,49 @@ describe('InferenceWindowAuthorizedService.putScheduleService — relinking a ST
     expect(prisma.inferenceSchedule.updateMany.mock.calls[0][0].data).toEqual({
       enabled: false,
     });
+  });
+});
+
+describe('InferenceWindowAuthorizedService.getManualPredictionsService', () => {
+  const range = {
+    from: '2026-09-17T00:00:00.000Z',
+    to: '2026-09-18T00:00:00.000Z',
+  } as never;
+
+  it('returns the range’s Run Predict scores oldest first, serialized for the wire', async () => {
+    const prisma = buildPrisma();
+    prisma.manualPrediction.findMany.mockResolvedValue([
+      {
+        predictedAt: new Date('2026-09-17T04:59:00.000Z'),
+        predicted: 42.5,
+        modelVersionId: 'ver-1',
+      },
+    ]);
+
+    const res = await makeService(prisma).getManualPredictionsService(
+      'model-1',
+      range,
+      user,
+    );
+
+    expect(prisma.manualPrediction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          modelId: 'model-1',
+          predictedAt: {
+            gte: new Date('2026-09-17T00:00:00.000Z'),
+            lte: new Date('2026-09-18T00:00:00.000Z'),
+          },
+        },
+        orderBy: { predictedAt: 'asc' },
+      }),
+    );
+    expect(res.data.points).toEqual([
+      {
+        at: '2026-09-17T04:59:00.000Z',
+        predicted: 42.5,
+        modelVersionId: 'ver-1',
+      },
+    ]);
   });
 });

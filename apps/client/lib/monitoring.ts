@@ -210,6 +210,11 @@ export interface LiveOverlayRow extends Partial<MonitoringRow> {
    *  this is an hour of predictions summarised by one number, and merging
    *  it into either would put two different things under one name. */
   scheduled?: number
+  /** One Run Predict press — an on-demand score the operator asked for, at
+   *  the scored source row's time. ITS OWN KEY: it is neither the hourly
+   *  `scheduled` summary nor the dense `live` stream, and it feeds no metric,
+   *  no residual and no SD band (a handful of instants is not a series). */
+  manual?: number
 
   /** MODEL-SERVE-009-T05 follow-up. `live - held`: the model's prediction
    *  minus the lab's LAST MEASURED value.
@@ -379,6 +384,41 @@ export function mergeScheduledPredictions(
         timestamp: point.windowStart,
         scheduled: point.mean,
       })
+    }
+  }
+
+  return [...byT.values()].sort((a, b) => a.t - b.t)
+}
+
+/**
+ * Fold the operator's Run Predict presses into rows the chart already holds.
+ *
+ * Exact timestamp match onto an existing row, otherwise the press gets a row
+ * of its own — the same rule `mergeScheduledPredictions` follows, for the
+ * same reason: a score belongs at its own instant, never snapped to a nearby
+ * measurement. Two presses scoring the same source row collapse to the
+ * latest one.
+ *
+ * Run BEFORE `applyHeldValue`, so the held Actual step spans these
+ * timestamps too and a press is always drawn beside an Actual.
+ */
+export function mergeManualPredictions(
+  rows: LiveOverlayRow[],
+  manual: Array<{ at: string; predicted: number }>,
+): LiveOverlayRow[] {
+  if (manual.length === 0) return rows
+
+  const byT = new Map<number, LiveOverlayRow>()
+  for (const row of rows) byT.set(row.t, { ...row })
+
+  for (const point of manual) {
+    const t = parseServerTimestamp(point.at)
+    if (Number.isNaN(t)) continue
+    const existing = byT.get(t)
+    if (existing) {
+      existing.manual = point.predicted
+    } else {
+      byT.set(t, { t, timestamp: point.at, manual: point.predicted })
     }
   }
 

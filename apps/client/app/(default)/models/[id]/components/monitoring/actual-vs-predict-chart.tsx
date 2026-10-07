@@ -98,7 +98,10 @@ export function ActualVsPredictChart({
             />
             <Tooltip
               content={
-                <MonitoringTooltip variant="main" formatLabel={tooltipFormatter} />
+                <MonitoringTooltip
+                  variant="main"
+                  formatLabel={tooltipFormatter}
+                />
               }
             />
 
@@ -219,6 +222,32 @@ export function ActualVsPredictChart({
               strokeWidth={2}
               strokeDasharray="5 5"
               dot={false}
+              isAnimationActive={false}
+            />
+
+            {/* The operator's Run Predict presses, drawn as hollow diamonds
+                with NO connecting stroke: a press is one on-demand instant,
+                not a series, so a line between two of them would claim a
+                continuity that was never measured. Drawn after `scheduled`
+                so a press is never hidden under an hourly dot. The live
+                /predict STREAM stays off this chart (2026-09-17); only the
+                presses are drawn, on purpose. */}
+            <Line
+              type="monotone"
+              dataKey="manual"
+              stroke="none"
+              dot={{
+                r: 6,
+                fill: 'var(--background)',
+                stroke: 'var(--chart-3)',
+                strokeWidth: 2,
+              }}
+              activeDot={{
+                r: 8,
+                fill: 'var(--background)',
+                stroke: 'var(--chart-3)',
+                strokeWidth: 2,
+              }}
               isAnimationActive={false}
             />
 

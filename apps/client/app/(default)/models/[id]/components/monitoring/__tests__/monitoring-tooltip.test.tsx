@@ -223,3 +223,38 @@ describe('MonitoringTooltip — live-overlay points (MODEL-SERVE-011-T09)', () =
     expect(screen.getByText('-3.25')).toBeVisible()
   })
 })
+
+describe('MonitoringTooltip — Run Predict press', () => {
+  it('shows the press AND the last reported Actual beside it', () => {
+    render(
+      <MonitoringTooltip
+        active
+        label={1}
+        variant="main"
+        formatLabel={fmtLabel}
+        payload={payload({ t: 1, manual: 42.85, held: 41.2 })}
+      />,
+    )
+
+    expect(screen.getByText('Run Predict')).toBeVisible()
+    expect(screen.getByText('42.85')).toBeVisible()
+    expect(screen.getByText('Actual (last reported)')).toBeVisible()
+    expect(screen.getByText('41.20')).toBeVisible()
+    expect(screen.getByText('+1.65')).toBeVisible()
+  })
+
+  it('shows no comparison when the lab never reported', () => {
+    render(
+      <MonitoringTooltip
+        active
+        label={1}
+        variant="main"
+        formatLabel={fmtLabel}
+        payload={payload({ t: 1, manual: 42.85 })}
+      />,
+    )
+
+    expect(screen.getByText('Run Predict')).toBeVisible()
+    expect(screen.queryByText('vs last reported')).toBeNull()
+  })
+})

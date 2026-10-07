@@ -125,6 +125,16 @@ export class InferenceWindowAuthorizedController {
     return this.service.getScheduledSeriesService(modelId, query, user);
   }
 
+  /** The operator's Run Predict scores, drawn on Actual vs Predict. */
+  @Get('/inference/manual-predictions')
+  getManualPredictionsController(
+    @Param('modelId') modelId: string,
+    @Query() query: InferenceTruthRangeQueryDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.getManualPredictionsService(modelId, query, user);
+  }
+
   /** MODEL-SERVE-005-T03. Live error over joined ground truth, with the
    *  coverage that makes it readable. */
   @Get('/inference/truth')

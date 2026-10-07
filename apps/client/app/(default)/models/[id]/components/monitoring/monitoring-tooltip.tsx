@@ -85,6 +85,7 @@ export function MonitoringTooltip({
   // `predict` are different artifacts with different provenance) — that
   // separation is correct and stays. What was missing is only the READ.
   const scheduled = scalar(payload, 'scheduled')
+  const manual = scalar(payload, 'manual')
   const held = scalar(payload, 'held')
   const heldDeviation = scalar(payload, 'heldDeviation')
   const heldDeviationPct = scalar(payload, 'heldDeviationPct')
@@ -112,7 +113,9 @@ export function MonitoringTooltip({
                 both are absent IF nothing else is present, so the tooltip
                 never renders as an empty box. */}
             {(hasMeasuredPair ||
-              (held === undefined && scheduled === undefined)) && (
+              (held === undefined &&
+                scheduled === undefined &&
+                manual === undefined)) && (
               <>
                 <Row
                   color="var(--chart-1)"
@@ -153,6 +156,26 @@ export function MonitoringTooltip({
                 label={predict === undefined ? 'Predict' : 'Predict (hour avg)'}
                 value={fmt(scheduled)}
               />
+            )}
+            {/* A Run Predict press: the operator's own on-demand score. Its
+                distance from the last reported Actual is computed HERE for
+                display only — it is not `heldDeviation`, which feeds the SD
+                band and must not be fed by a handful of presses. */}
+            {manual !== undefined && (
+              <>
+                <Row
+                  color="var(--chart-3)"
+                  label="Run Predict"
+                  value={fmt(manual)}
+                />
+                {held !== undefined && (
+                  <Row
+                    color="var(--muted-foreground)"
+                    label="vs last reported"
+                    value={`${manual - held >= 0 ? '+' : ''}${(manual - held).toFixed(2)}`}
+                  />
+                )}
+              </>
             )}
           </>
         ) : (

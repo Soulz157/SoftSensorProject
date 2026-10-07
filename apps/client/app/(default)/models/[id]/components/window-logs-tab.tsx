@@ -44,7 +44,7 @@ const LEVEL_CLS = {
  *
  * SCHEDULED AND SYNCHRONOUS ARE TWO PLANES AND THIS SHOWS ONE. Nothing
  * here pools `/predict` request logs into the feed; those are
- * `PredictionLog` and belong to Monitoring's Live Predictions section.
+ * `PredictionLog`; Monitoring shows only the Run Predict presses from them.
  */
 export function WindowLogsTab({ modelId }: { modelId: string }) {
   const {

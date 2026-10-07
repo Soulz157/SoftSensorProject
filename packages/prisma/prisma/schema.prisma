@@ -126,6 +126,7 @@ model User {
   presetImports          FeaturePresetImport[]
   loaderJobs             LoaderJob[]
   promotedModelVersions  ModelVersion[]
+  manualPredictions      ManualPrediction[]
   predictionJobs         PredictionJob[]
   inferenceSchedules     InferenceSchedule[]
   notificationChannels   NotificationChannel[]
@@ -244,6 +245,7 @@ model Model {
   predictionJobs        PredictionJob[]
   candidateJobs         ModelCandidateJob[]
   predictionLogs        PredictionLog[]
+  manualPredictions     ManualPrediction[]
   inferenceWindows      InferenceWindow[]
   inferenceSchedule     InferenceSchedule?
   tagObservations       TagObservation[]
@@ -1256,9 +1258,10 @@ model ModelVersion {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  predictionJobs   PredictionJob[]
-  predictionLogs   PredictionLog[]
-  inferenceWindows InferenceWindow[]
+  predictionJobs    PredictionJob[]
+  predictionLogs    PredictionLog[]
+  manualPredictions ManualPrediction[]
+  inferenceWindows  InferenceWindow[]
 
   @@unique([modelId, version])
   @@index([modelId, stage])
@@ -1596,6 +1599,37 @@ model ModelCandidateJob {
 /// ServingTokenGuard-authenticated callback from apps/serving — there is
 /// no user session on this path, matching PredictionJob's own container-
 /// callback rows.
+/// One row per Run Predict button press that produced a score — the warm
+/// /predict reading the Monitoring tab draws on Actual vs Predict. Written
+/// ONLY by the run-now route; never by the scheduler or the live prediction
+/// driver. PredictionLog cannot serve this purpose: it carries no source
+/// column, so a press is indistinguishable there from the driver's sweep.
+model ManualPrediction {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// The PRODUCTION version that answered, so a promote between two presses
+  /// stays readable on the chart.
+  modelVersionId String
+  modelVersion   ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: Cascade)
+
+  predicted Float
+
+  /// The DATA time scored (the newest source row's timestamp), not the press
+  /// time — it is the chart's x position, on the same axis as Actual. The
+  /// press time is `createdAt`.
+  predictedAt DateTime
+
+  requestedById String?
+  requestedBy   User?   @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([modelId, predictedAt])
+}
+
 model PredictionLog {
   id String @id @default(uuid())
 
