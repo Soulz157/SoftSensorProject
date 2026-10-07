@@ -93,12 +93,6 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
         icon: <Table className="h-4 w-4" />,
         href: '/datasets',
       },
-      {
-        id: 'analytics',
-        name: 'Analytics',
-        icon: <BarChart3 className="h-4 w-4" />,
-        href: '/analytics',
-      },
     ],
   },
   {
@@ -133,6 +127,14 @@ export const adminNavItems: NavItem[] = [
     name: 'Workspace Management',
     icon: <Building2 className="h-4 w-4" />,
     href: '/admin/workspaces',
+  },
+  {
+    // All-workspaces analytics is admin-only; each workspace keeps its own
+    // view under the workspace section's "Data Management" link.
+    id: 'admin-analytics',
+    name: 'Data Analytics',
+    icon: <BarChart3 className="h-4 w-4" />,
+    href: '/admin/analytics',
   },
   {
     id: 'admin-settings',

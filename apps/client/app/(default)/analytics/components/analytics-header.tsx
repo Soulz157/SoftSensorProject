@@ -16,6 +16,9 @@ import type { Workspace } from '@/types'
 
 interface Props {
   workspaces: Workspace[]
+  /** Admins only: the scope dropdown ("All Workspaces" routes to
+   *  /admin/analytics). A user stays on the workspace they opened. */
+  showScopeSelect: boolean
   scope: Scope
   onScopeChange: (scope: Scope) => void
   range: TimeRange
@@ -27,6 +30,7 @@ const ALL_WORKSPACES = 'all'
 
 export function AnalyticsHeader({
   workspaces,
+  showScopeSelect,
   scope,
   onScopeChange,
   range,
@@ -46,19 +50,21 @@ export function AnalyticsHeader({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Select value={scope} onValueChange={onScopeChange}>
-          <SelectTrigger className="h-9 w-52">
-            <SelectValue placeholder="All Workspaces" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL_WORKSPACES}>All Workspaces</SelectItem>
-            {workspaces.map(ws => (
-              <SelectItem key={ws.id} value={ws.id}>
-                {ws.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {showScopeSelect && (
+          <Select value={scope} onValueChange={onScopeChange}>
+            <SelectTrigger className="h-9 w-52">
+              <SelectValue placeholder="All Workspaces" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_WORKSPACES}>All Workspaces</SelectItem>
+              {workspaces.map(ws => (
+                <SelectItem key={ws.id} value={ws.id}>
+                  {ws.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
 
         <TimeRangeToggle value={range} onChange={onRangeChange} />
 

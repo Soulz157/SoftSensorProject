@@ -3,10 +3,12 @@
 import { useMemo } from 'react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import {
+  canViewScope,
   ingestionTrendSeries,
   perWorkspacePipeline,
   pipelineKpis,
   tagHealthBreakdown,
+  workspacesInScope,
   type IngestionPoint,
   type PipelineKpis,
   type Scope,
@@ -23,6 +25,8 @@ export interface UsePipelineAnalyticsResult {
   trend: IngestionPoint[]
   perWorkspace: WorkspacePipelineRow[]
   loading: boolean
+  /** The scope names a workspace the viewer is not a member of. */
+  noAccess: boolean
   refetch: () => void
 }
 
@@ -53,9 +57,21 @@ export function usePipelineAnalytics(
     [scope, range],
   )
   const perWorkspace = useMemo(
-    () => perWorkspacePipeline(workspaces),
-    [workspaces],
+    () => perWorkspacePipeline(workspacesInScope(scope, workspaces)),
+    [scope, workspaces],
   )
+  // `loading` starts true (workspacesLoadingAtom), so this never flashes
+  // before the list arrives.
+  const noAccess = !loading && !canViewScope(scope, workspaces)
 
-  return { workspaces, kpis, tagHealth, trend, perWorkspace, loading, refetch }
+  return {
+    workspaces,
+    kpis,
+    tagHealth,
+    trend,
+    perWorkspace,
+    loading,
+    noAccess,
+    refetch,
+  }
 }
