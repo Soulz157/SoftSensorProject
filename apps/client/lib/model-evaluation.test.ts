@@ -27,6 +27,7 @@ const MODEL: AIModel = {
     enabled: true,
     prodStatus: 'normal',
     logs: [],
+    editHistory: [],
   },
   nodesId: null,
   datasetId: null,

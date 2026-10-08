@@ -70,7 +70,7 @@ describe('MemberAccessDialog', () => {
 
   it('sends the grants ticked for a VIEWER', async () => {
     renderDialog(member('VIEWER'))
-    const [monitoring] = screen.getAllByRole('checkbox')
+    const monitoring = screen.getAllByRole('checkbox')[0]!
     expect(monitoring).toBeEnabled()
 
     await userEvent.click(monitoring)
@@ -82,7 +82,7 @@ describe('MemberAccessDialog', () => {
 
   it('starts from the VIEWER current grants and can revoke one', async () => {
     renderDialog(member('VIEWER', ['MONITORING_VIEW', 'NOTIFICATIONS_VIEW']))
-    const [, notifications] = screen.getAllByRole('checkbox')
+    const notifications = screen.getAllByRole('checkbox')[1]!
 
     await userEvent.click(notifications)
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
