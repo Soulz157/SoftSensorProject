@@ -11,7 +11,10 @@ import {
   UpdateWorkspaceRequestDto,
 } from './dto/workspace.admin.dto';
 import { normalizePermissions } from '@/lib/workspace-permission';
-import { deriveNodeSummary } from '@/lib/node-summary';
+import {
+  nodeSummariesByWorkspace,
+  summaryFromCounts,
+} from '@/lib/node-status-counts';
 
 /** How many alarming workspaces the dashboard queue lists. */
 const ATTENTION_QUEUE_LIMIT = 10;
@@ -47,7 +50,6 @@ export class WorkspaceAdminService {
           _count: {
             select: { models: true, plans: true, datasets: true },
           },
-          nodes: { select: { data: true } },
         },
         // Newest first, as before (the live /admin/workspaces table and the
         // move-member picker depend on it). `id` breaks ties so pagination
@@ -59,14 +61,21 @@ export class WorkspaceAdminService {
       this.prisma.workspace.count({ where }),
     ]);
 
-    // Same derivation the user list uses: equipment status rides the payload,
-    // so the admin dashboard needs no per-workspace node request.
-    const items = rows.map(({ nodes, ...ws }) => ({
+    // Equipment roll-up for this page only, counted in the database (one
+    // grouped query) — same rule as the user list's `deriveNodeSummary`,
+    // without loading every node's JSON. The admin dashboard therefore needs
+    // no per-workspace request, and the move-member picker (limit 100) stays
+    // cheap.
+    const summaries = await nodeSummariesByWorkspace(
+      this.prisma,
+      rows.map((r) => r.id),
+    );
+    const items = rows.map((ws) => ({
       ...ws,
       modelsCount: ws._count.models,
       plantsCount: ws._count.plans,
       datasetsCount: ws._count.datasets,
-      ...deriveNodeSummary(nodes),
+      ...summaryFromCounts(summaries.get(ws.id)),
     }));
 
     return {
@@ -93,14 +102,16 @@ export class WorkspaceAdminService {
           select: { id: true, firstName: true, lastName: true, email: true },
         },
         _count: { select: { models: true } },
-        nodes: { select: { data: true } },
       },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
+    // Counted in the database for the whole platform — never every node's
+    // JSON pulled into the process on each dashboard load.
+    const summaries = await nodeSummariesByWorkspace(this.prisma);
 
-    const workspaces = rows.map(({ nodes, ...ws }) => ({
+    const workspaces = rows.map((ws) => ({
       ...ws,
-      ...deriveNodeSummary(nodes),
+      ...summaryFromCounts(summaries.get(ws.id)),
     }));
     const alarming = workspaces
       .filter((w) => w.status === 'alarm')

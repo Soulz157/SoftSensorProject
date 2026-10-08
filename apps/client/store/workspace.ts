@@ -14,6 +14,14 @@ import {
 
 export const workspacesAtom = atomWithStorage<Workspace[]>('workspaces', [])
 
+/**
+ * Bumped once per SUCCESSFUL workspace create, wherever it happened (the
+ * sidebar's dialog, a page's own dialog, onboarding). Views that fetch
+ * workspace data on their own (the admin dashboard) list it as a dependency
+ * and reload — a cancelled or failed create bumps nothing.
+ */
+export const workspacesRevisionAtom = atom(0)
+
 export const workspacesLoadingAtom = atom(true)
 
 // Bumped by deploy-state mutations to invalidate cross-workspace model fetches

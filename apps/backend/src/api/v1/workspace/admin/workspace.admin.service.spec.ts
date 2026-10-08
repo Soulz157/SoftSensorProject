@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { WorkspaceAdminService } from './workspace.admin.service';
 import { PrismaService } from '@softsensor/prisma';
+import { deriveNodeSummary } from '@/lib/node-summary';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be declared before any imports that reference them
@@ -24,6 +25,34 @@ jest.mock('@softsensor/prisma', () => ({
   PrismaEnums: { Role: { USER: 'USER', ADMIN: 'ADMIN' } },
 }));
 
+// The roll-up is counted in SQL (`nodeSummariesByWorkspace`, pinned against
+// `deriveNodeSummary` in its own spec). Here it is fed from each fixture's
+// `nodes`, so the fixtures stay readable; `summaryFromCounts` stays real.
+const summariesMock = jest.fn();
+jest.mock('@/lib/node-status-counts', () => ({
+  ...jest.requireActual<object>('@/lib/node-status-counts'),
+  nodeSummariesByWorkspace: (...args: unknown[]): unknown =>
+    summariesMock(...args),
+}));
+
+/** Rows as the DB returns them (no `nodes` — the query no longer selects
+ *  them), with the SQL roll-up primed from each fixture's nodes. */
+function split(rows: Record<string, unknown>[]) {
+  summariesMock.mockResolvedValue(
+    new Map(
+      rows.map((r) => [
+        r.id as string,
+        deriveNodeSummary((r.nodes as { data: unknown }[]) ?? []),
+      ]),
+    ),
+  );
+  return rows.map((row) => {
+    const r = { ...row };
+    delete r.nodes;
+    return r;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -36,6 +65,7 @@ describe('WorkspaceAdminService', () => {
   };
 
   beforeEach(async () => {
+    summariesMock.mockReset();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WorkspaceAdminService,
@@ -81,14 +111,14 @@ describe('WorkspaceAdminService', () => {
   describe('listWorkspaces (MODEL-SERVE admin dashboard)', () => {
     it('returns real counts, updatedAt and the equipment roll-up per item', async () => {
       prisma.$transaction.mockResolvedValue([
-        [
+        split([
           workspaceRow(),
           workspaceRow({
             id: 'w2',
             name: 'Mock B',
             nodes: [node('alarm'), node('alarm'), node('warning')],
           }),
-        ],
+        ]),
         2,
       ]);
       const res = await service.listWorkspaces({ page: 1, limit: 15 });
@@ -112,8 +142,37 @@ describe('WorkspaceAdminService', () => {
       expect(res.data.total).toBe(2);
     });
 
+    it('counts nodes in the database for THIS page only — never loads node JSON', async () => {
+      prisma.$transaction.mockResolvedValue([
+        split([workspaceRow({ id: 'p1' }), workspaceRow({ id: 'p2' })]),
+        2,
+      ]);
+      await service.listWorkspaces({ page: 1, limit: 15 });
+      expect(summariesMock).toHaveBeenCalledWith(expect.anything(), [
+        'p1',
+        'p2',
+      ]);
+      const calls = prisma.workspace.findMany.mock.calls as unknown[][];
+      const arg = calls[0]?.[0] as { select?: Record<string, unknown> };
+      expect(arg.select).not.toHaveProperty('nodes');
+    });
+
+    it('a workspace with no nodes gets the empty roll-up, not undefined', async () => {
+      summariesMock.mockResolvedValue(new Map());
+      prisma.$transaction.mockResolvedValue([
+        [{ ...workspaceRow({ id: 'empty' }), nodes: undefined }],
+        1,
+      ]);
+      const res = await service.listWorkspaces({ page: 1, limit: 15 });
+      expect(res.data.items[0]).toMatchObject({
+        nodeCount: 0,
+        alarmCount: 0,
+        status: 'normal',
+      });
+    });
+
     it('keeps newest-first order with an id tiebreak so pages are stable', async () => {
-      prisma.$transaction.mockResolvedValue([[], 0]);
+      prisma.$transaction.mockResolvedValue([split([]), 0]);
       await service.listWorkspaces({ page: 2, limit: 15 });
       expect(prisma.workspace.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -125,7 +184,7 @@ describe('WorkspaceAdminService', () => {
     });
 
     it('never lists soft-deleted workspaces, and applies the search', async () => {
-      prisma.$transaction.mockResolvedValue([[], 0]);
+      prisma.$transaction.mockResolvedValue([split([]), 0]);
       await service.listWorkspaces({ page: 1, limit: 15, search: 'abc' });
       expect(prisma.workspace.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -138,7 +197,7 @@ describe('WorkspaceAdminService', () => {
     });
 
     it('does not leak fields outside the DTO', async () => {
-      prisma.$transaction.mockResolvedValue([[], 0]);
+      prisma.$transaction.mockResolvedValue([split([]), 0]);
       await service.listWorkspaces({ page: 1, limit: 15 });
       const calls = prisma.workspace.findMany.mock.calls as unknown[][];
       const arg = calls[0]?.[0] as { select?: Record<string, unknown> };
@@ -150,13 +209,18 @@ describe('WorkspaceAdminService', () => {
 
   describe('getSummary', () => {
     it('counts every workspace and sums models, unpaginated', async () => {
-      prisma.workspace.findMany.mockResolvedValue([
-        workspaceRow({ id: 'a', _count: { models: 2 } }),
-        workspaceRow({ id: 'b', _count: { models: 5 } }),
-      ]);
+      prisma.workspace.findMany.mockResolvedValue(
+        split([
+          workspaceRow({ id: 'a', _count: { models: 2 } }),
+          workspaceRow({ id: 'b', _count: { models: 5 } }),
+        ]),
+      );
       const res = await service.getSummary();
       expect(res.data.total).toBe(2);
       expect(res.data.models).toBe(7);
+      // Whole platform, counted in SQL; no node JSON selected.
+      expect(summariesMock).toHaveBeenCalledWith(expect.anything());
+      expect(summariesMock.mock.calls[0]).toHaveLength(1);
       const calls = prisma.workspace.findMany.mock.calls as unknown[][];
       const arg = calls[0]?.[0] as { take?: number; where: unknown };
       expect(arg.take).toBeUndefined();
@@ -164,16 +228,18 @@ describe('WorkspaceAdminService', () => {
     });
 
     it('lists only alarm workspaces under attention, with their counts', async () => {
-      prisma.workspace.findMany.mockResolvedValue([
-        workspaceRow({ id: 'ok', nodes: [node('normal')] }),
-        workspaceRow({ id: 'warn', nodes: [node('warning')] }),
-        workspaceRow({ id: 'off', nodes: [node('offline')] }),
-        workspaceRow({
-          id: 'bad',
-          name: 'Mock Bad',
-          nodes: [node('alarm'), node('offline')],
-        }),
-      ]);
+      prisma.workspace.findMany.mockResolvedValue(
+        split([
+          workspaceRow({ id: 'ok', nodes: [node('normal')] }),
+          workspaceRow({ id: 'warn', nodes: [node('warning')] }),
+          workspaceRow({ id: 'off', nodes: [node('offline')] }),
+          workspaceRow({
+            id: 'bad',
+            name: 'Mock Bad',
+            nodes: [node('alarm'), node('offline')],
+          }),
+        ]),
+      );
       const res = await service.getSummary();
       expect(res.data.attention).toEqual([
         {
@@ -189,7 +255,7 @@ describe('WorkspaceAdminService', () => {
     });
 
     it('reports an empty platform as zeros, not an error', async () => {
-      prisma.workspace.findMany.mockResolvedValue([]);
+      prisma.workspace.findMany.mockResolvedValue(split([]));
       const res = await service.getSummary();
       expect(res.data).toEqual({
         total: 0,
@@ -201,15 +267,17 @@ describe('WorkspaceAdminService', () => {
 
     it('caps the queue at the worst 10 but reports the true total', async () => {
       prisma.workspace.findMany.mockResolvedValue(
-        Array.from({ length: 14 }, (_, i) =>
-          workspaceRow({
-            id: `w${i}`,
-            name: `Mock ${String(i).padStart(2, '0')}`,
-            // w13 has the most alarms; the rest have one each.
-            nodes: Array.from({ length: i === 13 ? 3 : 1 }, () =>
-              node('alarm'),
-            ),
-          }),
+        split(
+          Array.from({ length: 14 }, (_, i) =>
+            workspaceRow({
+              id: `w${i}`,
+              name: `Mock ${String(i).padStart(2, '0')}`,
+              // w13 has the most alarms; the rest have one each.
+              nodes: Array.from({ length: i === 13 ? 3 : 1 }, () =>
+                node('alarm'),
+              ),
+            }),
+          ),
         ),
       );
       const res = await service.getSummary();

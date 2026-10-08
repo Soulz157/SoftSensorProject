@@ -9,9 +9,9 @@ import type { AdminWorkspaceSummary } from '@/types'
  * Whole-platform workspace summary for the admin dashboard header and
  * attention queue (one request — replaces the old per-workspace node
  * fan-out). A failure is returned as `error`, never as an empty "healthy"
- * summary.
+ * summary. `revision`: bump to reload (e.g. after a workspace is created).
  */
-export function useAdminWorkspaceSummary() {
+export function useAdminWorkspaceSummary(revision = 0) {
   const { status } = useSession()
   const [data, setData] = useState<AdminWorkspaceSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -43,7 +43,7 @@ export function useAdminWorkspaceSummary() {
     return () => {
       ignore = true
     }
-  }, [status, nonce])
+  }, [status, nonce, revision])
 
   const refetch = useCallback(() => setNonce(n => n + 1), [])
 

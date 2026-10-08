@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import { Provider, createStore } from 'jotai'
+import { workspacesRevisionAtom } from '@/store/workspace'
 
 const summary = vi.fn()
 const workspaces = vi.fn()
@@ -9,14 +11,14 @@ const refetchSummary = vi.fn()
 const refetchWorkspaces = vi.fn()
 
 vi.mock('@/hooks/admin/use-admin-workspace-summary', () => ({
-  useAdminWorkspaceSummary: () => summary(),
+  useAdminWorkspaceSummary: (revision: unknown) => summary(revision),
 }))
 vi.mock('@/hooks/admin/use-admin-workspaces', () => ({
   useAdminWorkspaces: (args: unknown) => workspaces(args),
 }))
 vi.mock('@/hooks/admin/use-activity', () => ({
   useUserStats: () => users(),
-  useActivityLog: () => activity(),
+  useActivityLog: (args: unknown) => activity(args),
 }))
 vi.mock('@/components/create-workspace', () => ({
   CreateWorkspaceDialog: ({
@@ -208,7 +210,7 @@ describe('AdminDashboard (wired)', () => {
       act(() => {
         vi.advanceTimersByTime(300)
       })
-      expect(args().at(-1)).toEqual({ page: 1, limit: 15, search: 'abc' })
+      expect(args().at(-1)).toMatchObject({ page: 1, limit: 15, search: 'abc' })
     })
 
     it('never sends a whitespace-only term', () => {
@@ -221,11 +223,40 @@ describe('AdminDashboard (wired)', () => {
     })
   })
 
-  it('refreshes the summary and list after the create dialog closes', () => {
+  it('closing the create dialog without creating reloads nothing', () => {
     render(<AdminDashboard />)
     fireEvent.click(screen.getByRole('button', { name: /Create workspace/ }))
+    const before = workspaces.mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'close dialog' }))
-    expect(refetchSummary).toHaveBeenCalled()
-    expect(refetchWorkspaces).toHaveBeenCalled()
+    expect(refetchSummary).not.toHaveBeenCalled()
+    expect(refetchWorkspaces).not.toHaveBeenCalled()
+    const revisions = workspaces.mock.calls
+      .slice(before)
+      .map(c => (c[0] as { revision: number }).revision)
+    expect(revisions.every(r => r === 0)).toBe(true)
+  })
+
+  // Either dialog (this page's or the sidebar's) bumps the shared revision
+  // on success; the summary and the list are keyed to it.
+  it('a successful create anywhere reloads the summary and the list', () => {
+    const store = createStore()
+    render(
+      <Provider store={store}>
+        <AdminDashboard />
+      </Provider>,
+    )
+    act(() => store.set(workspacesRevisionAtom, n => n + 1))
+    expect(summary.mock.calls.at(-1)?.[0]).toBe(1)
+    expect(workspaces.mock.calls.at(-1)?.[0]).toMatchObject({ revision: 1 })
+  })
+
+  it('sections with an inline error do not also toast', () => {
+    render(<AdminDashboard />)
+    expect(workspaces.mock.calls.at(-1)?.[0]).toMatchObject({
+      notifyOnError: false,
+    })
+    expect(activity.mock.calls.at(-1)?.[0]).toMatchObject({
+      notifyOnError: false,
+    })
   })
 })

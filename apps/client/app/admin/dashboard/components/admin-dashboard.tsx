@@ -1,12 +1,14 @@
 'use client'
 
 import { useState } from 'react'
+import { useAtomValue } from 'jotai'
 import { CreateWorkspaceDialog } from '@/components/create-workspace'
 import { useAdminWorkspaces } from '@/hooks/admin/use-admin-workspaces'
 import { useAdminWorkspaceSummary } from '@/hooks/admin/use-admin-workspace-summary'
 import { useActivityLog, useUserStats } from '@/hooks/admin/use-activity'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { ADMIN_PAGE_SIZE, pageFromServer } from '@/lib/admin-dashboard'
+import { workspacesRevisionAtom } from '@/store/workspace'
 import { AdminDashboardView } from './admin-dashboard-view'
 import type { LoadState } from './attention-queue'
 
@@ -29,22 +31,24 @@ export function AdminDashboard() {
   const page = pageState.term === term ? pageState.page : 1
   const setPage = (p: number) => setPageState({ term, page: p })
 
-  const summary = useAdminWorkspaceSummary()
+  // Bumped by every SUCCESSFUL create — this page's dialog or the sidebar's.
+  // A cancelled or failed create reloads nothing.
+  const revision = useAtomValue(workspacesRevisionAtom)
+  const summary = useAdminWorkspaceSummary(revision)
+  // The table and activity show their own error + "Try again": no toast on
+  // top. User stats have no inline error, so they keep the toast.
   const workspaces = useAdminWorkspaces({
     page,
     limit: ADMIN_PAGE_SIZE,
     search: term || undefined,
+    revision,
+    notifyOnError: false,
   })
   const users = useUserStats({ page: 1, limit: 1 })
-  const activity = useActivityLog({ page: 1, limit: 8 })
+  const activity = useActivityLog({ page: 1, limit: 8, notifyOnError: false })
 
   const stateOf = (error: string | null, loaded: boolean): LoadState =>
     error ? 'error' : loaded ? 'ready' : 'loading'
-
-  const refreshAll = () => {
-    summary.refetch()
-    void workspaces.refetch()
-  }
 
   return (
     <div className="flex-1 overflow-auto p-6 md:p-8">
@@ -74,14 +78,7 @@ export function AdminDashboard() {
         }}
         onCreate={() => setIsOpen(true)}
       />
-      <CreateWorkspaceDialog
-        open={isOpen}
-        onClose={() => {
-          setIsOpen(false)
-          // A workspace may have been created: refresh what depends on it.
-          refreshAll()
-        }}
-      />
+      <CreateWorkspaceDialog open={isOpen} onClose={() => setIsOpen(false)} />
     </div>
   )
 }

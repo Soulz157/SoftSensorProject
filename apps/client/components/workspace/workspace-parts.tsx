@@ -4,11 +4,8 @@ import { BINARY_STATUS_META } from '@/lib/overview-status'
 import type { ListStatus } from '@/lib/workspace-list'
 import { cn } from '@/lib/utils'
 
-/** Attention text: the status meta's own AA-safe red, not `text-destructive`
- *  (too dim on the dark surface). */
 export const ATTENTION_TEXT = BINARY_STATUS_META.abnormal.text
 
-/** Workspace icon on its documented colour (DESIGN_SYSTEM §6). */
 export function WorkspaceIconTile({
   iconId,
   colorId,
@@ -40,11 +37,6 @@ export function WorkspaceIconTile({
   )
 }
 
-/**
- * The binary workspace status — the sanctioned use of status colour — plus a
- * neutral "Checking" while it cannot be decided yet (model list loading). The
- * neutral state uses no status colour, so it never reads as healthy.
- */
 export function StatusPill({ status }: { status: ListStatus }) {
   const meta =
     status === 'unknown'
@@ -70,10 +62,6 @@ export function StatusPill({ status }: { status: ListStatus }) {
   )
 }
 
-/**
- * A count the list payload does not carry is UNKNOWN, not zero — an em-dash
- * says so honestly (DS-LAKE-021, MODEL-SERVE-005).
- */
 export function CountValue({
   value,
   label,
@@ -97,7 +85,6 @@ export function CountValue({
   )
 }
 
-/** Von Restorff: the one thing that must pop on a row or card. */
 export function AttentionNote({ count }: { count: number | null }) {
   if (count === null || count <= 0) return null
   return (
