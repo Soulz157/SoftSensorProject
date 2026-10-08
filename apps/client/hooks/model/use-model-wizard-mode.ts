@@ -95,9 +95,19 @@ export function useModelWizardMode(): UseModelWizardModeResult {
 
   const { resume } = useModelDraftResume()
 
-  const [mode, setModeState] = useState<WizardMode>('create')
+  // The mount effect below branches on the URL once; its opening state is
+  // read from the same URL here, so the effect never sets it synchronously.
+  const isEditUrl =
+    params.get('mode') === 'edit' &&
+    !!params.get('modelId') &&
+    !!params.get('workspaceId')
+  const [mode, setModeState] = useState<WizardMode>(() =>
+    isEditUrl ? 'edit' : 'create',
+  )
   const [modelName, setModelName] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(
+    () => isEditUrl || !!params.get('draftId'),
+  )
   const ranRef = useRef(false)
 
   useEffect(() => {
@@ -110,13 +120,11 @@ export function useModelWizardMode(): UseModelWizardModeResult {
     const draftId = params.get('draftId')
 
     if (urlMode !== 'edit' || !modelId || !workspaceId) {
-      setModeState('create')
       if (draftId) {
         // `resume` resets the wizard itself before hydrating, so the plain
         // create branch below is the only one that needs its own reset.
         // Unlike the in-wizard Resume button, a bad id in the URL leaves the
         // user on an empty wizard they did not ask for — send them back.
-        setLoading(true)
         void resume(draftId)
           .then(ok => {
             if (!ok) router.push('/models/views')
@@ -182,8 +190,6 @@ export function useModelWizardMode(): UseModelWizardModeResult {
     // Clear any leaked state first so a config-less (legacy) model never shows
     // a prior session's tags/fill rules.
     reset()
-    setLoading(true)
-    setModeState('edit')
     getModelById(workspaceId, modelId)
       .then(model => {
         if (!model) {

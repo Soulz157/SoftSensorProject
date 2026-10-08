@@ -16,16 +16,18 @@ interface Props {
  * whole table every second. Keeping the tick here confines it to this span.
  */
 export function FetchElapsed({ startedAt }: Props) {
-  const [elapsedMs, setElapsedMs] = useState(() => Date.now() - startedAt)
+  // Tick the clock, derive the elapsed time — never accumulate. A
+  // backgrounded tab throttles intervals to ~1/min, which would freeze an
+  // accumulated counter instead of just making it update coarsely. A new
+  // `startedAt` re-derives on the very next render; clamped because the last
+  // tick can predate it by up to a second.
+  const [now, setNow] = useState(() => Date.now())
+  const elapsedMs = Math.max(0, now - startedAt)
 
   useEffect(() => {
-    // Re-derive from `startedAt` on every tick rather than accumulating — a
-    // backgrounded tab throttles intervals to ~1/min, which would freeze an
-    // accumulated counter instead of just making it update coarsely.
-    setElapsedMs(Date.now() - startedAt)
-    const id = setInterval(() => setElapsedMs(Date.now() - startedAt), 1000)
+    const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
-  }, [startedAt])
+  }, [])
 
   return (
     // aria-hidden: the batch/tag status line next to this is the announced

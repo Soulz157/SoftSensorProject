@@ -84,43 +84,49 @@ export function useDatasetArtifactMetadata(
   draftId: string | null,
   artifactId: string | null,
 ): DatasetArtifactMetadataState {
-  const [metadata, setMetadata] = useState<DraftArtifactMetadata | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` and the
+  // reset on a new request are DERIVED from a key mismatch rather than set
+  // synchronously at the top of the effect.
+  const [settled, setSettled] = useState<{
+    key: string
+    metadata: DraftArtifactMetadata | null
+    error: string | null
+  } | null>(null)
   const tokenRef = useRef(0)
+  const requestKey =
+    draftId && artifactId ? JSON.stringify([draftId, artifactId]) : null
 
   useEffect(() => {
     const token = ++tokenRef.current
-    setMetadata(null)
-    setError(null)
+    if (!requestKey || !draftId || !artifactId) return
 
-    if (!draftId || !artifactId) {
-      setLoading(false)
-      return
-    }
-
-    setLoading(true)
     void (async () => {
       try {
         const data = await getCachedMetadata(draftId, artifactId, () =>
           datasetDraftService.metadata(draftId, artifactId),
         )
         if (tokenRef.current === token) {
-          setMetadata(data)
-          setLoading(false)
+          setSettled({ key: requestKey, metadata: data, error: null })
         }
       } catch (err) {
         if (tokenRef.current === token) {
-          setError(
-            err instanceof Error ? err.message : 'Failed to load metadata',
-          )
-          setLoading(false)
+          setSettled({
+            key: requestKey,
+            metadata: null,
+            error:
+              err instanceof Error ? err.message : 'Failed to load metadata',
+          })
         }
       }
     })()
-  }, [draftId, artifactId])
+  }, [requestKey, draftId, artifactId])
 
-  return { metadata, loading, error }
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    metadata: current?.metadata ?? null,
+    loading: requestKey !== null && current === null,
+    error: current?.error ?? null,
+  }
 }
 
 /**
@@ -135,41 +141,47 @@ export function useArtifactMetadata(
   datasetId: string | null,
   artifactId: string | null,
 ) {
-  const [metadata, setMetadata] = useState<DraftArtifactMetadata | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` and the
+  // reset on a new request are DERIVED from a key mismatch rather than set
+  // synchronously at the top of the effect.
+  const [settled, setSettled] = useState<{
+    key: string
+    metadata: DraftArtifactMetadata | null
+    error: string | null
+  } | null>(null)
   const tokenRef = useRef(0)
+  const requestKey =
+    datasetId && artifactId ? JSON.stringify([datasetId, artifactId]) : null
 
   useEffect(() => {
     const token = ++tokenRef.current
-    setMetadata(null)
-    setError(null)
+    if (!requestKey || !datasetId || !artifactId) return
 
-    if (!datasetId || !artifactId) {
-      setLoading(false)
-      return
-    }
-
-    setLoading(true)
     void (async () => {
       try {
         const data = await getCachedMetadata(datasetId, artifactId, () =>
           datasetArtifactService.metadata(datasetId, artifactId),
         )
         if (tokenRef.current === token) {
-          setMetadata(data)
-          setLoading(false)
+          setSettled({ key: requestKey, metadata: data, error: null })
         }
       } catch (err) {
         if (tokenRef.current === token) {
-          setError(
-            err instanceof Error ? err.message : 'Failed to load metadata',
-          )
-          setLoading(false)
+          setSettled({
+            key: requestKey,
+            metadata: null,
+            error:
+              err instanceof Error ? err.message : 'Failed to load metadata',
+          })
         }
       }
     })()
-  }, [datasetId, artifactId])
+  }, [requestKey, datasetId, artifactId])
 
-  return { metadata, loading, error }
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    metadata: current?.metadata ?? null,
+    loading: requestKey !== null && current === null,
+    error: current?.error ?? null,
+  }
 }

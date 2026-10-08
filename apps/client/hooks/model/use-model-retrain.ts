@@ -106,7 +106,8 @@ export function useModelRetrain({
   const [incumbent, setIncumbent] = useState<RetrainIncumbent | null>(null)
   const [job, setJob] = useState<RetrainJob | null>(null)
   const [logs, setLogs] = useState<ModelTrainingRunLog[]>([])
-  const [loading, setLoading] = useState(true)
+  const modelId = model?.id ?? null
+  const [loading, setLoading] = useState(() => modelId !== null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   // Read lazily (never during render) — `localStorage` is unavailable on the
@@ -122,7 +123,20 @@ export function useModelRetrain({
     onUpdatedRef.current = onUpdated
   }, [onUpdated])
 
-  const modelId = model?.id ?? null
+  // A model change resets the panel during render (React's "storing
+  // information from previous renders" pattern) rather than synchronously
+  // inside the load effect below.
+  const [prevModelId, setPrevModelId] = useState(modelId)
+  if (prevModelId !== modelId) {
+    setPrevModelId(modelId)
+    setLoading(modelId !== null)
+    if (!modelId) {
+      setIncumbent(null)
+      setJob(null)
+      setLogs([])
+      setError(null)
+    }
+  }
 
   const fetchLogs = useCallback(async (mId: string, runId: string) => {
     try {
@@ -139,22 +153,16 @@ export function useModelRetrain({
   useEffect(() => {
     idempotencyKeyRef.current = null
     notifiedTerminalRef.current = null
-    if (!modelId) {
-      setIncumbent(null)
-      setJob(null)
-      setLogs([])
-      setLoading(false)
-      setError(null)
-      return
-    }
+    if (!modelId) return
 
     let ignore = false
-    setLoading(true)
-    setDismissedJobId(readDismissedJobId(modelId))
-    void (async () => {
-      try {
-        const res = await modelRetrainService.current(modelId)
+    // Every setState below runs after the request settles — never
+    // synchronously in this effect. The dismissed id is read alongside the
+    // job it applies to.
+    void modelRetrainService.current(modelId).then(
+      res => {
         if (ignore) return
+        setDismissedJobId(readDismissedJobId(modelId))
         setIncumbent(res.data.incumbent)
         setJob(res.data.job)
         setError(null)
@@ -163,15 +171,17 @@ export function useModelRetrain({
         } else {
           setLogs([])
         }
-      } catch (err) {
+        setLoading(false)
+      },
+      (err: unknown) => {
         if (ignore) return
+        setDismissedJobId(readDismissedJobId(modelId))
         setError(
           err instanceof Error ? err.message : 'Failed to load retrain state',
         )
-      } finally {
-        if (!ignore) setLoading(false)
-      }
-    })()
+        setLoading(false)
+      },
+    )
 
     return () => {
       ignore = true
@@ -301,7 +311,10 @@ export function useModelRetrain({
   )
 
   const clearError = useCallback(() => setError(null), [])
-  const refresh = useCallback(() => setReloadKey(k => k + 1), [])
+  const refresh = useCallback(() => {
+    if (modelId) setLoading(true)
+    setReloadKey(k => k + 1)
+  }, [modelId])
   const dismiss = useCallback(() => {
     if (!modelId || !job) return
     writeDismissedJobId(modelId, job.id)

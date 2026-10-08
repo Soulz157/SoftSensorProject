@@ -37,10 +37,11 @@ export interface LoaderSink {
 export class LogLoaderSink implements LoaderSink {
   private readonly logger = new Logger(LogLoaderSink.name);
 
-  async load(payload: LoaderSinkPayload): Promise<void> {
+  load(payload: LoaderSinkPayload): Promise<void> {
     this.logger.log(
       `Loader seam: dataset ${payload.datasetId} version ${payload.versionId} ` +
         'ready for a serving-layer sink (none configured — logging only).',
     );
+    return Promise.resolve();
   }
 }

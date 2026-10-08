@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { InferenceWindowSchedulerService } from './inference-window-scheduler.service';
 import { materializeInferenceWindow } from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';

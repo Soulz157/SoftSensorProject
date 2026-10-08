@@ -8,12 +8,11 @@ import { useEffect, useState } from 'react'
  */
 export function useDelayedFlag(active: boolean, delayMs: number): boolean {
   const [delayed, setDelayed] = useState(false)
+  // Reset during render the moment the flag drops, rather than in the effect.
+  if (!active && delayed) setDelayed(false)
 
   useEffect(() => {
-    if (!active) {
-      setDelayed(false)
-      return
-    }
+    if (!active) return
     const timer = setTimeout(() => setDelayed(true), delayMs)
     return () => clearTimeout(timer)
   }, [active, delayMs])

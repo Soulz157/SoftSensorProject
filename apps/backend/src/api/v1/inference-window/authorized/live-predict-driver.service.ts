@@ -263,7 +263,7 @@ export class LivePredictDriverService
 
       const row: Record<string, number> = {};
       for (const column of featureColumns) {
-        row[column] = newest.cells[column]!.value;
+        row[column] = newest.cells[column].value;
       }
 
       // Values go PRE-SCALE and unaltered: the materialized frame is in raw

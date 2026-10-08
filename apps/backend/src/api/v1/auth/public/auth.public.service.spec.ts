@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- jest mocks are `any` by design */
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -127,7 +128,13 @@ describe('AuthPublicService', () => {
       .overrideProvider(AuthPublicService)
       .useFactory({
         factory: () =>
-          new AuthPublicService(prismaMock as never, jwtMock as never),
+          new AuthPublicService(
+            prismaMock as never,
+            jwtMock as never,
+            {
+              sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined),
+            } as never,
+          ),
       })
       .compile();
 

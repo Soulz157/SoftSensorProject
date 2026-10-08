@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/unbound-method -- jest mocks are `any` by design; expect(mock.method) never calls it */
 import { AppException } from '@softsensor/common';
 import { LoaderJobService } from './loader-job.service';
 import type { LoaderSink } from './loader-sink.interface';

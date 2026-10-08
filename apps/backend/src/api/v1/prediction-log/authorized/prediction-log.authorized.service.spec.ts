@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/unbound-method -- expect(mock.method) never calls it */
 import { PredictionLogAuthorizedService } from './prediction-log.authorized.service';
 import { resetColumnBaselineCacheForTests } from '@/lib/artifact-baseline';
 import * as pythonClient from '@/lib/python-preprocess-client';

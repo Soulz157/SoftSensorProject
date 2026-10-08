@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   Server,
   Database,
@@ -133,11 +133,11 @@ export function AddConnectionDialog({
   const [form, setForm] = useState<NewSourceForm>(() => {
     if (isEdit && initialData) {
       return {
-          ...initialData,
-          password: '',
-          config: initialData.config ?? {},
-          workspaceId: initialData.workspaceId ?? null,
-        }
+        ...initialData,
+        password: '',
+        config: initialData.config ?? {},
+        workspaceId: initialData.workspaceId ?? null,
+      }
     }
     return EMPTY_FORM
   })
@@ -153,24 +153,30 @@ export function AddConnectionDialog({
   // reused across sources (open toggled by the parent), so without this the
   // edit form would keep showing stale/blank values. Key off the open edge +
   // sourceId (stable per source) — not initialData's per-render identity.
-  useEffect(() => {
-    if (!open) return
+  // Adjusted during render (React's "storing information from previous
+  // renders" pattern) rather than in an effect, so the dialog never paints a
+  // frame of the previous source's values.
+  const [seededFor, setSeededFor] = useState({ open, sourceId })
+  if (seededFor.open !== open || seededFor.sourceId !== sourceId) {
+    setSeededFor({ open, sourceId })
+    if (open) reseed()
+  }
+  function reseed() {
     setForm(
       isEdit && initialData
         ? {
-          ...initialData,
-          password: '',
-          config: initialData.config ?? {},
-          workspaceId: initialData.workspaceId ?? null,
-        }
+            ...initialData,
+            password: '',
+            config: initialData.config ?? {},
+            workspaceId: initialData.workspaceId ?? null,
+          }
         : EMPTY_FORM,
     )
     setCsvFile(null)
     setTestState('idle')
     setTestMessage('')
     setConfirmOpen(false)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, sourceId])
+  }
 
   const setConfig = (patch: Partial<DataSourceConfig>) => {
     setForm(f => ({ ...f, config: { ...f.config, ...patch } }))

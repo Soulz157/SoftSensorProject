@@ -47,36 +47,23 @@ enum WorkspaceRole {
   VIEWER
 }
 
-/// Read-only feature grants an OWNER can give a VIEWER member. OWNER and
-/// STAFF already have both, so the list is always empty for them
-/// (`normalizePermissions` clears it on every role change).
 enum WorkspacePermission {
   MONITORING_VIEW
   NOTIFICATIONS_VIEW
 }
 
-/// MODEL-SERVE-022. Which channel kind a `NotificationChannel` row sends
-/// through. Teams uses a Workflows ("webhook request received") URL, not the
-/// legacy O365 incoming-webhook connector — D05.
 enum NotificationChannelKind {
   TEAMS_WORKFLOW
   EMAIL
 }
 
-/// MODEL-SERVE-022. A channel's `minSeverity` floor and an event's own
-/// severity, both graded against this one order. Matches the ledger's own
-/// event_catalogue severities (critical/warning/info) under names that don't
-/// collide with `HealthStatus`'s WARN/ALERT — these grade a NOTIFICATION,
-/// never a health axis.
 enum NotificationSeverity {
   INFO
   WARNING
   CRITICAL
 }
 
-/// MODEL-SERVE-022-D04. The outbox row's own lifecycle — drained by
-/// `NotificationDeliveryService`'s sweep, same shape every other sweep in
-/// this codebase uses (attempts + geometric backoff + a terminal state).
+
 enum NotificationDeliveryStatus {
   PENDING
   SENDING

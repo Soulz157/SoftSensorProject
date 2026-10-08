@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- jest mocks are `any` by design */
 import { Test, TestingModule } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import { AuthAuthorizedService } from './auth.authorized.service';
@@ -92,7 +93,13 @@ describe('AuthAuthorizedService', () => {
       .overrideProvider(AuthAuthorizedService)
       .useFactory({
         factory: () =>
-          new AuthAuthorizedService(prismaMock as never, jwtMock as never),
+          new AuthAuthorizedService(
+            prismaMock as never,
+            jwtMock as never,
+            {
+              sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined),
+            } as never,
+          ),
       })
       .compile();
 
@@ -284,13 +291,8 @@ describe('AuthAuthorizedService', () => {
       // Arrange
       const userId = 'user-id-1';
       const meta = { ipAddress: '192.168.1.1', userAgent: 'Mozilla/5.0' };
-      let capturedLogData: Record<string, unknown> = {};
-
       prismaMock.authLog.create.mockImplementation(
-        (args: { data: Record<string, unknown> }) => {
-          capturedLogData = args.data;
-          return Promise.resolve(args.data);
-        },
+        (args: { data: Record<string, unknown> }) => Promise.resolve(args.data),
       );
       prismaMock.$transaction.mockImplementation((ops: unknown[]) =>
         Promise.resolve(ops),

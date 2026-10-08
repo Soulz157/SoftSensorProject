@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo } from 'react'
 import { useWorkspacePlants } from '../workspace/use-workspace-plants'
 import { NodeStatus } from '@/store/status-colors'
 import { useDashboardData } from '../use-dashboard-data'
@@ -71,19 +71,23 @@ export function usePlantsController(
     [plants, selectedNode],
   )
 
-  const deepLinkApplied = useRef(false)
-  useEffect(() => {
-    if (deepLinkApplied.current || !initialNodeId || nodes.length === 0) return
-    const node = nodes.find(n => n.id === initialNodeId)
-    if (!node) return
-    deepLinkApplied.current = true
-    setSelectedNodeId(node.id)
-    if (node.planId) {
-      setSelectedPlanId(node.planId)
+  // Deep link applied once, as soon as its node has loaded — during render
+  // (React's "storing information from previous renders" pattern), so the
+  // first frame with nodes already shows the selection.
+  const [deepLinkApplied, setDeepLinkApplied] = useState(false)
+  const deepLinkNode =
+    !deepLinkApplied && initialNodeId
+      ? nodes.find(n => n.id === initialNodeId)
+      : undefined
+  if (deepLinkNode) {
+    setDeepLinkApplied(true)
+    setSelectedNodeId(deepLinkNode.id)
+    if (deepLinkNode.planId) {
+      setSelectedPlanId(deepLinkNode.planId)
       setViewMode('equipment')
     }
     setIsPanelOpen(true)
-  }, [initialNodeId, nodes])
+  }
 
   const breadcrumbPlant = selectedPlan ?? selectedNodePlan
   const inspectorMode: ViewMode = selectedNode ? 'equipment' : viewMode

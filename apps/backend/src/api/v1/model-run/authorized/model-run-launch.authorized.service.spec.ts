@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { NotFoundException } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';

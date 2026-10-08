@@ -19,25 +19,23 @@ export function useArtifactColumnStats(
   datasetId: string | null,
   artifactId: string | null,
 ) {
-  const [columnStats, setColumnStats] =
-    useState<ArtifactColumnStatsResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [missing, setMissing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` and the
+  // reset on a new request are DERIVED from a key mismatch rather than set
+  // synchronously at the top of the effect.
+  const [settled, setSettled] = useState<{
+    key: string
+    columnStats: ArtifactColumnStatsResult | null
+    missing: boolean
+    error: string | null
+  } | null>(null)
   const tokenRef = useRef(0)
+  const requestKey =
+    datasetId && artifactId ? JSON.stringify([datasetId, artifactId]) : null
 
   useEffect(() => {
     const token = ++tokenRef.current
-    setColumnStats(null)
-    setMissing(false)
-    setError(null)
+    if (!requestKey || !datasetId || !artifactId) return
 
-    if (!datasetId || !artifactId) {
-      setLoading(false)
-      return
-    }
-
-    setLoading(true)
     void (async () => {
       try {
         const res = await datasetArtifactService.columnStats(
@@ -45,22 +43,35 @@ export function useArtifactColumnStats(
           artifactId,
         )
         if (tokenRef.current !== token) return
-        setColumnStats(res.data)
-        setLoading(false)
+        setSettled({
+          key: requestKey,
+          columnStats: res.data,
+          missing: false,
+          error: null,
+        })
       } catch (err) {
         if (tokenRef.current !== token) return
         const status = (err as { statusCode?: number })?.statusCode
-        if (status === 404) {
-          setMissing(true)
-        } else {
-          setError(
-            err instanceof Error ? err.message : 'Failed to load statistics',
-          )
-        }
-        setLoading(false)
+        setSettled({
+          key: requestKey,
+          columnStats: null,
+          missing: status === 404,
+          error:
+            status === 404
+              ? null
+              : err instanceof Error
+                ? err.message
+                : 'Failed to load statistics',
+        })
       }
     })()
-  }, [datasetId, artifactId])
+  }, [requestKey, datasetId, artifactId])
 
-  return { columnStats, loading, missing, error }
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    columnStats: current?.columnStats ?? null,
+    loading: requestKey !== null && current === null,
+    missing: current?.missing ?? false,
+    error: current?.error ?? null,
+  }
 }

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ModelRunScoreAuthorizedService } from './model-run-score.authorized.service';
 import * as pythonClient from '@/lib/python-preprocess-client';

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { AppException } from '@softsensor/common';
 import { postToPython } from '@/lib/python-client';
 import { DatasetVersionAuthorizedService } from './dataset-version.authorized.service';
@@ -160,7 +161,9 @@ describe('DatasetVersionAuthorizedService — listVersionsService (DS-LAKE-009-T
       status: 'ACTIVE',
       qualityScore: 92.5,
       featureCount: 5,
-      sizeBytes: 9223372036854775,
+      // Past 2^53, so the service's Number() cast rounds; compare against the
+      // same cast rather than a literal that silently rounds too.
+      sizeBytes: Number(BigInt('9223372036854775')),
       createdBy: 'Ada Lovelace',
     });
     // The dropped columns must not silently reappear under old names.

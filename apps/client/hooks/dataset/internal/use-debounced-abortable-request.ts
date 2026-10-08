@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { getCached, setCached } from '@/lib/chart-request-cache'
 
 /**
@@ -92,10 +92,15 @@ export function useDebouncedAbortableRequest<T>({
   const onLoadingRef = useRef(onLoading)
   const onSettledRef = useRef(onSettled)
   const onIdleRef = useRef(onIdle)
-  fetcherRef.current = fetcher
-  onLoadingRef.current = onLoading
-  onSettledRef.current = onSettled
-  onIdleRef.current = onIdle
+  // Synced in a layout effect, not during render (React Compiler `refs`
+  // rule). Layout effects run before passive ones, so the request effect
+  // below always reads this commit's closures.
+  useLayoutEffect(() => {
+    fetcherRef.current = fetcher
+    onLoadingRef.current = onLoading
+    onSettledRef.current = onSettled
+    onIdleRef.current = onIdle
+  })
 
   useEffect(() => {
     // Cancel whatever was pending from the PREVIOUS key before doing

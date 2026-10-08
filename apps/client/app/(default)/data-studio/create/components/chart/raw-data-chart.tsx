@@ -138,9 +138,12 @@ export function RawTrendChart({
   }
 
   const [zoomWindow, setZoomWindow] = useState<[number, number] | null>(null)
-  useEffect(() => {
+  // New rows reset the zoom — same adjust-during-render pattern as above.
+  const [zoomRows, setZoomRows] = useState(rows)
+  if (zoomRows !== rows) {
+    setZoomRows(rows)
     setZoomWindow(null)
-  }, [rows])
+  }
 
   const zoomBy = (factor: number) => {
     setZoomWindow(prev => {

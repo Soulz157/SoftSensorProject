@@ -39,14 +39,17 @@ export function useSensorReadings(
 ): UseSensorReadingsResult {
   const [rows, setRows] = useState<SensorChartRow[] | null>(null)
   const [latest, setLatest] = useState<Record<string, SensorReading>>({})
-  const [isFetching, setIsFetching] = useState(false)
+  // Which request the current rows answer; `isFetching` is DERIVED from a
+  // mismatch rather than set synchronously at the top of the effect.
+  const [settledKey, setSettledKey] = useState<string | null>(null)
 
   // Stable primitive dep; avoids re-running on a new array identity.
   const tagsKey = piTags.join(',')
+  const requestKey = JSON.stringify([tagsKey, range])
+  const isFetching = settledKey !== requestKey
 
   useEffect(() => {
     let cancelled = false
-    setIsFetching(true)
 
     // setTimeout simulates the async API the real service will use.
     const timer = setTimeout(() => {
@@ -83,14 +86,14 @@ export function useSensorReadings(
       // Never reset to null here — keep previous data visible.
       setRows(merged)
       setLatest(latestMap)
-      setIsFetching(false)
+      setSettledKey(requestKey)
     }, 180)
 
     return () => {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [tagsKey, range])
+  }, [requestKey, tagsKey, range])
 
   return {
     rows: rows ?? [],

@@ -205,15 +205,22 @@ export default function ModelDetailPage({
         versionId: returnedVersionId,
       }
     : null
-  useEffect(() => {
-    if (
-      returnedStrategy === 'AUGMENT_DATA' ||
-      returnedStrategy === 'NEW_DATA_ONLY'
-    ) {
+  // Open the retrain tab + dialog whenever a new return lands — adjusted
+  // during render (React's "storing information from previous renders"
+  // pattern), not in an effect.
+  const returnKey = JSON.stringify([
+    returnedStrategy,
+    returnedDatasetId,
+    returnedVersionId,
+  ])
+  const [handledReturnKey, setHandledReturnKey] = useState<string | null>(null)
+  if (handledReturnKey !== returnKey) {
+    setHandledReturnKey(returnKey)
+    if (resumedStrategy) {
       setActiveTab('retrain')
       setRetrainOpen(true)
     }
-  }, [returnedStrategy, returnedDatasetId, returnedVersionId])
+  }
   const [version, setVersion] = useState(0)
   const [monitoringKey, setMonitoringKey] = useState(0)
   // Memoized because it is handed to hooks and children as a callback prop.

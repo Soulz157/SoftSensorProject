@@ -33,10 +33,17 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
   const dominates = top && shares.length > 1 && top.pct >= 55
   const stacked = shares.length > 2
 
+  // A new training run restarts the clock — reset during render, so the
+  // effect below only stamps the start time (a ref) and ticks.
+  const [prevStatus, setPrevStatus] = useState(status)
+  if (prevStatus !== status) {
+    setPrevStatus(status)
+    if (status === 'training') setElapsed(0)
+  }
+
   useEffect(() => {
     if (status !== 'training') return
     startRef.current = Date.now()
-    setElapsed(0)
     const id = setInterval(() => {
       setElapsed((Date.now() - (startRef.current ?? Date.now())) / 1000)
     }, 1000)

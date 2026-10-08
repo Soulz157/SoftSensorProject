@@ -24,43 +24,51 @@ export function useCandidateJob(
   draftId: string | null,
   jobId: string | null,
 ): UseCandidateJobResult {
-  const [job, setJob] = useState<ModelCandidateJob | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` is DERIVED
+  // from a key mismatch rather than set synchronously in the effect; the
+  // last result stays visible while a reload is in flight, as before.
+  const [settled, setSettled] = useState<{
+    key: string
+    job: ModelCandidateJob | null
+    error: string | null
+  } | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
 
+  const requestKey =
+    draftId && jobId ? JSON.stringify([draftId, jobId, reloadKey]) : null
+  // No job to load: drop the last one during render, not in the effect.
+  if (requestKey === null && settled !== null) setSettled(null)
+
   useEffect(() => {
-    if (!draftId || !jobId) {
-      setJob(null)
-      setLoading(false)
-      setError(null)
-      return
-    }
+    if (!requestKey || !draftId || !jobId) return
 
     let ignore = false
-    setLoading(true)
-
-    void (async () => {
-      try {
-        const res = await modelDraftCandidateJobService.get(draftId, jobId)
-        if (ignore) return
-        setJob(res.data)
-        setError(null)
-      } catch {
-        if (ignore) return
-        setJob(null)
-        setError('Failed to load the candidate job')
-      } finally {
-        if (!ignore) setLoading(false)
-      }
-    })()
+    modelDraftCandidateJobService.get(draftId, jobId).then(
+      res => {
+        if (!ignore) setSettled({ key: requestKey, job: res.data, error: null })
+      },
+      () => {
+        if (!ignore) {
+          setSettled({
+            key: requestKey,
+            job: null,
+            error: 'Failed to load the candidate job',
+          })
+        }
+      },
+    )
 
     return () => {
       ignore = true
     }
-  }, [draftId, jobId, reloadKey])
+  }, [requestKey, draftId, jobId])
 
   const refetch = useCallback(() => setReloadKey(k => k + 1), [])
 
-  return { job, loading, error, refetch }
+  return {
+    job: settled?.job ?? null,
+    loading: requestKey !== null && settled?.key !== requestKey,
+    error: settled?.error ?? null,
+    refetch,
+  }
 }

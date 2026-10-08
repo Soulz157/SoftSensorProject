@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { RotateCcw, Save } from 'lucide-react'
 import { toast } from 'sonner'
@@ -130,22 +130,23 @@ export function Step5DataCleaning({ nav }: Props) {
   const relock = () => setHighestUnlocked(prev => Math.min(prev, 5))
 
   const [draft, setDraft] = useState<CleaningStep[]>([])
-  const [previewTags, setPreviewTags] = useState<string[]>([])
+  const [previewTags, setPreviewTags] = useState<string[]>(() => [
+    ...cleaningTags,
+  ])
   const [previewIndex, setPreviewIndex] = useState(0)
   const [rawIsolated, setRawIsolated] = useState('')
 
-  const prevCountRef = useRef(0)
-  useEffect(() => {
-    const prev = prevCountRef.current
-    prevCountRef.current = cleaningTags.length
-    if (cleaningTags.length === 0) {
-      setDraft([])
-      return
-    }
-    if (prev === 0) {
+  // Seed the draft from the first tag's saved pipeline when a batch starts
+  // (count leaves 0), clear it when the batch empties — adjusted during
+  // render (React's "storing information from previous renders" pattern).
+  const [seenCount, setSeenCount] = useState(0)
+  if (seenCount !== cleaningTags.length) {
+    setSeenCount(cleaningTags.length)
+    if (cleaningTags.length === 0) setDraft([])
+    else if (seenCount === 0) {
       setDraft(cleaningPipelines[cleaningTags[0] ?? ''] ?? [])
     }
-  }, [cleaningTags, cleaningPipelines])
+  }
 
   const isolatedTag = cleaningTags.includes(rawIsolated)
     ? rawIsolated
@@ -153,12 +154,16 @@ export function Step5DataCleaning({ nav }: Props) {
   // Keep the preview within the current batch. Default to ALL selected tags so
   // the chart mirrors the sidebar selection on entry; prune to still-selected
   // on change, and re-seed to the full set when the pruned result is empty.
-  useEffect(() => {
+  // Compared by content so an unmemoized array can never loop the render.
+  const cleaningKey = cleaningTags.join('\u0000')
+  const [previewSource, setPreviewSource] = useState(cleaningKey)
+  if (previewSource !== cleaningKey) {
+    setPreviewSource(cleaningKey)
     setPreviewTags(prev => {
       const pruned = prev.filter(t => cleaningTags.includes(t))
       return pruned.length > 0 ? pruned : [...cleaningTags]
     })
-  }, [cleaningTags])
+  }
 
   const draftMap = useMemo(() => {
     const map: Record<string, TagPipeline> = {}

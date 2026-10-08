@@ -43,14 +43,19 @@ export function useArtifactValidationRows(
   tags: string[] = [],
   options: ArtifactRowsOptions = {},
 ) {
-  const [sample, setSample] = useState<Dataset | null>(null)
-  // Rows the server holds inside the window — the whole match, not this page.
-  const [totalRowCount, setTotalRowCount] = useState<number | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [missing, setMissing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled page tagged with the source and the exact request — see
+  // `useArtifactRows`; resets are derived from the keys, never set in the
+  // effect body.
+  const [settled, setSettled] = useState<{
+    source: string
+    key: string
+    sample: Dataset | null
+    // Rows the server holds inside the window — the whole match, not this page.
+    totalRowCount: number | null
+    missing: boolean
+    error: string | null
+  } | null>(null)
   const tokenRef = useRef(0)
-  const sourceRef = useRef('')
   const boundedTags = tags.slice(0, COMPARE_TAGS)
   const boundedTagsKey = boundedTags.join(',')
   // Same rule as `useArtifactRows`, so the two compare sides can never be
@@ -62,25 +67,18 @@ export function useArtifactValidationRows(
   const startTime = options.timeWindow?.startTime
   const endTime = options.timeWindow?.endTime
 
+  // Same source-vs-window rule as `useArtifactRows`: a new window of the
+  // same source keeps the rows on screen until its page lands.
+  const source = `${datasetId}|${artifactId}|${boundedTagsKey}`
+  const requestKey =
+    datasetId && artifactId && boundedTagsKey
+      ? JSON.stringify([source, limit, startTime, endTime])
+      : null
+
   useEffect(() => {
     const token = ++tokenRef.current
-    // Same source-vs-window rule as `useArtifactRows`: a new window of the
-    // same source keeps the rows on screen until its page lands.
-    const source = `${datasetId}|${artifactId}|${boundedTagsKey}`
-    if (sourceRef.current !== source) {
-      sourceRef.current = source
-      setSample(null)
-      setTotalRowCount(null)
-    }
-    setMissing(false)
-    setError(null)
+    if (!requestKey || !datasetId || !artifactId) return
 
-    if (!datasetId || !artifactId || boundedTags.length === 0) {
-      setLoading(false)
-      return
-    }
-
-    setLoading(true)
     void (async () => {
       try {
         const res = await datasetArtifactService.validationRows(
@@ -95,30 +93,45 @@ export function useArtifactValidationRows(
           },
         )
         if (tokenRef.current !== token) return
-        setSample({ tags: res.data.tags, rows: res.data.rows })
-        setTotalRowCount(res.data.totalRowCount)
-        setLoading(false)
+        setSettled({
+          source,
+          key: requestKey,
+          sample: { tags: res.data.tags, rows: res.data.rows },
+          totalRowCount: res.data.totalRowCount,
+          missing: false,
+          error: null,
+        })
       } catch (err) {
         if (tokenRef.current !== token) return
-        setSample(null)
-        setTotalRowCount(null)
         const status = (err as { statusCode?: number })?.statusCode
-        if (status === 404) {
-          setMissing(true)
-        } else {
-          setError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load validation rows',
-          )
-        }
-        setLoading(false)
+        setSettled({
+          source,
+          key: requestKey,
+          sample: null,
+          totalRowCount: null,
+          missing: status === 404,
+          error:
+            status === 404
+              ? null
+              : err instanceof Error
+                ? err.message
+                : 'Failed to load validation rows',
+        })
       }
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `boundedTags`
     // deliberately excluded (array reference changes every render);
-    // `boundedTagsKey` is its stable stand-in, same pattern as `useArtifactRows`.
-  }, [datasetId, artifactId, boundedTagsKey, limit, startTime, endTime])
+    // `boundedTagsKey` (inside `source`) is its stable stand-in, same
+    // pattern as `useArtifactRows`.
+  }, [requestKey, datasetId, artifactId, source, limit, startTime, endTime])
 
-  return { sample, totalRowCount, loading, missing, error }
+  const sameSource = settled?.source === source
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    sample: sameSource ? (settled?.sample ?? null) : null,
+    totalRowCount: sameSource ? (settled?.totalRowCount ?? null) : null,
+    loading: requestKey !== null && current === null,
+    missing: current?.missing ?? false,
+    error: current?.error ?? null,
+  }
 }

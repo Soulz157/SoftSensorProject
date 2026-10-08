@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Pencil } from 'lucide-react'
 import {
   Dialog,
@@ -30,15 +30,20 @@ export function EditDatasetDialog({
   dataset,
   onSave,
 }: Props) {
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
+  const [name, setName] = useState(dataset?.name ?? '')
+  const [description, setDescription] = useState(dataset?.description ?? '')
 
-  useEffect(() => {
+  // Re-seed when a different dataset is handed in — adjusted during render
+  // (React's "storing information from previous renders" pattern), not in an
+  // effect that would paint one frame of the previous dataset's values.
+  const [seededFrom, setSeededFrom] = useState(dataset)
+  if (seededFrom !== dataset) {
+    setSeededFrom(dataset)
     if (dataset) {
       setName(dataset.name)
       setDescription(dataset.description ?? '')
     }
-  }, [dataset])
+  }
 
   const handleSave = () => {
     if (!name.trim()) return

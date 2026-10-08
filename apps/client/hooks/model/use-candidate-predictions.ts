@@ -42,35 +42,39 @@ export interface UseCandidatePredictionsResult {
  * change its contents (the caller derives it with `useMemo`) — this hook
  * re-fetches whenever the ARRAY reference changes, not on every render.
  */
+const EMPTY_BY_RUN_ID: Map<string, RunPredictionsBatchItem> = new Map()
+
 export function useCandidatePredictions(
   draftId: string | null,
   runIds: string[],
   population: PredictionPopulation = 'test',
 ): UseCandidatePredictionsResult {
-  const [byRunId, setByRunId] = useState<Map<string, RunPredictionsBatchItem>>(
-    new Map(),
-  )
-  const [loading, setLoading] = useState(runIds.length > 0)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` is DERIVED
+  // from a key mismatch rather than set synchronously in the effect; the
+  // last result stays visible while a reload is in flight, as before.
+  const [settled, setSettled] = useState<{
+    key: string
+    byRunId: Map<string, RunPredictionsBatchItem>
+    error: string | null
+  } | null>(null)
+
+  const requestKey =
+    draftId && runIds.length > 0
+      ? JSON.stringify([draftId, runIds, population])
+      : null
+  // Nothing to load: drop the last result during render, not in the effect.
+  if (requestKey === null && settled !== null) setSettled(null)
 
   useEffect(() => {
-    if (!draftId || runIds.length === 0) {
-      setByRunId(new Map())
-      setLoading(false)
-      setError(null)
-      return
-    }
+    if (!requestKey || !draftId || runIds.length === 0) return
 
     let ignore = false
-    setLoading(true)
-
-    void (async () => {
-      try {
-        const responses = await Promise.all(
-          chunkRunIds(runIds).map(ids =>
-            modelDraftRunService.predictionsBatch(draftId, ids, population),
-          ),
-        )
+    Promise.all(
+      chunkRunIds(runIds).map(ids =>
+        modelDraftRunService.predictionsBatch(draftId, ids, population),
+      ),
+    ).then(
+      responses => {
         if (ignore) return
         const map = new Map<string, RunPredictionsBatchItem>()
         for (const res of responses) {
@@ -78,21 +82,26 @@ export function useCandidatePredictions(
             if (item.runId) map.set(item.runId, item)
           }
         }
-        setByRunId(map)
-        setError(null)
-      } catch {
+        setSettled({ key: requestKey, byRunId: map, error: null })
+      },
+      () => {
         if (ignore) return
-        setByRunId(new Map())
-        setError('Failed to load candidate predictions')
-      } finally {
-        if (!ignore) setLoading(false)
-      }
-    })()
+        setSettled({
+          key: requestKey,
+          byRunId: new Map(),
+          error: 'Failed to load candidate predictions',
+        })
+      },
+    )
 
     return () => {
       ignore = true
     }
-  }, [draftId, runIds, population])
+  }, [requestKey, draftId, runIds, population])
 
-  return { byRunId, loading, error }
+  return {
+    byRunId: settled?.byRunId ?? EMPTY_BY_RUN_ID,
+    loading: requestKey !== null && settled?.key !== requestKey,
+    error: settled?.error ?? null,
+  }
 }

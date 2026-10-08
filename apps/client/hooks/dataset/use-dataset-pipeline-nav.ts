@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useLayoutEffect, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   preprocessPipelines,
@@ -147,7 +147,11 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const isEditLocked = mode === 'edit'
   // without adding `isEditLocked` to every dependency array.
   const lockedRef = useRef(isEditLocked)
-  lockedRef.current = isEditLocked
+  // Synced after commit, not during render (React Compiler `refs` rule);
+  // only event handlers read it, and those run after the layout phase.
+  useLayoutEffect(() => {
+    lockedRef.current = isEditLocked
+  }, [isEditLocked])
 
   const [currentStep, setCurrentStep] = useAtom(dwCurrentStepAtom)
   const [highestUnlocked, setHighestUnlocked] = useAtom(dwHighestUnlockedAtom)

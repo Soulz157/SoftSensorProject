@@ -69,32 +69,35 @@ export function rangeError(
 export function useRetrainBaseDataset(
   baseDatasetId: string | null,
 ): UseRetrainBaseDataset {
-  const [baseDataset, setBaseDataset] = useState<SavedDataset | null>(null)
-  const [loadingBase, setLoadingBase] = useState(false)
+  // Settled result tagged with the request it answers. `loadingBase` is
+  // DERIVED from a key mismatch rather than set synchronously in the effect.
+  const [settled, setSettled] = useState<{
+    key: string
+    baseDataset: SavedDataset | null
+  } | null>(null)
+  // No base dataset: drop the last one during render, not in the effect.
+  if (baseDatasetId === null && settled !== null) setSettled(null)
 
   useEffect(() => {
-    if (!baseDatasetId) {
-      setBaseDataset(null)
-      return
-    }
+    if (!baseDatasetId) return
     let cancelled = false
-    setLoadingBase(true)
-    void datasetService
-      .get(baseDatasetId)
-      .then(res => {
-        if (!cancelled) setBaseDataset(res.data ?? null)
-      })
-      .catch(() => {
-        if (!cancelled) setBaseDataset(null)
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingBase(false)
-      })
+    void datasetService.get(baseDatasetId).then(
+      res => {
+        if (!cancelled) {
+          setSettled({ key: baseDatasetId, baseDataset: res.data ?? null })
+        }
+      },
+      () => {
+        if (!cancelled) setSettled({ key: baseDatasetId, baseDataset: null })
+      },
+    )
     return () => {
       cancelled = true
     }
   }, [baseDatasetId])
 
+  const baseDataset = settled?.baseDataset ?? null
+  const loadingBase = baseDatasetId !== null && settled?.key !== baseDatasetId
   const baseTags =
     baseDataset?.pipelineConfig?.baseTags ?? baseDataset?.tags ?? []
 

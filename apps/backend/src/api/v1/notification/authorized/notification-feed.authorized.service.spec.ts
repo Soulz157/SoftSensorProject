@@ -6,7 +6,7 @@ const user = (role: 'USER' | 'ADMIN' = 'USER') => ({
   email: 'u@example.com',
   firstName: 'A',
   lastName: 'B',
-  company: null,
+  company: undefined,
 });
 
 function buildPrisma(overrides: Record<string, unknown> = {}) {

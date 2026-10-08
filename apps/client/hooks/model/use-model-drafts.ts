@@ -27,41 +27,55 @@ export interface UseModelDraftsResult {
  * back, not the step's subject — a 500 here should hide the panel, never stand
  * between the user and starting a model.
  */
+const EMPTY_DRAFTS: ModelDraft[] = []
+
 export function useModelDrafts(
   query: ListModelDraftsQuery = {},
 ): UseModelDraftsResult {
   const { workspaceId, status } = query
 
-  const [drafts, setDrafts] = useState<ModelDraft[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` is DERIVED
+  // from a key mismatch rather than set synchronously in the effect; the
+  // last result stays visible while a reload is in flight, as before.
+  const [settled, setSettled] = useState<{
+    key: string
+    drafts: ModelDraft[]
+    error: string | null
+  } | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+
+  const requestKey = JSON.stringify([workspaceId, status, reloadKey])
 
   useEffect(() => {
     let ignore = false
-    setLoading(true)
-
-    void (async () => {
-      try {
-        const res = await modelDraftService.list({ workspaceId, status })
-        if (ignore) return
-        setDrafts(res.data)
-        setError(null)
-      } catch {
-        if (ignore) return
-        setDrafts([])
-        setError('Failed to load drafts')
-      } finally {
-        if (!ignore) setLoading(false)
-      }
-    })()
+    modelDraftService.list({ workspaceId, status }).then(
+      res => {
+        if (!ignore) {
+          setSettled({ key: requestKey, drafts: res.data, error: null })
+        }
+      },
+      () => {
+        if (!ignore) {
+          setSettled({
+            key: requestKey,
+            drafts: [],
+            error: 'Failed to load drafts',
+          })
+        }
+      },
+    )
 
     return () => {
       ignore = true
     }
-  }, [workspaceId, status, reloadKey])
+  }, [requestKey, workspaceId, status])
 
   const refetch = useCallback(() => setReloadKey(k => k + 1), [])
 
-  return { drafts, loading, error, refetch }
+  return {
+    drafts: settled?.drafts ?? EMPTY_DRAFTS,
+    loading: settled?.key !== requestKey,
+    error: settled?.error ?? null,
+    refetch,
+  }
 }

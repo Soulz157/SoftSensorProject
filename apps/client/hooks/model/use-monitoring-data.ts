@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useRef } from 'react'
+import { useMemo, useState } from 'react'
 import type { AIModel } from '@/types'
 import type { TimeRange } from '@/lib/mock-readings'
 import type { EvalPoint } from '@/lib/model-evaluation'
@@ -24,7 +24,7 @@ export function useMonitoringData(
   model: AIModel | null,
   range: TimeRange,
 ): UseMonitoringDataResult {
-  const now = useRef(Date.now()).current
+  const [now] = useState(() => Date.now())
 
   const points = useMemo(
     () => (model ? generateLabComparison(model.id, range, now) : []),

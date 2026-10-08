@@ -41,31 +41,31 @@ export function useArtifactValidationBoxplot(
   tags: string[],
   sampleRows?: number,
 ): ArtifactValidationBoxplotState {
-  const [boxplot, setBoxplot] = useState<DraftBoxplotResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [missing, setMissing] = useState(false)
-  const [tagMismatch, setTagMismatch] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` and the
+  // reset of every flag on a new request are DERIVED from a key mismatch
+  // rather than set synchronously at the top of the effect.
+  const [settled, setSettled] = useState<{
+    key: string
+    boxplot: DraftBoxplotResult | null
+    missing: boolean
+    tagMismatch: boolean
+    error: string | null
+  } | null>(null)
   const tokenRef = useRef(0)
 
   // `tags` is a fresh array identity every render — key the effect on the
   // joined string, or it re-fires forever.
   const tagsKey = tags.join(',')
+  const requestKey =
+    datasetId && artifactId && tagsKey
+      ? JSON.stringify([datasetId, artifactId, tagsKey, sampleRows])
+      : null
 
   useEffect(() => {
     const token = ++tokenRef.current
-    setBoxplot(null)
-    setMissing(false)
-    setTagMismatch(false)
-    setError(null)
-
-    if (!datasetId || !artifactId || !tagsKey) {
-      setLoading(false)
-      return
-    }
+    if (!requestKey || !datasetId || !artifactId) return
 
     const ac = new AbortController()
-    setLoading(true)
 
     datasetArtifactService
       .validationBoxplot(
@@ -79,29 +79,41 @@ export function useArtifactValidationBoxplot(
       )
       .then(res => {
         if (tokenRef.current !== token) return
-        setBoxplot(res.data)
-        setLoading(false)
+        setSettled({
+          key: requestKey,
+          boxplot: res.data,
+          missing: false,
+          tagMismatch: false,
+          error: null,
+        })
       })
       .catch((err: unknown) => {
         if (tokenRef.current !== token) return
         if ((err as Error)?.name === 'AbortError') return
         const status = (err as { statusCode?: number })?.statusCode
-        if (status === 404) {
-          setMissing(true)
-        } else if (status === 400) {
-          setTagMismatch(true)
-        } else {
-          setError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load validation boxplot',
-          )
-        }
-        setLoading(false)
+        setSettled({
+          key: requestKey,
+          boxplot: null,
+          missing: status === 404,
+          tagMismatch: status === 400,
+          error:
+            status === 404 || status === 400
+              ? null
+              : err instanceof Error
+                ? err.message
+                : 'Failed to load validation boxplot',
+        })
       })
 
     return () => ac.abort()
-  }, [datasetId, artifactId, tagsKey, sampleRows])
+  }, [requestKey, datasetId, artifactId, tagsKey, sampleRows])
 
-  return { boxplot, loading, missing, tagMismatch, error }
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    boxplot: current?.boxplot ?? null,
+    loading: requestKey !== null && current === null,
+    missing: current?.missing ?? false,
+    tagMismatch: current?.tagMismatch ?? false,
+    error: current?.error ?? null,
+  }
 }

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- jest mocks are `any` by design */
 import {
   AUGMENTED_VERSION_SUFFIX,
   ModelRetrainAugmentAuthorizedService,

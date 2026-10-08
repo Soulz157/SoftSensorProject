@@ -520,7 +520,7 @@ export class InferenceWindowSchedulerService
       const now = new Date();
 
       for (const tag of tags) {
-        const reading = readings[tag]!;
+        const reading = readings[tag];
         const prior = byTag.get(tag) ?? null;
         const next = nextTagObservation(
           {

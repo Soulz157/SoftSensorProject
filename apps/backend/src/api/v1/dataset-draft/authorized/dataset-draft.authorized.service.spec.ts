@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- jest mocks are `any` by design */
 import { AppException } from '@softsensor/common';
 import { PrismaTypes } from '@softsensor/prisma';
 import {
@@ -1111,9 +1112,9 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
         return result;
       },
     );
-    loaderJobs.enqueue.mockImplementationOnce(async () => {
+    loaderJobs.enqueue.mockImplementationOnce(() => {
       callOrder.push('enqueue');
-      return 'loader-job-1';
+      return Promise.resolve('loader-job-1');
     });
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
@@ -1187,7 +1188,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
       );
     });
     prisma.$transaction.mockImplementationOnce(
-      (fn: (tx: unknown) => unknown) => {
+      (fn: (tx: typeof prisma._tx) => Promise<unknown>) => {
         callOrder.push('transaction');
         return fn(prisma._tx);
       },
@@ -1516,13 +1517,13 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
   it('runs the /metadata derivation call BEFORE opening $transaction, not inside it', async () => {
     const prisma = chainedPrisma();
     const callOrder: string[] = [];
-    post.mockImplementationOnce(async () => VALIDATION_REPORT);
-    post.mockImplementationOnce(async () => {
+    post.mockImplementationOnce(() => Promise.resolve(VALIDATION_REPORT));
+    post.mockImplementationOnce(() => {
       callOrder.push('metadata');
-      return PYTHON_METADATA_FOR_SAVE;
+      return Promise.resolve(PYTHON_METADATA_FOR_SAVE);
     });
     prisma.$transaction.mockImplementationOnce(
-      async (fn: (tx: unknown) => unknown) => {
+      (fn: (tx: typeof prisma._tx) => Promise<unknown>) => {
         callOrder.push('transaction');
         return fn(prisma._tx);
       },

@@ -219,10 +219,12 @@ function ConstantValueInput({
   onCommit: (v: number | null) => void
 }) {
   const [draft, setDraft] = useState(value?.toString() ?? '')
-
-  useEffect(() => {
+  // Re-sync from the committed value during render, not in an effect.
+  const [syncedValue, setSyncedValue] = useState(value)
+  if (syncedValue !== value) {
+    setSyncedValue(value)
     setDraft(value?.toString() ?? '')
-  }, [value])
+  }
 
   return (
     <Input
@@ -258,10 +260,12 @@ function UnitOverrideInput({
   onCommit: (v: string | null) => void
 }) {
   const [draft, setDraft] = useState(value ?? '')
-
-  useEffect(() => {
+  // Re-sync from the committed value during render, not in an effect.
+  const [syncedValue, setSyncedValue] = useState(value)
+  if (syncedValue !== value) {
+    setSyncedValue(value)
     setDraft(value ?? '')
-  }, [value])
+  }
 
   return (
     <Input

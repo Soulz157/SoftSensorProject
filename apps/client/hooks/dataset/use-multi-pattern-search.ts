@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { dwSelectedSourcesAtom } from '@/store/dataset-studio'
 import { dataSourceService, type TagMetaItem } from '@/services/data-sources'
@@ -64,19 +64,40 @@ function toMeta(item: TagMetaItem): TagMeta {
  * can reason about. Narrowing the pattern is the answer to a truncated result,
  * not a Next button.
  */
+const EMPTY_PAGES: Map<string, PatternPage> = new Map()
+
+function pagesFromCache(
+  wanted: { key: string; cacheKey: string }[],
+  cache: Map<string, PatternPage>,
+): Map<string, PatternPage> {
+  const next = new Map<string, PatternPage>()
+  for (const w of wanted) {
+    const hit = cache.get(w.cacheKey)
+    if (hit) next.set(w.key, hit)
+  }
+  return next
+}
+
 export function useMultiPatternSearch(
   patterns: string[],
   pageSize = PATTERN_CAP,
   includeQuality = true,
 ): UseMultiPatternSearchResult {
   const sources = useAtomValue(dwSelectedSourcesAtom)
-  const [pages, setPages] = useState<Map<string, PatternPage>>(new Map())
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Last settled fetch, tagged with the request it answers. `loading`, the
+  // cleared error on a new request and the empty result with nothing to
+  // search are DERIVED from it during render, never set in the effect body.
+  const [settled, setSettled] = useState<{
+    key: string
+    pages: Map<string, PatternPage>
+    error: string | null
+  } | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
 
-  // `${sourceId}::${pattern}` → PatternPage
-  const cache = useRef(new Map<string, PatternPage>())
+  // `${sourceId}::${pattern}::${pageSize}::${includeQuality}` → PatternPage.
+  // Held in state (never replaced) so render can read it; the size/quality
+  // suffix keeps a stale page from being served before the clear below runs.
+  const [cache] = useState(() => new Map<string, PatternPage>())
 
   const ids = useMemo(
     () => sources.filter(s => s.type === 'aveva').map(s => s.id),
@@ -92,44 +113,42 @@ export function useMultiPatternSearch(
   const patternsKey = JSON.stringify(active)
 
   useEffect(() => {
-    cache.current.clear()
-  }, [pageSize, includeQuality])
+    cache.clear()
+  }, [cache, pageSize, includeQuality])
+
+  const wanted = useMemo(
+    () =>
+      ids.flatMap(id =>
+        active.map(pattern => ({
+          id,
+          pattern,
+          key: `${id}::${pattern}`,
+          cacheKey: `${id}::${pattern}::${pageSize}::${includeQuality}`,
+        })),
+      ),
+    [ids, active, pageSize, includeQuality],
+  )
+  const requestKey =
+    wanted.length > 0
+      ? JSON.stringify([
+          patternsKey,
+          idsKey,
+          pageSize,
+          includeQuality,
+          reloadNonce,
+        ])
+      : null
+  const allCached =
+    requestKey !== null && wanted.every(w => cache.has(w.cacheKey))
 
   useEffect(() => {
-    const list: string[] = JSON.parse(patternsKey)
-    if (list.length === 0 || ids.length === 0) {
-      setPages(new Map())
-      setError(null)
-      setLoading(false)
-      return
-    }
-
-    const wanted = ids.flatMap(id =>
-      list.map(pattern => ({ id, pattern, key: `${id}::${pattern}` })),
-    )
-
-    const commit = () => {
-      const next = new Map<string, PatternPage>()
-      for (const w of wanted) {
-        const hit = cache.current.get(w.key)
-        if (hit) next.set(w.key, hit)
-      }
-      setPages(next)
-    }
-
-    const missing = wanted.filter(w => !cache.current.has(w.key))
-    if (missing.length === 0) {
-      commit()
-      setError(null)
-      setLoading(false)
-      return
-    }
+    if (!requestKey) return
+    const missing = wanted.filter(w => !cache.has(w.cacheKey))
+    if (missing.length === 0) return
 
     const ctrl = new AbortController()
-    setLoading(true)
-    setError(null)
 
-    Promise.allSettled(
+    void Promise.allSettled(
       missing.map(w =>
         dataSourceService.metadata(
           w.id,
@@ -141,40 +160,55 @@ export function useMultiPatternSearch(
           { signal: ctrl.signal },
         ),
       ),
-    )
-      .then(results => {
-        if (ctrl.signal.aborted) return
-        const failed: string[] = []
+    ).then(results => {
+      if (ctrl.signal.aborted) return
+      const failed: string[] = []
 
-        results.forEach((r, i) => {
-          const w = missing[i]
-          if (!w) return
-          if (r.status === 'rejected') {
-            failed.push(`${w.pattern}`)
-            return
-          }
-          const d = r.value.data
-          cache.current.set(w.key, {
-            tags: d.tags ?? [],
-            // `hasNext === true` guards against a null/`[null]` artefact from a
-            // wrongly-defaulted server field being read as truthy.
-            truncated: d.hasNext === true,
-          })
+      results.forEach((r, i) => {
+        const w = missing[i]
+        if (!w) return
+        if (r.status === 'rejected') {
+          failed.push(`${w.pattern}`)
+          return
+        }
+        const d = r.value.data
+        cache.set(w.cacheKey, {
+          tags: d.tags ?? [],
+          // `hasNext === true` guards against a null/`[null]` artefact from a
+          // wrongly-defaulted server field being read as truthy.
+          truncated: d.hasNext === true,
         })
+      })
 
-        commit()
-        setError(
-          failed.length
-            ? `Could not search ${failed.length} of ${missing.length} pattern/source combination(s).`
-            : null,
-        )
+      setSettled({
+        key: requestKey,
+        pages: pagesFromCache(wanted, cache),
+        error: failed.length
+          ? `Could not search ${failed.length} of ${missing.length} pattern/source combination(s).`
+          : null,
       })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false)
-      })
+    })
 
     return () => ctrl.abort()
-  }, [patternsKey, idsKey, pageSize, includeQuality, reloadNonce]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [requestKey, wanted, cache, pageSize])
+
+  // Fully cached: read straight from the cache. Otherwise the last settled
+  // pages stay on screen while the next request loads; nothing to search
+  // shows nothing.
+  const pages = useMemo(
+    () =>
+      requestKey === null
+        ? EMPTY_PAGES
+        : allCached
+          ? pagesFromCache(wanted, cache)
+          : (settled?.pages ?? EMPTY_PAGES),
+    // `settled` stands in for cache writes: every write is followed by one.
+    [requestKey, allCached, wanted, cache, settled],
+  )
+  const settledHere = settled?.key === requestKey ? settled : null
+  const loading = requestKey !== null && !allCached && settledHere === null
+  const error =
+    requestKey !== null && !allCached ? (settledHere?.error ?? null) : null
 
   const derived = useMemo(() => {
     const meta = new Map<string, TagMeta>()
@@ -214,12 +248,12 @@ export function useMultiPatternSearch(
     }
   }, [pages, ids, active])
 
-  // reloadNonce IS in the effect deps above. Clearing a cache the effect does
+  // reloadNonce IS in `requestKey` above. Clearing a cache the effect does
   // not depend on is the silent-Refresh bug.
   const refetch = useCallback(() => {
-    cache.current.clear()
+    cache.clear()
     setReloadNonce(n => n + 1)
-  }, [])
+  }, [cache])
 
   return { ...derived, droppedPatterns, loading, error, refetch }
 }
