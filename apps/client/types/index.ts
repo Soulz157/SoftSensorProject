@@ -430,17 +430,49 @@ export interface NotificationEventItem {
   unread: boolean
 }
 
+export interface AdminWorkspaceOwner {
+  id: string
+  firstName: string | null
+  lastName: string | null
+  email: string
+}
+
 export interface AdminWorkspace {
   id: string
   name: string
   color: string
   icon: string
   createdAt: string
-  owner: {
-    id: string
-    firstName: string | null
-    lastName: string | null
-    email: string
-  }
+  updatedAt: string
+  owner: AdminWorkspaceOwner
   _count: { models: number }
+  /** Counts and the equipment roll-up ride the admin list. Optional only so
+   *  a client that outruns the backend renders "—", never a fake 0. */
+  modelsCount?: number
+  plantsCount?: number
+  datasetsCount?: number
+  nodeCount?: number
+  alarmCount?: number
+  warningCount?: number
+  offlineCount?: number
+  status?: 'normal' | 'warning' | 'alarm' | 'offline'
+}
+
+/** `GET /admin/workspace/summary` — the whole platform, never one page. */
+export interface AdminWorkspaceSummary {
+  total: number
+  models: number
+  /** How many workspaces are in alarm; `attention` lists only the worst few. */
+  attentionTotal: number
+  /** Workspaces whose equipment is in ALARM, worst first, capped. Equipment
+   *  only: the admin API does not know model-level status. */
+  attention: {
+    id: string
+    name: string
+    owner: AdminWorkspaceOwner
+    status: 'alarm'
+    alarmCount: number
+    warningCount: number
+    offlineCount: number
+  }[]
 }

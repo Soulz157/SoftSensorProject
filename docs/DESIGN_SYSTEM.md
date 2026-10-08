@@ -22,6 +22,7 @@ Design system reference for the SoftSensor client app (`apps/client`).
 12. [Laws of UX Conventions](#12-laws-of-ux-conventions)
 13. [Brand & Public Surfaces](#13-brand--public-surfaces)
 14. [All Workspaces list](#14-all-workspaces-list)
+15. [Admin dashboard](#15-admin-dashboard)
 
 ---
 
@@ -683,3 +684,19 @@ Added 2026-10-07. `/workspaces` (`app/(default)/workspaces/`). The instrument-li
 - **Models button** opens `/models/views?workspace={id}`. That page keeps its workspace filter in step with the URL (`hooks/workspace/use-workspace-url-filter.ts`): it follows the param when it changes on a mounted page, writes it back when the user picks a workspace, and falls back to All for an id the user does not have (`resolveWorkspaceFilter`).
 - **Entry from Overview:** the Overview map header has a "View all workspaces" button (outline, solid surface so it reads on both map themes) linking here.
 - **Pure logic** lives in `lib/workspace-list.ts` (status rule, payload mapping, search/filter, ordering, summary, empty-state wording, `paginate`, `resolveWorkspaceFilter`) and is unit-tested.
+
+---
+
+## 15. Admin dashboard
+
+Added 2026-10-07. `/admin/dashboard` (`app/admin/dashboard/`); `/admin` redirects here. The two-column layout (B) was chosen over a single column (A, still available as `layout="console"` on `AdminDashboardView`).
+
+- **Header:** `AdminSummaryHeader` — Display title, a mono summary line (`12 workspaces · 2 need attention · 46 models · 38 users`) and "Create workspace". No KPI cards, no health claim. Every segment is "—" until it has loaded; the attention segment is the only one coloured (`ATTENTION_TEXT`).
+- **Layout (ops):** table left, a 22rem column right (attention queue above recent activity). The DOM order is the reading and Tab order at every width — attention, table, activity — and the columns are placed with grid placement from `lg`, never CSS `order`, so what is seen and what is announced never differ.
+- **Attention queue:** workspaces whose **equipment** is in alarm, worst first, capped at 10 by the API with "and N more workspaces in alarm" under it. Only the "N in alarm" text is red; warnings and offline equipment are listed in muted text. Empty reads "No workspace needs attention." in neutral text — not a green all-clear. A failed load is an error with "Try again", never an empty queue.
+- **Workspace table:** one dense row per workspace — icon, name, owner, **Equipment status**, models, plants, datasets, updated. Server-side search (debounced 300 ms) and pagination, 15 per page (`ADMIN_PAGE_SIZE`); a new search returns to page 1. A workspace with no equipment reads "No equipment", not Normal. An out-of-range page says "This page is empty" with a way back — it never claims the platform has no workspaces.
+- **Status is equipment-only.** The admin API does not know model-level health (failed deploys, monitoring ALERT), so the column and queue are labelled "Equipment status" and nothing claims more. The binary rule is the same as everywhere (`isAbnormal`): only alarm is Abnormal; warning and offline are not alarms.
+- **Recent activity:** the latest 8 sign-ins and sign-outs (admin activity is authentication), mono timestamps, "View all activity".
+- **Data:** one summary request (`GET /admin/workspace/summary`, whole platform, unpaginated) plus the paginated list, which now carries real counts, `updatedAt` and the equipment roll-up. No per-workspace requests. Each section maps its own hook to a load state with the **error winning** — a failed or failed-refetch section is never shown as empty or healthy.
+- **Reuse:** `StatusPill`, `CountValue`, `WorkspaceIconTile`, `ATTENTION_TEXT` and the pager live in `components/workspace/` and are shared with the user-facing All Workspaces list (§14).
+- **Pure logic** lives in `lib/admin-dashboard.ts` and is unit-tested.

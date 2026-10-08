@@ -38,8 +38,7 @@ export default function LandingPage() {
   }
 
   // Signed out: the full-screen landing (AppLayout drops its shell on `/`
-  // for guests). Direction C chosen 2026-10-07; the A/C preview stays at
-  // /design-preview/landing.
+  // for guests). Direction C chosen 2026-10-07.
   if (status !== 'authenticated') {
     return <LandingHero layout="tags" />
   }

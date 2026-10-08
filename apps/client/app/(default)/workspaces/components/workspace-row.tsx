@@ -10,7 +10,7 @@ import {
   CountValue,
   StatusPill,
   WorkspaceIconTile,
-} from './workspace-parts'
+} from '@/components/workspace/workspace-parts'
 
 /** Column template shared by the header, rows and skeletons. */
 export const ROW_GRID =

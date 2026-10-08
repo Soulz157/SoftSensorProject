@@ -59,7 +59,6 @@ export function useSidebar() {
   }
 
   const isActiveNav = (href: string) => {
-    if (href === '/admin') return pathname === '/admin'
     return pathname.startsWith(href)
   }
 

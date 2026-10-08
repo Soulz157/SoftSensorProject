@@ -8,9 +8,7 @@ import type { NextRequest } from 'next/server'
 // falls under the protected rule below (guests go to /login?callbackUrl=…).
 const AUTH_PATHS = ['/login', '/register', '/reset-password']
 
-// TEMPORARY (landing redesign Phase A): visual-only design preview, no data.
-// Remove together with app/design-preview before Phase B ships.
-const PUBLIC_PATHS = ['/', '/design-preview', ...AUTH_PATHS]
+const PUBLIC_PATHS = ['/', ...AUTH_PATHS]
 
 export async function proxy(req: NextRequest) {
   const session = await auth()

@@ -24,7 +24,7 @@ import {
 import { CreateWorkspaceDialog } from '@/components/create-workspace'
 import { WorkspacesHeader } from './components/workspaces-header'
 import { WorkspacesToolbar } from './components/workspaces-toolbar'
-import { WorkspacesPagination } from './components/workspaces-pagination'
+import { WorkspacePagination } from '@/components/workspace/workspace-pagination'
 import {
   WorkspaceRow,
   WorkspaceRowHeader,
@@ -158,7 +158,7 @@ export default function WorkspacesPage() {
                 ))}
               </ul>
             </div>
-            <WorkspacesPagination page={current} onPage={changePage} />
+            <WorkspacePagination page={current} onPage={changePage} />
           </>
         )}
       </div>

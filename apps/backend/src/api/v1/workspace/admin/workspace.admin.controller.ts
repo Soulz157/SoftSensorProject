@@ -20,6 +20,7 @@ import {
   AdminMoveMemberDto,
   AdminUpdateMemberRoleDto,
   AdminWorkspaceListResponseDto,
+  AdminWorkspaceSummaryResponseDto,
   AdminWorkspaceQueryDto,
   CreateWorkspaceRequestDto,
   CreateWorkspaceResponseDto,
@@ -46,6 +47,15 @@ export class WorkspaceAdminController {
   @ApiOkResponse({ type: AdminWorkspaceListResponseDto })
   async listWorkspaces(@Query() query: AdminWorkspaceQueryDto) {
     return this.workspaceAdminService.listWorkspaces(query);
+  }
+
+  // Declared BEFORE `/:id` — otherwise "summary" is read as a workspace id.
+  @Roles('ADMIN')
+  @Get('/summary')
+  @HttpCode(200)
+  @ApiOkResponse({ type: AdminWorkspaceSummaryResponseDto })
+  async getSummary() {
+    return this.workspaceAdminService.getSummary();
   }
 
   @Roles('ADMIN')

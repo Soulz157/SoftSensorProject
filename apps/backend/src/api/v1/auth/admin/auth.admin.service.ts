@@ -56,8 +56,12 @@ export class AuthAdminService {
   async listUserStats(args: PaginationQueryDto) {
     const { page, limit } = args;
 
+    // Soft-deleted accounts (scrambled e-mail, `deletedAt` set) are not
+    // users any more: they must not be listed or counted.
+    const where = { deletedAt: null };
     const [users, total] = await this.prisma.$transaction([
       this.prisma.user.findMany({
+        where,
         select: {
           id: true,
           firstName: true,
@@ -70,7 +74,7 @@ export class AuthAdminService {
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.user.count(),
+      this.prisma.user.count({ where }),
     ]);
 
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);

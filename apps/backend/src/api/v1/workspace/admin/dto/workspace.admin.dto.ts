@@ -23,7 +23,22 @@ export const AdminWorkspaceItemSchema = z.object({
     lastName: z.string().nullable(),
     email: z.string(),
   }),
-  _count: z.object({ models: z.number().int() }),
+  // `updatedAt`, the counts and the equipment roll-up ride the list so the
+  // admin dashboard needs no per-workspace request.
+  updatedAt: z.iso.datetime(),
+  _count: z.object({
+    models: z.number().int(),
+    plans: z.number().int(),
+    datasets: z.number().int(),
+  }),
+  modelsCount: z.number().int(),
+  plantsCount: z.number().int(),
+  datasetsCount: z.number().int(),
+  nodeCount: z.number().int(),
+  alarmCount: z.number().int(),
+  warningCount: z.number().int(),
+  offlineCount: z.number().int(),
+  status: z.enum(['normal', 'warning', 'alarm', 'offline']),
 });
 
 export const AdminWorkspaceListResponseSchema = createStandardResponseSchema(
@@ -33,6 +48,35 @@ export const AdminWorkspaceListResponseSchema = createStandardResponseSchema(
     page: z.number().int().positive(),
     limit: z.number().int().positive(),
   }),
+);
+
+const AdminOwnerSchema = z.object({
+  id: z.string(),
+  firstName: z.string().nullable(),
+  lastName: z.string().nullable(),
+  email: z.string(),
+});
+
+export const AdminWorkspaceSummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  models: z.number().int().nonnegative(),
+  /** Every workspace in alarm; `attention` lists only the worst few. */
+  attentionTotal: z.number().int().nonnegative(),
+  attention: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      owner: AdminOwnerSchema,
+      status: z.literal('alarm'),
+      alarmCount: z.number().int(),
+      warningCount: z.number().int(),
+      offlineCount: z.number().int(),
+    }),
+  ),
+});
+
+export const AdminWorkspaceSummaryResponseSchema = createStandardResponseSchema(
+  AdminWorkspaceSummarySchema,
 );
 
 export const AdminWorkspaceMemberSchema = z.object({
@@ -113,6 +157,9 @@ export class AdminWorkspaceQueryDto extends createZodDto(
 ) {}
 export class AdminWorkspaceListResponseDto extends createZodDto(
   AdminWorkspaceListResponseSchema,
+) {}
+export class AdminWorkspaceSummaryResponseDto extends createZodDto(
+  AdminWorkspaceSummaryResponseSchema,
 ) {}
 export class AdminGetWorkspaceByIdResponseDto extends createZodDto(
   AdminGetWorkspaceByIdResponseSchema,

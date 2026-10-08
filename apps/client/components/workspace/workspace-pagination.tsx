@@ -7,19 +7,21 @@ import type { WorkspacePage } from '@/lib/workspace-list'
  * The ends use `aria-disabled`, not `disabled`: pressing Next onto the last
  * page must not drop keyboard focus to <body>.
  */
-export function WorkspacesPagination({
+export function WorkspacePagination({
   page,
   onPage,
+  label = 'Workspaces pagination',
 }: {
   page: WorkspacePage<unknown>
   onPage: (p: number) => void
+  label?: string
 }) {
   if (page.pageCount <= 1) return null
   const atStart = page.page <= 1
   const atEnd = page.page >= page.pageCount
   return (
     <nav
-      aria-label="Workspaces pagination"
+      aria-label={label}
       className="flex flex-wrap items-center justify-between gap-3"
     >
       <p

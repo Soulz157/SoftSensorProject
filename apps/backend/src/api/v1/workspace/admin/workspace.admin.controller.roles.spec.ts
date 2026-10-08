@@ -38,6 +38,7 @@ describe('WorkspaceAdminController — ADMIN enforcement', () => {
 
   const adminOnly: Handler[] = [
     'listWorkspaces',
+    'getSummary',
     'getWorkspaceById',
     'updateWorkspace',
     'inviteMember',

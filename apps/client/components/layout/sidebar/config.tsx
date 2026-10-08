@@ -6,7 +6,6 @@ import {
   CirclePlus,
   // CheckCircle2,
   // ClipboardCheck,
-  Cog,
   Database,
   Eye,
   Factory,
@@ -135,11 +134,5 @@ export const adminNavItems: NavItem[] = [
     name: 'Data Analytics',
     icon: <BarChart3 className="h-4 w-4" />,
     href: '/admin/analytics',
-  },
-  {
-    id: 'admin-settings',
-    name: 'System Settings',
-    icon: <Cog className="h-4 w-4" />,
-    href: '/admin/settings',
   },
 ]

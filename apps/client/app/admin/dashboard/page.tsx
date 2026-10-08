@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
-import { DashboardContent } from '@/app/admin/dashboard/components/dashboard-content'
+import { AdminDashboard } from './components/admin-dashboard'
 
-export default function LandingPage() {
-  return <DashboardContent />
+export default function AdminDashboardPage() {
+  return <AdminDashboard />
 }

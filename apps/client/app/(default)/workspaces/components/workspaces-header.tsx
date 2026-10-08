@@ -2,7 +2,7 @@ import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { WorkspaceSummary } from '@/lib/workspace-list'
 import { cn } from '@/lib/utils'
-import { ATTENTION_TEXT } from './workspace-parts'
+import { ATTENTION_TEXT } from '@/components/workspace/workspace-parts'
 
 const plural = (n: number | null, one: string, many: string) =>
   n === 1 ? one : many

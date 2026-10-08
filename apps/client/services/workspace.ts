@@ -1,6 +1,7 @@
 import { fetchClient } from '@/lib/fetcher'
 import type {
   AdminWorkspace,
+  AdminWorkspaceSummary,
   AdminWorkspaceDetail,
   CreateWorkspaceInput,
   Paginated,
@@ -45,8 +46,6 @@ export const workspaceService = {
       method: 'GET',
     })
   },
-  getAdminAllWorkspaces: () =>
-    fetchClient('/api/v1/admin/workspace', { method: 'GET' }),
 
   createWorkspace: async (data: CreateWorkspaceInput): Promise<Workspace> => {
     const res = await fetchClient('/api/v1/admin/workspace/create', {
@@ -98,6 +97,9 @@ export const workspaceService = {
       body: JSON.stringify({ workspaceId }),
     })
   },
+
+  getAdminWorkspaceSummary: (): Promise<{ data: AdminWorkspaceSummary }> =>
+    fetchClient('/api/v1/admin/workspace/summary', { method: 'GET' }),
 
   getAdminWorkspaces: (params: {
     page?: number
