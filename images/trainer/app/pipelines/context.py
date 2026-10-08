@@ -74,6 +74,10 @@ class TrainingResult:
     loss_history: dict[str, Any] | None = None
     # filename -> JSON payload. cv_folds.json is the only inhabitant today.
     extra_json: dict[str, Any] = field(default_factory=dict)
+    # filename -> frame. MODEL-FLOW-028-T01: cv_oof_predictions.parquet is the
+    # only inhabitant today. Kept apart from `predictions` on purpose — that
+    # field is the TEST split and None under CV (MODEL-FLOW-016 userDecisions).
+    extra_parquet: dict[str, pd.DataFrame] = field(default_factory=dict)
     # MODEL-FLOW-016-T07. False for CV: holdout scoring there is a SEPARATE,
     # USER-TRIGGERED phase against the refit model, run as its own container
     # spawn well after this run's /complete (see pipelines/score.py). `claim()`

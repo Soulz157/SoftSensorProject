@@ -35,6 +35,7 @@ from intergrations.object_store import (
     NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
     INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
     CV_GAP_PREDICTIONS_FILENAME,
+    CV_OOF_PREDICTIONS_FILENAME,
     TIMESTAMP_COLUMN,
     VALIDATE_DATA_FILENAME,
     VALIDATE_NEW_DATA_FILENAME,
@@ -161,6 +162,9 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         # uploadable here but read only by `run_cv_gap`, never by the
         # three-column readers below.
         CV_GAP_PREDICTIONS_FILENAME,
+        # MODEL-FLOW-028-T01. A CV run's out-of-fold series — three columns,
+        # so it is also in _READABLE_PREDICTION_FILENAMES below.
+        CV_OOF_PREDICTIONS_FILENAME,
     }
 )
 
@@ -182,6 +186,9 @@ _READABLE_PREDICTION_FILENAMES = frozenset(
         NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
         # MODEL-SERVE-021. Same shape again, a third population.
         INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-FLOW-028-T01. Same shape once more — a CV run's out-of-fold
+        # population (the configuration's fold fits, not the refit).
+        CV_OOF_PREDICTIONS_FILENAME,
     }
 )
 

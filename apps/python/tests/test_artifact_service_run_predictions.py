@@ -176,6 +176,23 @@ def test_reads_the_new_data_holdout_series_under_a_model_scoped_key() -> None:
     assert result["row_count"] == 4
 
 
+def test_reads_a_cv_runs_out_of_fold_series_under_a_draft_scoped_key() -> None:
+    """MODEL-FLOW-028-T02. A CV run's out-of-fold series is uploadable AND
+    readable, under a DRAFT-scoped key (Step 3 reads it before Save Model, when
+    the run still lives under `drafts/`). Same two-allow-list trap as the
+    new-data series above."""
+    from intergrations.object_store import CV_OOF_PREDICTIONS_FILENAME
+
+    assert CV_OOF_PREDICTIONS_FILENAME in artifact_service._ALLOWED_RUN_UPLOADS
+    assert CV_OOF_PREDICTIONS_FILENAME in artifact_service._READABLE_PREDICTION_FILENAMES
+    key = f"drafts/d1/runs/r1/{CV_OOF_PREDICTIONS_FILENAME}"
+    store = RecordingStore({key: predictions_frame()})
+    result = artifact_service.run_predictions(
+        store, ModelRunPredictionsRequest(source_key=key)
+    )
+    assert result["row_count"] == 4
+
+
 def test_refuses_a_frame_missing_a_required_column() -> None:
     bad = predictions_frame().drop(columns=["y_pred"])
     store = RecordingStore({RUN_KEY: bad})

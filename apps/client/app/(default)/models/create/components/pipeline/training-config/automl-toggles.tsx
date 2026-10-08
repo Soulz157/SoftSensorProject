@@ -132,7 +132,12 @@ export function AutoMlToggles({
             findBestModel
               ? 'Tune the sweep’s winning algorithm with a curated set of hyperparameter variants.'
               : singleAlgorithm
-                ? 'Tune this algorithm’s hyperparameters directly — no sweep needed with one algorithm selected.'
+                ? cvEnabled
+                  ? // MODEL-FLOW-029. CV composes with a direct search: every
+                    // variant is cross-validated and the winner is the lowest
+                    // mean CV RMSE. The fit count is in the runtime estimate.
+                    'Tune this algorithm’s hyperparameters directly — every variant is cross-validated (k+1 fits each) and the lowest mean CV RMSE wins.'
+                  : 'Tune this algorithm’s hyperparameters directly — no sweep needed with one algorithm selected.'
                 : 'Turn on Find Best Model first, or select exactly one algorithm to tune it directly.'
           }
           checked={findBestParams}

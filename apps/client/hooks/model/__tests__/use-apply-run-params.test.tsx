@@ -9,6 +9,7 @@ import {
   mpFindBestParamsAtom,
   mpHighestUnlockedAtom,
   mpHyperparamsAtom,
+  mpNSplitsAtom,
   mpTargetVariableAtom,
   mpTrainStateAtom,
   mpTrainTestSplitAtom,
@@ -148,5 +149,40 @@ describe('useApplyRunParams', () => {
 
     expect(outcome?.dropped).toEqual(['weird'])
     expect(store.get(mpHyperparamsAtom)).toEqual({ alpha: 0.5 })
+  })
+  describe('MODEL-FLOW-029 — a CV run', () => {
+    // The shared split-spec type has no cv_expanding variant (a recorded,
+    // deliberate gap — see lib/run-comparison.ts), so the real wire shape is
+    // cast in.
+    const cvRun = () =>
+      ridgeRun({
+        cvFoldsKey: 'drafts/d/runs/run-1/cv_folds.json',
+        splitSpec: {
+          method: 'cv_expanding',
+          n_splits: 5,
+        } as unknown as ModelTrainingRun['splitSpec'],
+        metrics: { cv_rmse_mean: 1.2, cv_rmse_std: 0.1, n_splits: 5 },
+      })
+
+    it('restores Cross-Validation with the run k', () => {
+      const { result } = renderApply()
+      act(() => result.current.applyRun(cvRun()))
+      expect(store.get(mpNSplitsAtom)).toBe(5)
+    })
+
+    it('never writes NaN into the split, and leaves the ratio as it was', () => {
+      store.set(mpTrainTestSplitAtom, 80)
+      const { result } = renderApply()
+      act(() => result.current.applyRun(cvRun()))
+      expect(store.get(mpTrainTestSplitAtom)).toBe(80)
+    })
+
+    it('a ratio run turns Cross-Validation off and restores its ratio', () => {
+      store.set(mpNSplitsAtom, 5)
+      const { result } = renderApply()
+      act(() => result.current.applyRun(ridgeRun()))
+      expect(store.get(mpNSplitsAtom)).toBeUndefined()
+      expect(store.get(mpTrainTestSplitAtom)).toBe(70)
+    })
   })
 })

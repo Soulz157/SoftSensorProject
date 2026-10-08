@@ -105,6 +105,43 @@ export interface RuntimeInput {
    * under-estimates.
    */
   tuningVariants?: Partial<Record<string, number>>
+  /**
+   * MODEL-FLOW-029. Cross-Validation's k, when on. Every candidate then costs
+   * k fold fits plus a refit. The fold fits train on growing subsets, so
+   * pricing each as a full fit over- rather than under-estimates — the same
+   * direction this file already errs in for an unknown variant count.
+   */
+  nSplits?: number
+}
+
+/** Fits each candidate costs: 1, or k folds + the refit under CV. */
+function fitsPerCandidate(nSplits: number | undefined): number {
+  return nSplits !== undefined ? nSplits + 1 : 1
+}
+
+export interface CvFitCount {
+  candidates: number
+  fitsEach: number
+  total: number
+}
+
+/**
+ * MODEL-FLOW-029. How many models a CV launch will fit, stated before Start —
+ * the number a data scientist reads to decide whether k and the variant list
+ * are worth it. Null when Cross-Validation is off. CV fits ONE algorithm (it
+ * excludes a sweep), so the candidates are that algorithm's base fit plus,
+ * with Find Best Parameters, its variants.
+ */
+export function cvFitCount(input: RuntimeInput): CvFitCount | null {
+  if (input.nSplits === undefined) return null
+  const [algorithm] = input.algorithms
+  const variants =
+    input.findBestParams && algorithm
+      ? (input.tuningVariants?.[algorithm] ?? TUNE_VARIANTS)
+      : 0
+  const candidates = Math.max(input.algorithms.length, 1) + variants
+  const fitsEach = fitsPerCandidate(input.nSplits)
+  return { candidates, fitsEach, total: candidates * fitsEach }
 }
 
 /**
@@ -137,6 +174,7 @@ export function estimateRuntimeSeconds({
   findBestParams,
   nEstimators,
   tuningVariants,
+  nSplits,
 }: RuntimeInput): number {
   const cells = Math.max(rows, 1) * Math.max(features, 1)
   const trees = (nEstimators ?? 100) / 100
@@ -163,6 +201,7 @@ export function estimateRuntimeSeconds({
       SEC_PER_CELL *
       trees *
       (baseCost + tuningCost) *
+      fitsPerCandidate(nSplits) *
       Math.max(targets, 1),
   )
 }

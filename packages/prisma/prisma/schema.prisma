@@ -134,6 +134,7 @@ model User {
   /// NotificationReadMarker's own doc comment.
   notificationReadMarker NotificationReadMarker?
   notificationUserMutes  NotificationUserMute[]
+  notificationDismissals NotificationDismissal[]
 }
 
 model Account {
@@ -1468,6 +1469,13 @@ model ModelCandidateJob {
   /// their own test RMSE. NEW_DATA_ONLY only; capped at config time by the
   /// combined artifact's distinct labelled values // 10. Null = no CV.
   cvFolds            Int?
+  /// MODEL-FLOW-029. Expanding-fold CROSS-VALIDATION for every candidate of a
+  /// draft-owned HYPERPARAMETER_SEARCH: each variant launches as an ordinary
+  /// `cv_expanding` run with this k, and the job's winner is the lowest
+  /// `cv_rmse_mean` rather than test `rmse`. NOT `cvFolds` above, which is a
+  /// measurement beside chronological retrain candidates. Mutually exclusive
+  /// with `trainTestSplit`; refused for a sweep (MODEL-FLOW-016). Null = not CV.
+  nSplits            Int?
   /// MODEL-SERVE-026-T07. The acceptance criteria the operator chose BEFORE
   /// the retrain started (lib/acceptance-criteria.ts shapes, 'retrain'
   /// scope). A stated verdict only — never blocks a retrain or a promote.
@@ -2437,6 +2445,7 @@ model NotificationEvent {
   createdAt DateTime @default(now())
 
   deliveries NotificationDelivery[]
+  dismissals NotificationDismissal[]
 
   @@index([workspaceId, createdAt])
   @@index([modelId, createdAt])
@@ -2454,6 +2463,29 @@ model NotificationReadMarker {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   lastReadAt DateTime @default(now())
+
+  /// "Clear all" in the bell: events created at or before this are hidden
+  /// from THIS user's feed and count. Per user — the event rows are shared
+  /// with every member and with Teams/e-mail delivery history, so they are
+  /// never deleted. Null = never cleared.
+  clearedAt DateTime?
+}
+
+/// Per-user removal of ONE event from the bell (the row's X). Hides it for
+/// this user only; the event, other members' feeds and delivery history are
+/// untouched. "Clear all" uses NotificationReadMarker.clearedAt instead of
+/// one row per event.
+model NotificationDismissal {
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  eventId String
+  event   NotificationEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([userId, eventId])
+  @@index([eventId])
 }
 
 /// MODEL-SERVE-022-T07. Per-user, per-model mute for the IN-APP feed only —

@@ -1297,12 +1297,20 @@ describe('Phase4ModelSelection — per-candidate Test/Validate pair (MODEL-FLOW-
     fireEvent.click(toggles[0]!)
     fireEvent.click(toggles[1]!)
 
-    // Definitional: the CV candidate's Test chart never offers an action.
-    const cvReason = screen.getByText(
-      /is cross-validated and has no test split/i,
+    // MODEL-FLOW-030. A CV candidate's own chart is now its OUT-OF-FOLD series
+    // (it has no test split), so its absence is the missing out-of-fold
+    // object — still definitional, still never an action: the remedy is to
+    // retrain, not to score.
+    // Stated twice on purpose: by the group's out-of-fold overlay AND by the
+    // opened row's own chart.
+    const cvReasons = screen.getAllByText(
+      /No out-of-fold predictions are stored/i,
     )
-    expect(cvReason).toBeInTheDocument()
-    expect(cvReason.textContent).not.toMatch(/score/i)
+    expect(cvReasons.length).toBeGreaterThan(0)
+    for (const reason of cvReasons) {
+      expect(reason.textContent).not.toMatch(/score/i)
+    }
+    const cvReason = cvReasons[0]!
 
     // Actionable: the non-CV candidate's Validate chart names the remedy
     // and points at the group's own Score action — never a button of its

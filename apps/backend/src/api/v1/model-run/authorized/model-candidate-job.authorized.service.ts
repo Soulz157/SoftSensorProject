@@ -227,9 +227,18 @@ export class ModelCandidateJobAuthorizedService {
     );
   }
 
-  private extractRmse(metrics: unknown): number | null {
+  /**
+   * The figure a job ranks its candidates on. MODEL-FLOW-029: a CV search's
+   * runs carry no bare `rmse` (only `cv_*` fold aggregates), so a job with
+   * `nSplits` ranks on `cv_rmse_mean` — the same mean Step 4's table ranks a
+   * CV estimate on. Keyed on the JOB, never on a run happening to lack
+   * `rmse`, so a sweep's or a retrain's ranking cannot change.
+   */
+  private extractRmse(metrics: unknown, isCvJob = false): number | null {
     if (!metrics || typeof metrics !== 'object') return null;
-    const rmse = (metrics as Record<string, unknown>).rmse;
+    const rmse = (metrics as Record<string, unknown>)[
+      isCvJob ? 'cv_rmse_mean' : 'rmse'
+    ];
     return typeof rmse === 'number' && Number.isFinite(rmse) ? rmse : null;
   }
 
@@ -362,6 +371,9 @@ export class ModelCandidateJobAuthorizedService {
       goldArtifactId: string;
       targetY: string;
       trainTestSplit: number | null;
+      // MODEL-FLOW-029. Optional so a caller building its own job shape (the
+      // retrain path) need not name it; a retrain job is never CV.
+      nSplits?: number | null;
     },
     candidate: Candidate,
   ): Promise<LaunchedRun> {
@@ -472,6 +484,7 @@ export class ModelCandidateJobAuthorizedService {
       goldArtifactId: string;
       targetY: string;
       trainTestSplit: number | null;
+      nSplits?: number | null;
     },
     candidate: Candidate,
   ): CreateTrainingRunDto {
@@ -480,7 +493,12 @@ export class ModelCandidateJobAuthorizedService {
       targetY: job.targetY,
       algorithm: candidate.algorithm as CreateTrainingRunDto['algorithm'],
       hyperparameters: candidate.hyperparameters,
-      trainTestSplit: job.trainTestSplit ?? undefined,
+      // MODEL-FLOW-029. Exactly one of the two, mirroring
+      // CreateTrainingRunSchema's own refine: a CV search's candidates are
+      // ordinary cv_expanding runs.
+      ...(job.nSplits != null
+        ? { nSplits: job.nSplits }
+        : { trainTestSplit: job.trainTestSplit ?? undefined }),
     } as CreateTrainingRunDto;
   }
 
@@ -566,6 +584,9 @@ export class ModelCandidateJobAuthorizedService {
           targetY: dto.targetY,
           goldArtifactId: dto.goldArtifactId,
           trainTestSplit: dto.trainTestSplit ?? null,
+          // MODEL-FLOW-029. Null = not CV. The DTO already refused it for a
+          // sweep and together with trainTestSplit.
+          nSplits: dto.nSplits ?? null,
           // MODEL-FLOW-020-T04. Captured verbatim from what the client saw,
           // never recomputed — see this pair's own note on
           // CreateCandidateJobSchema for why the client is the one that has
@@ -692,7 +713,7 @@ export class ModelCandidateJobAuthorizedService {
 
     if (run.status !== 'SUCCEEDED') return; // still QUEUED/RUNNING — nothing to do yet.
 
-    const rmse = this.extractRmse(run.metrics);
+    const rmse = this.extractRmse(run.metrics, job.nSplits != null);
     const completedRuns = job.completedRuns + 1;
     // rmse, never r2: always present and well-behaved even for a degenerate
     // fit — an observed real run scored r2 = -1,110,858 while rmse stayed a

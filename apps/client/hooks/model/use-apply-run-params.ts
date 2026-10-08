@@ -8,12 +8,14 @@ import {
   mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpHyperparamsAtom,
+  mpNSplitsAtom,
   mpTargetVariableAtom,
   mpTrainTestSplitAtom,
   type Algorithm,
 } from '@/store/model-pipeline'
 import type { ModelTrainingRunListItem } from '@/services/model-draft'
 import { splitPercentFromRun, toApplyPatch } from '@/lib/run-params'
+import { cvFoldCountOf } from '@/lib/run-comparison'
 import { useCommitRunConfig } from './use-commit-run-config'
 
 export interface UseApplyRunParamsResult {
@@ -50,6 +52,7 @@ export function useApplyRunParams(): UseApplyRunParamsResult {
   const setHyperparameters = useSetAtom(mpHyperparamsAtom)
   const setTargetVariable = useSetAtom(mpTargetVariableAtom)
   const setTrainTestSplit = useSetAtom(mpTrainTestSplitAtom)
+  const setNSplits = useSetAtom(mpNSplitsAtom)
   const commitRunConfig = useCommitRunConfig()
 
   const applyRun = useCallback(
@@ -61,7 +64,18 @@ export function useApplyRunParams(): UseApplyRunParamsResult {
       setAlgorithm(algorithm)
       setHyperparameters(hyperparameters)
       setTargetVariable([run.targetY])
-      setTrainTestSplit(splitPercentFromRun(run.splitSpec))
+      // MODEL-FLOW-029. A CV run's split spec has no `ratio`, so the ratio
+      // path wrote NaN into the split and dropped CV. A CV run restores its
+      // own k instead and leaves the ratio as it was; a ratio run restores
+      // its ratio and turns CV off. A CV run with no recorded k changes
+      // neither, rather than guessing one.
+      if (run.cvFoldsKey !== null) {
+        const k = cvFoldCountOf(run)
+        if (k !== null) setNSplits(k)
+      } else {
+        setNSplits(undefined)
+        setTrainTestSplit(splitPercentFromRun(run.splitSpec))
+      }
       setFindBestModel(false)
       setFindBestParams(false)
 
@@ -79,6 +93,7 @@ export function useApplyRunParams(): UseApplyRunParamsResult {
       setHyperparameters,
       setTargetVariable,
       setTrainTestSplit,
+      setNSplits,
     ],
   )
 

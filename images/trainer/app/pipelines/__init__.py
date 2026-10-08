@@ -522,6 +522,9 @@ def _publish(
     for filename, payload in result.extra_json.items():
         artifacts.add_json(filename, payload)
 
+    for filename, frame in result.extra_parquet.items():
+        artifacts.add_parquet(filename, frame)
+
     artifacts.add_json(
         MANIFEST_FILENAME,
         build_run_manifest(

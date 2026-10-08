@@ -40,6 +40,7 @@ import { cvScoringPhaseOf } from '@/hooks/model/use-draft-run-evaluation'
 import { METRIC_META, type MetricKey } from '@/lib/model-metrics'
 import {
   METRIC_SOURCE_LABELS,
+  OOF_LOAD_FAILED_TEXT,
   candidateAbsenceText,
   metricValueOf,
   type CvFoldEstimate,
@@ -58,6 +59,8 @@ import type {
   RunPredictionsBatchItem,
 } from '@/services/model-draft'
 import { CandidateBaseChart } from './candidate-base-chart'
+import { useRunCvFolds } from '@/hooks/model/use-run-cv-folds'
+import { foldCutXs } from '@/lib/cv-oof'
 import { CandidateChart } from './candidate-chart'
 
 export const STATUS_META: Record<
@@ -338,8 +341,9 @@ function RowCriteriaMarks({
  * already rendered this correctly (`0.400 ± 0.050`, "Est. CV RMSE") before
  * it was deleted for this same task's "one layout" rule — the unified
  * table must inherit that discipline, not replace it with a bare
- * "N/A": a CV run is reachable from the standalone path (never from a
- * candidate job, per this column's own history below) and would otherwise
+ * "N/A": a CV run is reachable from the standalone path AND, since
+ * MODEL-FLOW-029, from a cross-validated HYPERPARAMETER_SEARCH job (every
+ * variant a CV run, ranked on this same mean), and would otherwise
  * show no figure of any kind for its own headline number.
  */
 function CvEstimateCell({
@@ -392,8 +396,12 @@ export function CandidateTable({
   onSortMetric,
   byRunId,
   holdoutByRunId,
+  oofByRunId,
+  oofError,
+  draftId,
   predictionsLoading,
   holdoutLoading,
+  oofLoading,
   rowNote,
   rowAction,
   chartMode = 'full',
@@ -411,6 +419,17 @@ export function CandidateTable({
    *  fetched by every caller for the group overlay above this table; the
    *  expanded row's Validate chart reads it too, no third fetch. */
   holdoutByRunId: Map<string, RunPredictionsBatchItem>
+  /** MODEL-FLOW-030. A CV candidate's own population is its out-of-fold
+   *  series, not a test split. Optional: a caller with no CV candidate need
+   *  not fetch it. */
+  oofByRunId?: Map<string, RunPredictionsBatchItem>
+  /** The out-of-fold fetch's error, so a failed load is not worded as "none
+   *  stored". */
+  oofError?: string | null
+  /** Needed to read a CV candidate's fold boundaries when its row is
+   *  expanded; absent, the chart simply has no fold lines. */
+  draftId?: string
+  oofLoading?: boolean
   predictionsLoading: boolean
   holdoutLoading: boolean
   rowNote?: (runId: string) => React.ReactNode
@@ -425,6 +444,13 @@ export function CandidateTable({
     [candidates, sortMetric],
   )
   const summary = rankingSummaryText(ranking)
+  // MODEL-FLOW-030. A cross-validated candidate has no test split, so its
+  // figure in this column is the fold estimate (`Est. CV`) — say so in the
+  // header rather than let the chart above read "Out-of-fold (CV)" over a column
+  // still labelled "Test".
+  const testColumnLabel = candidates.some(c => c.cvFoldsKey)
+    ? 'Test / CV'
+    : 'Test'
   // Per-row disclosure state — local to this table (one per phase group),
   // reset whenever a fresh group mounts rather than persisted, matching the
   // ephemeral view-preference treatment `sortMetric` already gets.
@@ -515,7 +541,7 @@ export function CandidateTable({
               {visibleMetrics.map(key => (
                 <Fragment key={key}>
                   <TableHead className="border-l text-right text-[10px] font-normal">
-                    Test
+                    {testColumnLabel}
                   </TableHead>
                   <TableHead
                     className={cn(
@@ -548,8 +574,9 @@ export function CandidateTable({
               // estimate has no TEST-SPLIT figure at all (finding (g) — a CV
               // run's `metrics` carries no bare rmse/r2/mae). MODEL-FLOW-
               // 019-T08 part 4: reachable from the standalone path (a CV
-              // run launched one at a time, never from a candidate job —
-              // CreateCandidateJob's own schema has no `nSplits` field), so
+              // run launched one at a time) and, since MODEL-FLOW-029, from a
+              // cross-validated HYPERPARAMETER_SEARCH job, whose server-side
+              // winner is the lowest of this same fold mean — so
               // the cell renders the fold estimate itself
               // (`CvEstimateCell`, its own mean+std, labelled `Est. CV` —
               // never under the plain "Test" shape, which would be the
@@ -755,16 +782,26 @@ export function CandidateTable({
                               parity chart). Each names its own population
                               and its own absence reason — never a shared,
                               derived one. */}
-                          <CandidateBaseChart
-                            runId={candidate.runId}
-                            population="test-split"
-                            item={byRunId.get(candidate.runId)}
-                            loading={predictionsLoading}
-                            absence={candidateAbsenceText(
-                              candidate,
-                              'test-split',
-                            )}
-                          />
+                          {candidate.cvFoldsKey ? (
+                            <CvOofRowChart
+                              draftId={draftId}
+                              candidate={candidate}
+                              item={oofByRunId?.get(candidate.runId)}
+                              loading={oofLoading ?? false}
+                              error={oofError ?? null}
+                            />
+                          ) : (
+                            <CandidateBaseChart
+                              runId={candidate.runId}
+                              population="test-split"
+                              item={byRunId.get(candidate.runId)}
+                              loading={predictionsLoading}
+                              absence={candidateAbsenceText(
+                                candidate,
+                                'test-split',
+                              )}
+                            />
+                          )}
                           <CandidateBaseChart
                             runId={candidate.runId}
                             population="holdout"
@@ -786,6 +823,49 @@ export function CandidateTable({
         </Table>
       </div>
     </div>
+  )
+}
+
+/**
+ * MODEL-FLOW-030. A CV candidate's expanded-row chart: its OUT-OF-FOLD series,
+ * with the fold boundaries drawn. Mounted only while the row is open, so the
+ * fold-boundary read (`cv_folds.json`, via the single-run GET) is one request
+ * for the one row the user opened, never one per candidate.
+ */
+function CvOofRowChart({
+  draftId,
+  candidate,
+  item,
+  loading,
+  error,
+}: {
+  draftId: string | undefined
+  candidate: CandidateResult
+  item: RunPredictionsBatchItem | undefined
+  loading: boolean
+  error: string | null
+}) {
+  const runIds = useMemo(
+    () => (candidate.runId ? [candidate.runId] : []),
+    [candidate.runId],
+  )
+  const folds = useRunCvFolds(draftId ?? null, runIds)
+  const cvFolds = candidate.runId ? folds.byRunId.get(candidate.runId) : null
+  const foldCuts = useMemo(
+    () => (cvFolds ? foldCutXs(cvFolds.folds) : undefined),
+    [cvFolds],
+  )
+  return (
+    <CandidateBaseChart
+      runId={candidate.runId}
+      population="cv-oof"
+      item={item}
+      loading={loading}
+      absence={
+        error ? OOF_LOAD_FAILED_TEXT : candidateAbsenceText(candidate, 'cv-oof')
+      }
+      foldCuts={foldCuts}
+    />
   )
 }
 

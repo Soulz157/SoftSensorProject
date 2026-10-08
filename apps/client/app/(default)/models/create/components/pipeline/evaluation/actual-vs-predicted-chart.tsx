@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -59,6 +60,11 @@ interface Props {
    *  together, since `syncId` was a module CONSTANT before this prop
    *  existed, not something the caller could vary per instance. */
   syncId?: string
+  /** MODEL-FLOW-030. X positions (`FitRow.t`) of a CV run's fold boundaries,
+   *  drawn as thin vertical lines so an out-of-fold series reads as k test
+   *  windows, not one continuous test split. Omitted — every other caller —
+   *  and nothing is drawn. */
+  foldCuts?: number[]
 }
 
 /**
@@ -72,6 +78,7 @@ export function ActualVsPredictedChart({
   compareName,
   height = 320,
   syncId = EVAL_SYNC_ID,
+  foldCuts,
 }: Props) {
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -111,6 +118,21 @@ export function ActualVsPredictedChart({
             />
           }
         />
+
+        {foldCuts?.map((x, i) => (
+          <ReferenceLine
+            key={x}
+            x={x}
+            stroke="var(--border)"
+            strokeDasharray="2 3"
+            label={{
+              value: `F${i + 1}`,
+              position: 'insideTopLeft',
+              fill: 'var(--muted-foreground)',
+              fontSize: 10,
+            }}
+          />
+        ))}
 
         {/* ±1 SD band wrapping the ACTUAL line — [actual − SD, actual + SD]. */}
         <Area

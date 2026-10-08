@@ -506,7 +506,13 @@ export function useModelTraining({
           goldArtifactId: selectedDataset.currentArtifactId,
           targetY,
           kind: 'HYPERPARAMETER_SEARCH',
-          trainTestSplit: trainTestSplit / 100,
+          // MODEL-FLOW-029. EXACTLY ONE of the two, as for a single run: with
+          // Cross-Validation on, every variant is a cv_expanding run and the
+          // job's winner is the lowest mean CV RMSE. This branch used to send
+          // the ratio unconditionally, silently dropping CV.
+          ...(nSplits !== undefined
+            ? { nSplits }
+            : { trainTestSplit: trainTestSplit / 100 }),
           candidates: [
             {
               algorithm: backendAlgorithm,

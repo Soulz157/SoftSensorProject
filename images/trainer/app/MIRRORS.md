@@ -273,6 +273,34 @@ whose own docstring names its mirror in `split_stats_service.py`.
 
 ---
 
+## 12. `CV_OOF_PREDICTIONS_FILENAME = "cv_oof_predictions.parquet"`
+
+| Copy        | Location                                                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| this image  | `artifacts.py`                                                                                                                 |
+| apps/python | `object_store.py` (`CV_OOF_PREDICTIONS_FILENAME`), gating BOTH `_ALLOWED_RUN_UPLOADS` and `_READABLE_PREDICTION_FILENAMES` in `services/artifact_service.py` |
+| API (TS)    | `artifact-keys.ts` (`RUN_UPLOAD_FILENAMES`)                                                                                    |
+
+MODEL-FLOW-028-T01. Same three-column `{timestamp, y_true, y_pred}` shape as
+entries 8-10, so the shared prediction reader takes it unchanged — which is also
+why it carries NO `fold` column (that reader refuses an unexpected column). Fold
+membership is derived from `cv_folds.json`'s `cut_timestamp`s: fold i covers
+`[cut_i, cut_{i+1})`.
+
+A CV run's out-of-fold rows: every expanding fold's test window, predicted by
+that fold's OWN model, which never trained on them. It describes the
+CONFIGURATION, not the refit that ships, so it is a population of its own —
+never served as the test split (a CV run has none) and never as the holdout.
+No run column records its key; it is the sibling of `cvFoldsKey`.
+
+Written by `pipelines/cv_expanding.py` for every CV run, via
+`TrainingResult.extra_parquet`. A CV run trained before this image carries no
+such file, permanently; the client states that absence.
+
+**Image rebuild required**, same as entries 9-11.
+
+---
+
 ## Long-term
 
 The right fix is a shared wheel containing `labelled_mask`, the fold plan, and

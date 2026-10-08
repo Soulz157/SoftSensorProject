@@ -31,10 +31,17 @@
  * re-deriving that from a column name that means two different things.
  */
 
-/** The two populations a run can have a per-row series for. Mirrors the
- *  client's `EvaluationPopulation` (`lib/metric-source.ts`) — a fold
- *  ESTIMATE is not a series and so is not a member here either. */
-export type PredictionPopulation = 'test' | 'holdout';
+import { CV_OOF_PREDICTIONS_FILENAME } from './artifact-keys';
+
+/** The populations a run can have a per-row series for. `test` and `holdout`
+ *  mirror the client's `EvaluationPopulation` (`lib/metric-source.ts`) — a fold
+ *  ESTIMATE is not a series and so is not a member there.
+ *
+ *  MODEL-FLOW-028-T01 adds `cv-oof`: a CV run's OUT-OF-FOLD series, every
+ *  expanding fold's test rows as predicted by that fold's own model. It
+ *  describes the CONFIGURATION, not the refit that ships, so it is neither the
+ *  test split nor the holdout and is never served as either. */
+export type PredictionPopulation = 'test' | 'holdout' | 'cv-oof';
 
 /** The three columns this derivation reads. Named structurally rather than
  *  as the Prisma row type so a test fixture satisfies it without a cast. */
@@ -58,6 +65,16 @@ export function predictionKeyFor(
   population: PredictionPopulation,
 ): string | null {
   const isCv = Boolean(run.cvFoldsKey);
+  if (population === 'cv-oof') {
+    // MODEL-FLOW-028-T01. No run column records this key: it sits beside
+    // cv_folds.json under the same run prefix, which is how the cv_gap series
+    // is found too. Only a CV run has one, and only one trained on an image
+    // that writes it — for an older CV run the key resolves but the object is
+    // absent, which the reader reports as a 404 the client words as "trained
+    // before out-of-fold predictions were saved".
+    if (!run.cvFoldsKey) return null;
+    return `${run.cvFoldsKey.slice(0, run.cvFoldsKey.lastIndexOf('/') + 1)}${CV_OOF_PREDICTIONS_FILENAME}`;
+  }
   if (population === 'test') {
     // A CV run's predictionsKey is its HOLDOUT, so it must not be served as
     // a test split — that substitution is the exact conflation this feature

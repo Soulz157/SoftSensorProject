@@ -19,6 +19,8 @@ import {
   mpCandidateJobIdAtom,
   mpTrainStateAtom,
   mpPerAlgorithmHyperparamsAtom,
+  mpNSplitsAtom,
+  mpTrainTestSplitAtom,
 } from '@/store/model-pipeline'
 import type { SavedDataset } from '@/store/datasets'
 
@@ -156,6 +158,54 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     expect(modelDraftRunService.create).not.toHaveBeenCalled()
     expect(store.get(mpTrainStateAtom).status).toBe('training')
   })
+
+  /**
+   * MODEL-FLOW-029. This branch used to send the ratio unconditionally, so a
+   * user with Cross-Validation on got chronological variants. With CV on it
+   * sends exactly `nSplits`; with CV off, exactly the ratio.
+   */
+  it.each([
+    [3, { nSplits: 3 }, 'trainTestSplit'],
+    [undefined, { trainTestSplit: 0.7 }, 'nSplits'],
+  ] as const)(
+    'a direct search with nSplits=%s sends %o and never %s',
+    async (nSplits, expected, absent) => {
+      vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+        statusCode: 201,
+        message: 'ok',
+        type: 'SUCCESS',
+        data: { id: 'job-1' } as never,
+      })
+      vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+        statusCode: 200,
+        message: 'ok',
+        type: 'SUCCESS',
+        data: {
+          id: 'job-1',
+          status: 'RUNNING',
+          completedRuns: 0,
+          totalRuns: 5,
+          candidates: [],
+        } as never,
+      })
+      const { result } = renderTraining(s => {
+        s.set(mpFindBestParamsAtom, true)
+        s.set(mpAlgorithmsAtom, ['ridge'])
+        s.set(mpNSplitsAtom, nSplits)
+        s.set(mpTrainTestSplitAtom, 70)
+      })
+
+      await act(async () => {
+        result.current.start()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      const body = vi.mocked(modelDraftCandidateJobService.create).mock
+        .calls[0]![1]
+      expect(body).toMatchObject(expected)
+      expect(body).not.toHaveProperty(absent)
+    },
+  )
 
   /**
    * MODEL-FLOW-026. Step 3's hand-added variant rows ride along on the

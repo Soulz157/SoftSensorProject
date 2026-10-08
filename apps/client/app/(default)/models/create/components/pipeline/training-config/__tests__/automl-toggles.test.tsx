@@ -58,3 +58,20 @@ describe('AutoMlToggles — Find Best Parameters enable/disable', () => {
     ).toBeInTheDocument()
   })
 })
+
+describe('AutoMlToggles — with Cross-Validation on (MODEL-FLOW-029)', () => {
+  it('keeps Find Best Parameters enabled for one algorithm and says each variant is cross-validated', () => {
+    render(<AutoMlToggles {...baseProps()} cvEnabled algorithms={['ridge']} />)
+    expect(findBestParamsSwitch()).not.toBeDisabled()
+    expect(
+      screen.getByText(/every variant is cross-validated/i),
+    ).toBeInTheDocument()
+  })
+
+  it('still disables Find Best Model — CV and a sweep stay exclusive', () => {
+    render(<AutoMlToggles {...baseProps()} cvEnabled />)
+    expect(
+      screen.getByRole('switch', { name: /find best model/i }),
+    ).toBeDisabled()
+  })
+})

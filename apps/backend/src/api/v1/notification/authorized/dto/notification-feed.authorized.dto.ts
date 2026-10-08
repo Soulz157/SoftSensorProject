@@ -21,3 +21,11 @@ export const MuteModelSchema = z
   .strict();
 
 export class MuteModelDto extends createZodDto(MuteModelSchema) {}
+
+/** Body for POST /notifications/clear — same shape as mark-read: `upTo` is
+ *  the newest event the user was shown (omitted = now). */
+export const ClearNotificationsSchema = MarkNotificationsReadSchema;
+
+export class ClearNotificationsDto extends createZodDto(
+  ClearNotificationsSchema,
+) {}

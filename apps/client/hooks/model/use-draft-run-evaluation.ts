@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   modelDraftRunService,
   modelDraftService,
@@ -10,6 +10,8 @@ import {
   type RunPermutationImportance,
 } from '@/services/model-draft'
 import { fitFromRun, type ModelFit, type FitPoint } from '@/lib/model-metrics'
+import type { EvaluationPopulation } from '@/lib/metric-source'
+import { ApiError } from '@/lib/fetcher'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 
 /** Just enough of the run row for Step 4's banner and empty states — not the
@@ -159,36 +161,76 @@ export interface ParityRange {
   yPredMax: number
 }
 
+/**
+ * MODEL-FLOW-030. Why a population has no series to chart:
+ *
+ * - `no-series`  — nothing was recorded for it. For the holdout that is a run
+ *                  never scored (or one that predates keeping the frame); the
+ *                  caller states which, from the holdout-absence rules.
+ * - `no-oof`     — a CV run trained before the out-of-fold artifact existed
+ *                  (image < 1.0.21). It never will have one.
+ * - `too-large`  — the series exceeds what the single-run endpoint serves
+ *                  without decimation. NEVER decimated here: the histogram, QQ
+ *                  plot and residual SD would then describe a sample, not the
+ *                  population they are captioned with.
+ * - `unreadable` — recorded but the read failed.
+ */
+export type PopulationAbsence =
+  | 'no-series'
+  | 'no-oof'
+  | 'too-large'
+  | 'unreadable'
+
+/** The headline figures for a population — available whenever the run
+ *  recorded them, WITH OR WITHOUT a series (about three quarters of this
+ *  system's runs have holdout metrics and no holdout series). */
+export interface PopulationMetrics {
+  r2: number
+  rmse: number
+  mae: number
+  /** Spread across folds — present only for the out-of-fold population, where
+   *  `r2`/`rmse`/`mae` are fold MEANS. */
+  std: { r2: number; rmse: number; mae: number } | null
+  /** Folds averaged — out-of-fold only. */
+  nSplits: number | null
+}
+
+export interface PopulationEvaluation {
+  population: EvaluationPopulation
+  metrics: PopulationMetrics | null
+  /** The charted series. Null when `absence` is set. */
+  fit: ModelFit | null
+  parityRange: ParityRange | null
+  absence: PopulationAbsence | null
+}
+
 export interface UseDraftRunEvaluationResult {
   run: DraftRunSummary | null
-  fit: ModelFit | null
   manifest: DraftRunManifestInfo | null
-  parityRange: ParityRange | null
+  /** The run's own population: the test split, or — for a CV run — its
+   *  out-of-fold series. */
+  own: PopulationEvaluation | null
+  /** The dataset's raw validation holdout, once scored. */
+  holdout: PopulationEvaluation | null
   loading: boolean
   error: string | null
-  /** MODEL-FLOW-016-T11. POSTs the run's own `/score` trigger (T07) and
-   *  immediately forces a refetch so the hook starts self-polling — see
-   *  the poll effect below. A no-op (resolves immediately) when `run` is
-   *  null; the caller is expected to only offer this action once
-   *  `cvScoringPhaseOf(run) === 'awaiting-scoring'`, same as every other
-   *  disable-with-reason control in this feature. */
   triggerScoring: () => Promise<void>
 }
 
 interface EvaluationData {
   run: DraftRunSummary | null
-  fit: ModelFit | null
   manifest: DraftRunManifestInfo | null
-  parityRange: ParityRange | null
+  own: PopulationEvaluation | null
+  holdout: PopulationEvaluation | null
 }
 
-/**
- * Everything the run/predictions calls can fail without a number reaching the
- * screen — a malformed `metrics.r2`/`rmse` violates the invariant this
- * feature is built on (every scalar comes from the run's own metrics.json,
- * never recomputed client-side), so it is refused here rather than silently
- * substituted.
- */
+const NO_DATA: EvaluationData = {
+  run: null,
+  manifest: null,
+  own: null,
+  holdout: null,
+}
+
 function requireMetric(
   metrics: Record<string, unknown> | null,
   key: 'r2' | 'rmse' | 'mae',
@@ -224,12 +266,23 @@ async function resolveRunId(
   return draftRes.data.resolvedRunId ?? runIdHint
 }
 
+/** MODEL-FLOW-030. What a poll tick may reuse: the run's OWN population (and
+ *  the manifest it carried) is fixed once the run SUCCEEDED — holdout scoring
+ *  writes only the holdout series — so re-reading up to 20,000 points through
+ *  python every 2.5s for it is pure cost. */
+interface OwnSnapshot {
+  runId: string
+  own: PopulationEvaluation
+  manifest: DraftRunManifestInfo | null
+}
+
 async function fetchEvaluation(
   draftId: string,
   runIdHint: string | null,
+  reuse: OwnSnapshot | null = null,
 ): Promise<EvaluationData> {
   const runId = await resolveRunId(draftId, runIdHint)
-  if (!runId) return { run: null, fit: null, manifest: null, parityRange: null }
+  if (!runId) return NO_DATA
 
   const runRes = await modelDraftRunService.get(draftId, runId)
   const run = runRes.data
@@ -256,96 +309,264 @@ async function fetchEvaluation(
   }
 
   if (run.status !== 'SUCCEEDED') {
-    return { run: summary, fit: null, manifest: null, parityRange: null }
+    return { ...NO_DATA, run: summary }
   }
 
-  // MODEL-FLOW-016-T11. A CV run writes no test-split predictions file at
-  // all — cv_folds.json describes the CONFIGURATION, not the refit model
-  // that ships, and the refit has no held-out score until the separate
-  // scoring phase (T07) runs. Pre-scoring, there is nothing to fetch: the
-  // "awaiting scoring"/"scoring" phase (`cvScoringPhaseOf`, read off
-  // `summary` above) IS the honest answer, not an error to surface.
-  if (run.cvFoldsKey && !run.predictionsKey) {
-    return { run: summary, fit: null, manifest: null, parityRange: null }
+  const isCv = run.cvFoldsKey !== null
+  // Only a population that loaded cleanly is reused: an absence (unreadable,
+  // too-large) is retried on the next tick rather than frozen.
+  const reusable =
+    reuse && reuse.runId === runId && reuse.own.absence === null ? reuse : null
+  const [own, holdout] = await Promise.all([
+    reusable
+      ? Promise.resolve<LoadedPopulation>({
+          evaluation: reusable.own,
+          manifest: reusable.manifest,
+        })
+      : isCv
+        ? loadOutOfFold(draftId, runId, run)
+        : loadTestSplit(draftId, runId, run),
+    loadHoldout(draftId, runId, run, isCv),
+  ])
+
+  return {
+    run: summary,
+    // The manifest is the leakage guard's record for the RUN, not for a
+    // population; whichever series loaded carries the same one.
+    manifest: own.manifest ?? holdout.manifest,
+    own: own.evaluation,
+    holdout: holdout.evaluation,
   }
+}
 
-  // MODEL-FLOW-019-T20. WHICH population this run's single series is, in
-  // the endpoint's new vocabulary. The endpoint used to read
-  // `predictionsKey` unconditionally; it now disambiguates, and its `test`
-  // default resolves to NULL for a CV run (a CV run has no test split) —
-  // so a scored CV run 404s unless the caller names `holdout`.
-  //
-  // Deriving is correct HERE, unlike in `CandidateOverlayChart`: this hook
-  // fetches whatever the ONE run it was handed actually has, so that run's
-  // own shape is the only thing that decides. The overlay chart is the
-  // opposite case — its caller has already chosen a population and fetched
-  // that batch, so a per-series derivation there would contradict the
-  // bytes already on screen.
-  const predRes = await modelDraftRunService.predictions(
-    draftId,
-    runId,
-    run.cvFoldsKey ? 'holdout' : 'test',
-  )
-  const pred = predRes.data
+interface LoadedPopulation {
+  evaluation: PopulationEvaluation
+  manifest: DraftRunManifestInfo | null
+}
 
+type RunDetail = Awaited<ReturnType<typeof modelDraftRunService.get>>['data']
+
+function toFit(
+  pred: Awaited<ReturnType<typeof modelDraftRunService.predictions>>['data'],
+  metrics: { r2: number; rmse: number; mae: number },
+): { fit: ModelFit; parityRange: ParityRange; manifest: DraftRunManifestInfo } {
   const points: FitPoint[] = pred.points.map(p => ({
     timestamp: p.timestamp,
     actual: p.yTrue,
     predicted: p.yPred,
     residual: p.yTrue - p.yPred,
   }))
-  // MODEL-FLOW-016-T11. A scored CV run's predictions.parquet IS its
-  // holdout series, so its r2/rmse must come from `holdoutMetrics` — never
-  // `metrics` (that holds the fold MEAN, `cv_r2_mean`/`cv_rmse_mean`, a
-  // different question; a CV run's `metrics` has no plain `r2`/`rmse` key
-  // at all). Pairing a holdout series with a fold-mean or test-split
-  // scalar is exactly the category error this feature exists to prevent.
-  // An ordinary (non-CV) run keeps reading its own test-split `metrics`,
-  // unchanged.
-  const fit = run.cvFoldsKey
-    ? fitFromRun(points, {
-        r2: requireMetric(run.holdoutMetrics, 'r2', 'holdout_metrics'),
-        rmse: requireMetric(run.holdoutMetrics, 'rmse', 'holdout_metrics'),
-        mae: requireMetric(run.holdoutMetrics, 'mae', 'holdout_metrics'),
-        sd: pred.residualSd,
-      })
-    : fitFromRun(points, {
-        r2: requireMetric(run.metrics, 'r2'),
-        rmse: requireMetric(run.metrics, 'rmse'),
-        mae: requireMetric(run.metrics, 'mae'),
-        sd: pred.residualSd,
-      })
-
   return {
-    run: summary,
-    fit,
-    manifest: {
-      derivedFromTarget: pred.derivedFromTarget,
-      targetScaled: pred.targetScaled,
-    },
+    fit: fitFromRun(points, { ...metrics, sd: pred.residualSd }),
     parityRange: {
       yTrueMin: pred.yTrueMin,
       yTrueMax: pred.yTrueMax,
       yPredMin: pred.yPredMin,
       yPredMax: pred.yPredMax,
     },
+    manifest: {
+      derivedFromTarget: pred.derivedFromTarget,
+      targetScaled: pred.targetScaled,
+    },
+  }
+}
+
+/** The single-run endpoint refuses a frame over its point cap and does not
+ *  decimate (`MAX_PREDICTION_POINTS`, apps/python/schemas/preprocess.py). */
+function isTooLarge(err: unknown): boolean {
+  return err instanceof Error && /rows, over the \d+/.test(err.message)
+}
+
+function numberOf(
+  bag: Record<string, unknown> | null,
+  key: string,
+): number | null {
+  const v = bag?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * A non-CV run's own population: its TEST split. Strict about the METRICS, as
+ * before this feature — a successful run whose metrics cannot be read is an
+ * error to show, not an absence to explain.
+ *
+ * An over-cap SERIES is the one exception, handled like the other two
+ * populations: the page keeps its tiles, the holdout tab, importance and the
+ * Retrain action, and the panel says the series is not drawn. Before, that
+ * single throw took the whole of Step 5 down with it.
+ */
+async function loadTestSplit(
+  draftId: string,
+  runId: string,
+  run: RunDetail,
+): Promise<LoadedPopulation> {
+  const metrics = {
+    r2: requireMetric(run.metrics, 'r2'),
+    rmse: requireMetric(run.metrics, 'rmse'),
+    mae: requireMetric(run.metrics, 'mae'),
+  }
+  let predRes: Awaited<ReturnType<typeof modelDraftRunService.predictions>>
+  try {
+    predRes = await modelDraftRunService.predictions(draftId, runId, 'test')
+  } catch (err) {
+    if (!isTooLarge(err)) throw err
+    return {
+      manifest: null,
+      evaluation: {
+        population: 'test-split',
+        metrics: { ...metrics, std: null, nSplits: null },
+        fit: null,
+        parityRange: null,
+        absence: 'too-large',
+      },
+    }
+  }
+  const { fit, parityRange, manifest } = toFit(predRes.data, metrics)
+  return {
+    manifest,
+    evaluation: {
+      population: 'test-split',
+      metrics: { ...metrics, std: null, nSplits: null },
+      fit,
+      parityRange,
+      absence: null,
+    },
   }
 }
 
 /**
- * MODEL-FLOW-004. Step 4 Evaluation's data source — a draft's training run,
- * read server-side (no client-computed fit). Keyed on `(draftId, runId)`
- * rather than derived from wizard atoms, so resuming a TRAINED draft (out of
- * scope for this feature, MODEL-FLOW-010-T08's gap 1) is a follow-on rather
- * than a rewrite: whatever resolves a `runId` can call this hook unchanged.
+ * MODEL-FLOW-030. A CV run's own population: its OUT-OF-FOLD series. The
+ * tiles are the fold MEAN ± std (`metrics.cv_*`) — never a figure recomputed
+ * from the pooled series, whose RMSE is a different number. The series' own
+ * residual SD (`fit.sd`) is the pooled figure and the diagnostics' basis.
  *
- * `runIdHint` may be null — see `resolveRunId`'s own doc comment. Only
- * `draftId` gates `enabled`: a hint-less call still has a real chance of
- * finding a SUCCEEDED run via `ModelDraft.currentRunId`.
+ * A run with no out-of-fold object (trained before image 1.0.21) keeps its
+ * fold tiles and says so; an over-cap series does the same and draws nothing,
+ * rather than feeding the diagnostics a decimated sample.
  */
-/** MODEL-FLOW-016-T11. `use-model-training.ts`'s own `pollRun` runs the same
- *  2500ms cadence for the training container; matching it here rather than
- *  inventing a second constant. */
+async function loadOutOfFold(
+  draftId: string,
+  runId: string,
+  run: RunDetail,
+): Promise<LoadedPopulation> {
+  const mean = {
+    r2: numberOf(run.metrics, 'cv_r2_mean'),
+    rmse: numberOf(run.metrics, 'cv_rmse_mean'),
+    mae: numberOf(run.metrics, 'cv_mae_mean'),
+  }
+  const std = {
+    r2: numberOf(run.metrics, 'cv_r2_std'),
+    rmse: numberOf(run.metrics, 'cv_rmse_std'),
+    mae: numberOf(run.metrics, 'cv_mae_std'),
+  }
+  const metrics: PopulationMetrics | null =
+    mean.r2 !== null && mean.rmse !== null && mean.mae !== null
+      ? {
+          r2: mean.r2,
+          rmse: mean.rmse,
+          mae: mean.mae,
+          std:
+            std.r2 !== null && std.rmse !== null && std.mae !== null
+              ? { r2: std.r2, rmse: std.rmse, mae: std.mae }
+              : null,
+          nSplits: numberOf(run.metrics, 'n_splits'),
+        }
+      : null
+
+  const absent = (absence: PopulationAbsence): LoadedPopulation => ({
+    manifest: null,
+    evaluation: {
+      population: 'cv-oof',
+      metrics,
+      fit: null,
+      parityRange: null,
+      absence,
+    },
+  })
+  if (!metrics) return absent('no-series')
+
+  try {
+    const predRes = await modelDraftRunService.predictions(
+      draftId,
+      runId,
+      'cv-oof',
+    )
+    const { fit, parityRange, manifest } = toFit(predRes.data, metrics)
+    return {
+      manifest,
+      evaluation: {
+        population: 'cv-oof',
+        metrics,
+        fit,
+        parityRange,
+        absence: null,
+      },
+    }
+  } catch (err) {
+    if (isTooLarge(err)) return absent('too-large')
+    // The key always resolves for a CV run; a missing OBJECT is a 404 from the
+    // reader. Anything else is a read failure worth saying so about.
+    if (err instanceof ApiError && err.status === 404) return absent('no-oof')
+    return absent('unreadable')
+  }
+}
+
+/**
+ * The dataset's raw validation HOLDOUT, for either run kind. Tiles come from
+ * `holdoutMetrics` whenever they exist, series or not; the series is fetched
+ * only when the run recorded one (a CV run's `predictionsKey` IS its holdout, a
+ * non-CV run's `holdoutPredictionsKey` is — `predictionKeyFor`'s rule).
+ */
+async function loadHoldout(
+  draftId: string,
+  runId: string,
+  run: RunDetail,
+  isCv: boolean,
+): Promise<LoadedPopulation> {
+  const r2 = numberOf(run.holdoutMetrics, 'r2')
+  const rmse = numberOf(run.holdoutMetrics, 'rmse')
+  const mae = numberOf(run.holdoutMetrics, 'mae')
+  const metrics: PopulationMetrics | null =
+    r2 !== null && rmse !== null && mae !== null
+      ? { r2, rmse, mae, std: null, nSplits: null }
+      : null
+
+  const absent = (absence: PopulationAbsence): LoadedPopulation => ({
+    manifest: null,
+    evaluation: {
+      population: 'holdout',
+      metrics,
+      fit: null,
+      parityRange: null,
+      absence,
+    },
+  })
+
+  const seriesKey = isCv ? run.predictionsKey : run.holdoutPredictionsKey
+  if (!seriesKey || !metrics) return absent('no-series')
+
+  try {
+    const predRes = await modelDraftRunService.predictions(
+      draftId,
+      runId,
+      'holdout',
+    )
+    const { fit, parityRange, manifest } = toFit(predRes.data, metrics)
+    return {
+      manifest,
+      evaluation: {
+        population: 'holdout',
+        metrics,
+        fit,
+        parityRange,
+        absence: null,
+      },
+    }
+  } catch (err) {
+    return absent(isTooLarge(err) ? 'too-large' : 'unreadable')
+  }
+}
+
 const SCORING_POLL_MS = 2500
 
 export function useDraftRunEvaluation(
@@ -353,15 +574,18 @@ export function useDraftRunEvaluation(
   runIdHint: string | null,
 ): UseDraftRunEvaluationResult {
   const [run, setRun] = useState<DraftRunSummary | null>(null)
-  const [fit, setFit] = useState<ModelFit | null>(null)
   const [manifest, setManifest] = useState<DraftRunManifestInfo | null>(null)
-  const [parityRange, setParityRange] = useState<ParityRange | null>(null)
+  const [own, setOwn] = useState<PopulationEvaluation | null>(null)
+  const [holdout, setHoldout] = useState<PopulationEvaluation | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Bumped by the poll effect below and by `triggerScoring` — included in
   // `cacheKey` purely to force a cache MISS on each tick
   // (`chart-request-cache` has no TTL of its own), never read otherwise.
   const [pollTick, setPollTick] = useState(0)
+  // The last clean own-population load, for a poll tick to reuse. A ref, not
+  // state: nothing renders from it.
+  const ownSnapshot = useRef<OwnSnapshot | null>(null)
 
   const enabled = !!draftId
   const cacheKey = enabled
@@ -379,16 +603,22 @@ export function useDraftRunEvaluation(
     // force a fresh fetch — caching that key would leak one Map entry per
     // tick for as long as scoring runs, since nothing ever reads it back.
     skipCache: pollTick > 0,
-    fetcher: () => fetchEvaluation(draftId!, runIdHint),
+    fetcher: () =>
+      fetchEvaluation(
+        draftId!,
+        runIdHint,
+        // First load and any non-poll fetch read everything fresh.
+        pollTick > 0 ? ownSnapshot.current : null,
+      ),
     onLoading: () => {
       // Only clear stale state on the FIRST load, not on a poll refetch —
       // a poll tick while `scoring` must not flash the whole panel back to
       // a loading skeleton every 2.5s.
       if (pollTick === 0) {
         setRun(null)
-        setFit(null)
         setManifest(null)
-        setParityRange(null)
+        setOwn(null)
+        setHoldout(null)
         setLoading(true)
       }
       setError(null)
@@ -396,9 +626,17 @@ export function useDraftRunEvaluation(
     onSettled: result => {
       if (result.status === 'ready') {
         setRun(result.data.run)
-        setFit(result.data.fit)
         setManifest(result.data.manifest)
-        setParityRange(result.data.parityRange)
+        setOwn(result.data.own)
+        setHoldout(result.data.holdout)
+        ownSnapshot.current =
+          result.data.run && result.data.own
+            ? {
+                runId: result.data.run.id,
+                own: result.data.own,
+                manifest: result.data.manifest,
+              }
+            : null
       } else {
         setError(result.error)
       }
@@ -406,9 +644,9 @@ export function useDraftRunEvaluation(
     },
     onIdle: () => {
       setRun(null)
-      setFit(null)
       setManifest(null)
-      setParityRange(null)
+      setOwn(null)
+      setHoldout(null)
       setLoading(false)
       setError(null)
     },
@@ -432,5 +670,5 @@ export function useDraftRunEvaluation(
     setPollTick(t => t + 1)
   }
 
-  return { run, fit, manifest, parityRange, loading, error, triggerScoring }
+  return { run, manifest, own, holdout, loading, error, triggerScoring }
 }

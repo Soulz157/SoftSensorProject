@@ -63,11 +63,23 @@ function stringField(value: unknown, key: string): string | null {
  * for EVERY run including CV ones. Recorded as its own ledger finding (not
  * fixed here): three separate workarounds now exist because of this one gap.
  */
+/**
+ * MODEL-FLOW-029. A CV run's fold count, or null for a non-CV run (or a CV
+ * run that recorded none). `cvFoldsKey` decides CV-ness, never `splitSpec`'s
+ * method; the count is read from `metrics.n_splits` first and the split spec
+ * second, both loosely, for the reason this file's doc comment gives.
+ */
+export function cvFoldCountOf(run: ModelTrainingRunListItem): number | null {
+  if (run.cvFoldsKey === null) return null
+  return (
+    numberField(run.metrics, 'n_splits') ??
+    numberField(run.splitSpec, 'n_splits')
+  )
+}
+
 export function splitShapeKey(run: ModelTrainingRunListItem): string {
   if (run.cvFoldsKey !== null) {
-    const n =
-      numberField(run.metrics, 'n_splits') ??
-      numberField(run.splitSpec, 'n_splits')
+    const n = cvFoldCountOf(run)
     return `cv:${n ?? '?'}`
   }
   const s = run.splitSpec
@@ -78,9 +90,7 @@ export function splitShapeKey(run: ModelTrainingRunListItem): string {
 
 export function splitShapeLabel(run: ModelTrainingRunListItem): string {
   if (run.cvFoldsKey !== null) {
-    const n =
-      numberField(run.metrics, 'n_splits') ??
-      numberField(run.splitSpec, 'n_splits')
+    const n = cvFoldCountOf(run)
     return n !== null ? `${n}-fold cross-validation` : 'cross-validation'
   }
   const s = run.splitSpec

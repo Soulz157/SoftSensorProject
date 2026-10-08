@@ -118,9 +118,9 @@ export const CreateTrainingRunSchema = z
      * MODEL-FLOW-019-T31. Groups the runs of one feature-count sweep so the
      * table can read them back as one curve. Client-generated, because the
      * sweep is sequenced client-side: a candidate job cannot carry these rows
-     * — it is never CV (`runDtoFor` sets no `nSplits`), so no row would have
-     * the fold spread AC67 requires, and its runs store no `splitStats`, so
-     * no row would have AC68's observations-per-feature either.
+     * — it is CV only as a HYPERPARAMETER_SEARCH over ONE feature set
+     * (MODEL-FLOW-029), never a ladder of feature subsets, and its runs store
+     * no `splitStats`, so no row would have AC68's observations-per-feature.
      */
     sweepId: z.string().uuid().optional(),
 
@@ -164,7 +164,7 @@ export const MAX_PREDICTION_BATCH_RUN_IDS = 24;
  * downstream — access check, batch cap, decimation, soft-fail-per-run — is
  * identical. A parallel endpoint would have to restate all of it.
  */
-export const PredictionPopulationEnum = z.enum(['test', 'holdout']);
+export const PredictionPopulationEnum = z.enum(['test', 'holdout', 'cv-oof']);
 
 export const RunPredictionsQuerySchema = z
   .object({ population: PredictionPopulationEnum.optional() })

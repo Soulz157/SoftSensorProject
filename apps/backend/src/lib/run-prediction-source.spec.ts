@@ -60,3 +60,38 @@ describe('predictionKeyFor — a CV run', () => {
     expect(predictionKeyFor(unscoredCv, 'holdout')).toBeNull();
   });
 });
+
+/**
+ * MODEL-FLOW-028-T01. A CV run's out-of-fold series is a THIRD population: no
+ * run column records its key, so it is resolved beside `cvFoldsKey`, and it
+ * must never be mistaken for (or substitute for) the test split or holdout.
+ */
+describe("predictionKeyFor — 'cv-oof'", () => {
+  const OOF = 'drafts/d1/runs/r1/cv_oof_predictions.parquet';
+
+  it('resolves beside cv_folds.json under the same run prefix', () => {
+    expect(predictionKeyFor(run({ cvFoldsKey: CV }), 'cv-oof')).toBe(OOF);
+  });
+
+  it('also resolves for a model-scoped (saved) run prefix', () => {
+    const saved = run({ cvFoldsKey: 'models/m1/runs/r1/cv_folds.json' });
+    expect(predictionKeyFor(saved, 'cv-oof')).toBe(
+      'models/m1/runs/r1/cv_oof_predictions.parquet',
+    );
+  });
+
+  it('has none for a non-CV run', () => {
+    expect(predictionKeyFor(run(), 'cv-oof')).toBeNull();
+  });
+
+  it('leaves a CV run test and holdout answers unchanged', () => {
+    const scoredCv = run({ cvFoldsKey: CV, predictionsKey: TEST });
+    expect(predictionKeyFor(scoredCv, 'test')).toBeNull();
+    expect(predictionKeyFor(scoredCv, 'holdout')).toBe(TEST);
+  });
+
+  it('is independent of scoring: an unscored CV run still has one', () => {
+    const unscoredCv = run({ cvFoldsKey: CV, predictionsKey: null });
+    expect(predictionKeyFor(unscoredCv, 'cv-oof')).toBe(OOF);
+  });
+});

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   breakdownRuntime,
+  cvFitCount,
   estimateRuntimeSeconds,
   type RuntimeInput,
 } from '@/lib/model/estimate-runtime'
@@ -161,5 +162,45 @@ describe('estimateRuntimeSeconds — real variant counts (MODEL-FLOW-025-T06)', 
 
   it('ignores counts while Find Best Parameters is off', () => {
     expect(est({ tuningVariants: { lightgbm: 3 } })).toBeCloseTo(one, 6)
+  })
+})
+
+describe('Cross-Validation pricing (MODEL-FLOW-029)', () => {
+  it('prices a single CV run as k folds plus the refit', () => {
+    expect(est({ nSplits: 5 })).toBeCloseTo(est() * 6, 6)
+  })
+
+  it('prices a CV search as every variant times k+1', () => {
+    const search = { findBestParams: true, tuningVariants: { lightgbm: 4 } }
+    expect(est({ ...search, nSplits: 3 })).toBeCloseTo(est(search) * 4, 6)
+  })
+
+  it('is unchanged with CV off', () => {
+    expect(est({ nSplits: undefined })).toBeCloseTo(est(), 6)
+  })
+})
+
+describe('cvFitCount (MODEL-FLOW-029)', () => {
+  it('is null with CV off', () => {
+    expect(cvFitCount(BASE)).toBeNull()
+  })
+
+  it('counts one candidate for a plain CV run', () => {
+    expect(cvFitCount({ ...BASE, nSplits: 5 })).toEqual({
+      candidates: 1,
+      fitsEach: 6,
+      total: 6,
+    })
+  })
+
+  it('counts the base plus every variant for a CV search', () => {
+    expect(
+      cvFitCount({
+        ...BASE,
+        nSplits: 5,
+        findBestParams: true,
+        tuningVariants: { lightgbm: 7 },
+      }),
+    ).toEqual({ candidates: 8, fitsEach: 6, total: 48 })
   })
 })

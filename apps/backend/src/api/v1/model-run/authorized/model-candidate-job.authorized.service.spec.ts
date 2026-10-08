@@ -42,6 +42,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
     targetY: 'TI-101',
     goldArtifactId: 'gold-1',
     trainTestSplit: null as number | null,
+    // MODEL-FLOW-029. Null = not a cross-validated search.
+    nSplits: null as number | null,
     kind: 'HYPERPARAMETER_SEARCH' as
       | 'HYPERPARAMETER_SEARCH'
       | 'ALGORITHM_SWEEP'
@@ -1039,6 +1041,206 @@ describe('ModelCandidateJobAuthorizedService', () => {
             bestRunId: 'run-0',
             bestRmse: 0.5,
           }),
+        }),
+      );
+    });
+  });
+
+  describe('MODEL-FLOW-029 — a cross-validated HYPERPARAMETER_SEARCH', () => {
+    const SCHEMA_BASE = {
+      goldArtifactId: '123e4567-e89b-12d3-a456-426614174000',
+      targetY: 'TI-101',
+      candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+    };
+    const TWO_ALGORITHMS = [
+      { algorithm: 'ridge', hyperparameters: { alpha: 1 } },
+      { algorithm: 'ols', hyperparameters: {} },
+    ];
+
+    beforeEach(() => {
+      mockedTuningCandidatesFor.mockReset();
+      mockedDistinctExtraVariants.mockReset().mockReturnValue([]);
+    });
+
+    it('accepts nSplits on a HYPERPARAMETER_SEARCH', () => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...SCHEMA_BASE,
+        kind: 'HYPERPARAMETER_SEARCH',
+        nSplits: 3,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it.each(['ALGORITHM_SWEEP', 'SWEEP_THEN_TUNE'])(
+      'refuses nSplits on %s — CV and an algorithm sweep stay exclusive',
+      (kind) => {
+        const result = CreateCandidateJobSchema.safeParse({
+          ...SCHEMA_BASE,
+          candidates: TWO_ALGORITHMS,
+          kind,
+          nSplits: 3,
+        });
+        expect(result.success).toBe(false);
+      },
+    );
+
+    it('refuses nSplits together with trainTestSplit', () => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...SCHEMA_BASE,
+        kind: 'HYPERPARAMETER_SEARCH',
+        nSplits: 3,
+        trainTestSplit: 0.7,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('persists nSplits and launches the first variant as a CV run, with no ratio', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 0.01 }]);
+      // `create` resolves to this job row (the mock does not echo `data`),
+      // so it is seeded as the row the create would have written.
+      const prisma = makePrisma({ job: { nSplits: 3 } });
+      const launchDraftRun = jest.fn().mockResolvedValue({ id: 'run-1' });
+      const runLaunch = makeRunLaunch({ launchDraftRun });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          nSplits: 3,
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      const createCall = prisma.modelCandidateJob.create.mock.calls[0][0];
+      expect(createCall.data.nSplits).toBe(3);
+      expect(createCall.data.trainTestSplit).toBeNull();
+      const launchedDto = launchDraftRun.mock.calls[0][1];
+      expect(launchedDto.nSplits).toBe(3);
+      expect(launchedDto).not.toHaveProperty('trainTestSplit');
+    });
+
+    it('records nSplits as null for an ordinary search', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 0.01 }]);
+      const prisma = makePrisma({ job: { trainTestSplit: 0.7 } });
+      const launchDraftRun = jest.fn().mockResolvedValue({ id: 'run-1' });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch({ launchDraftRun }) as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          trainTestSplit: 0.7,
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      const createCall = prisma.modelCandidateJob.create.mock.calls[0][0];
+      expect(createCall.data.nSplits).toBeNull();
+      const launchedDto = launchDraftRun.mock.calls[0][1];
+      expect(launchedDto.trainTestSplit).toBe(0.7);
+      expect(launchedDto).not.toHaveProperty('nSplits');
+    });
+
+    it('ranks a CV job on cv_rmse_mean and launches the next variant as CV too', async () => {
+      const prisma = makePrisma({
+        job: { completedRuns: 0, totalRuns: 2, nSplits: 3 },
+        // A real CV run: fold aggregates only, no bare rmse.
+        run: {
+          id: 'run-1',
+          status: 'SUCCEEDED',
+          metrics: { cv_rmse_mean: 0.4, cv_rmse_std: 0.05, n_splits: 3 },
+        },
+      });
+      const launchDraftRun = jest.fn().mockResolvedValue({ id: 'run-2' });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch({ launchDraftRun }) as never,
+      );
+
+      await service.advanceJobForRun('run-1', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 0.4 }),
+        }),
+      );
+      expect(launchDraftRun).toHaveBeenCalledWith(
+        'draft-1',
+        expect.objectContaining({ nSplits: 3 }),
+        'job-1',
+      );
+    });
+
+    it('keeps the earlier CV winner when a later variant has a worse fold mean', async () => {
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          nSplits: 3,
+          currentRunId: 'run-2',
+          bestRunId: 'run-1',
+          bestRmse: 0.4,
+        },
+        run: {
+          id: 'run-2',
+          status: 'SUCCEEDED',
+          metrics: { cv_rmse_mean: 0.6, cv_rmse_std: 0.01, n_splits: 3 },
+        },
+      });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+
+      await service.advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'SUCCEEDED',
+            bestRunId: 'run-1',
+            bestRmse: 0.4,
+          }),
+        }),
+      );
+    });
+
+    it('a NON-CV job still ranks on rmse even if a run also carries cv_rmse_mean', async () => {
+      const prisma = makePrisma({
+        job: { completedRuns: 0, totalRuns: 2 },
+        run: {
+          id: 'run-1',
+          status: 'SUCCEEDED',
+          metrics: { rmse: 0.9, cv_rmse_mean: 0.1 },
+        },
+      });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch({
+          launchDraftRun: jest.fn().mockResolvedValue({ id: 'run-2' }),
+        }) as never,
+      );
+
+      await service.advanceJobForRun('run-1', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 0.9 }),
         }),
       );
     });

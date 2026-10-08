@@ -13,8 +13,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
+
 from api import RunApi
-from artifacts import CV_FOLDS_FILENAME
+from artifacts import CV_FOLDS_FILENAME, CV_OOF_PREDICTIONS_FILENAME
+from config import TIMESTAMP_COLUMN
 from metrics import aggregate_fold_metrics, regression_metrics
 from models import build_model
 from pipelines.context import (
@@ -42,6 +45,7 @@ def run(prepared: PreparedRun, api: RunApi) -> TrainingResult:
     )
 
     fold_records: list[dict[str, Any]] = []
+    oof_frames: list[pd.DataFrame] = []
     for i, plan in enumerate(fold_plan):
         fold_train_rows = plan["train_rows"]
         fold_test_end = fold_train_rows + plan["test_rows"]
@@ -59,6 +63,16 @@ def run(prepared: PreparedRun, api: RunApi) -> TrainingResult:
         fold_model.fit(fold_train[feature_cols], fold_train[target_y])
         fold_pred = fold_model.predict(fold_test[feature_cols])
         fold_pred_train = fold_model.predict(fold_train[feature_cols])
+        # MODEL-FLOW-028-T01. Already computed above; kept rather than dropped.
+        oof_frames.append(
+            pd.DataFrame(
+                {
+                    TIMESTAMP_COLUMN: fold_test[TIMESTAMP_COLUMN].values,
+                    "y_true": fold_test[target_y].values,
+                    "y_pred": fold_pred,
+                }
+            )
+        )
 
         record = {
             "fold": i + 1,
@@ -140,6 +154,12 @@ def run(prepared: PreparedRun, api: RunApi) -> TrainingResult:
                 "n_splits": n_splits,
                 "folds": fold_records,
             }
+        },
+        # MODEL-FLOW-028-T01. The k folds' test windows are contiguous and do
+        # not overlap, so concatenating in fold order is already time-ordered
+        # and covers each scored row exactly once.
+        extra_parquet={
+            CV_OOF_PREDICTIONS_FILENAME: pd.concat(oof_frames, ignore_index=True)
         },
         # Holdout scoring for a CV run is score.py's job, not this run's.
         holdout_eligible=False,

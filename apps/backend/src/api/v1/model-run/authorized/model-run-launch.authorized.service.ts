@@ -38,6 +38,10 @@ import { TrainningContainerAuthorizedService } from '../../trainning-container/a
 const MODEL_POPULATION_LABEL: Record<PredictionPopulation, string> = {
   test: 'test data',
   holdout: 'test data the current version was scored on',
+  // MODEL-FLOW-028-T01. Draft-route only — the Model route's own enum
+  // (`ModelRunPredictionPopulationEnum`) never carries it — but the record is
+  // keyed on the shared type, so it needs an entry.
+  'cv-oof': 'cross-validation folds',
 };
 
 /** Anything longer than this and the token, not the run, is the risk. */

@@ -503,6 +503,19 @@ export function holdoutSeriesAbsenceOf(
   return 'not-scored-yet'
 }
 
+/** MODEL-FLOW-030. The out-of-fold BATCH itself failed (network, a refused
+ *  chunk) — a different fact from the object being absent, and never worded as
+ *  "trained before they were saved", which would send the reader to retrain a
+ *  run that is fine. */
+export const OOF_LOAD_FAILED_TEXT =
+  'Could not load the out-of-fold predictions — try again in a moment.'
+
+/** MODEL-FLOW-030. A CV run's out-of-fold key always resolves; the object
+ *  exists only if the trainer that ran it wrote one (image 1.0.21+). */
+const OOF_MISSING_TEXT =
+  'No out-of-fold predictions are stored — runs trained before they were ' +
+  'saved have none. Retrain to see this chart.'
+
 /**
  * MODEL-FLOW-019-T28/T29. Why ONE candidate's OWN chart — for the given
  * population — has no series to draw, in one sentence. The per-candidate
@@ -536,6 +549,13 @@ export function candidateAbsenceText(
       )
     }
     return null
+  }
+
+  if (population === 'cv-oof') {
+    if (!candidate.cvFoldsKey) {
+      return 'Only a cross-validated candidate has an out-of-fold series.'
+    }
+    return OOF_MISSING_TEXT
   }
 
   const absence = holdoutSeriesAbsenceOf(candidate)
@@ -650,6 +670,12 @@ export function groupAbsenceText(
     return artifactAbsenceText(population)
   }
 
+  if (population === 'cv-oof') {
+    return candidates.some(c => c.cvFoldsKey)
+      ? OOF_MISSING_TEXT
+      : 'No candidate here is cross-validated, so none has an out-of-fold series.'
+  }
+
   const absences = new Set(candidates.map(c => c.holdoutSeriesAbsence))
   // Ordered most-informative-first — a mixed group states the most
   // actionable fact any candidate carries, rather than the first one found.
@@ -757,10 +783,28 @@ export function groupOmittedText(
  * modes, and it would drift the moment `MetricSource` gains a member or
  * respells one.
  */
-export type EvaluationPopulation = Extract<
-  MetricSource,
-  'test-split' | 'holdout'
->
+export type EvaluationPopulation = 'test-split' | 'holdout' | 'cv-oof'
+
+/**
+ * MODEL-FLOW-030. `cv-oof` — a CV run's OUT-OF-FOLD series: each expanding
+ * fold's test rows as predicted by that fold's own model. Declared here as an
+ * explicit member rather than widening the `Extract` of `MetricSource` it used
+ * to be: a fold ESTIMATE is a `MetricSource`, an out-of-fold SERIES is not
+ * (it is a population to chart), and folding it into `MetricSource` would put
+ * a fourth claim into every column of every table that keys on it.
+ *
+ * It describes the CONFIGURATION's k fold fits, not the refit that ships.
+ */
+
+/** The query-parameter spelling the predictions endpoints pin
+ *  (`PredictionPopulation`, services/model-draft.ts) — a separate vocabulary
+ *  from the display one above, on purpose. One mapping, here, so no caller
+ *  respells it. */
+export function wirePopulationOf(
+  population: EvaluationPopulation,
+): 'test' | 'holdout' | 'cv-oof' {
+  return population === 'test-split' ? 'test' : population
+}
 
 /**
  * The population a run's predictions file describes, from its own scoring
@@ -806,15 +850,17 @@ export function populationOf(phase: CvScoringPhase): EvaluationPopulation {
 /** Axis/column form, in the split vocabulary `METRIC_SOURCE_LABELS`
  *  already uses for Step 4's own columns — 'Test' / 'Validate'. */
 export function populationAxisLabel(p: EvaluationPopulation): string {
-  return METRIC_SOURCE_LABELS[p]
+  return p === 'cv-oof' ? 'Out-of-fold' : METRIC_SOURCE_LABELS[p]
 }
 
 /** Prose form, for the middle of a sentence. */
 export function populationLabel(p: EvaluationPopulation): string {
+  if (p === 'cv-oof') return 'out-of-fold'
   return p === 'holdout' ? 'validation holdout' : 'test split'
 }
 
 /** Heading form — capitalised, standalone. */
 export function populationTitle(p: EvaluationPopulation): string {
+  if (p === 'cv-oof') return 'Out-of-fold (CV)'
   return p === 'holdout' ? 'Validate' : 'Test-split'
 }

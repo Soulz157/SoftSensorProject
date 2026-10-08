@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import {
   breakdownRuntime,
+  cvFitCount,
   estimateRuntimeSeconds,
   formatDuration,
   SUPERLINEAR,
@@ -43,6 +44,7 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
   }, [status])
 
   const est = estimateRuntimeSeconds(input)
+  const cvFits = cvFitCount(input)
   const low = est * 0.6
   const high = est * 2
   const heavy = est > 900 // 15 min
@@ -79,6 +81,18 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
           }}
         />
       </div>
+
+      {/* MODEL-FLOW-029. The fit count, stated before Start — under CV every
+          candidate is k fold fits plus a refit. */}
+      {!live && cvFits && (
+        <p className="text-[11px] text-muted-foreground">
+          Cross-validation:{' '}
+          <span className="font-medium tabular-nums text-foreground">
+            {cvFits.candidates} candidate{cvFits.candidates === 1 ? '' : 's'} ×{' '}
+            {cvFits.fitsEach} fits = {cvFits.total} model fits
+          </span>
+        </p>
+      )}
 
       {!live && shares.length > 0 && (
         <div className="space-y-2 pt-3 border-t border-border/50">

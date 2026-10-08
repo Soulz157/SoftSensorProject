@@ -36,6 +36,14 @@ import {
  */
 
 const STEP_FILE = path.resolve(__dirname, '../phase-5-evaluation.tsx')
+// MODEL-FLOW-030. The zoom window, the residual-derived diagnostics and the
+// charts they drive moved out of the page into one panel per population (one
+// per tab), so the zoom-scope rule is read from there. The page itself still
+// holds the run-level wiring the other guards in this file check.
+const PANEL_FILE = path.resolve(
+  __dirname,
+  '../evaluation/evaluation-population-panel.tsx',
+)
 const PARITY_CHART_FILE = path.resolve(
   __dirname,
   '../evaluation/parity-scatter-chart.tsx',
@@ -171,8 +179,10 @@ describe('Parity legend wording and shape (MODEL-FLOW-019-T17/V31)', () => {
  * `zoom` — proving the split is real on BOTH sides, not just claimed.
  */
 describe('Zoom-scope split is structural, not just stated (MODEL-FLOW-019-T16/V30)', () => {
+  const readPanel = () => readFileSync(PANEL_FILE, 'utf-8')
+
   it('residuals, histogramBins and qq never list zoom as a dependency', () => {
-    const src = read()
+    const src = readPanel()
     expect(src).toMatch(
       /const residuals = useMemo\(\s*\(\) => [^,]+,\s*\[fit\],?\s*\)/,
     )
@@ -183,7 +193,7 @@ describe('Zoom-scope split is structural, not just stated (MODEL-FLOW-019-T16/V3
   })
 
   it('visibleRows and tickFormatter DO depend on zoom, driving the two charts above', () => {
-    const src = read()
+    const src = readPanel()
     expect(src).toMatch(
       /const visibleRows = useMemo\(\(\) => \{[\s\S]*?\}, \[rows, zoom\]\)/,
     )

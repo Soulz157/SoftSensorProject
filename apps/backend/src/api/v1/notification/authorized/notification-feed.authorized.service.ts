@@ -23,6 +23,11 @@ const MAX_LIMIT = 50;
  * events from BOTH the list and the unread count for that user only —
  * a separate control from `NotificationChannel.focusModelIds`, which picks
  * the models a channel sends for, for everyone.
+ *
+ * HIDING, per user: the X on a bell row writes a `NotificationDismissal`;
+ * "Clear all" moves `NotificationReadMarker.clearedAt`. Both drop events
+ * from this user's list AND count; the shared event rows (other members,
+ * Teams/e-mail delivery history) are never deleted.
  */
 @Injectable()
 export class NotificationFeedAuthorizedService {
@@ -34,20 +39,56 @@ export class NotificationFeedAuthorizedService {
   private eventWhere(
     user: Auth.UserPayload,
   ): PrismaTypes.NotificationEventWhereInput {
-    const workspaceWhere: PrismaTypes.WorkspaceWhereInput =
-      user.role === 'ADMIN'
-        ? { deletedAt: null }
-        : {
-            deletedAt: null,
-            OR: [
-              { ownerId: user.id },
-              { members: { some: { userId: user.id } } },
-            ],
-          };
     return {
-      workspace: workspaceWhere,
+      workspace: this.workspaceWhere(user),
       model: { notificationUserMutes: { none: { userId: user.id } } },
+      dismissals: { none: { userId: user.id } },
     };
+  }
+
+  /** The read-access rule alone (no mutes / dismissals / clear) — what an
+   *  event must pass for this user to be allowed to act on it at all. */
+  private workspaceWhere(
+    user: Auth.UserPayload,
+  ): PrismaTypes.WorkspaceWhereInput {
+    return user.role === 'ADMIN'
+      ? { deletedAt: null }
+      : {
+          deletedAt: null,
+          OR: [
+            { ownerId: user.id },
+            { members: { some: { userId: user.id } } },
+          ],
+        };
+  }
+
+  private readMarker(userId: string) {
+    return this.prisma.notificationReadMarker.findUnique({
+      where: { userId },
+      select: { lastReadAt: true, clearedAt: true },
+    });
+  }
+
+  /** `?limit=` arrives as text; anything that is not a number falls back to
+   *  the default instead of reaching Prisma as `take: NaN` (a 500). */
+  private takeFrom(limit: number | undefined): number {
+    const n =
+      limit !== undefined && Number.isFinite(limit) ? limit : DEFAULT_LIMIT;
+    return Math.min(Math.max(Math.trunc(n), 1), MAX_LIMIT);
+  }
+
+  /** An unparseable cursor is the caller's mistake (400), not a 500. */
+  private cursorFrom(cursor: string | undefined): Date | undefined {
+    if (cursor === undefined) return undefined;
+    const at = new Date(cursor);
+    if (Number.isNaN(at.getTime())) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'Invalid cursor',
+        type: 'ERROR',
+      });
+    }
+    return at;
   }
 
   async listEventsService(
@@ -55,35 +96,35 @@ export class NotificationFeedAuthorizedService {
     cursor: string | undefined,
     limit: number | undefined,
   ) {
-    const take = Math.min(Math.max(limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
+    const take = this.takeFrom(limit);
+    const before = this.cursorFrom(cursor);
+    const marker = await this.readMarker(user.id);
+    const createdAt: PrismaTypes.DateTimeFilter = {
+      ...(marker?.clearedAt ? { gt: marker.clearedAt } : {}),
+      ...(before ? { lt: before } : {}),
+    };
     const where: PrismaTypes.NotificationEventWhereInput = {
       ...this.eventWhere(user),
-      ...(cursor ? { createdAt: { lt: new Date(cursor) } } : {}),
+      ...(Object.keys(createdAt).length ? { createdAt } : {}),
     };
 
-    const [events, marker] = await Promise.all([
-      this.prisma.notificationEvent.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        take,
-        select: {
-          id: true,
-          modelId: true,
-          axis: true,
-          kind: true,
-          severity: true,
-          fromStatus: true,
-          toStatus: true,
-          reason: true,
-          createdAt: true,
-          model: { select: { name: true } },
-        },
-      }),
-      this.prisma.notificationReadMarker.findUnique({
-        where: { userId: user.id },
-        select: { lastReadAt: true },
-      }),
-    ]);
+    const events = await this.prisma.notificationEvent.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        modelId: true,
+        axis: true,
+        kind: true,
+        severity: true,
+        fromStatus: true,
+        toStatus: true,
+        reason: true,
+        createdAt: true,
+        model: { select: { name: true } },
+      },
+    });
     const lastReadAt = marker?.lastReadAt ?? new Date(0);
 
     return {
@@ -113,14 +154,16 @@ export class NotificationFeedAuthorizedService {
   }
 
   async unreadCountService(user: Auth.UserPayload) {
-    const marker = await this.prisma.notificationReadMarker.findUnique({
-      where: { userId: user.id },
-      select: { lastReadAt: true },
-    });
-    const lastReadAt = marker?.lastReadAt ?? new Date(0);
+    const marker = await this.readMarker(user.id);
+    // Unread = newer than BOTH watermarks: a cleared event is gone, not
+    // unread.
+    const since = [marker?.lastReadAt, marker?.clearedAt].reduce<Date>(
+      (a, b) => (b && b > a ? b : a),
+      new Date(0),
+    );
 
     const count = await this.prisma.notificationEvent.count({
-      where: { ...this.eventWhere(user), createdAt: { gt: lastReadAt } },
+      where: { ...this.eventWhere(user), createdAt: { gt: since } },
     });
 
     return {
@@ -192,6 +235,69 @@ export class NotificationFeedAuthorizedService {
         type: 'ERROR',
       });
     }
+  }
+
+  /** The row's X: hide ONE event from this user's bell. Idempotent. */
+  async dismissEventService(user: Auth.UserPayload, eventId: string) {
+    const event = await this.prisma.notificationEvent.findFirst({
+      where: { id: eventId, workspace: this.workspaceWhere(user) },
+      select: { id: true },
+    });
+    if (!event) {
+      // Same answer for "no such event" and "not yours to see".
+      throw new AppException({
+        statusCode: 404,
+        message: 'Notification not found',
+        type: 'ERROR',
+      });
+    }
+    await this.prisma.notificationDismissal.upsert({
+      where: { userId_eventId: { userId: user.id, eventId } },
+      create: { userId: user.id, eventId },
+      update: {},
+    });
+    return {
+      statusCode: 200,
+      message: 'Notification removed',
+      type: 'SUCCESS' as const,
+    };
+  }
+
+  /**
+   * "Clear all": hide every event up to `upTo` (the newest one the user was
+   * shown — never one that arrived after) from this user's bell. Clamped to
+   * now, never moves back, and also counts as read. Per-event dismissals it
+   * now covers are dropped, so that table stays small.
+   */
+  async clearService(user: Auth.UserPayload, upTo: string | undefined) {
+    const now = new Date();
+    const asked = upTo ? new Date(upTo) : now;
+    const target = asked > now ? now : asked;
+    const marker = await this.readMarker(user.id);
+    const later = (a: Date | null | undefined) =>
+      a && a > target ? a : target;
+
+    await this.prisma.$transaction([
+      this.prisma.notificationReadMarker.upsert({
+        where: { userId: user.id },
+        create: { userId: user.id, lastReadAt: target, clearedAt: target },
+        update: {
+          lastReadAt: later(marker?.lastReadAt),
+          clearedAt: later(marker?.clearedAt),
+        },
+      }),
+      this.prisma.notificationDismissal.deleteMany({
+        where: {
+          userId: user.id,
+          event: { createdAt: { lte: later(marker?.clearedAt) } },
+        },
+      }),
+    ]);
+    return {
+      statusCode: 200,
+      message: 'Notifications cleared',
+      type: 'SUCCESS' as const,
+    };
   }
 
   async listMutesService(user: Auth.UserPayload) {

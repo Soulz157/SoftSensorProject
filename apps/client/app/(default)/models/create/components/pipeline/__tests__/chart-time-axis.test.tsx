@@ -118,9 +118,15 @@ vi.mock('@/hooks/model/use-candidate-predictions', () => ({
   useCandidatePredictions: (
     draftId: string,
     runIds: string[],
-    population: 'test' | 'holdout' = 'test',
+    population: 'test' | 'holdout' | 'cv-oof' = 'test',
   ) => {
     h.predictionsSpy(draftId, runIds, population)
+    // MODEL-FLOW-030. A third population with its OWN (empty) result — never
+    // the test series, which would stage an out-of-fold chart drawing test
+    // rows: the conflation these tests exist to catch.
+    if (population === 'cv-oof') {
+      return { byRunId: new Map(), loading: false, error: null }
+    }
     return population === 'holdout'
       ? h.holdoutPredictionsResult
       : h.predictionsResult
@@ -591,10 +597,14 @@ describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties not
 
     // Requested: the foreign id was never asked for, only the job's own two.
     expect(h.predictionsSpy).toHaveBeenCalled()
-    const [, requestedIds] = h.predictionsSpy.mock.calls.at(-1) as [
-      string,
-      string[],
-    ]
+    // The TEST-SPLIT fetch specifically (MODEL-FLOW-030 added a third,
+    // out-of-fold call after it, so `.at(-1)` no longer means "the test one").
+    const [, requestedIds] = h.predictionsSpy.mock.calls
+      .filter(call => call[2] === 'test')
+      .at(-1) as [string, string[]]
+    for (const call of h.predictionsSpy.mock.calls) {
+      expect(call[1]).not.toContain(FOREIGN_RUN_ID)
+    }
     expect(requestedIds.sort()).toEqual(['run-a', 'run-b'])
     expect(requestedIds).not.toContain(FOREIGN_RUN_ID)
   })
@@ -678,10 +688,14 @@ describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties not
     expect(screen.getAllByText('Random Forest').length).toBeGreaterThan(0)
 
     expect(h.predictionsSpy).toHaveBeenCalled()
-    const [, requestedIds] = h.predictionsSpy.mock.calls.at(-1) as [
-      string,
-      string[],
-    ]
+    // The TEST-SPLIT fetch specifically (MODEL-FLOW-030 added a third,
+    // out-of-fold call after it, so `.at(-1)` no longer means "the test one").
+    const [, requestedIds] = h.predictionsSpy.mock.calls
+      .filter(call => call[2] === 'test')
+      .at(-1) as [string, string[]]
+    for (const call of h.predictionsSpy.mock.calls) {
+      expect(call[1]).not.toContain(FOREIGN_RUN_ID)
+    }
     expect(requestedIds.sort()).toEqual(['run-a', 'run-b'])
     expect(requestedIds).not.toContain(FOREIGN_RUN_ID)
   })

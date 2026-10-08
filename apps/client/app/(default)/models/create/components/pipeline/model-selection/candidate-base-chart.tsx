@@ -43,6 +43,9 @@ interface Props {
   /** Small-multiple default. The overlay chart draws its own component
    *  entirely (`candidate-overlay-chart.tsx`), not this one. */
   height?: number
+  /** MODEL-FLOW-030. Fold-boundary x positions for a CV candidate's
+   *  out-of-fold chart (`foldCutXs`). Omitted for every other population. */
+  foldCuts?: number[]
 }
 
 /**
@@ -61,6 +64,7 @@ export function CandidateBaseChart({
   loading,
   absence,
   height = 140,
+  foldCuts,
 }: Props) {
   if (!runId) return null
 
@@ -84,6 +88,18 @@ export function CandidateBaseChart({
     return (
       <p className="text-[10px] text-muted-foreground">
         {absence ?? 'No predictions artifact recorded for this run.'}
+      </p>
+    )
+  }
+
+  // MODEL-FLOW-030. The python reader soft-fails a missing object per item
+  // with a raw storage string ("Could not read '<key>': NoSuchKey"). For the
+  // out-of-fold population that is the one expected cause (a CV run from before
+  // the trainer saved it), so say that instead of printing storage internals.
+  if (population === 'cv-oof' && (item.error || item.points.length === 0)) {
+    return (
+      <p className="text-[10px] text-muted-foreground">
+        {absence ?? 'No out-of-fold predictions are stored for this run.'}
       </p>
     )
   }
@@ -126,6 +142,7 @@ export function CandidateBaseChart({
         // across two windows with no overlapping timestamps (T26's live
         // read: holdout 27-31 Jan against test 21-27 Feb for the same run).
         syncId={`candidate-base-${runId}-${population}`}
+        foldCuts={foldCuts}
       />
       {/* MODEL-FLOW-019 AC65. Unconditional, not gated on `downsampled` —
           a small holdout frame (as few as 40 rows) is never decimated and

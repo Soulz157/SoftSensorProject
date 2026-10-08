@@ -24,6 +24,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import {
   ALGORITHM_LABELS,
   mpAlgorithmsAtom,
+  mpCandidateJobIdAtom,
   mpCompareRunIdsAtom,
   mpSelectedDatasetAtom,
   mpServerDraftIdAtom,
@@ -32,8 +33,11 @@ import {
 } from '@/store/model-pipeline'
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import { useDraftSelection } from '@/hooks/model/use-draft-selection'
+import { useCandidateJob } from '@/hooks/model/use-candidate-job'
 import { useApplyRunParams } from '@/hooks/model/use-apply-run-params'
 import { RunComparisonPanel } from './run-comparison-panel'
+import { CvRunSection, cvEstimateOf, formatCvScore } from './cv-results-section'
+import { cvFoldCountOf } from '@/lib/run-comparison'
 import {
   classifyHyperparams,
   seedConsumedBy,
@@ -151,6 +155,20 @@ export function RunParamsPanel() {
   const { selectedRunId, refetch: refetchSelection } =
     useDraftSelection(draftId)
   const { applyRun } = useApplyRunParams()
+  // MODEL-FLOW-029. The current search's winner, marked on its own card. Not
+  // the "Step 4" badge: that reads the draft's `selectedRunId`, which only
+  // Step 4's own Select writes, so a finished search's winner had no mark
+  // here until the user picked it there.
+  const candidateJobId = useAtomValue(mpCandidateJobIdAtom)
+  const { job: candidateJob, refetch: refetchJob } = useCandidateJob(
+    draftId,
+    candidateJobId,
+  )
+  const bestRunId = candidateJob?.bestRunId ?? null
+  const bestTitle =
+    candidateJob?.nSplits != null
+      ? 'Lowest mean cross-validated RMSE in this search.'
+      : 'Lowest test RMSE in this search.'
 
   const [appliedMessage, setAppliedMessage] = useState<string | null>(null)
   /**
@@ -195,7 +213,8 @@ export function RunParamsPanel() {
   useEffect(() => {
     refetch()
     refetchSelection()
-  }, [trainStatus, refetch, refetchSelection])
+    refetchJob()
+  }, [trainStatus, refetch, refetchSelection, refetchJob])
 
   const handleApply = (run: ModelTrainingRunListItem) => {
     const { dropped } = applyRun(run)
@@ -293,12 +312,14 @@ export function RunParamsPanel() {
         orderedRuns.map(run => (
           <RunCard
             key={run.id}
+            draftId={draftId}
             run={run}
             latest={run.id === latestRunId}
             currentAlgorithms={currentAlgorithms}
             datasetTags={selectedDataset ? selectedDataset.tags : null}
             isCompared={activeCompareIds.has(run.id)}
             isCarryForward={run.id === selectedRunId}
+            bestTitle={run.id === bestRunId ? bestTitle : null}
             onApply={handleApply}
             onToggleCompare={toggleCompare}
           />
@@ -398,21 +419,26 @@ function Provenance({
 }
 
 function RunCard({
+  draftId,
   run,
   latest,
   currentAlgorithms,
   datasetTags,
   isCompared,
   isCarryForward,
+  bestTitle,
   onApply,
   onToggleCompare,
 }: {
+  draftId: string
   run: ModelTrainingRunListItem
   latest: boolean
   currentAlgorithms: readonly string[]
   datasetTags: readonly string[] | null
   isCompared: boolean
   isCarryForward: boolean
+  /** Non-null on the current search's winner — the rule it won by. */
+  bestTitle: string | null
   onApply: (run: ModelTrainingRunListItem) => void
   onToggleCompare: (run: ModelTrainingRunListItem) => void
 }) {
@@ -433,6 +459,11 @@ function RunCard({
   const rows = classifyHyperparams(run.algorithm, run.hyperparameters)
   const seedUsed = seedConsumedBy(run.algorithm)
   const rmse = typeof run.metrics?.rmse === 'number' ? run.metrics.rmse : null
+  // MODEL-FLOW-029. A CV run has no bare `rmse` — its headline is the fold
+  // mean ± std, labelled as CV so it is never read as a test-split figure.
+  const isCv = run.cvFoldsKey !== null
+  const cvEstimate = isCv ? cvEstimateOf(run) : undefined
+  const cvFolds = cvFoldCountOf(run)
 
   // Guarded, not assumed finite: a CV run's splitSpec is
   // {method:'cv_expanding', n_splits} with no `ratio` at all, so this reads
@@ -508,6 +539,15 @@ function RunCard({
                 latest
               </Badge>
             )}
+            {bestTitle && (
+              <Badge
+                variant="outline"
+                className="h-4 shrink-0 px-1.5 text-[9px] font-medium"
+                title={bestTitle}
+              >
+                best
+              </Badge>
+            )}
             {isCarryForward && (
               <Badge
                 variant="outline"
@@ -523,12 +563,20 @@ function RunCard({
             )}
             <span className="ml-auto flex shrink-0 items-baseline gap-1">
               <span className="text-[9px] uppercase text-muted-foreground">
-                rmse
+                {isCv ? 'cv rmse' : 'rmse'}
               </span>
               <span className="font-mono text-sm font-medium tabular-nums text-foreground">
-                {run.status === 'SUCCEEDED' && rmse !== null
-                  ? METRIC_META.rmse.format(rmse)
-                  : '—'}
+                {run.status !== 'SUCCEEDED'
+                  ? '—'
+                  : isCv
+                    ? formatCvScore(
+                        cvEstimate?.mean.rmse ?? null,
+                        cvEstimate?.std.rmse ?? null,
+                        METRIC_META.rmse.format,
+                      )
+                    : rmse !== null
+                      ? METRIC_META.rmse.format(rmse)
+                      : '—'}
               </span>
             </span>
           </div>
@@ -546,6 +594,14 @@ function RunCard({
               y ={' '}
               <span className="font-medium text-foreground">{run.targetY}</span>
             </span>
+            {isCv && (
+              <span
+                className="shrink-0 rounded border border-border/60 px-1 font-medium text-foreground"
+                title="Expanding time-ordered folds plus a refit — Apply restores Cross-Validation with this k."
+              >
+                {cvFolds !== null ? `${cvFolds}-fold CV` : 'CV'}
+              </span>
+            )}
           </div>
         </button>
 
@@ -670,6 +726,13 @@ function RunCard({
               />
             )}
           </div>
+
+          {/* MODEL-FLOW-029-T03. The CV run's own results, in the same card
+              a normal run uses. Mounted only while the card is open, so it
+              fetches nothing for a collapsed card. */}
+          {isCv && run.status === 'SUCCEEDED' && (
+            <CvRunSection draftId={draftId} run={run} />
+          )}
 
           {run.failureReason && (
             <p className="text-[10px] text-destructive">{run.failureReason}</p>

@@ -19,6 +19,7 @@ import {
   groupOmittedText,
   holdoutSeriesAbsenceOf,
   scoreableRunIds,
+  wirePopulationOf,
 } from './metric-source'
 
 /**
@@ -737,5 +738,70 @@ describe('groupOmittedText', () => {
         { runId: null, label: 'MLP' },
       ]),
     ).toContain('MLP')
+  })
+})
+
+describe("the 'cv-oof' population (MODEL-FLOW-030)", () => {
+  const cvCandidate = {
+    status: 'SUCCEEDED',
+    algorithm: 'ridge',
+    cvFoldsKey: 'drafts/d/runs/r/cv_folds.json',
+    predictionsKey: null,
+    holdoutPredictionsKey: null,
+    scoringContainerId: null,
+    holdoutAbsence: null,
+  }
+
+  it('has its own display words, never the test split’s or the holdout’s', () => {
+    expect(populationTitle('cv-oof')).toBe('Out-of-fold (CV)')
+    expect(populationLabel('cv-oof')).toBe('out-of-fold')
+    expect(populationAxisLabel('cv-oof')).toBe('Out-of-fold')
+    expect(populationLabel('cv-oof')).not.toMatch(/test|holdout/)
+  })
+
+  it('leaves the existing two populations’ words exactly as they were', () => {
+    expect(populationTitle('test-split')).toBe('Test-split')
+    expect(populationTitle('holdout')).toBe('Validate')
+    expect(populationLabel('test-split')).toBe('test split')
+    expect(populationLabel('holdout')).toBe('validation holdout')
+  })
+
+  it('maps display values to the wire spelling in one place', () => {
+    expect(wirePopulationOf('test-split')).toBe('test')
+    expect(wirePopulationOf('holdout')).toBe('holdout')
+    expect(wirePopulationOf('cv-oof')).toBe('cv-oof')
+  })
+
+  it('populationOf is untouched: a CV run before scoring is still the holdout', () => {
+    expect(populationOf('awaiting-scoring')).toBe('holdout')
+    expect(populationOf('not-cv')).toBe('test-split')
+  })
+
+  it('explains a CV candidate with no OOF object by what to do', () => {
+    expect(candidateAbsenceText(cvCandidate, 'cv-oof')).toMatch(
+      /Retrain to see this chart/,
+    )
+  })
+
+  it('says a non-CV candidate simply has no out-of-fold series', () => {
+    expect(
+      candidateAbsenceText({ ...cvCandidate, cvFoldsKey: null }, 'cv-oof'),
+    ).toMatch(/Only a cross-validated candidate/)
+  })
+
+  it('a group with no CV candidate says none is cross-validated', () => {
+    expect(
+      groupAbsenceText('cv-oof', [
+        { cvFoldsKey: null, holdoutSeriesAbsence: null },
+      ]),
+    ).toMatch(/none has an out-of-fold series/)
+  })
+
+  it('a group with a CV candidate gets the retrain sentence', () => {
+    expect(
+      groupAbsenceText('cv-oof', [
+        { cvFoldsKey: 'k', holdoutSeriesAbsence: null },
+      ]),
+    ).toMatch(/Retrain to see this chart/)
   })
 })

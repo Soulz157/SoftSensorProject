@@ -1324,6 +1324,16 @@ INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = (
 # images/trainer/app/artifacts.py and artifact-keys.ts — change all three.
 # See images/trainer/app/MIRRORS.md entry 11.
 CV_GAP_PREDICTIONS_FILENAME = "cv_gap_predictions.parquet"
+# MODEL-FLOW-028-T01. A CV run's OUT-OF-FOLD series ({timestamp,y_true,y_pred})
+# — every expanding fold's test rows as predicted by that fold's own model. The
+# same three columns as predictions.parquet but a different population (the
+# CONFIGURATION's fold fits, not the shipped refit), so its OWN filename: it is
+# never the test split and never the holdout. Mirrored in
+# images/trainer/app/artifacts.py (same name) and artifact-keys.ts — change all
+# three, and also add to _ALLOWED_RUN_UPLOADS and
+# _READABLE_PREDICTION_FILENAMES in services/artifact_service.py. See
+# images/trainer/app/MIRRORS.md entry 12.
+CV_OOF_PREDICTIONS_FILENAME = "cv_oof_predictions.parquet"
 # MODEL-FLOW-016-T08. The model-ready validation holdout `tryReplayHoldout`
 # (model-run.authorized.service.ts) writes under a run's own prefix, via
 # `prepare_holdout_for_run`/`replay_holdout_for_run` — NOT one of train.py's

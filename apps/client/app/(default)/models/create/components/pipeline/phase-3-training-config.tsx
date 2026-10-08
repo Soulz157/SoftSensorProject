@@ -277,6 +277,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
             findBestParams={draft.findBestParams}
             nEstimators={nEstimators}
             tuningVariants={tuningVariants}
+            nSplits={draft.nSplits}
             status={training.status}
             progress={training.progress}
           />

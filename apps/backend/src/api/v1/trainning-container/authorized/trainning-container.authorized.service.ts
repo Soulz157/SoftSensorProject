@@ -441,8 +441,17 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // (json_safe): a 1-row frozen holdout's r2 is NaN, and requests refused the
   // whole completion, failing good runs. Built by the user (2026-10-02, image
   // e27b112f7562); trainer suite 80/80 inside it.
+  //
+  // 1.0.21 — MODEL-FLOW-028. pipelines/cv_expanding.py keeps each fold's
+  // out-of-fold predictions and publishes them as `cv_oof_predictions.parquet`
+  // (new TrainingResult.extra_parquet; MIRRORS.md entry 12) instead of
+  // discarding them. ADDITIVE: every non-CV run is byte-for-byte 1.0.20. A CV
+  // run trained on an older image has no such file and never will. Built by
+  // the user (2026-10-08, image 51d727619caa); trainer suite 83/83 run against
+  // the mounted source, and the built image confirmed to contain the new code.
+  // Not pushed.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.20';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.21';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

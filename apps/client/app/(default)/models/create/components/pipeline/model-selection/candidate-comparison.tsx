@@ -31,6 +31,7 @@ import type {
   RunPredictionsBatchItem,
 } from '@/services/model-draft'
 import { EmptyPanel } from './empty-panel'
+import { OwnPopulationOverlays } from './own-population-overlays'
 import { CandidateOverlayChart } from './candidate-overlay-chart'
 import { CandidateTable } from './candidate-table'
 import { MetricsPicker } from './metrics-picker'
@@ -117,6 +118,22 @@ export function CandidateComparison({
   // test-split fetch's.
   const { byRunId: holdoutByRunId, loading: holdoutLoading } =
     useCandidatePredictions(draftId, candidateRunIds, 'holdout')
+
+  // MODEL-FLOW-030. A cross-validated search puts CV runs on this path. They
+  // have no test split, so their OWN population is the out-of-fold series —
+  // fetched for the CV candidates only (a non-CV run has none, and asking would
+  // be a request per run for a guaranteed absence). Keyed on the ids' content so
+  // the hook, which refetches on array identity, fetches once.
+  const cvKey = [...(job?.candidates ?? []), ...earlierCandidates]
+    .filter(c => c.cvFoldsKey && c.runId)
+    .map(c => c.runId as string)
+    .join(',')
+  const cvRunIds = useMemo(() => (cvKey ? cvKey.split(',') : []), [cvKey])
+  const {
+    byRunId: oofByRunId,
+    loading: oofLoading,
+    error: oofError,
+  } = useCandidatePredictions(draftId, cvRunIds, 'cv-oof')
 
   // MODEL-FLOW-019-T08 part 3. Step 3's own compare checkboxes sit on draft
   // runs, and a job-owned run IS a draft run, so a ticked set narrows this
@@ -252,8 +269,12 @@ export function CandidateComparison({
         onSelect={runId => void handleSelect(runId)}
         byRunId={byRunId}
         holdoutByRunId={holdoutByRunId}
+        oofByRunId={oofByRunId}
+        oofError={oofError}
+        draftId={draftId}
         predictionsLoading={predictionsLoading}
         holdoutLoading={holdoutLoading}
+        oofLoading={oofLoading}
         selectedMetrics={selectedMetrics}
         sortMetric={sortMetric}
         onSortMetric={setSortMetric}
@@ -281,8 +302,12 @@ function CandidateGroups({
   onSelect,
   byRunId,
   holdoutByRunId,
+  oofByRunId,
+  oofError,
+  draftId,
   predictionsLoading,
   holdoutLoading,
+  oofLoading,
   selectedMetrics,
   sortMetric,
   onSortMetric,
@@ -300,6 +325,11 @@ function CandidateGroups({
   /** MODEL-FLOW-019-T20. The same candidates' HOLDOUT series, fetched
    *  separately — empty for a candidate never scored against one. */
   holdoutByRunId: Map<string, RunPredictionsBatchItem>
+  /** MODEL-FLOW-030. The CV candidates' out-of-fold series. */
+  oofByRunId: Map<string, RunPredictionsBatchItem>
+  oofError: string | null
+  draftId: string
+  oofLoading: boolean
   predictionsLoading: boolean
   /** MODEL-FLOW-019-T28. The holdout fetch's own loading state — the
    *  expanded row's Validate chart reads this, not `predictionsLoading`. */
@@ -337,11 +367,11 @@ function CandidateGroups({
     const toScoreIds = scoreableRunIds(group)
     return (
       <div className="space-y-4">
-        <CandidateOverlayChart
+        <OwnPopulationOverlays
           candidates={group}
           byRunId={byRunId}
-          population="test-split"
-          absenceNote={groupAbsenceText('test-split', groupAbsenceCandidates)}
+          oofByRunId={oofByRunId}
+          oofError={oofError}
         />
         {/* MODEL-FLOW-019-T20. Beside the test-split overlay, never merged
             into it — the two windows are genuinely different data (the
@@ -378,8 +408,12 @@ function CandidateGroups({
           onSortMetric={onSortMetric}
           byRunId={byRunId}
           holdoutByRunId={holdoutByRunId}
+          oofByRunId={oofByRunId}
+          oofError={oofError}
+          draftId={draftId}
           predictionsLoading={predictionsLoading}
           holdoutLoading={holdoutLoading}
+          oofLoading={oofLoading}
           criteria={criteria}
         />
       </div>

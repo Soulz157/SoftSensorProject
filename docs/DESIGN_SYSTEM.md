@@ -360,6 +360,10 @@ toast.success('Workspace created')
 toast.error('Something went wrong')
 ```
 
+**New-notification toasts** (`hooks/notifications/use-notifications.ts`, pure rules in `lib/notification-toast.ts`): when the bell's poll sees a new **WARNING** (`toast.warning`) or **CRITICAL** (`toast.error`) event, it pops a toast titled `{model} · {event}` with the same detail line as the bell and an **Open** action to the model tab that explains it. INFO events (started, stopped, promoted, recovered) are bell-only. At most 3 per poll, then one "N more new notifications" summary. Events that existed when the page loaded never toast. A section that already shows its own error inline does not also toast (see §15).
+
+**Bell history** (`navbar-notification.tsx`): each row is the link plus two icon items — **X** removes that one event, **⋯** holds "Mute this model". "Clear all" in the header empties the list up to the newest event shown. Removing and clearing are per user (other members and Teams/e-mail history keep the event) and **silent** — no toast unless they fail. Mute is a real setting change, so it stays behind ⋯ and keeps its toast.
+
 ---
 
 ## 8. Patterns

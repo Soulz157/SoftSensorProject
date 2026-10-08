@@ -89,6 +89,18 @@ INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = (
 # _READABLE_PREDICTION_FILENAMES) and artifact-keys.ts — change all three.
 # See MIRRORS.md entry 11.
 CV_GAP_PREDICTIONS_FILENAME = "cv_gap_predictions.parquet"
+# MODEL-FLOW-028-T01. A CV run's OUT-OF-FOLD series ({timestamp,y_true,y_pred}):
+# every expanding fold's test rows, predicted by that fold's own model, which
+# never trained on them. The same three columns as predictions.parquet, but a
+# different population — it describes the CONFIGURATION's k fold fits, not the
+# refit that ships — so it has its OWN filename and is never served as the test
+# split or the holdout. Fold membership is derived from cv_folds.json's
+# cut_timestamps, never stored as a column (the shared prediction reader
+# accepts exactly three). Written only by pipelines/cv_expanding.py. Mirrored
+# in apps/python's object_store.py (CV_OOF_PREDICTIONS_FILENAME, gating
+# _ALLOWED_RUN_UPLOADS) and artifact_service.py (_READABLE_PREDICTION_FILENAMES)
+# and artifact-keys.ts — change all four. See MIRRORS.md entry 12.
+CV_OOF_PREDICTIONS_FILENAME = "cv_oof_predictions.parquet"
 # MODEL-FLOW-023-T03/T10. A SECOND artifact, never a widened
 # feature_importance.json — importance.py's own finding 6 is explicit that
 # the two methods cannot share one file (a signed permutation drop and an

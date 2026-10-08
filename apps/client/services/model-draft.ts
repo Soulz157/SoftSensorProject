@@ -502,8 +502,13 @@ const oneRun = (draftId: string, runId: string) =>
  * WHICH COLUMN backs each is a per-run fact resolved server-side
  * (`predictionKeyFor`), never here: a CV run's `predictionsKey` IS its
  * holdout, a non-CV run's is its test split.
+ *
+ * MODEL-FLOW-028. `'cv-oof'` is a CV run's OUT-OF-FOLD series: each expanding
+ * fold's test rows as predicted by that fold's own model. It is a third
+ * population, not a test split or a holdout, and describes the configuration
+ * rather than the refit that ships. Draft route only.
  */
-export type PredictionPopulation = 'test' | 'holdout'
+export type PredictionPopulation = 'test' | 'holdout' | 'cv-oof'
 
 /**
  * A training run's predictions for one population, parsed (MODEL-FLOW-004).
@@ -668,6 +673,10 @@ export interface CreateCandidateJobInput {
   goldArtifactId: string
   targetY: string
   trainTestSplit?: number
+  /** MODEL-FLOW-029. Cross-validate every candidate with k expanding folds.
+   *  HYPERPARAMETER_SEARCH only and exclusive with `trainTestSplit` — the
+   *  server refuses either violation. */
+  nSplits?: number
   kind: ModelCandidateJobKind
   candidates: CandidateInput[]
   /** MODEL-FLOW-020-T04/T02. The two dataset size figures as this form saw
@@ -769,6 +778,9 @@ export interface ModelCandidateJob {
   targetY: string
   goldArtifactId: string
   trainTestSplit: number | null
+  /** MODEL-FLOW-029. k for a cross-validated search, whose `bestRunId` is
+   *  the lowest mean CV RMSE rather than test RMSE. Null/absent = not CV. */
+  nSplits?: number | null
   kind: ModelCandidateJobKind
   totalRuns: number
   completedRuns: number

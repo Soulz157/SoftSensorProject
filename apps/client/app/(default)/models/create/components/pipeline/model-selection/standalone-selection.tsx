@@ -33,6 +33,7 @@ import type { ModelTrainingRunListItem } from '@/services/model-draft'
 import { candidateFromRun } from '@/lib/candidate-from-run'
 import { EmptyPanel } from './empty-panel'
 import { CandidateOverlayChart } from './candidate-overlay-chart'
+import { OwnPopulationOverlays } from './own-population-overlays'
 import { CandidateTable } from './candidate-table'
 import { MetricsPicker } from './metrics-picker'
 
@@ -90,6 +91,20 @@ function StandaloneComparison({
   // path's.
   const { byRunId: holdoutByRunId, loading: holdoutLoading } =
     useCandidatePredictions(draftId, runIds, 'holdout')
+
+  // MODEL-FLOW-030. A CV run has no test split; its own population is the
+  // out-of-fold series. Fetched for the CV runs only, keyed on the ids'
+  // content so the hook (which refetches on array identity) fetches once.
+  const cvKey = runs
+    .filter(run => run.status === 'SUCCEEDED' && run.cvFoldsKey)
+    .map(run => run.id)
+    .join(',')
+  const cvRunIds = useMemo(() => (cvKey ? cvKey.split(',') : []), [cvKey])
+  const {
+    byRunId: oofByRunId,
+    loading: oofLoading,
+    error: oofError,
+  } = useCandidatePredictions(draftId, cvRunIds, 'cv-oof')
 
   // MODEL-FLOW-019-T20 follow-up. The ONE dataset-level fact `candidateFromRun`
   // needs and a run row cannot answer itself — mirrors the job path's own
@@ -243,14 +258,11 @@ function StandaloneComparison({
                 every path — including a single-run group, which renders one
                 prediction series against actual rather than no chart at
                 all. */}
-            <CandidateOverlayChart
+            <OwnPopulationOverlays
               candidates={groupCandidates}
               byRunId={byRunId}
-              population="test-split"
-              absenceNote={groupAbsenceText(
-                'test-split',
-                groupAbsenceCandidates,
-              )}
+              oofByRunId={oofByRunId}
+              oofError={oofError}
             />
             <CandidateOverlayChart
               candidates={groupCandidates}
@@ -281,8 +293,12 @@ function StandaloneComparison({
               onSortMetric={setSortMetric}
               byRunId={byRunId}
               holdoutByRunId={holdoutByRunId}
+              oofByRunId={oofByRunId}
+              oofError={oofError}
+              draftId={draftId}
               predictionsLoading={predictionsLoading}
               holdoutLoading={holdoutLoading}
+              oofLoading={oofLoading}
               rowNote={noteFor(groupRuns)}
               rowAction={actionFor}
               chartMode="predictions-only"

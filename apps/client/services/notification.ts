@@ -110,6 +110,21 @@ export const notificationFeedService = {
       body: JSON.stringify(upTo ? { upTo } : {}),
     }),
 
+  /** The bell row's X: hide one event for this user only. */
+  dismiss: (eventId: string): Promise<unknown> =>
+    fetchClient(
+      `/api/v1/authorized/notifications/${encodeURIComponent(eventId)}`,
+      { method: 'DELETE' },
+    ),
+
+  /** "Clear all": hide everything up to `upTo` (the newest event shown) for
+   *  this user only. */
+  clear: (upTo?: string): Promise<unknown> =>
+    fetchClient('/api/v1/authorized/notifications/clear', {
+      method: 'POST',
+      body: JSON.stringify(upTo ? { upTo } : {}),
+    }),
+
   listMutes: (): Promise<{ data: { modelIds: string[] } }> =>
     fetchClient('/api/v1/authorized/notifications/mutes', { method: 'GET' }),
 

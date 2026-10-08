@@ -105,6 +105,15 @@ export const DATA_FILENAME_BY_TYPE: Record<
 export const PRESET_ROOT = 'feature-presets/';
 export const SDTA_FILENAME = 'sdta.json';
 
+/**
+ * MODEL-FLOW-028-T01. A CV run's out-of-fold series. Named, unlike its
+ * siblings, because `predictionKeyFor` resolves it by convention (no run column
+ * records its key) and needs the filename. Mirrored from
+ * CV_OOF_PREDICTIONS_FILENAME in object_store.py and
+ * images/trainer/app/artifacts.py — change all three.
+ */
+export const CV_OOF_PREDICTIONS_FILENAME = 'cv_oof_predictions.parquet';
+
 export const RUN_UPLOAD_FILENAMES = [
   'model.joblib',
   'metrics.json',
@@ -162,6 +171,16 @@ export const RUN_UPLOAD_FILENAMES = [
   // object_store.py and images/trainer/app/artifacts.py — change all three.
   // See images/trainer/app/MIRRORS.md entry 11.
   'cv_gap_predictions.parquet',
+  // MODEL-FLOW-028-T01. A CV run's OUT-OF-FOLD series — {timestamp, y_true,
+  // y_pred}, every expanding fold's test rows predicted by that fold's own
+  // model. Its own filename: a different population from predictions.parquet
+  // (a non-CV run's test split), holdout_predictions.parquet and the refit
+  // that ships. No run column records its key: it is the sibling of
+  // `cvFoldsKey` (see run-prediction-source.ts). Mirrored from
+  // CV_OOF_PREDICTIONS_FILENAME in object_store.py and
+  // images/trainer/app/artifacts.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 12.
+  CV_OOF_PREDICTIONS_FILENAME,
 ] as const;
 
 /**

@@ -12,6 +12,7 @@ import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { NotificationFeedAuthorizedService } from './notification-feed.authorized.service';
 import {
+  ClearNotificationsDto,
   MarkNotificationsReadDto,
   MuteModelDto,
 } from './dto/notification-feed.authorized.dto';
@@ -53,6 +54,15 @@ export class NotificationFeedAuthorizedController {
     return this.service.markReadService(user, dto.upTo);
   }
 
+  /** "Clear all" in the bell — hides for this user only. */
+  @Post('clear')
+  clearController(
+    @Body() dto: ClearNotificationsDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.clearService(user, dto.upTo);
+  }
+
   @Get('mutes')
   listMutesController(@Users() user: Auth.UserPayload) {
     return this.service.listMutesService(user);
@@ -64,6 +74,15 @@ export class NotificationFeedAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.service.muteModelService(user, dto.modelId);
+  }
+
+  /** A bell row's X — hides that one event for this user only. */
+  @Delete(':eventId')
+  dismissController(
+    @Param('eventId') eventId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.dismissEventService(user, eventId);
   }
 
   @Delete('mutes/:modelId')

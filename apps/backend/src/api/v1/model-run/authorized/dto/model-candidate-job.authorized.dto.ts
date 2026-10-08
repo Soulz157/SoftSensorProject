@@ -34,6 +34,13 @@ export const CreateCandidateJobSchema = z
     goldArtifactId: z.string().uuid(),
     targetY: z.string().min(1).max(255),
     trainTestSplit: z.coerce.number().min(0.5).max(0.95).optional(),
+    // MODEL-FLOW-029. Cross-validate EVERY candidate with k expanding folds —
+    // each launches as an ordinary `cv_expanding` run, and the winner is the
+    // lowest mean CV RMSE. Same bounds as CreateTrainingRunSchema.nSplits;
+    // the per-dataset cap (distinct labelled values // 10) is enforced by the
+    // run launch itself, which every candidate goes through. HYPERPARAMETER_
+    // SEARCH only, and exclusive with trainTestSplit — both refined below.
+    nSplits: z.coerce.number().int().min(2).max(10).optional(),
     kind: CandidateJobKindEnum,
 
     // At least 1 for HYPERPARAMETER_SEARCH — a single algorithm + its
@@ -113,6 +120,27 @@ export const CreateCandidateJobSchema = z
       message:
         'extraVariants is only supported for a HYPERPARAMETER_SEARCH — a sweep builds its tuning phase after the winner is known, from the job row.',
       path: ['extraVariants'],
+    },
+  )
+  // MODEL-FLOW-029. CV composes with tuning ONE algorithm, never with a
+  // sweep: MODEL-FLOW-016 resolved CV x algorithm sweep as mutually
+  // exclusive, and that decision stands.
+  .refine(
+    (data) =>
+      data.nSplits === undefined || data.kind === 'HYPERPARAMETER_SEARCH',
+    {
+      message:
+        'Cross-validation (nSplits) is only supported for a HYPERPARAMETER_SEARCH — an algorithm sweep and CV are mutually exclusive.',
+      path: ['nSplits'],
+    },
+  )
+  .refine(
+    (data) =>
+      !(data.nSplits !== undefined && data.trainTestSplit !== undefined),
+    {
+      message:
+        'trainTestSplit and nSplits are mutually exclusive — a cross-validated search has k fold cuts, not one train/test ratio.',
+      path: ['nSplits'],
     },
   )
   .refine(
