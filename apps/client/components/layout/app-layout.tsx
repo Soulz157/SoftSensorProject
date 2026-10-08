@@ -30,7 +30,9 @@ export function AppLayout({ children }: AppLayoutProps) {
 
   // A signed-out visitor on `/` gets the full-screen landing page — the
   // sidebar, search and system-health badge mean nothing without an account.
-  if (pathname === '/' && status === 'unauthenticated') {
+  // While the session is still loading `/` shows its full-screen skeleton, so
+  // the shell never flashes for a guest.
+  if (pathname === '/' && status !== 'authenticated') {
     return <>{children}</>
   }
 
