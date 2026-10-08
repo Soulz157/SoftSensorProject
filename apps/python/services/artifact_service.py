@@ -14,11 +14,11 @@ tmp objects.
 """
 
 from __future__ import annotations
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 import pyarrow as pa
@@ -26,35 +26,75 @@ from fastapi import Response
 
 from intergrations.object_store import (
     COLUMN_STATS_FILENAME,
-    DATA_FILENAME,
     FEATURE_SPEC_FILENAME,
     MANIFEST_FILENAME,
+    CV_FOLDS_FILENAME,
+    FEATURE_IMPORTANCE_FILENAME,
+    PERMUTATION_IMPORTANCE_FILENAME,
+    HOLDOUT_PREDICTIONS_FILENAME,
+    NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+    INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+    CV_GAP_PREDICTIONS_FILENAME,
+    CV_OOF_PREDICTIONS_FILENAME,
     TIMESTAMP_COLUMN,
+    VALIDATE_DATA_FILENAME,
+    VALIDATE_NEW_DATA_FILENAME,
+    VALIDATE_NEW_READY_FILENAME,
+    VALIDATE_READY_FILENAME,
     VALIDATION_REPORT_FILENAME,
     ArtifactStats,
     ObjectStore,
     ObjectStoreError,
+    artifact_prefix,
     build_manifest,
     sidecar_key,
     status_column,
     tag_columns,
+    LOSS_HISTORY_FILENAME,
     METRICS_FILENAME,
     MODEL_FILENAME,
     PREDICTIONS_FILENAME,
     RUN_MANIFEST_FILENAME,
+    draft_run_key,
+    draft_run_prefix,
+    draft_runs_prefix,
     is_committed_artifact_key,
+    is_draft_run_key,
     is_model_run_key,
+    is_prediction_job_key,
+    is_inference_window_key,
+    missing_pct,
     model_run_key,
+    prediction_job_key,
+    inference_window_key,
+    INFERENCE_INPUT_FILENAME,
+    split_data_key,
+    OUTPUT_FILENAME,
+    BATCH_MANIFEST_FILENAME,
 )
 from schemas.preprocess import (
+    ArtifactAdoptRequest,
     ArtifactReclaimRequest,
     CleanRequest,
     CleanupRequest,
     ColumnStatsRequest,
+    CombineForRetrainRequest,
+    DraftRunReclaimRequest,
+    FeatureConfigRequest,
+    FeatureSpecRequest,
     FeaturesRequest,
+    HoldoutSplitRequest,
     MaterializeRequest,
+    MAX_PREDICTION_BATCH_RUNS,
+    MAX_PREDICTION_POINTS,
     MetadataRequest,
+    PassthroughHoldoutForRunRequest,
+    PrepareHoldoutForRunRequest,
+    ReplayHoldoutForRunRequest,
+    ReplayHoldoutRequest,
+    ResplitHoldoutRequest,
     RowsRequest,
+    ScaleRequest,
     TagCatalogRequest,
     ValidateRequest,
 )
@@ -62,21 +102,94 @@ from services.cleaning_service import apply_operations
 from services.column_stats_service import build_column_stats
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
 from services.feature_service import (
+    DEFAULT_SCALER,
     apply_features,
+    drop_bad_feature_rows,
     feature_column_name,
+    force_keep_target,
     select_columns,
     to_model_ready,
 )
-from services.feature_spec_service import build_feature_spec
+from softsensor_scaling import assert_scaling_coverage
+from services.downsample import lttb_indices
+from services.feature_spec_service import (
+    build_feature_spec,
+    compute_psi_ref_edges,
+    max_replay_lookback,
+)
 from services.frame_service import from_pi_response, from_sql_response
-from services.preview_service import sample_rows
+from services.preview_service import _finite, sample_rows
 from services.validation_service import run_validation
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 _pi = PIDataSourceService()
 _sql = SQLDataSourceService()
 
 _ALLOWED_RUN_UPLOADS = frozenset(
-    {MODEL_FILENAME, METRICS_FILENAME, RUN_MANIFEST_FILENAME, PREDICTIONS_FILENAME}
+    {
+        MODEL_FILENAME,
+        METRICS_FILENAME,
+        RUN_MANIFEST_FILENAME,
+        PREDICTIONS_FILENAME,
+        LOSS_HISTORY_FILENAME,
+        # MODEL-FLOW-016-T04. Per-fold CV metrics — present only on a CV run.
+        CV_FOLDS_FILENAME,
+        # MODEL-FLOW-019-T09. Per-feature importance — present only for the
+        # algorithms images/trainer/app/importance.py can read a real
+        # quantity from.
+        FEATURE_IMPORTANCE_FILENAME,
+        # MODEL-FLOW-023-T10. Population-scored importance — a second,
+        # independent artifact from FEATURE_IMPORTANCE_FILENAME above,
+        # present only for the strategy that scores a permutation population
+        # (windowed.run, i.e. lstm/gru).
+        PERMUTATION_IMPORTANCE_FILENAME,
+        # MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series, written by
+        # score-mode only — never predictions.parquet, which a non-CV run's
+        # test split already occupies.
+        HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-020-T06. The retrain candidate's per-row series on the
+        # operator's new-data window — its own filename, never one of the two
+        # above (a different population).
+        NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-021. The CURRENT PRODUCTION model's series on that SAME
+        # window — a third population, own filename, never overwriting either
+        # of the above.
+        INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-026-T05. The CV-gap series — five columns, so it is
+        # uploadable here but read only by `run_cv_gap`, never by the
+        # three-column readers below.
+        CV_GAP_PREDICTIONS_FILENAME,
+        # MODEL-FLOW-028-T01. A CV run's out-of-fold series — three columns,
+        # so it is also in _READABLE_PREDICTION_FILENAMES below.
+        CV_OOF_PREDICTIONS_FILENAME,
+    }
+)
+
+#: MODEL-FLOW-019-T20. The READ counterpart of the write allowlist above, and
+#: deliberately its own set: `_ALLOWED_RUN_UPLOADS` gates what a CONTAINER may
+#: write, this gates what `run_predictions`/`_decimated_run_predictions` will
+#: parse as a `{timestamp, y_true, y_pred}` series. Both filenames carry that
+#: identical shape — the only difference is WHICH population the rows describe
+#: (test split vs the dataset's raw validation holdout), which is the caller's
+#: fact to state, not this reader's to infer from a filename. Widening the
+#: WRITE side alone would have left the new artifact uploadable and then
+#: unreadable, refused right here by name.
+_READABLE_PREDICTION_FILENAMES = frozenset(
+    {
+        PREDICTIONS_FILENAME,
+        HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-020-T06. Same {timestamp, y_true, y_pred} shape — see the
+        # note above on why widening the write side alone is not enough.
+        NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-021. Same shape again, a third population.
+        INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-FLOW-028-T01. Same shape once more — a CV run's out-of-fold
+        # population (the configuration's fold fits, not the refit).
+        CV_OOF_PREDICTIONS_FILENAME,
+    }
 )
 
 
@@ -86,6 +199,10 @@ def _stats_payload(
     column_stats_key: str | None = None,
     feature_spec_key: str | None = None,
     skipped_features: list[str] | None = None,
+    validation_row_count: int | None = None,
+    validation_holdout_from: str | None = None,
+    validation_missing_pct: float | None = None,
+    dropped_bad_rows: int | None = None,
 ) -> dict[str, Any]:
     return {
         "object_key": stats.object_key,
@@ -103,6 +220,27 @@ def _stats_payload(
         # call apply_features at all. Only `features()` ever populates
         # this; every other caller passes nothing, defaulting it to [].
         "skipped_features": skipped_features or [],
+        # DS-LAKE-018-T03. Rows written to validate_data.parquet (holdout
+        # window + lead-in) — None means no holdout was requested; only
+        # `materialize()` ever sets this. `row_count` above keeps meaning
+        # "rows in data.parquet" unconditionally, per the task's own AC.
+        "validation_row_count": validation_row_count,
+        # DS-LAKE-018-T05. The resolved holdout boundary, same string
+        # convention `replay_holdout`'s own `holdout_from` expects.
+        "validation_holdout_from": validation_holdout_from,
+        # MODEL-FLOW-010-T06. Share of `validate_data.parquet` cells that are
+        # not Good — `missing_pct(validate_frame)`, computed while the frame
+        # is already in memory at write time rather than a compute-on-read
+        # scan later. None exactly when `validation_row_count` is None (no
+        # holdout requested / not yet re-captured for a legacy holdout).
+        "validation_missing_pct": validation_missing_pct,
+        # DS-LAKE-023-T05. Rows `drop_bad_feature_rows` removed before
+        # `to_model_ready` ran on THIS write — None for every caller that
+        # never calls it (materialize/clean, which never scale). Reported
+        # beside the metric it affects for the same reason
+        # `validation_missing_pct` is: a row count computed over an
+        # unstated subset is not comparable to anything.
+        "dropped_bad_rows": dropped_bad_rows,
     }
 
 
@@ -116,6 +254,10 @@ def _commit(
     column_stats: dict[str, Any] | None = None,
     feature_spec: dict[str, Any] | None = None,
     skipped_features: list[str] | None = None,
+    validation_row_count: int | None = None,
+    validation_holdout_from: str | None = None,
+    validation_missing_pct: float | None = None,
+    dropped_bad_rows: int | None = None,
 ) -> dict[str, Any]:
     """Write the manifest (and, since DS-LAKE-005B-A-T07, the column-stats
     sidecar; since DS-LAKE-006-T05, the feature-spec sidecar) beside the
@@ -146,6 +288,10 @@ def _commit(
             else None
         ),
         skipped_features=skipped_features,
+        validation_row_count=validation_row_count,
+        validation_holdout_from=validation_holdout_from,
+        validation_missing_pct=validation_missing_pct,
+        dropped_bad_rows=dropped_bad_rows,
     )
     store.put_json(
         sidecar_key(stats.object_key, MANIFEST_FILENAME),
@@ -191,12 +337,115 @@ def _as_mapping(response: Any) -> dict[str, Any]:
     return response.model_dump() if hasattr(response, "model_dump") else dict(response)
 
 
+def _wall_clock(value: Any) -> pd.Timestamp:
+    """A caller-supplied boundary timestamp, normalised to the NAIVE
+    wall-clock convention every frame in this wizard already stores.
+
+    MODEL-FLOW-020-T03 found this the hard way. `DatasetArtifact.
+    validationHoldoutFrom` is Postgres `timestamp WITHOUT time zone`, and the
+    parquet's own timestamp column is `datetime64[us]`, tz-naive — but the
+    value reaches this service as JSON, and the backend serialises it with
+    JavaScript's `toISOString()`, which appends `Z`. `pd.Timestamp` then
+    builds a tz-AWARE object, and pandas refuses to compare aware against
+    naive: `TypeError: Invalid comparison between dtype=datetime64[us] and
+    Timestamp`.
+
+    The failure was invisible where it mattered. `tryReplayHoldout` swallows
+    it, and the run's only trace is the generic line "Holdout scoring
+    skipped: Preprocessing failed" — so an affected dataset trains fine,
+    reports test-split metrics fine, and silently never scores a holdout at
+    all. Measured on artifact 1ae5cc53: 0 of its 5 runs had ever produced
+    `holdoutMetrics`.
+
+    `tz_localize(None)` KEEPS THE WALL TIME rather than converting it: a
+    `2026-01-25T17:00:00Z` in becomes `2026-01-25 17:00:00`, the exact value
+    Postgres holds. Converting to a local zone instead would shift the
+    holdout boundary by the UTC offset and silently move which rows are
+    scored. Naive input passes through unchanged, so a caller that already
+    sends wall-clock is unaffected.
+    """
+    ts = pd.Timestamp(value)
+    return ts.tz_localize(None) if ts.tzinfo is not None else ts
+
+
+# DS-LAKE-018-T02/T03: over-provisioned lead-in duration, mirrored from
+# `HOLDOUT_LEAD_IN_DURATION` in apps/client/lib/holdout.ts ({value:7,
+# unit:'day'}). Applied HERE rather than client-side — userDecisions[0]:
+# "the interval is already known at materialize time... so the duration
+# converts to rows there." A plain constant, not a config value: no env var
+# exists for this on either side (see the TS constant's own doc comment).
+HOLDOUT_LEAD_IN = timedelta(days=7)
+
+
+def _split_holdout(
+    frame: pd.DataFrame,
+    holdout: HoldoutSplitRequest,
+    lead_in: timedelta = HOLDOUT_LEAD_IN,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split one materialized frame into (train, validate).
+
+    `train` keeps every row OUTSIDE the holdout window — this is what lands
+    in `data.parquet` (or, for the DS-LAKE-023 features-stage split, in the
+    committed SILVER), so the holdout genuinely leaves the training path
+    (finding: "HOLDOUT ROWS MUST BE CUT FROM data.parquet TOO", the easiest
+    thing here to get wrong and the hardest to notice). `validate` is the
+    holdout window PLUS a lead-in margin ahead of it, so DS-LAKE-018-T04's
+    replay has real prior rows to compute lag/rolling features for the
+    holdout's own first rows (finding: "LAG AND ROLLING FEATURES NEED
+    LEAD-IN ROWS"). Lead-in rows are NOT removed from train — they were
+    already inside the fetch window and cost nothing extra to carry
+    (userDecisions[0]) — they are only ADDITIONALLY copied into `validate`.
+
+    `lead_in` DEFAULTS to `HOLDOUT_LEAD_IN` so both existing callers
+    (`materialize`, `resplit_holdout`) are byte-identical to before this
+    parameter existed. DS-LAKE-023's features-stage split passes
+    `timedelta(0)` explicitly: a feature-bearing holdout already carries its
+    own computed lag/rolling values, so lead-in rows there would be TRAINING
+    rows sitting in the holdout file with no purpose — and they would be
+    SCORED, silently inflating the holdout row count with rows the model
+    trained on. Getting this parameter's value wrong at a NEW call site is
+    exactly the failure DS-LAKE-023-V02 exists to catch.
+
+    Timestamps compare directly: both sides are the same "local wall-clock"
+    convention already used everywhere in this wizard (`HoldoutSplitRequest`'s
+    own doc comment) — no second timezone conversion here.
+    """
+    ts = frame[TIMESTAMP_COLUMN]
+    # Same normalisation as `replay_holdout`'s own boundary, and for the same
+    # reason: these compare against a tz-naive column, and a `Z`-suffixed
+    # caller value would raise rather than mis-split. The "compare directly"
+    # note above describes the CONVENTION (wall-clock on both sides), which
+    # is what `_wall_clock` enforces rather than departs from.
+    holdout_from = _wall_clock(holdout.from_time)
+    holdout_to = _wall_clock(holdout.to_time)
+    lead_in_from = holdout_from - lead_in
+
+    holdout_mask = (ts >= holdout_from) & (ts <= holdout_to)
+    lead_in_mask = (ts >= lead_in_from) & (ts < holdout_from)
+
+    train = frame[~holdout_mask].reset_index(drop=True)
+    validate = (
+        frame[lead_in_mask | holdout_mask]
+        .sort_values(TIMESTAMP_COLUMN)
+        .reset_index(drop=True)
+    )
+    return train, validate
+
+
 def materialize(store: ObjectStore, request: MaterializeRequest) -> dict[str, Any]:
     """Fetch from the source, normalise, and write the raw artifact.
 
     The two source shapes are genuinely different and converge only here: PI is
     tag-major with no shared time axis, SQL is row-major and already aligned.
     `frame_service` reconciles them; this function only routes and writes.
+
+    DS-LAKE-018-T03: when `request.holdout` is set, this is ONE operation
+    with TWO outputs (scope_note — do not split into two calls): the holdout
+    window is cut from the frame BEFORE it is written as `data.parquet`, and
+    written SEPARATELY as `validate_data.parquet` beside it, with lead-in
+    rows included. `row_count` in the response keeps meaning "rows in
+    data.parquet" exactly as before; `validation_row_count` is the new,
+    separate field for the sidecar's own row count.
     """
     started = time.perf_counter()
 
@@ -219,6 +468,21 @@ def materialize(store: ObjectStore, request: MaterializeRequest) -> dict[str, An
         )
 
     assert_frame_is_usable(frame)
+
+    validate_frame: pd.DataFrame | None = None
+    if request.holdout is not None:
+        frame, validate_frame = _split_holdout(frame, request.holdout)
+        # Cutting the holdout can, in principle, leave nothing on either
+        # side (e.g. the whole fetch window picked as the holdout — T01's
+        # own guard 1 does not refuse that, only containment). Both must
+        # fail loud here, not commit a 0-row artifact silently.
+        assert_frame_is_usable(frame)
+        if len(validate_frame) == 0:
+            raise ValueError(
+                "The holdout window matched no rows in the fetched data — "
+                "check the holdout range against the fetch window."
+            )
+
     stats = store.put_frame(frame, request.target_key,
                             overwrite=request.overwrite)
     # No parent: a materialised artifact is a lineage root — it comes from the
@@ -226,7 +490,99 @@ def materialize(store: ObjectStore, request: MaterializeRequest) -> dict[str, An
     # None) reports drift=None for every tag, not 0 — there is nothing to
     # compare against, which is a different fact than "no drift occurred".
     column_stats = build_column_stats(frame, operations=[])
-    return _commit(store, stats, started, column_stats=column_stats)
+
+    validation_row_count = None
+    validation_holdout_from = None
+    validation_missing_pct = None
+    if validate_frame is not None:
+        validate_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+        store.put_frame(validate_frame, validate_key, overwrite=request.overwrite)
+        validation_row_count = len(validate_frame)
+        # Canonicalised via `pd.Timestamp` (not the raw request string) so a
+        # later replay compares against the SAME parsed form `_split_holdout`
+        # itself compared against, never a second, independent parse.
+        assert request.holdout is not None  # validate_frame implies this
+        validation_holdout_from = str(pd.Timestamp(request.holdout.from_time))
+        # MODEL-FLOW-010-T06: captured now, while validate_frame is already
+        # in memory, instead of a compute-on-read scan against
+        # validate_data.parquet later.
+        validation_missing_pct = missing_pct(validate_frame)
+
+    return _commit(
+        store, stats, started,
+        column_stats=column_stats,
+        validation_row_count=validation_row_count,
+        validation_holdout_from=validation_holdout_from,
+        validation_missing_pct=validation_missing_pct,
+    )
+
+
+def resplit_holdout(
+    store: ObjectStore, request: ResplitHoldoutRequest
+) -> dict[str, Any]:
+    """Re-split an EXISTING, PRISTINE (never-split) BRONZE against a new
+    holdout window, without re-fetching from the source.
+
+    Companion to `materialize()`'s own holdout branch, used when the user
+    changes the holdout AFTER the artifact has already been materialized
+    (DS-LAKE-018-T06: the holdout picker moved from Step 2 to Step 3.1,
+    which mounts after the bronze warm has already run once with no
+    holdout).
+
+    `request.source_key` MUST be pristine — the caller (NestJS
+    `resplitDraftHoldoutService`) resolves the draft's root BRONZE
+    (`parentArtifactId: null`) and refuses one with a non-null
+    `validationRowCount`, since re-splitting an ALREADY-split frame would
+    permanently shed the rows the previous split cut into
+    `validate_data.parquet` — there is no reconstruction step here on
+    purpose (see this task's own decision note: the prior holdout boundary
+    needed to reconstruct is not persisted anywhere reachable). Splitting
+    fresh from the pristine source every time is what makes repeated
+    holdout edits lossless and idempotent.
+
+    Otherwise IDENTICAL to `materialize()`'s holdout branch — same
+    `_split_holdout`, same guards, same `_commit` shape — reused verbatim
+    rather than re-derived, so the lead-in math never drifts between the
+    two call sites.
+    """
+    started = time.perf_counter()
+
+    frame = store.get_frame(request.source_key)
+    assert_frame_is_usable(frame)
+
+    train, validate_frame = _split_holdout(frame, request.holdout)
+    # Same as materialize()'s own guard: cutting the holdout can leave
+    # nothing on either side, and both must fail loud here rather than
+    # commit a 0-row artifact silently.
+    assert_frame_is_usable(train)
+    if len(validate_frame) == 0:
+        raise ValueError(
+            "The holdout window matched no rows in the source data — "
+            "check the holdout range against the fetch window."
+        )
+
+    stats = store.put_frame(train, request.target_key, overwrite=request.overwrite)
+    # No parent-frame comparison: mirrors materialize()'s own reasoning —
+    # this is a fresh split of a pristine frame, so there is nothing else to
+    # diff drift against.
+    column_stats = build_column_stats(train, operations=[])
+
+    validate_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+    store.put_frame(validate_frame, validate_key, overwrite=request.overwrite)
+
+    # Canonicalised via `pd.Timestamp`, same as materialize() — so a later
+    # replay compares against the SAME parsed form `_split_holdout` itself
+    # compared against, never a second, independent parse.
+    validation_holdout_from = str(pd.Timestamp(request.holdout.from_time))
+
+    return _commit(
+        store, stats, started,
+        parent_key=request.source_key,
+        column_stats=column_stats,
+        validation_row_count=len(validate_frame),
+        validation_holdout_from=validation_holdout_from,
+        validation_missing_pct=missing_pct(validate_frame),
+    )
 
 
 def clean(store: ObjectStore, request: CleanRequest) -> dict[str, Any]:
@@ -267,6 +623,632 @@ def clean(store: ObjectStore, request: CleanRequest) -> dict[str, Any]:
     )
 
 
+def replay_holdout(store: ObjectStore, request: ReplayHoldoutRequest) -> dict[str, Any]:
+    """DS-LAKE-018-T04. Raw holdout (`validate_data.parquet`) -> model-ready
+    frame, scaler params SUPPLIED, never re-fit. RESOLVED (user decision):
+    the holdout stays fully raw — no `apply_operations` call here at all,
+    unlike `clean()`; only feature/select/scale run, the same tail
+    `features()` runs.
+
+    Order matters and mirrors `features()` deliberately: the lead-in
+    sufficiency check runs BEFORE any transform, so a doomed replay fails
+    fast rather than after paying for feature computation it can't trust.
+    """
+    started = time.perf_counter()
+
+    source = store.get_frame(request.source_key)
+    step_configs = [f.to_step() for f in request.features]
+
+    # LEAD-IN CHECK IS A REFUSAL, NOT A WARNING (scope_note). Computed from
+    # the recipe's own compound lookback (DS-LAKE-018-T04's
+    # `max_replay_lookback` — a lag on a rolling column compounds), not
+    # re-derived from a duration/interval a caller would have to look up.
+    # The alternative is the silent failure this check exists to prevent:
+    # the holdout's first rows get null/wrong lag values, feed straight
+    # into predict(), and depress the metric with no trace of why.
+    required = max_replay_lookback(step_configs)
+    # `_wall_clock`, not a bare `pd.Timestamp`: the boundary arrives as JSON
+    # with a `Z` suffix and would otherwise be tz-aware, which pandas refuses
+    # to compare against this naive column — see that helper's own note for
+    # the silent-skip this caused.
+    holdout_from = _wall_clock(request.holdout_from)
+    captured = int((source[TIMESTAMP_COLUMN] < holdout_from).sum())
+    if captured < required:
+        raise ValueError(
+            f"Lead-in is insufficient to replay this recipe: {captured} "
+            f"row(s) captured before the holdout boundary, but the deepest "
+            f"feature needs {required} (short by {required - captured}). "
+            "Re-materialize with a wider fetch window or a later holdout "
+            "start."
+        )
+
+    effective_selected = force_keep_target(
+        request.selected_columns, request.target_y)
+
+    skipped_columns: list[str] = []
+    result = apply_features(source, step_configs, skipped=skipped_columns)
+    result = select_columns(result, effective_selected)
+    # `scaling_params` is what T02 recorded on the ORIGINAL GOLD's own
+    # feature_spec.json — SUPPLIED here, never re-fit on the holdout's own
+    # statistics (T02's own finding: that would be a silently DIFFERENT,
+    # wrong transform).
+    result, _ = to_model_ready(
+        # MODEL-SERVE-010-T05. The target is excluded HERE TOO. A holdout
+        # replayed with the target scaled and a GOLD written with it raw
+        # would disagree about what the model's own y means, which is the
+        # same class of silently-different transform this call's own comment
+        # above warns about for the FEATURES.
+        result, _scalable_tags(result, request.target_y), request.scalers,
+        fitted_params=request.scaling_params,
+    )
+
+    # Trim lead-in rows AFTER feature computation, before returning — they
+    # were scaffolding for lag/rolling, never rows to score (scope_note).
+    result = result[result[TIMESTAMP_COLUMN] >= holdout_from].reset_index(
+        drop=True)
+    assert_frame_is_usable(result)
+
+    stats = store.put_frame(
+        result, request.target_key, overwrite=request.overwrite)
+    return _commit(
+        store, stats, started,
+        parent_key=request.source_key,
+        operations=step_configs,
+    )
+
+
+def replay_holdout_for_run(
+    store: ObjectStore, request: ReplayHoldoutForRunRequest
+) -> dict[str, Any]:
+    """DS-LAKE-018-T05. `replay_holdout`, sourced from an EXISTING GOLD's own
+    recorded `feature_spec.json` instead of the caller re-supplying the
+    recipe by hand — this is the endpoint `claim()` (model-run.authorized.
+    service.ts) calls, since NestJS never re-derives a training run's recipe
+    itself; `feature_spec_key` is `ModelTrainingRun.featureSpecKey`, already
+    pinned on the run row at training-create time.
+
+    `feature_spec.json`'s own `features` entries are `{name, kind, config}`
+    (`feature_spec_service.build_feature_spec` strips only `id`/`name` —
+    `config` still carries `kind` redundantly alongside every other field)
+    — reshaped back into `FeatureConfigRequest`'s flat shape here via
+    `config` alone, which already has everything `FeatureConfigRequest`
+    needs. `id` is a synthesised placeholder: `apply_features` never reads
+    it (a client-side identity field only, confirmed against
+    `feature_service.py`), so any value round-trips safely.
+    """
+    spec = store.get_json(request.feature_spec_key)
+
+    target_y = spec.get("target_y")
+    if spec.get("target_scaled"):
+        # Mirrors train.py's own refusal (its `main()`, before the split):
+        # no inverse transform is recorded for a scaled target, so a score
+        # against it would be silently wrong. A run this applies to never
+        # reaches model.fit/predict either — this is a defensive mirror of
+        # that guard, not this run's only line of defense.
+        raise ValueError(
+            f"target_y '{target_y}' is scaled in this GOLD's "
+            "feature_spec.json — refusing holdout replay (no inverse "
+            "transform recorded)."
+        )
+
+    features_config = [
+        FeatureConfigRequest(
+            id=entry.get("name") or f"f{i}",
+            name=entry.get("name"),
+            **entry.get("config", {}),
+        )
+        for i, entry in enumerate(spec.get("features", []))
+    ]
+    scalers = {row["tag"]: row["method"] for row in spec.get("scaling", [])}
+
+    return replay_holdout(
+        store,
+        ReplayHoldoutRequest(
+            source_key=request.source_key,
+            target_key=request.target_key,
+            holdout_from=request.holdout_from,
+            features=features_config,
+            selected_columns=spec.get("selectedColumns"),
+            scalers=scalers,
+            scaling_params=spec.get("scalingParams") or {},
+            target_y=target_y,
+            overwrite=request.overwrite,
+        ),
+    )
+
+
+def prepare_holdout_for_run(
+    store: ObjectStore, request: PrepareHoldoutForRunRequest
+) -> dict[str, Any]:
+    """DS-LAKE-023-T03. The SILVER-branch counterpart to
+    `replay_holdout_for_run` — for a holdout produced by the reordered
+    features-stage split (T01). `source_key`'s `validate_data.parquet`
+    already carries its derived columns AND has no lead-in rows (written
+    with `lead_in=timedelta(0)`), so there is no `apply_features`, no
+    `select_columns`, and nothing to trim. Only the FITTED scaler
+    transform runs — never re-fit, same as `replay_holdout`'s own
+    `to_model_ready(..., fitted_params=...)` call, and the same
+    `target_scaled` refusal `replay_holdout_for_run` already uses.
+
+    Discriminating a SILVER-produced holdout from a legacy BRONZE-produced
+    one is NOT this function's job: `model-run.authorized.service.ts`'s
+    `tryReplayHoldout` makes that call by inspecting WHICH ARTIFACT ROW
+    carries `validationRowCount` before choosing which of these two
+    endpoints to call at all.
+    """
+    started = time.perf_counter()
+    spec = store.get_json(request.feature_spec_key)
+
+    target_y = spec.get("target_y")
+    if spec.get("target_scaled"):
+        # Mirrors `replay_holdout_for_run`'s own refusal, for the same
+        # reason: no inverse transform is recorded for a scaled target, so
+        # a score against it would be silently wrong.
+        raise ValueError(
+            f"target_y '{target_y}' is scaled in this GOLD's "
+            "feature_spec.json — refusing holdout scoring (no inverse "
+            "transform recorded)."
+        )
+
+    scalers = {row["tag"]: row["method"] for row in spec.get("scaling", [])}
+    scaling_params = spec.get("scalingParams") or {}
+
+    frame = store.get_frame(request.source_key)
+
+    # Coverage guard, not just presence: `to_model_ready`'s lookup is
+    # per-tag (`fitted_params.get(tag) if fitted_params else None`), so a
+    # PARTIAL `scaling_params` dict would silently re-fit the missing tags
+    # on the holdout's own statistics — the exact wrongness this whole
+    # design exists to prevent (finding: "scaling the holdout against its
+    # own statistics is a DIFFERENT transform... and it fails silently").
+    # MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+    # this used to be an inline copy; now shared with the serving loader's
+    # own predict-time coverage check via softsensor_scaling, so the two
+    # cannot silently disagree about which tags need coverage.
+    assert_scaling_coverage(tag_columns(frame), scalers, scaling_params)
+
+    # DS-LAKE-023-T05. BEFORE `to_model_ready` — see `drop_bad_feature_rows`'s
+    # own docstring for why this must run here, not after. `target_y` is
+    # excluded: a non-Good TARGET row is `train.py`'s own `labelled_mask`
+    # concern (D4), not this function's.
+    frame, dropped_bad_rows = drop_bad_feature_rows(
+        frame, tag_columns(frame), exclude=target_y)
+
+    result, _ = to_model_ready(
+        # MODEL-SERVE-010-T05. Same exclusion as every other scaling call —
+        # `drop_bad_feature_rows` one line above already excludes the target
+        # for its own reasons, and this keeps the two consistent about which
+        # columns the target is and is not part of.
+        frame, _scalable_tags(frame, target_y), scalers,
+        fitted_params=scaling_params,
+    )
+    assert_frame_is_usable(result)
+
+    stats = store.put_frame(
+        result, request.target_key, overwrite=request.overwrite)
+    return _commit(
+        store, stats, started, parent_key=request.source_key,
+        dropped_bad_rows=dropped_bad_rows,
+    )
+
+
+def passthrough_holdout_for_run(
+    store: ObjectStore, request: PassthroughHoldoutForRunRequest
+) -> dict[str, Any]:
+    """MODEL-SERVE-015-T04. The THIRD holdout shape — see
+    `PassthroughHoldoutForRunRequest`'s own docstring for why this exists
+    beside `replay_holdout_for_run`/`prepare_holdout_for_run` rather than
+    being folded into either. `source_key` is already model-ready (a
+    retrain-augmentation candidate's frozen-eval slice, cut out of the
+    already-scaled base FINAL by `combine_for_retrain`), so this copies it
+    to the run's own `target_key` verbatim — no `apply_features`, no
+    `select_columns`, no `to_model_ready`, nothing to drop. `claim()`'s
+    caller-side contract is unchanged: the same `presign_run_object` read
+    that resolves `prepare_holdout_for_run`'s output resolves this one.
+    """
+    started = time.perf_counter()
+    frame = store.get_frame(request.source_key)
+    assert_frame_is_usable(frame)
+    stats = store.put_frame(
+        frame, request.target_key, overwrite=request.overwrite)
+    return _commit(store, stats, started, parent_key=request.source_key)
+
+
+def combine_for_retrain(
+    store: ObjectStore, request: CombineForRetrainRequest
+) -> dict[str, Any]:
+    """MODEL-SERVE-015-T03. See `CombineForRetrainRequest`'s own docstring
+    for the shape of what each input names. Order of operations, and why:
+
+    1. The base FINAL's rows split at `cut_timestamp` into `base_train`
+       (kept as-is) and `base_frozen_raw` (candidate frozen-eval rows,
+       still needing the re-cut below). NEITHER is re-scaled — both are
+       slices of an already-scaled artifact, and scaling either again is
+       the double-scale bug this feature's design note rules out.
+    2. The new dataset's own start time is read off the frame THIS call
+       actually loaded (never trusted from the caller) and the frozen-eval
+       window is re-cut to `[cut_timestamp, new_start)` — rows at/after
+       `new_start` are dropped from BOTH train and eval: they are part of
+       the incumbent's own original test split, so they may not join
+       train, and they are not provably ahead of every new-dataset row, so
+       they may not stay in the frozen eval set either. Refuses outright
+       when that window is empty (`new_start <= cut_timestamp`) — the same
+       "no uncontaminated eval window" rule NestJS's own pre-flight check
+       enforces, re-verified here against the real data.
+    3. ONLY the new dataset's rows are feature-engineered (`apply_features`
+       -> `select_columns`), bad-row-dropped, and scaled — with the base's
+       own FITTED `scaling_params`, never re-fit (T02's decision, mirrored
+       from `replay_holdout_for_run`/`prepare_holdout_for_run`'s own
+       `fitted_params=` calls).
+    4. `base_train` and the newly-scaled rows are concatenated, deduplicated
+       — UNLESS `combine` is False, in which case (MODEL-SERVE-021) the base
+       is never loaded at all and the newly scaled rows, cut to those
+       strictly BEFORE the operator's validation window, stand alone as the
+       training frame. Steps 1-3 no longer run for this strategy (there is
+       no base data to freeze or compare tags against beyond the recipe's
+       own expected columns) — see the `if request.combine` branch near the
+       top of the function body. The rest of this step reads as written once
+       the frame is chosen: deduplicated on `timestamp` keeping the LAST row
+       (irrelevant when `combine` is False — the frame is one dataset's own
+       rows and nothing else — kept for the AUGMENT_DATA path, where it is
+       "new wins"), and sorted.
+    5. The combined frame commits as a new GOLD; the re-cut frozen-eval
+       slice commits as its `validate_data.parquet` sidecar, in the same
+       call, via `_commit`'s existing `validation_row_count`/
+       `validation_holdout_from` fields (the same convention `features()`'s
+       own holdout branch already uses) — NestJS marks the created row
+       `validationAlreadyScaled: true`, which is what routes a future
+       `claim()` through `passthrough_holdout_for_run` instead of
+       `prepare_holdout_for_run` for this artifact.
+    """
+    started = time.perf_counter()
+    cut_ts = _wall_clock(request.cut_timestamp)
+
+    # MODEL-SERVE-021. `combine=False` ("New Data Only") REPLACES the
+    # training data outright rather than augmenting the incumbent's own
+    # frozen test window — the whole point being that an operator can pick a
+    # dataset that overlaps the incumbent's own data, including its test
+    # split, which the AUGMENT_DATA path can never allow (that path trains on
+    # BOTH the old and new rows together, so old-and-new overlapping would be
+    # a real duplicate; this path trains on the new rows ALONE, so there is
+    # nothing to duplicate). Comparability no longer comes from a shared
+    # frozen slice of the BASE's own rows — there isn't one, base is never
+    # loaded at all below — it comes from scoring both the candidate and the
+    # incumbent's own saved model on the SAME new-data validation window,
+    # which is why that window is REQUIRED for this strategy (enforced here;
+    # the backend's own DTO refuses earlier for the common case).
+    if not request.combine:
+        if not (request.new_validation_from and request.new_validation_to):
+            raise ValueError(
+                "New Data Only requires a validation window — both "
+                "new_validation_from and new_validation_to must be supplied, "
+                "so the new version and the current version can be scored "
+                "on the same new-data rows."
+            )
+
+        new_frame = store.get_frame(request.new_data_key)
+        assert_frame_is_usable(new_frame)
+        new_start = new_frame[TIMESTAMP_COLUMN].min()
+        new_end = new_frame[TIMESTAMP_COLUMN].max()
+
+        v_from = _wall_clock(request.new_validation_from)
+        v_to = _wall_clock(request.new_validation_to)
+        if v_to < v_from:
+            raise ValueError(
+                f"Validation window ends at {v_to}, before it starts at "
+                f"{v_from}."
+            )
+        if v_from < new_start or v_to > new_end:
+            raise ValueError(
+                f"Validation window [{v_from}, {v_to}] falls outside the "
+                f"new dataset's own range [{new_start}, {new_end}]."
+            )
+        # MODEL-SERVE-021-D03. The window must start on or after the point
+        # the incumbent's own training stopped — never inside rows the
+        # incumbent was itself trained on — or scoring the incumbent there
+        # would not measure what it does on genuinely unseen data.
+        if v_from < cut_ts:
+            raise ValueError(
+                f"Validation window starts at {v_from}, before this model's "
+                f"own test data starts ({cut_ts}) — pick a window on or "
+                "after that date so both versions are scored on data "
+                "neither has trained on."
+            )
+
+        base_frozen = None
+        frozen_eval_dropped_rows = None
+    else:
+        base = store.get_frame(request.base_data_key)
+        assert_frame_is_usable(base)
+        base_train = base[base[TIMESTAMP_COLUMN] < cut_ts].reset_index(drop=True)
+        base_frozen_raw = (
+            base[base[TIMESTAMP_COLUMN] >= cut_ts]
+            .sort_values(TIMESTAMP_COLUMN)
+            .reset_index(drop=True)
+        )
+        if len(base_frozen_raw) == 0:
+            # MODEL-SERVE-019. This ValueError's `detail` reaches the
+            # operator verbatim through the dialog's error banner
+            # (postToPython -> AppException.message) — plain wording, no
+            # "incumbent"/"frozen".
+            raise ValueError(
+                f"No rows exist at or after {cut_ts} in this model's own "
+                "training data — there is no test data left to compare a "
+                "retrained version against."
+            )
+
+        new_frame = store.get_frame(request.new_data_key)
+        assert_frame_is_usable(new_frame)
+        new_start = new_frame[TIMESTAMP_COLUMN].min()
+        if new_start <= cut_ts:
+            raise ValueError(
+                f"New dataset starts at {new_start}, at or before this "
+                f"model's own test data starts ({cut_ts}) — there would be "
+                "nothing left to test the new version on. Pick a dataset "
+                "whose data begins after this model's own test data starts."
+            )
+
+        base_frozen = base_frozen_raw[
+            base_frozen_raw[TIMESTAMP_COLUMN] < new_start
+        ].reset_index(drop=True)
+        # MODEL-SERVE-019-D03. How many of the incumbent's own frozen rows
+        # were cut off by the new dataset's start — 0 means the candidate is
+        # scored on the SAME row extent the incumbent's own test split
+        # covers (both unmasked; a downstream label mask, if any, excludes
+        # the same physical rows from both sides equally). This is what the
+        # comparison gates on, rather than comparing this ARTIFACT's
+        # unmasked row count against a different LABELLED row count computed
+        # by a different service (build_split_stats masks on the target's
+        # Good rows first) — those two counts describe different
+        # populations and would almost never agree on a sparse target,
+        # which very nearly shipped as a permanent refusal.
+        frozen_eval_dropped_rows = len(base_frozen_raw) - len(base_frozen)
+        if len(base_frozen) == 0:
+            raise ValueError(
+                f"Every row in this model's own test data (at or after "
+                f"{cut_ts}) falls at or after the new dataset's own start "
+                f"({new_start}) — there would be no test data left to "
+                "compare a retrained version against."
+            )
+
+    spec = store.get_json(request.base_feature_spec_key)
+    if spec.get("target_scaled"):
+        # Mirrors `replay_holdout_for_run`/`prepare_holdout_for_run`'s own
+        # refusal: no inverse transform is recorded for a scaled target, and
+        # this feature's evaluation-basis claim depends on the target
+        # meaning the same thing on both sides of the merge.
+        raise ValueError(
+            f"target_y '{spec.get('target_y')}' is scaled in the base "
+            "artifact's feature_spec.json — refusing to combine (no "
+            "inverse transform recorded)."
+        )
+
+    step_configs = [
+        FeatureConfigRequest(
+            id=entry.get("name") or f"f{i}", name=entry.get("name"),
+            **entry.get("config", {}),
+        ).to_step()
+        for i, entry in enumerate(spec.get("features", []))
+    ]
+    effective_selected = force_keep_target(
+        spec.get("selectedColumns"), request.target_y)
+    scalers = {row["tag"]: row["method"] for row in spec.get("scaling", [])}
+    scaling_params = spec.get("scalingParams") or {}
+
+    skipped_columns: list[str] = []
+    new_engineered = apply_features(new_frame, step_configs, skipped=skipped_columns)
+    new_engineered = select_columns(new_engineered, effective_selected)
+
+    # MODEL-SERVE-021. `combine=False` never loads `base`'s own data (nothing
+    # of it reaches training or the frozen slice), so there is no `base_train`
+    # frame to compare tags against. `effective_selected` — the base recipe's
+    # own expected column set, force-kept target included — is the same
+    # cross-check without the load: `select_columns` above silently DROPS a
+    # column it does not find rather than erroring, so a new dataset missing
+    # a required raw tag would otherwise reach `to_model_ready` with a column
+    # quietly absent. `None` means "keep everything" (the TS identity spec),
+    # which has no fixed expected set to check against.
+    base_tags = (
+        set(tag_columns(base_train))
+        if request.combine
+        else (set(effective_selected) if effective_selected is not None else None)
+    )
+    new_tags = set(tag_columns(new_engineered))
+    if base_tags is not None and base_tags != new_tags:
+        only_base = sorted(base_tags - new_tags)
+        only_new = sorted(new_tags - base_tags)
+        raise ValueError(
+            "Base and new artifact disagree on tag columns after applying "
+            f"the base's recipe — only in base: {only_base or 'none'}; "
+            f"only in new: {only_new or 'none'}. The two datasets are not "
+            "schema-compatible for augmentation."
+        )
+
+    # Coverage is asserted over the tags that actually GET scaled — the same
+    # list handed to `to_model_ready` four lines below — never over every
+    # column in the frame.
+    #
+    # Reported from live use: a retrain refused with "Scaling refused:
+    # ['S204IBP.lab'] would scale without a recorded scalingParams entry",
+    # where that tag was the TARGET. `assert_scaling_coverage` reads a tag
+    # absent from `scaling` as defaulting to minmax, so a target with no
+    # recorded params — which is what a CORRECT spec looks like, since
+    # `_scalable_tags` keeps the target out of scaling entirely and this
+    # function already refuses outright when `target_scaled` is set — read as
+    # "would be scaled, with nothing recorded" and killed the whole retrain
+    # over a column the next line declines to scale.
+    assert_scaling_coverage(
+        _scalable_tags(new_engineered, request.target_y),
+        scalers,
+        scaling_params,
+    )
+    new_engineered, dropped_bad_rows = drop_bad_feature_rows(
+        new_engineered, tag_columns(new_engineered), exclude=request.target_y)
+    new_scaled, _ = to_model_ready(
+        new_engineered, _scalable_tags(new_engineered, request.target_y),
+        scalers, fitted_params=scaling_params,
+    )
+
+    # MODEL-SERVE-017 / MODEL-SERVE-021. `combine=False` is the "New Data
+    # Only" strategy: the base is never loaded and the candidate trains on
+    # the new data alone (minus its own validation window — see D03 below).
+    # Everything from here to the window handling stays the same feature
+    # engineering/scaling path as AUGMENT_DATA — the same recipe, the same
+    # never-re-fit scalers — because the two strategies still prepare the NEW
+    # rows identically; only which rows reach TRAINING differs. There is no
+    # frozen slice for this strategy any more (MODEL-SERVE-021 reversed
+    # MODEL-SERVE-017's "still scored on the incumbent's own frozen rows"):
+    # comparability now comes from scoring both the candidate and the
+    # incumbent's own saved model on this SAME validation window, in the
+    # trainer container (`claim()`/`pipelines/__init__.py`), never from a
+    # slice of the base's own data.
+    # The operator's own validation window, carved out of the NEW rows and
+    # removed from training. Cut AFTER scaling deliberately: scaling is
+    # per-column with the base's already-fitted params, so slicing before or
+    # after is numerically identical, and doing it here guarantees the
+    # holdout went through the exact same transform as the rows it will be
+    # compared against — there is no second code path to drift.
+    new_validation: Optional[pd.DataFrame] = None
+    if request.new_validation_from or request.new_validation_to:
+        if not (request.new_validation_from and request.new_validation_to):
+            raise ValueError(
+                "new_validation_from and new_validation_to must be supplied "
+                "together — a half-open validation window is refused rather "
+                "than guessed at."
+            )
+        v_from = _wall_clock(request.new_validation_from)
+        v_to = _wall_clock(request.new_validation_to)
+        if v_to < v_from:
+            raise ValueError(
+                f"Validation window ends at {v_to}, before it starts at "
+                f"{v_from}."
+            )
+        # Bounds are checked against the rows THIS call actually loaded,
+        # never against anything the caller asserted — the same discipline
+        # `new_start` above is derived with.
+        new_end = new_frame[TIMESTAMP_COLUMN].max()
+        if v_from < new_start or v_to > new_end:
+            raise ValueError(
+                f"Validation window [{v_from}, {v_to}] falls outside the new "
+                f"dataset's own range [{new_start}, {new_end}]."
+            )
+
+        in_window = (
+            (new_scaled[TIMESTAMP_COLUMN] >= v_from)
+            & (new_scaled[TIMESTAMP_COLUMN] <= v_to)
+        )
+        new_validation = (
+            new_scaled[in_window]
+            .sort_values(TIMESTAMP_COLUMN)
+            .reset_index(drop=True)
+        )
+        if len(new_validation) == 0:
+            raise ValueError(
+                f"No new-dataset rows fall inside the validation window "
+                f"[{v_from}, {v_to}] — nothing to validate on."
+            )
+        # THE leakage guard: these rows leave training entirely. A row may
+        # never be both trained on and validated on.
+        new_scaled = new_scaled[~in_window].reset_index(drop=True)
+        if not request.combine:
+            # MODEL-SERVE-021-D03. Train ONLY on rows strictly BEFORE the
+            # window starts — never on rows that come after it. AUGMENT_DATA
+            # keeps every non-window row (before and after); this strategy
+            # trains on a dataset the operator may have picked BECAUSE it
+            # overlaps the incumbent's own data, so "after the window" can
+            # be exactly the rows the window exists to test against, and
+            # training on them would be forecasting with the answer key.
+            new_scaled = new_scaled[
+                new_scaled[TIMESTAMP_COLUMN] < v_from
+            ].reset_index(drop=True)
+            if len(new_scaled) == 0:
+                raise ValueError(
+                    "No new-dataset rows fall before the validation window — "
+                    "nothing to train the new version on under New Data "
+                    "Only. Pick a window later in the dataset, leaving rows "
+                    "before it to train on."
+                )
+
+    train_parts = [base_train, new_scaled] if request.combine else [new_scaled]
+    before_dedupe = sum(len(part) for part in train_parts)
+    combined = pd.concat(train_parts, ignore_index=True)
+    combined = combined.drop_duplicates(
+        subset=[TIMESTAMP_COLUMN], keep="last"
+    ).sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
+    dedupe_dropped = before_dedupe - len(combined)
+    assert_frame_is_usable(combined)
+
+    stats = store.put_frame(
+        combined, request.target_key, overwrite=request.overwrite)
+    # `parent_frame` is what the stats are compared AGAINST. Under
+    # `combine=False` the base's training rows are not this frame's parent in
+    # any sense — nothing of them is in it — so the comparison is dropped
+    # rather than computed against an unrelated frame.
+    column_stats = build_column_stats(
+        combined,
+        operations=[],
+        parent_frame=base_train if request.combine else None,
+    )
+    # MODEL-SERVE-021. `combine=False` carves NO frozen slice — `base_frozen`
+    # is `None`, there is nothing of the base's own rows in this candidate's
+    # story at all, and writing an empty/absent sidecar here would leave a
+    # `validate_data.parquet` describing a comparison basis that no longer
+    # exists. `frozen_eval_checksum` is `None` on the payload; the backend's
+    # own schema for it is nullable (nothing downstream reads it besides that
+    # schema declaration).
+    frozen_stats = None
+    if base_frozen is not None:
+        frozen_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+        frozen_stats = store.put_frame(
+            base_frozen, frozen_key, overwrite=request.overwrite)
+
+    payload = _commit(
+        store, stats, started,
+        parent_key=request.base_data_key,
+        operations=step_configs,
+        column_stats=column_stats,
+        feature_spec=spec,
+        skipped_features=skipped_columns,
+        validation_row_count=len(base_frozen) if base_frozen is not None else None,
+        validation_holdout_from=str(cut_ts) if base_frozen is not None else None,
+        validation_missing_pct=(
+            missing_pct(base_frozen) if base_frozen is not None else None
+        ),
+        dropped_bad_rows=dropped_bad_rows,
+    )
+    payload["frozen_eval_checksum"] = (
+        frozen_stats.checksum if frozen_stats is not None else None
+    )
+    payload["dedupe_dropped"] = dedupe_dropped
+    if new_validation is not None:
+        new_validation_stats = store.put_frame(
+            new_validation,
+            sidecar_key(stats.object_key, VALIDATE_NEW_DATA_FILENAME),
+            overwrite=request.overwrite,
+        )
+        payload["new_validation_row_count"] = len(new_validation)
+        payload["new_validation_checksum"] = new_validation_stats.checksum
+        # The measured first/last timestamps of the rows actually selected,
+        # not the bounds the caller asked for — the UI reports what the
+        # candidate was really scored on.
+        payload["new_validation_from"] = str(
+            new_validation[TIMESTAMP_COLUMN].min())
+        payload["new_validation_to"] = str(
+            new_validation[TIMESTAMP_COLUMN].max())
+    # Reports rows that actually reached TRAINING, so New Data Only reports 0
+    # base rows rather than the count of rows it deliberately left out.
+    payload["base_train_row_count"] = len(base_train) if request.combine else 0
+    payload["new_train_row_count"] = len(new_scaled)
+    # MODEL-SERVE-019. The frozen slice's own upper bound (it never had one
+    # on the wire before — only its lower bound `cut_timestamp` was) and the
+    # combined frame's true tail, so the backend can label a figure's time
+    # range from persisted facts instead of re-deriving it client-side.
+    payload["frozen_eval_to"] = str(new_start)
+    payload["combined_end_time"] = str(combined[TIMESTAMP_COLUMN].max())
+    payload["frozen_eval_dropped_rows"] = frozen_eval_dropped_rows
+    return payload
+
+
 def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     """DS-LAKE-006-T05. `source_key` is the SILVER artifact; `target_key` is
     the GOLD artifact. `_commit`'s `parent_key=request.source_key` is what
@@ -281,33 +1263,119 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     `applyFeatures -> precleanse -> ... -> selectColumns -> toModelReady`) —
     cleaning already happened to produce the SILVER source, so only the
     feature/select/scale stages run here.
+
+    DS-LAKE-022-T02: `request.scale` (default True) gates the toModelReady
+    tail. False stops after selectColumns — no scaling, no
+    feature_spec.json — for a caller that will run `scale()` separately
+    once cleaning has run BETWEEN feature computation and scaling (the
+    precondition the whole DS-LAKE-022 reorder depends on: `to_model_ready`
+    forces every finite cell Good, so a cleaning stage placed after the OLD
+    combined write would see nothing left to clean). Default True keeps
+    every existing caller's behaviour byte-identical.
+
+    DS-LAKE-023-T01: `request.holdout`, when present, splits AFTER
+    apply_features/select_columns and BEFORE the (optional) scale tail and
+    BEFORE `put_frame` — the whole point of this feature. A holdout cut
+    here carries its own already-computed derived columns, unlike the old
+    BRONZE-stage split (`materialize`'s `request.holdout`), which is why
+    `lead_in=timedelta(0)` is passed explicitly: lead-in rows exist only to
+    let a RAW holdout compute lag/rolling later (DS-LAKE-018-T04's
+    `replay_holdout`), and this holdout already has those values. Every
+    kind in `_compute_feature_column` reads its own row or an EARLIER one
+    only (verified directly — `lag` reads `i-k`, `rolling` reads
+    `[i-window+1, i]`, everything else reads `i` alone), so splitting AFTER
+    computing features yields exactly the values production would produce;
+    nothing here reads across the cut. Committed as the TRAIN side under
+    `request.target_key`; the validate frame writes to
+    `sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)`, the same
+    sidecar name and placement `materialize`/`resplit_holdout` already use
+    — one filename, two possible provenances, discriminated at the
+    NestJS layer by WHICH ARTIFACT ROW carries `validationRowCount`
+    (BRONZE = legacy raw holdout, SILVER = this path), not by
+    `pipelineVersion` (DS-LAKE-022 already stamps that on every
+    create-mode SILVER regardless of whether a holdout was ever picked).
     """
     started = time.perf_counter()
 
     source = store.get_frame(request.source_key)
     step_configs = [f.to_step() for f in request.features]
 
+    # Computed once and reused for both the actual column drop AND the spec
+    # that describes it — request.selected_columns alone would let the spec
+    # claim a different column set than what select_columns actually kept,
+    # and since selectedColumns is part of the featureHash payload, that
+    # would make the hash describe bytes that don't exist.
+    effective_selected = force_keep_target(
+        request.selected_columns, request.target_y)
+
     skipped_columns: list[str] = []
     result = apply_features(source, step_configs, skipped=skipped_columns)
-    result = select_columns(result, request.selected_columns)
-    result = to_model_ready(result, tag_columns(result), request.scalers)
+    result = select_columns(result, effective_selected)
+
+    validate_frame: pd.DataFrame | None = None
+    if request.holdout is not None:
+        result, validate_frame = _split_holdout(
+            result, request.holdout, lead_in=timedelta(0))
+        # Same double-sided guard `materialize`'s own holdout branch uses —
+        # cutting the holdout can leave nothing on either side, and both
+        # must fail loud here rather than commit a 0-row artifact silently.
+        assert_frame_is_usable(result)
+        if len(validate_frame) == 0:
+            raise ValueError(
+                "The holdout window matched no rows in the feature-engineered "
+                "data — check the holdout range against the fetch window."
+            )
+
+    spec: dict[str, Any] | None = None
+    dropped_bad_rows: int | None = None
+    if request.scale:
+        # DS-LAKE-023-T05. BEFORE `to_model_ready` — see
+        # `drop_bad_feature_rows`'s own docstring. TRAIN side only
+        # (`result`, post-holdout-split if any) — `validate_frame`, if
+        # present, is untouched here: it stays raw/unscaled until
+        # `prepare_holdout_for_run` runs its OWN `drop_bad_feature_rows`
+        # immediately before ITS `to_model_ready` call, which is the actual
+        # "before scaling" point for the holdout side.
+        result, dropped_bad_rows = drop_bad_feature_rows(
+            result, tag_columns(result), exclude=request.target_y)
+
+        # MODEL-SERVE-001-T13. BEFORE `to_model_ready`, same placement
+        # reasoning as `drop_bad_feature_rows` immediately above: `result`
+        # here is the TRAIN split's RAW, post-feature-engineering,
+        # Bad-row-dropped frame — exactly the population T13 STEP 1-4
+        # requires (train-split, raw engineering units, derived columns
+        # included). Computing this AFTER `to_model_ready` would freeze
+        # edges in scaled [0,1] units instead of the raw units a live
+        # `/predict` payload actually carries.
+        psi_ref_edges = compute_psi_ref_edges(result, tag_columns(result))
+
+        # DS-LAKE-018-T02: `scaling_params` is what each scaler actually FIT
+        # on these train rows — recorded below so a later holdout replay
+        # (DS-LAKE-018-T04) can scale with these exact numbers instead of
+        # re-fitting on itself (see finding: re-fitting is a silently
+        # DIFFERENT transform from the one the model learned).
+        result, scaling_params = to_model_ready(
+            result, _scalable_tags(result, request.target_y), request.scalers)
+
+        # Exclude collided configs from the sidecar — feature_spec.json must
+        # only claim features that were actually computed, not merely
+        # requested. `feature_column_name` is cheap enough to recompute per
+        # config here (config lists are short) rather than have
+        # `apply_features` return column names paired with configs.
+        computed_configs = [
+            cfg for cfg in step_configs
+            if feature_column_name(cfg) not in skipped_columns
+        ]
+        spec = build_feature_spec(
+            computed_configs, effective_selected, request.scalers,
+            request.target_y, scaling_params=scaling_params,
+            psi_ref_edges=psi_ref_edges)
 
     assert_frame_is_usable(result)
 
     stats = store.put_frame(
         result, request.target_key, overwrite=request.overwrite)
 
-    # Exclude collided configs from the sidecar — feature_spec.json must
-    # only claim features that were actually computed, not merely
-    # requested. `feature_column_name` is cheap enough to recompute per
-    # config here (config lists are short) rather than have
-    # `apply_features` return column names paired with configs.
-    computed_configs = [
-        cfg for cfg in step_configs
-        if feature_column_name(cfg) not in skipped_columns
-    ]
-    spec = build_feature_spec(
-        computed_configs, request.selected_columns, request.scalers)
     # `source` (the SILVER parent) is already in memory from the get_frame
     # above — same shape `clean()` uses, and the only place features() holds
     # both frames at once.
@@ -330,6 +1398,20 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         result, operations=[], parent_frame=source
     )
 
+    # DS-LAKE-023-T01. Written AFTER the train side (`stats` above) so the
+    # sidecar key derives from the ACTUAL committed key, same convention
+    # `materialize`/`resplit_holdout` already use via `sidecar_key`.
+    validation_row_count: int | None = None
+    validation_holdout_from: str | None = None
+    validation_missing_pct: float | None = None
+    if validate_frame is not None:
+        validate_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+        store.put_frame(validate_frame, validate_key, overwrite=request.overwrite)
+        validation_row_count = len(validate_frame)
+        assert request.holdout is not None  # validate_frame implies this
+        validation_holdout_from = str(pd.Timestamp(request.holdout.from_time))
+        validation_missing_pct = missing_pct(validate_frame)
+
     return _commit(
         store,
         stats,
@@ -339,6 +1421,124 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         column_stats=column_stats,
         feature_spec=spec,
         skipped_features=skipped_columns,
+        validation_row_count=validation_row_count,
+        validation_holdout_from=validation_holdout_from,
+        validation_missing_pct=validation_missing_pct,
+        dropped_bad_rows=dropped_bad_rows,
+    )
+
+
+def _scalable_tags(df, target_y: str | None) -> list[str]:
+    """MODEL-SERVE-010-T05. Every logical tag EXCEPT the target.
+
+    THE TARGET MUST NEVER BE SCALED, and leaving it out of the scaler map was
+    not enough to prevent that: `to_model_ready` reads
+    `scalers.get(tag, DEFAULT_SCALER)` and DEFAULT_SCALER is "minmax", so a
+    tag absent from the map is min-max scaled ANYWAY. That is how a GOLD
+    artifact came to carry a target ranging exactly 0.0-1.0 while its own
+    feature_spec declared `target_scaled: false` — one missing map entry
+    produced both the scaling and the claim that it had not happened.
+
+    Measured consequence before this fix: the model emitted 0.64-0.66 while
+    the lab measured 196 in engineering units, so every comparison between a
+    prediction and a measurement (the Actual-vs-Predict chart, residuals,
+    r2/rmse/mae, the batch path, any error-keyed alert) was apples to
+    oranges. Nothing caught it because no lab pair had ever existed for the
+    model in question.
+
+    Exclusion is BY NAME here rather than by trusting the caller's scaler
+    map, because the map is exactly what proved untrustworthy.
+    """
+    tags = tag_columns(df)
+    if target_y is None:
+        return tags
+    return [t for t in tags if t != target_y]
+
+
+def scale(store: ObjectStore, request: ScaleRequest) -> dict[str, Any]:
+    """DS-LAKE-022-T02. The trailing half of the old combined `/features`
+    write (`toModelReady` + `feature_spec.json`), split out so a caller can
+    run cleaning between feature computation (`features(scale=False)`,
+    producing the feature-stage/SILVER artifact) and scaling. `source_key`
+    is that feature-stage artifact — cleaned or not, this function does not
+    care — and `target_key` is the GOLD (cleaned+scaled) artifact.
+
+    `request.features`/`selected_columns`/`target_y` are the SAME recipe
+    `features()` was called with — needed here only to build
+    `feature_spec.json` (DS-LAKE-022 decision D2: the sidecar's ownership
+    moves whole to this stage), not to recompute anything: `source` already
+    carries the engineered/selected columns.
+
+    DEFAULT_SCALER is "minmax" (`feature_service.DEFAULT_SCALER`), so an
+    empty `scalers` dict still scales every column — there is no "pass
+    scalers={} to skip scaling" shortcut. A caller with nothing to scale
+    still gets every column min-max scaled, exactly like `features()`
+    always did with `scale=True`.
+
+    CALLER OBLIGATION, NOT YET ENFORCED HERE: `request.features` must be the
+    list of configs that were ACTUALLY computed into `source`, not the
+    originally-requested list — `features(scale=False)`'s own
+    `skipped_features` (name-collision skips) must be filtered out before
+    the recipe reaches this call, the same filtering `features()` used to do
+    internally via `computed_configs` before this split. This function
+    trusts its caller rather than re-deriving skips itself, because it never
+    calls `apply_features` and so cannot recompute which configs landed.
+    Unenforced because no caller exists yet this session (DS-LAKE-022-T02 is
+    additive-only); the wizard integration in T04-T07 must thread
+    `skipped_features` through or `feature_spec.json` will claim a feature
+    that was never actually computed.
+    """
+    started = time.perf_counter()
+
+    source = store.get_frame(request.source_key)
+    step_configs = [f.to_step() for f in request.features]
+    effective_selected = force_keep_target(
+        request.selected_columns, request.target_y)
+
+    # DS-LAKE-023-T05. BEFORE `to_model_ready` — see `drop_bad_feature_rows`'s
+    # own docstring for why. Reassigned onto `source` itself (not a separate
+    # variable) so `column_stats` below compares the SAME row set before and
+    # after scaling — its own `parent_frame=source` drift comparison would
+    # otherwise straddle a row-count change with no dropped rows on the
+    # "before" side.
+    source, dropped_bad_rows = drop_bad_feature_rows(
+        source, tag_columns(source), exclude=request.target_y)
+
+    # MODEL-SERVE-001-T13. Same placement as `features()`'s own call: AFTER
+    # `drop_bad_feature_rows`, BEFORE `to_model_ready` — `source` here is
+    # this path's TRAIN-split RAW frame (see this function's own docstring:
+    # "`source` already carries the engineered/selected columns").
+    psi_ref_edges = compute_psi_ref_edges(source, tag_columns(source))
+
+    result, scaling_params = to_model_ready(
+        source, _scalable_tags(source, request.target_y), request.scalers)
+
+    assert_frame_is_usable(result)
+
+    stats = store.put_frame(
+        result, request.target_key, overwrite=request.overwrite)
+
+    spec = build_feature_spec(
+        step_configs, effective_selected, request.scalers, request.target_y,
+        scaling_params=scaling_params, psi_ref_edges=psi_ref_edges)
+    # `source` here is already the feature-stage frame (post applyFeatures/
+    # selectColumns) — no columns are minted by scaling, so `operations=[]`
+    # is correct the same way `features()`'s own `column_stats` call already
+    # documents for a derived column: "no comparison possible" where nothing
+    # changed shape, `drift` where a value did.
+    column_stats = build_column_stats(
+        result, operations=[], parent_frame=source
+    )
+
+    return _commit(
+        store,
+        stats,
+        started,
+        parent_key=request.source_key,
+        operations=step_configs,
+        column_stats=column_stats,
+        feature_spec=spec,
+        dropped_bad_rows=dropped_bad_rows,
     )
 
 
@@ -566,6 +1766,29 @@ def column_stats(store: ObjectStore, request: ColumnStatsRequest) -> dict[str, A
     }
 
 
+def feature_spec(store: ObjectStore, request: FeatureSpecRequest) -> dict[str, Any]:
+    """DS-LAKE-025-T06. Serve `feature_spec.json` — the exact shape
+    `column_stats` above serves its own sidecar, for the same reasons.
+
+    The key is DERIVED from `source_key` via the same `sidecar_key()` the
+    write path used, never looked up elsewhere, so read and write cannot
+    disagree about where it lives. A missing sidecar surfaces as
+    `ObjectStoreError` -> 422 through `routers/preprocess._run`, with no
+    separate handling here.
+
+    T06 read 3 is why this endpoint exists: `scalingParams` records what each
+    scaler actually FIT, so a display surface can present engineering units
+    from the scaled bytes without a pipeline change. This reads the sidecar
+    ONLY — the data object is never opened.
+    """
+    key = sidecar_key(request.source_key, FEATURE_SPEC_FILENAME)
+    return {
+        "source_key": request.source_key,
+        "feature_spec_key": key,
+        "spec": store.get_json(key),
+    }
+
+
 def cleanup(store: ObjectStore, request: CleanupRequest) -> dict[str, Any]:
     """Clear a tmp prefix. `CleanupRequest` already refuses anything outside tmp/."""
     return {
@@ -586,9 +1809,105 @@ def reclaim_artifact(
     prefix, which is what makes a retried cleanup pass converge: calling this
     twice for the same artifact returns `deleted: 0` the second time instead
     of failing.
+
+    DS-LAKE-016-T02: prefix now comes from `split_data_key`, not a hardcoded
+    `object_key[: -len(DATA_FILENAME)]` slice. Against a stage-suffixed key
+    (e.g. `.../data_gold.parquet`, longer than legacy `data.parquet`), that
+    old slice left a filename FRAGMENT on the prefix (`.../data_`) —
+    `delete_prefix` would then silently match nothing and report success
+    having deleted zero objects. `ArtifactReclaimRequest`'s own validator
+    already guarantees `object_key` ends in an accepted data filename, so
+    `split_data_key` here cannot return `None` — unpacking it directly (no
+    `if`) makes that guarantee fail loudly, not silently, if it is ever
+    violated.
     """
-    prefix = request.object_key[: -len(DATA_FILENAME)]
+    prefix, _ = split_data_key(request.object_key)
     return {"prefix": prefix, "deleted": store.delete_prefix(prefix)}
+
+
+def reclaim_draft_runs(
+    store: ObjectStore, request: DraftRunReclaimRequest
+) -> dict[str, Any]:
+    """Delete one ModelDraft's training-run objects — MODEL-FLOW-011-T02.
+
+    `DraftRunReclaimRequest` already validates draft_id/run_id resolve to a
+    well-formed `drafts/{draft_id}/runs/[{run_id}/]` prefix, so the prefix
+    built here is always scoped to a draft's OWN runs subtree — never a bare
+    `drafts/{draft_id}/`, which would also reach an unrelated DatasetDraft's
+    `artifacts/` objects under the same shared root. `run_id` omitted
+    reclaims the whole subtree in one call (used when the sweep finds no
+    adopted run on the draft — MODEL-FLOW-011-T05 — including run prefixes
+    whose `ModelTrainingRun` row no longer exists); `run_id` given reclaims
+    exactly that run, leaving every sibling untouched.
+
+    Same idempotence as `reclaim_artifact`: `delete_prefix` on an absent
+    prefix returns `0` rather than erroring, so a retried sweep tick
+    converges instead of failing.
+    """
+    prefix = (
+        draft_run_prefix(request.draft_id, request.run_id)
+        if request.run_id
+        else draft_runs_prefix(request.draft_id)
+    )
+    return {"prefix": prefix, "deleted": store.delete_prefix(prefix)}
+
+
+def adopt_artifact(
+    store: ObjectStore, request: ArtifactAdoptRequest
+) -> dict[str, Any]:
+    """Copy one artifact's objects into the dataset's own prefix — DS-LAKE-025.
+
+    Save Dataset calls this for the FINAL it is adopting and for that
+    FINAL's lineage-root BRONZE, so the saved dataset owns its bytes
+    outright instead of borrowing the draft's. See `ArtifactAdoptRequest`
+    for the incident this closes.
+
+    Both prefixes come from the shared helpers — `split_data_key` for the
+    source (never a hand-rolled suffix slice: against a stage-suffixed key
+    like `data_gold.parquet` such a slice leaves a filename FRAGMENT, the
+    DS-LAKE-016-T02 defect that made `reclaim_artifact` silently match
+    nothing) and `artifact_prefix` for the destination, the same
+    `{datasetId}/artifacts/{artifactId}/` layout EXPORT already writes to.
+    The request validator guarantees `split_data_key` cannot return None,
+    so it is unpacked directly — a violation fails loudly, not silently.
+
+    Copies EVERY object under the source prefix, not just the data file:
+    `manifest.json`, `column_stats.json`, `feature_spec.json` and
+    `validation_report.json` are all read back later through keys derived
+    from the data key, so leaving any of them behind would repoint the row
+    at a data file whose sidecars still 404.
+
+    Idempotent in both directions, so a retried Save converges rather than
+    failing the second time: objects already at the destination are counted
+    and skipped (`ObjectStore.copy_prefix`), and an artifact that is
+    ALREADY dataset-owned degenerates to `copy_prefix(p, p)` — every object
+    exists at its own destination, so nothing is copied and the call
+    reduces to a listing of what is there.
+
+    The source objects are deliberately left in place. Deleting them is
+    cleanup's job and cleanup's alone (`global_definition_of_done`:
+    "Cleanup reclaims MinIO objects only"); doing it here would make Save
+    destructive, and a Save that half-failed would take the draft's own
+    bytes down with it.
+    """
+    src_prefix, data_filename = split_data_key(request.object_key)
+    dst_prefix = artifact_prefix(request.dataset_id, request.artifact_id)
+    keys = store.copy_prefix(src_prefix, dst_prefix)
+    present = set(keys)
+
+    def sidecar_if_present(filename: str) -> str | None:
+        key = f"{dst_prefix}{filename}"
+        return key if key in present else None
+
+    return {
+        "source_prefix": src_prefix,
+        "destination_prefix": dst_prefix,
+        "object_key": f"{dst_prefix}{data_filename}",
+        "feature_spec_key": sidecar_if_present(FEATURE_SPEC_FILENAME),
+        "validation_key": sidecar_if_present(VALIDATION_REPORT_FILENAME),
+        "column_stats_key": sidecar_if_present(COLUMN_STATS_FILENAME),
+        "keys": keys,
+    }
 
 
 def presign_artifact(store: ObjectStore, body) -> dict:
@@ -618,6 +1937,12 @@ def presign_artifact(store: ObjectStore, body) -> dict:
         # recorded, and reading both from the same place would prove nothing.
         "checksum": store.checksum_of(body.source_key),
         "row_count": meta["row_count"],
+        # MODEL-SERVE-007-T06. The bucket this key is relative to. NestJS has
+        # no S3 configuration of its own — this service is the only component
+        # that knows the bucket name — so a manifest that wants to be
+        # self-describing has to be told it from here, through the claim
+        # payload. A key alone is not a location.
+        "bucket": store.bucket,
         "expires_at": (
             datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
         ).isoformat(),
@@ -632,21 +1957,909 @@ def presign_model_run_upload(store: ObjectStore, body) -> dict:
             f"Allowed: {sorted(_ALLOWED_RUN_UPLOADS)}."
         )
 
+    # EXACTLY ONE of model_id / draft_id — enforced by the request schema's
+    # own validator (MODEL-FLOW-003-T08). A run started from the wizard has
+    # no model_id yet and writes under drafts/ instead.
+    if body.draft_id is not None:
+        build_key = lambda filename: draft_run_key(  # noqa: E731
+            body.draft_id, body.run_id, filename)
+        is_well_formed = is_draft_run_key
+        root = "drafts/"
+    else:
+        build_key = lambda filename: model_run_key(  # noqa: E731
+            body.model_id, body.run_id, filename)
+        is_well_formed = is_model_run_key
+        root = "models/"
+
     upload_urls: dict[str, str] = {}
     for filename in body.filenames:
-        key = model_run_key(body.model_id, body.run_id, filename)
+        key = build_key(filename)
         # Belt and braces: the allow-list above already constrains the
         # filename, but the ids come from the request too, and this predicate
-        # is the one thing standing between a malformed id and a write outside
-        # models/.
-        if not is_model_run_key(key):
+        # is the one thing standing between a malformed id and a write
+        # outside the owner's own root.
+        if not is_well_formed(key):
             raise ValueError(
-                f"Refusing to presign a write outside models/: '{key}'")
+                f"Refusing to presign a write outside {root}: '{key}'")
         upload_urls[filename] = store.presigned_put(key)
 
     return {
         "upload_urls": upload_urls,
         "expires_at": (
             datetime.now(timezone.utc) + store.PRESIGN_WRITE_TTL
+        ).isoformat(),
+    }
+
+
+def run_predictions(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's test-split predictions, parsed — MODEL-FLOW-004.
+
+    `predictions.parquet` is exactly `{timestamp, y_true, y_pred}` over the
+    TEST split (`images/trainer/train.py`'s own write) — not the wide
+    `{timestamp, tag, tag__status, ...}` shape `rows()`/`sample_rows` assume,
+    which is why this is its own reader rather than a call to `rows()`.
+
+    Guarded structurally, not by an id pair: NestJS already resolved which
+    run's key this is off the `ModelTrainingRun` row before calling here —
+    the same division of labour `presign_artifact` uses for a committed
+    artifact's `source_key`. Both roots are accepted (`is_draft_run_key` OR
+    `is_model_run_key`) because an adopted run's objects stay under
+    `drafts/` permanently — Save Model adopts by pointer, never copies bytes.
+
+    Every scalar here (`row_count`, `residual_sd`, the rmse cross-check, the
+    y ranges) is computed over the FULL frame, before any point-count cap is
+    applied — there is no cap to apply, since this endpoint has no
+    decimation branch (`MAX_PREDICTION_POINTS`). A run whose test split
+    exceeds it is refused by name rather than silently decimated.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] not in _READABLE_PREDICTION_FILENAMES:
+        raise ValueError(
+            f"'{key}' does not name one of "
+            f"{sorted(_READABLE_PREDICTION_FILENAMES)}."
+        )
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    frame = store.get_frame(key)
+
+    expected = {TIMESTAMP_COLUMN, "y_true", "y_pred"}
+    actual = set(frame.columns)
+    if actual != expected:
+        problems = []
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        if missing:
+            problems.append(f"missing {missing}")
+        if unexpected:
+            problems.append(f"unexpected {unexpected}")
+        raise ValueError(
+            f"'{key}' is not a predictions frame ({', '.join(problems)}). "
+            "Expected exactly timestamp/y_true/y_pred."
+        )
+    for column in ("y_true", "y_pred"):
+        if not pd.api.types.is_numeric_dtype(frame[column]):
+            raise ValueError(
+                f"Column '{column}' in '{key}' is not numeric "
+                f"(dtype={frame[column].dtype})."
+            )
+
+    row_count = int(len(frame))
+    if row_count > MAX_PREDICTION_POINTS:
+        raise ValueError(
+            f"'{key}' has {row_count} rows, over the {MAX_PREDICTION_POINTS} "
+            "this endpoint serves without decimation. See MODEL-FLOW-004's "
+            "stated deferral for a run this large."
+        )
+
+    frame = frame.sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
+    residual = frame["y_true"] - frame["y_pred"]
+    sd = float(residual.std(ddof=0)) if row_count > 1 else 0.0
+    rmse = float((residual ** 2).mean()) ** 0.5 if row_count else 0.0
+
+    points = [
+        {
+            "timestamp": (
+                ts.isoformat(sep=" ") if hasattr(ts, "isoformat") else str(ts)
+            ),
+            "y_true": _finite(y_true) or 0.0,
+            "y_pred": _finite(y_pred) or 0.0,
+        }
+        for ts, y_true, y_pred in zip(
+            frame[TIMESTAMP_COLUMN], frame["y_true"], frame["y_pred"]
+        )
+    ]
+
+    # A missing manifest is null, not a failure — same "missing sidecar"
+    # convention `presign_artifact` applies, expressed as a catch rather than
+    # an `exists()` probe: with the manifest usually present (both objects
+    # come from the same trainer upload), the catch is the cheaper path —
+    # one round trip, not two — for the common case.
+    manifest: dict[str, Any] | None = None
+    if body.manifest_key:
+        try:
+            manifest = store.get_json(body.manifest_key)
+        except ObjectStoreError:
+            manifest = None
+
+    return {
+        "source_key": key,
+        "row_count": row_count,
+        "residual_sd": round(sd, 6),
+        "residual_rmse_check": round(rmse, 6),
+        "y_true_min": _finite(frame["y_true"].min()) or 0.0,
+        "y_true_max": _finite(frame["y_true"].max()) or 0.0,
+        "y_pred_min": _finite(frame["y_pred"].min()) or 0.0,
+        "y_pred_max": _finite(frame["y_pred"].max()) or 0.0,
+        "points": points,
+        "derived_from_target": (
+            manifest.get("derived_from_target") if manifest else None
+        ),
+        "target_scaled": manifest.get("target_scaled") if manifest else None,
+    }
+
+
+def _decimated_run_predictions(
+    store: ObjectStore, key: str, max_points: int
+) -> dict[str, Any]:
+    """One run's DECIMATED actual/predicted series — MODEL-FLOW-017-T02,
+    the batch counterpart of `run_predictions`.
+
+    Shares `run_predictions`' guards verbatim (filename, structural key,
+    exact column set, numeric dtype) — the frame this reads is the
+    identical `predictions.parquet` shape, just decimated before it leaves
+    this process rather than served in full.
+
+    DECIMATION BASIS: `lttb_indices` is bucketed on `(timestamp, y_true)`,
+    not the residual. This is deliberate and measured, not assumed —
+    bucketing on y_true is blind to y_pred, so a candidate whose prediction
+    spikes hard between two kept y_true points could in principle lose the
+    exact divergence a reader is looking for. Measured on the two largest
+    real predictions.parquet objects (4,633 rows each): y_true-driven
+    decimation at 1,000 points keeps 99.1% and 98.2% of the full-frame
+    max|residual| — the divergence survives within a margin worth the
+    payoff, which is that every candidate sharing a splitSpec shares
+    byte-identical y_true, and therefore shares byte-identical KEPT
+    timestamps too. That is what lets the client's overlay chart plot every
+    candidate's decimated prediction against one shared actual line with no
+    further alignment step. Bucketing on the residual instead would give
+    each candidate its own kept-timestamp grid — a legitimate design, but a
+    different one, and one the overlay chart does not implement.
+
+    Scalars (`residual_sd`, `residual_rmse_check`, the y ranges) are
+    computed over the FULL frame before decimation, exactly as
+    `run_predictions` computes them — a decimated series must never feed a
+    number a reader takes as exact, only the chart it draws.
+    """
+    if key.rsplit("/", 1)[-1] not in _READABLE_PREDICTION_FILENAMES:
+        raise ValueError(
+            f"'{key}' does not name one of "
+            f"{sorted(_READABLE_PREDICTION_FILENAMES)}."
+        )
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    frame = store.get_frame(key)
+
+    expected = {TIMESTAMP_COLUMN, "y_true", "y_pred"}
+    actual = set(frame.columns)
+    if actual != expected:
+        problems = []
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        if missing:
+            problems.append(f"missing {missing}")
+        if unexpected:
+            problems.append(f"unexpected {unexpected}")
+        raise ValueError(
+            f"'{key}' is not a predictions frame ({', '.join(problems)}). "
+            "Expected exactly timestamp/y_true/y_pred."
+        )
+    for column in ("y_true", "y_pred"):
+        if not pd.api.types.is_numeric_dtype(frame[column]):
+            raise ValueError(
+                f"Column '{column}' in '{key}' is not numeric "
+                f"(dtype={frame[column].dtype})."
+            )
+
+    row_count = int(len(frame))
+    if row_count > MAX_PREDICTION_POINTS:
+        raise ValueError(
+            f"'{key}' has {row_count} rows, over the {MAX_PREDICTION_POINTS} "
+            "a single run serves. See /models/runs/predictions for a run "
+            "this large."
+        )
+
+    frame = frame.sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
+    residual = frame["y_true"] - frame["y_pred"]
+    sd = float(residual.std(ddof=0)) if row_count > 1 else 0.0
+    rmse = float((residual ** 2).mean()) ** 0.5 if row_count else 0.0
+
+    timestamps = frame[TIMESTAMP_COLUMN].to_numpy()
+    y_true = frame["y_true"].to_numpy(dtype=float)
+    y_pred = frame["y_pred"].to_numpy(dtype=float)
+
+    sample = lttb_indices(timestamps, y_true, max_points)
+    kept = sample.indices
+
+    points = [
+        {
+            "timestamp": (
+                ts.isoformat(sep=" ") if hasattr(ts, "isoformat") else str(ts)
+            ),
+            "y_true": _finite(y_true[i]) or 0.0,
+            "y_pred": _finite(y_pred[i]) or 0.0,
+        }
+        for i, ts in zip(kept, frame[TIMESTAMP_COLUMN].iloc[kept])
+    ]
+
+    return {
+        "source_key": key,
+        "row_count": row_count,
+        "residual_sd": round(sd, 6),
+        "residual_rmse_check": round(rmse, 6),
+        "y_true_min": _finite(frame["y_true"].min()) or 0.0,
+        "y_true_max": _finite(frame["y_true"].max()) or 0.0,
+        "y_pred_min": _finite(frame["y_pred"].min()) or 0.0,
+        "y_pred_max": _finite(frame["y_pred"].max()) or 0.0,
+        "points": points,
+        "downsampled": sample.downsampled,
+        "error": None,
+    }
+
+
+_CV_GAP_COLUMNS = {"fold", TIMESTAMP_COLUMN, "y_true", "y_pred", "y_pred_current"}
+
+
+def run_cv_gap(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-SERVE-026-T05. Reads a retrain candidate's
+    `cv_gap_predictions.parquet` — every expanding fold's test rows, the
+    candidate configuration's fold-fit prediction and the current version's
+    prediction (null before the current version's own cut, where it may have
+    trained). Its own reader because the shape is five columns, not the
+    three `run_predictions` accepts. Undecimated and point-capped like
+    `run_predictions`: the client picks lab events from these rows, so a
+    sampled series would change which rows count.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != CV_GAP_PREDICTIONS_FILENAME:
+        raise ValueError(f"'{key}' does not name {CV_GAP_PREDICTIONS_FILENAME}.")
+    if not is_model_run_key(key):
+        raise ValueError(
+            f"'{key}' is not a well-formed model-run output key. Only "
+            "models/{modelId}/runs/{runId}/... carries a CV-gap series."
+        )
+
+    frame = store.get_frame(key)
+    actual = set(frame.columns)
+    if actual != _CV_GAP_COLUMNS:
+        raise ValueError(
+            f"'{key}' is not a CV-gap frame (missing "
+            f"{sorted(_CV_GAP_COLUMNS - actual)}, unexpected "
+            f"{sorted(actual - _CV_GAP_COLUMNS)})."
+        )
+    row_count = int(len(frame))
+    if row_count > MAX_PREDICTION_POINTS:
+        raise ValueError(
+            f"'{key}' has {row_count} rows, over the {MAX_PREDICTION_POINTS} "
+            "this endpoint serves without decimation."
+        )
+
+    frame = frame.sort_values(["fold", TIMESTAMP_COLUMN]).reset_index(drop=True)
+    points = [
+        {
+            "fold": int(fold),
+            "timestamp": (
+                ts.isoformat(sep=" ") if hasattr(ts, "isoformat") else str(ts)
+            ),
+            "y_true": _finite(y_true) or 0.0,
+            "y_pred": _finite(y_pred) or 0.0,
+            # null, never 0: a missing current prediction means "not scored
+            # here", and 0 would read as a real, very wrong prediction.
+            "y_pred_current": _finite(y_cur),
+        }
+        for fold, ts, y_true, y_pred, y_cur in zip(
+            frame["fold"],
+            frame[TIMESTAMP_COLUMN],
+            frame["y_true"],
+            frame["y_pred"],
+            frame["y_pred_current"],
+        )
+    ]
+    return {"source_key": key, "row_count": row_count, "points": points}
+
+
+def run_predictions_batch(store: ObjectStore, body) -> dict[str, Any]:
+    """Decimated actual/predicted series for N runs in one call —
+    MODEL-FLOW-017-T02/T03, Step 4 Model Selection's first caller of the
+    decimation design `run_predictions`' own docstring deferred.
+
+    Bounded on BOTH axes: `body.keys` is capped at MAX_PREDICTION_BATCH_RUNS
+    by the request schema already (refused there, by Pydantic, before this
+    function runs), and `body.max_points` is capped at
+    MAX_PREDICTION_BATCH_POINTS the same way — this function does not
+    re-check either, since re-deriving a schema-level cap here would be a
+    second source of truth for it.
+
+    SOFT-FAILS PER RUN, never for the whole batch — same discipline the
+    per-candidate loss-history hydration in `reconcileAndShape`
+    (model-candidate-job.authorized.service.ts) established: one
+    candidate's unreadable artifact must not blank every other candidate's
+    chart. A failed run's item carries only `source_key` and `error`; every
+    other field is a placeholder, never a partial result a caller could
+    mistake for real data.
+    """
+    results = []
+    for key in body.keys:
+        try:
+            results.append(
+                _decimated_run_predictions(store, key, body.max_points)
+            )
+        except (ValueError, ObjectStoreError) as e:
+            logger.warning(
+                "run_predictions_batch: could not decimate '%s': %s", key, e
+            )
+            results.append(
+                {
+                    "source_key": key,
+                    "row_count": None,
+                    "residual_sd": None,
+                    "residual_rmse_check": None,
+                    "y_true_min": None,
+                    "y_true_max": None,
+                    "y_pred_min": None,
+                    "y_pred_max": None,
+                    "points": [],
+                    "downsampled": False,
+                    "error": str(e),
+                }
+            )
+
+    return {"results": results}
+
+
+def get_run_loss_history(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `loss_history.json`, read and shape-checked —
+    MODEL-FLOW-013-T05/T07.
+
+    Unlike `run_predictions`, this is a read-and-validate, not a
+    parse-and-reshape: `loss_history.json` is already exactly the response
+    shape (`extract_loss_history` in `images/trainer/train.py` writes it
+    that way on purpose). Guarded the same structural way `run_predictions`
+    guards its own key.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != LOSS_HISTORY_FILENAME:
+        raise ValueError(f"'{key}' does not name {LOSS_HISTORY_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("metric"), str)
+        or not isinstance(data.get("series"), dict)
+    ):
+        raise ValueError(f"'{key}' is not a well-formed loss_history.json.")
+
+    return {
+        "algorithm": data["algorithm"],
+        "metric": data["metric"],
+        "series": data["series"],
+    }
+
+
+def get_run_cv_folds(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `cv_folds.json`, read and shape-checked —
+    MODEL-FLOW-016-T04/T11.
+
+    Same discipline as `get_run_loss_history`: `cv_folds.json` is already
+    exactly the response shape (`images/trainer/train.py` writes it that
+    way on purpose), so this is a read-and-validate, not a parse-and-reshape
+    like `run_predictions`. Guarded the same structural way.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != CV_FOLDS_FILENAME:
+        raise ValueError(f"'{key}' does not name {CV_FOLDS_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("n_splits"), int)
+        or not isinstance(data.get("folds"), list)
+    ):
+        raise ValueError(f"'{key}' is not a well-formed cv_folds.json.")
+
+    return {
+        "algorithm": data["algorithm"],
+        "n_splits": data["n_splits"],
+        "folds": data["folds"],
+    }
+
+
+def get_run_feature_importance(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `feature_importance.json`, read and shape-checked —
+    MODEL-FLOW-019-T09.
+
+    Same discipline as `get_run_cv_folds`/`get_run_loss_history`:
+    `feature_importance.json` is already exactly the response shape
+    (`images/trainer/app/importance.py` writes it that way on purpose), so
+    this is a read-and-validate, not a parse-and-reshape. Guarded the same
+    structural way.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != FEATURE_IMPORTANCE_FILENAME:
+        raise ValueError(f"'{key}' does not name {FEATURE_IMPORTANCE_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("method"), str)
+        or not isinstance(data.get("features"), list)
+    ):
+        raise ValueError(f"'{key}' is not a well-formed feature_importance.json.")
+
+    return {
+        "algorithm": data["algorithm"],
+        "method": data["method"],
+        "standardized": data.get("standardized"),
+        "scaling_methods": data.get("scaling_methods") or [],
+        "features": data["features"],
+    }
+
+
+def get_run_permutation_importance(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `permutation_importance.json`, read and
+    shape-checked — MODEL-FLOW-023-T10.
+
+    Same discipline as `get_run_feature_importance`, file for file:
+    `permutation_importance.json` is already exactly the response shape
+    (`images/trainer/app/importance.py`'s `extract_permutation_importance`
+    writes it that way on purpose), so this is a read-and-validate, not a
+    parse-and-reshape.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != PERMUTATION_IMPORTANCE_FILENAME:
+        raise ValueError(
+            f"'{key}' does not name {PERMUTATION_IMPORTANCE_FILENAME}."
+        )
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("method"), str)
+        or not isinstance(data.get("scored_on"), str)
+        or not isinstance(data.get("metric"), str)
+        or not isinstance(data.get("n"), int)
+        or not isinstance(data.get("n_repeats"), int)
+        or not isinstance(data.get("baseline_score"), (int, float))
+        or not isinstance(data.get("features"), list)
+    ):
+        raise ValueError(
+            f"'{key}' is not a well-formed permutation_importance.json."
+        )
+
+    return {
+        "algorithm": data["algorithm"],
+        "method": data["method"],
+        "scored_on": data["scored_on"],
+        "n": data["n"],
+        "metric": data["metric"],
+        "n_repeats": data["n_repeats"],
+        "baseline_score": data["baseline_score"],
+        "features": data["features"],
+    }
+
+
+def get_run_manifest(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `run_manifest.json`, read for `framework_versions` and
+    `model_sha256` — MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01.
+
+    Every other manifest field (gold_object_key, artifact_checksum, target_y,
+    algorithm, hyperparameters, seed, split, metrics, holdout_metrics) is
+    already a column on `ModelTrainingRun`, written by `complete()` —
+    returning them again here would be a second, driftable copy of facts the
+    row already owns. `framework_versions` and `model_sha256` are the two
+    fields `images/trainer/train.py` writes that have no column.
+
+    CORRECTED 2026-09-01 (MODEL-SERVE-001-T01): `model_sha256` was previously
+    listed above as "already a column" — it is not (verified against
+    `schema.prisma`: no model.joblib checksum field exists on
+    `ModelTrainingRun`). `ModelVersion.modelChecksum` reads it from here.
+
+    CORRECTED 2026-09-01 (MODEL-FLOW-016-T07): `feature_columns` is ALSO not
+    already a column, for the same reason — verified against `schema.prisma`
+    directly. The holdout-scoring phase is the first caller that needs it:
+    `model.predict` requires the SAME columns, in the SAME order, the model
+    was trained on, and nothing else records that order.
+
+    Guarded the same structural way `get_run_loss_history` guards its own key.
+    Any of the three fields is absent for a run trained before the trainer
+    version that added it — returned as `None`, not an error, so a caller can
+    still read an older run's result with an honestly incomplete provenance
+    record rather than being refused outright.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != RUN_MANIFEST_FILENAME:
+        raise ValueError(f"'{key}' does not name {RUN_MANIFEST_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    versions = data.get("framework_versions") if isinstance(data, dict) else None
+    if versions is not None and (
+        not isinstance(versions, dict)
+        or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in versions.items()
+        )
+    ):
+        raise ValueError(
+            f"'{key}' has a malformed framework_versions (expected a "
+            "string-to-string mapping)."
+        )
+
+    model_sha256 = data.get("model_sha256") if isinstance(data, dict) else None
+    if model_sha256 is not None and not isinstance(model_sha256, str):
+        raise ValueError(f"'{key}' has a malformed model_sha256 (expected a string).")
+
+    feature_columns = data.get("feature_columns") if isinstance(data, dict) else None
+    if feature_columns is not None and (
+        not isinstance(feature_columns, list)
+        or not all(isinstance(c, str) for c in feature_columns)
+    ):
+        raise ValueError(
+            f"'{key}' has a malformed feature_columns (expected a list of strings)."
+        )
+
+    return {
+        "framework_versions": versions,
+        "model_sha256": model_sha256,
+        "feature_columns": feature_columns,
+    }
+
+
+def verify_model_object(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-SERVE-001-T05. Existence + checksum for one training-run
+    `model.joblib`, checked live against object storage before a promote or
+    rollback is allowed to flip a `ModelVersion`'s stage.
+
+    Guarded the same structural way `run_predictions`/`get_run_manifest`
+    guard their own keys — both `drafts/{draftId}/runs/{runId}/` and
+    `models/{modelId}/runs/{runId}/` are accepted, since an adopted run's
+    objects stay under `drafts/` permanently (Save Model adopts by pointer,
+    never copies bytes).
+
+    Deliberately NOT `/artifacts/presign`: that endpoint hard-refuses
+    anything that is not `is_committed_artifact_key` (a committed dataset
+    artifact's data.parquet), and model.joblib is a different object with a
+    different owner entirely.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != MODEL_FILENAME:
+        raise ValueError(f"'{key}' does not name {MODEL_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be verified here."
+        )
+
+    if not store.exists(key):
+        return {"exists": False, "checksum": None}
+    return {"exists": True, "checksum": store.checksum_of(key)}
+
+
+#: MODEL-FLOW-016-T07. Extended beyond T08's original single-filename check:
+#: the holdout-scoring container needs BOTH a presigned model.joblib (to
+#: unpickle) and validate_ready.parquet (to score against). Only these two —
+#: still never the full run-scoped surface `run_predictions`/
+#: `get_run_manifest` each expose for their OWN one filename.
+_ALLOWED_RUN_OBJECT_PRESIGNS = frozenset(
+    {VALIDATE_READY_FILENAME, VALIDATE_NEW_READY_FILENAME, MODEL_FILENAME}
+)
+
+
+def presign_run_object(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-FLOW-016-T08/T07. Presigns a training-run-scoped object for
+    READING — `validate_ready.parquet` (the model-ready holdout
+    `prepare_holdout_for_run`/`replay_holdout_for_run` writes under a run's
+    own prefix, `tryReplayHoldout` in model-run.authorized.service.ts) or
+    `model.joblib` (the holdout-scoring container's own claim step, T07).
+
+    FIXES A LIVE DEFECT, not a latent one (T08's original finding):
+    `claim()` used to call `/artifacts/presign` for the holdout key, and
+    `presign_artifact` below hard-refuses anything that is not
+    `is_committed_artifact_key` — true of every committed DATASET artifact,
+    false of every run-scoped object. That refusal fired on every run whose
+    dataset actually had a holdout (confirmed live, 2026-09-01:
+    `validate_ready.parquet` already exists in object storage for every
+    affected run — the WRITE succeeded; only this READ was ever refused), so
+    `holdoutMetrics` had been null on 100% of runs for a reason unrelated to
+    whether a holdout existed at all.
+
+    Guarded the same structural way `verify_model_object`/`run_predictions`
+    guard their own run-scoped keys — never widen `is_committed_artifact_key`
+    itself, which is shared by every committed-dataset-artifact path in this
+    service and must keep refusing a run-scoped key.
+
+    `row_count` is `None` for `model.joblib` — `get_frame_metadata` is a
+    PARQUET reader and would raise on a pickled estimator; only
+    `validate_ready.parquet` gets a real row count. Otherwise the response
+    shape matches `presign_artifact`'s (`data_url`/`checksum`, plus an
+    always-empty `sidecar_urls` — a run-scoped object has none) so `claim()`'s
+    caller can go on constructing `holdoutDataUrl`/`holdoutArtifactChecksum`/
+    `holdoutRowCount` exactly as it did when this read went through
+    `/artifacts/presign`.
+    """
+    key = body.source_key
+    filename = key.rsplit("/", 1)[-1]
+    if filename not in _ALLOWED_RUN_OBJECT_PRESIGNS:
+        raise ValueError(
+            f"'{key}' does not name one of {sorted(_ALLOWED_RUN_OBJECT_PRESIGNS)}."
+        )
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be presigned here."
+        )
+
+    data_url = store.presigned_get(key)
+    # MODEL-SERVE-007-T02. A run output is uploaded by the trainer container
+    # through a presigned PUT, so this service never wrote it and never
+    # tagged it. This read is the first server-side touch afterwards — see
+    # `tag_retention`, which swallows its own failures.
+    store.tag_retention(key)
+    # Both holdout parquets get a real row count; only `model.joblib` does
+    # not (it is a pickled estimator, and `get_frame_metadata` is a parquet
+    # reader that would raise on it). Missing the new filename here would
+    # not error — it would hand back row_count=None, which the claim path
+    # reads as "no holdout", silently dropping the score.
+    row_count = (
+        store.get_frame_metadata(key)["row_count"]
+        if filename in (VALIDATE_READY_FILENAME, VALIDATE_NEW_READY_FILENAME)
+        else None
+    )
+
+    return {
+        "data_url": data_url,
+        "sidecar_urls": {},
+        "checksum": store.checksum_of(key),
+        "row_count": row_count,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
+        ).isoformat(),
+    }
+
+
+#: MODEL-SERVE-003. What a batch container may upload — mirrors
+#: _ALLOWED_RUN_UPLOADS' allow-list discipline one root over.
+_ALLOWED_PREDICTION_JOB_UPLOADS = frozenset({OUTPUT_FILENAME, BATCH_MANIFEST_FILENAME})
+
+
+def presign_prediction_job_upload(store: ObjectStore, body) -> dict:
+    """MODEL-SERVE-003. Mints WRITE URLs for a batch container's own two
+    outputs — mirrors `presign_model_run_upload`'s exact shape one root
+    over (predictions/{modelId}/{jobId}/ instead of {models|drafts}/
+    {ownerId}/runs/{runId}/). No draft/model split: a PredictionJob always
+    has a model_id.
+    """
+    unknown = sorted(set(body.filenames) - _ALLOWED_PREDICTION_JOB_UPLOADS)
+    if unknown:
+        raise ValueError(
+            f"Not part of the prediction-job layout: {unknown}. "
+            f"Allowed: {sorted(_ALLOWED_PREDICTION_JOB_UPLOADS)}."
+        )
+
+    upload_urls: dict[str, str] = {}
+    for filename in body.filenames:
+        key = prediction_job_key(body.model_id, body.job_id, filename)
+        # Belt and braces, same reasoning presign_model_run_upload states on
+        # itself: the allow-list above already constrains the filename, but
+        # the ids come from the request too, and this predicate is the one
+        # thing standing between a malformed id and a write outside
+        # predictions/.
+        if not is_prediction_job_key(key):
+            raise ValueError(
+                f"Refusing to presign a write outside predictions/: '{key}'"
+            )
+        upload_urls[filename] = store.presigned_put(key)
+
+    return {
+        "upload_urls": upload_urls,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_WRITE_TTL
+        ).isoformat(),
+    }
+
+
+#: MODEL-SERVE-003. Only the output — nothing today needs a fresh read URL
+#: for a job's own batch_manifest.json (V03 reads it directly off the
+#: worker's own upload response / a live re-fetch on the container side,
+#: never through this READ path).
+_ALLOWED_PREDICTION_JOB_OBJECT_PRESIGNS = frozenset({OUTPUT_FILENAME})
+
+
+def presign_prediction_job_object(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-SERVE-003. Presigns a PredictionJob's own output.parquet for
+    READING — mirrors `presign_run_object`'s exact shape one root over.
+
+    Deliberately NOT routed through `/artifacts/presign`
+    (`presign_artifact`): that function hard-refuses anything failing
+    `is_committed_artifact_key`, which a prediction-job output satisfies
+    neither condition of (no `/artifacts/` segment, no `ALL_DATA_FILENAMES`
+    match — see `is_committed_artifact_key`'s own docstring). Reusing it
+    here would repeat the exact mistake `presign_run_object` was built to
+    fix: that refusal already made `holdoutMetrics` null on 100% of runs
+    for a reason unrelated to whether the object existed at all (see this
+    function's own doc comment above). Never widen
+    `is_committed_artifact_key` itself — it is shared by every committed-
+    dataset-artifact path in this service and must keep refusing a
+    job-scoped key.
+    """
+    key = body.source_key
+    filename = key.rsplit("/", 1)[-1]
+    if filename not in _ALLOWED_PREDICTION_JOB_OBJECT_PRESIGNS:
+        raise ValueError(
+            f"'{key}' does not name one of "
+            f"{sorted(_ALLOWED_PREDICTION_JOB_OBJECT_PRESIGNS)}."
+        )
+    if not is_prediction_job_key(key):
+        raise ValueError(
+            f"'{key}' is not a well-formed prediction-job output key. Only "
+            "predictions/{modelId}/{jobId}/... can be presigned here."
+        )
+
+    # MODEL-SERVE-007-T02: uploaded by the batch container via presigned PUT
+    # and therefore untagged at write time — same reasoning as
+    # `presign_run_object`.
+    store.tag_retention(key)
+
+    return {
+        "data_url": store.presigned_get(key),
+        "sidecar_urls": {},
+        "checksum": store.checksum_of(key),
+        "row_count": None,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
+        ).isoformat(),
+    }
+
+
+#: MODEL-SERVE-006-T06. What an infer-mode container may upload — mirrors
+#: _ALLOWED_PREDICTION_JOB_UPLOADS' allow-list discipline one root over.
+#: PREDICTIONS_FILENAME/METRICS_FILENAME are the SAME constants
+#: ModelTrainingRun's own artifacts use — same names, same meaning, a
+#: different root.
+_ALLOWED_INFERENCE_WINDOW_UPLOADS = frozenset(
+    {PREDICTIONS_FILENAME, METRICS_FILENAME}
+)
+
+
+def presign_inference_window_upload(store: ObjectStore, body) -> dict:
+    """MODEL-SERVE-006-T06. Mints WRITE URLs for an infer-mode container's
+    own two outputs — mirrors `presign_prediction_job_upload`'s exact shape
+    one root over (inference/{modelId}/{modelVersionId}/dt=.../hour=.../
+    instead of predictions/{modelId}/{jobId}/). `dt`/`hour` arrive from the
+    caller (NestJS, computed from the window's own windowStart in UTC) —
+    this function never derives them, matching `inference_window_prefix`'s
+    own doc comment.
+    """
+    unknown = sorted(set(body.filenames) - _ALLOWED_INFERENCE_WINDOW_UPLOADS)
+    if unknown:
+        raise ValueError(
+            f"Not part of the inference-window layout: {unknown}. "
+            f"Allowed: {sorted(_ALLOWED_INFERENCE_WINDOW_UPLOADS)}."
+        )
+
+    upload_urls: dict[str, str] = {}
+    for filename in body.filenames:
+        key = inference_window_key(
+            body.model_id, body.model_version_id, body.dt, body.hour, filename
+        )
+        # Belt and braces, same reasoning presign_prediction_job_upload
+        # states on itself: the allow-list above already constrains the
+        # filename, but the ids/dt/hour come from the request too, and this
+        # predicate is the one thing standing between a malformed value and
+        # a write outside inference/.
+        if not is_inference_window_key(key):
+            raise ValueError(
+                f"Refusing to presign a write outside inference/: '{key}'"
+            )
+        upload_urls[filename] = store.presigned_put(key)
+
+    return {
+        "upload_urls": upload_urls,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_WRITE_TTL
+        ).isoformat(),
+    }
+
+
+#: MODEL-SERVE-006-T06. Prediction output AND input — unlike PredictionJob
+#: (whose input is a committed dataset artifact under a DIFFERENT root,
+#: presigned through /artifacts/presign), an inference window's input.parquet
+#: lives under this SAME root. The infer-mode container reads it at claim
+#: time through this endpoint, not /artifacts/presign, which would refuse it
+#: outright (is_committed_artifact_key would reject an inference/ key).
+_ALLOWED_INFERENCE_WINDOW_OBJECT_PRESIGNS = frozenset(
+    {PREDICTIONS_FILENAME, INFERENCE_INPUT_FILENAME}
+)
+
+
+def presign_inference_window_object(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-SERVE-006-T06. Presigns one of an inference window's own
+    objects (input.parquet for the container to download at claim time,
+    predictions.parquet for reading afterward) — mirrors
+    `presign_prediction_job_object`'s exact shape one root over.
+    Deliberately NOT `/artifacts/presign`, for the identical reason that
+    function's own doc comment states one root over.
+    """
+    key = body.source_key
+    filename = key.rsplit("/", 1)[-1]
+    if filename not in _ALLOWED_INFERENCE_WINDOW_OBJECT_PRESIGNS:
+        raise ValueError(
+            f"'{key}' does not name one of "
+            f"{sorted(_ALLOWED_INFERENCE_WINDOW_OBJECT_PRESIGNS)}."
+        )
+    if not is_inference_window_key(key):
+        raise ValueError(
+            f"'{key}' is not a well-formed inference-window output key. "
+            "Only inference/{modelId}/{modelVersionId}/dt=.../hour=.../... "
+            "can be presigned here."
+        )
+
+    # MODEL-SERVE-007-T02: predictions.parquet is uploaded by the infer-mode
+    # container via presigned PUT. input.parquet IS written by this service
+    # (inference_window_service) and is already tagged; re-tagging it here is
+    # idempotent and costs one call, which is cheaper than a branch that has
+    # to stay in step with which filename came from where.
+    store.tag_retention(key)
+
+    return {
+        "data_url": store.presigned_get(key),
+        "sidecar_urls": {},
+        "checksum": store.checksum_of(key),
+        "row_count": None,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
         ).isoformat(),
     }

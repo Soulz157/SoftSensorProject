@@ -2,7 +2,11 @@
 
 import { Scissors } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { PrecleanseRemoved } from '@/lib/precleanse'
+import {
+  removedCellItems,
+  removedRowItems,
+  type PrecleanseRemoved,
+} from '@/lib/precleanse'
 
 interface Props {
   removed: PrecleanseRemoved
@@ -11,17 +15,23 @@ interface Props {
 }
 
 /**
- * Cut-off Details Summary — what each cut-off stage removed. Crop stages report
- * whole **rows** removed; the outlier rules only touch cells, so they report
- * affected **points**. Styling is intentionally neutral (no red/amber — those
- * are reserved for workspace/plant status per the design system).
+ * Cut-off Details Summary — what each cut-off stage removed. Reads every
+ * counter through removedRowItems/removedCellItems (precleanse.ts) rather
+ * than hand-picking fields — that function's own doc comment explains why:
+ * a new counter shows up here by construction instead of being silently
+ * dropped. A prior hand-rolled version of this list did exactly that, which
+ * is why the SD&TA/manual "Excluded ranges" cut never appeared here even
+ * though `precleanseBreakdown` was counting it correctly all along.
+ *
+ * Crop/exclusion/drop-row stages report whole **rows** removed; the
+ * value-based outlier rules only touch cells, so they report affected
+ * **points**. Styling is intentionally neutral (no red/amber — those are
+ * reserved for workspace/plant status per the design system).
  */
 export function CutoffSummary({ removed, keptRows, totalRows }: Props) {
   const rows: Array<{ label: string; count: number; unit: string }> = [
-    { label: 'Time Crop', count: removed.timeCrop, unit: 'rows' },
-    { label: 'Value Crop (Y)', count: removed.valueCrop, unit: 'rows' },
-    { label: 'Condition', count: removed.conditional, unit: 'points' },
-    { label: 'Statistical', count: removed.statistical, unit: 'points' },
+    ...removedRowItems(removed).map(item => ({ ...item, unit: 'rows' })),
+    ...removedCellItems(removed).map(item => ({ ...item, unit: 'points' })),
   ]
 
   const keptPct = totalRows > 0 ? (keptRows / totalRows) * 100 : 0

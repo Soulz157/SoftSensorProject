@@ -1,0 +1,177 @@
+import { createZodDto } from 'nestjs-zod';
+import { z } from 'zod';
+
+/**
+ * MODEL-SERVE-006-T09. Enable/disable + cadence/lag for one model's
+ * schedule, plus the wizard's five deploy-step guardrails, adopted under
+ * THEIR names (store/model-pipeline.ts's mpAutoRetrainAtom/
+ * mpRetrainWarnSdAtom/mpRetrainCriticalSdAtom/mpDriftMonitorAtom/
+ * mpDriftThresholdPctAtom) — a parallel vocabulary here would mean the
+ * wizard and the scheduler describing one setting two ways.
+ *
+ * `sourceId` is optional here and required by the SERVICE, not this schema
+ * (D8): it is only mandatory when the pinned version's source dataset has
+ * more than one `sourceIds` entry, which this DTO cannot see.
+ *
+ * `warnSd < criticalSd` is checked here ONLY when both arrive in the same
+ * request — a partial update sending just one of the pair is re-checked in
+ * the SERVICE against the row's final, merged state, since this schema has
+ * no view of what is already persisted.
+ */
+export const PutInferenceScheduleSchema = z
+  .object({
+    enabled: z.boolean(),
+    cadenceMinutes: z.number().int().positive().max(1440).optional(),
+    lagMinutes: z.number().int().nonnegative().max(1440).optional(),
+    sourceId: z.string().trim().min(1).optional(),
+    autoRetrain: z.boolean().optional(),
+    warnSd: z.number().positive().optional(),
+    criticalSd: z.number().positive().optional(),
+    driftMonitor: z.boolean().optional(),
+    // MODEL-SERVE-005-T03. The ground-truth half of the same lag trade.
+    // `truthLagMinutes` is deliberately a much larger number than
+    // `lagMinutes` above — feature freshness and lab latency are different
+    // quantities, which is the distinction MODEL-SERVE-006-T04 drew.
+    // Positive, never zero: a zero truth lag would join a window the
+    // instant it closed, before any lab result could exist.
+    truthLagMinutes: z.number().int().positive().max(43200).optional(),
+    truthToleranceMinutes: z.number().int().positive().max(1440).optional(),
+    truthHorizonHours: z.number().int().positive().max(8760).optional(),
+    // MODEL-SERVE-001-T28. The monitoring axis's own bands. `.optional()`
+    // like every sibling, and the object is `.strict()` — omitting them here
+    // would make any request carrying them fail outright.
+    missingPctWarn: z.number().nonnegative().max(100).optional(),
+    missingPctAlert: z.number().nonnegative().max(100).optional(),
+    skipStreakAlert: z.number().int().positive().max(100).optional(),
+    frozenWindows: z.number().int().positive().max(24).optional(),
+    // NONNEGATIVE, not `.positive()` like its sibling warnSd: 0 is
+    // this field's own DEFAULT and its most meaningful value (exact
+    // flatness), so `.positive()` would make the default unsettable.
+    frozenTolerancePct: z.number().nonnegative().max(100).optional(),
+  })
+  .strict()
+  .refine(
+    (dto) =>
+      dto.warnSd === undefined ||
+      dto.criticalSd === undefined ||
+      dto.warnSd < dto.criticalSd,
+    { message: 'warnSd must be less than criticalSd.' },
+  )
+  // Same shape, same limitation: this only fires when BOTH arrive in one
+  // request. A partial update naming just one is re-checked server-side
+  // against the MERGED state — the exact gap T09 found for warnSd/criticalSd.
+  .refine(
+    (dto) =>
+      dto.missingPctWarn === undefined ||
+      dto.missingPctAlert === undefined ||
+      dto.missingPctWarn < dto.missingPctAlert,
+    { message: 'missingPctWarn must be less than missingPctAlert.' },
+  );
+
+export class PutInferenceScheduleDto extends createZodDto(
+  PutInferenceScheduleSchema,
+) {}
+
+/**
+ * MODEL-SERVE-006-T11. A range, not a single window — over-requesting is
+ * harmless (T01's unique constraint makes a repeated insert a no-op), so
+ * this deliberately does not require the caller to know which windows are
+ * already missing.
+ */
+export const BackfillInferenceWindowsSchema = z
+  .object({
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+  })
+  .strict()
+  .refine((dto) => new Date(dto.to) > new Date(dto.from), {
+    message: '`to` must be after `from`.',
+  });
+
+export class BackfillInferenceWindowsDto extends createZodDto(
+  BackfillInferenceWindowsSchema,
+) {}
+
+/**
+ * MODEL-SERVE-005-T03. The live-error read's own range — same shape
+ * `PredictionLogRangeQuerySchema` already uses for this page's other two
+ * reads, so the Monitoring tab speaks one range vocabulary throughout.
+ */
+export const InferenceTruthRangeQuerySchema = z
+  .object({
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+  })
+  .strict()
+  .refine((dto) => new Date(dto.from) <= new Date(dto.to), {
+    message: '`from` must be before or equal to `to`.',
+  });
+
+export class InferenceTruthRangeQueryDto extends createZodDto(
+  InferenceTruthRangeQuerySchema,
+) {}
+
+/**
+ * MODEL-SERVE-005-T03. Force a re-join over a range — the same range shape,
+ * driving the same sweeper code path a scheduled join uses. There is no
+ * second implementation for a human-triggered join, for the reason
+ * MODEL-SERVE-006-T11 gives about backfill: a second path is a second set
+ * of bugs, exercised only during incidents.
+ */
+export const RejoinInferenceTruthSchema = z
+  .object({
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+  })
+  .strict()
+  .refine((dto) => new Date(dto.to) > new Date(dto.from), {
+    message: '`to` must be after `from`.',
+  });
+
+export class RejoinInferenceTruthDto extends createZodDto(
+  RejoinInferenceTruthSchema,
+) {}
+
+/** MODEL-SERVE-006. The infer-mode container's own terminal report —
+ *  mirrors `PredictionJobCompleteSchema`'s shape one entity over. */
+export const InferenceWindowCompleteSchema = z
+  .object({
+    status: z.enum(['SUCCEEDED', 'FAILED']),
+    rowCount: z.number().int().nonnegative().optional(),
+    outputChecksum: z.string().min(1).optional(),
+    uploaded: z.array(z.string()).max(2).optional(),
+    failureReason: z.string().max(2000).optional(),
+  })
+  .strict()
+  .refine(
+    (dto) =>
+      dto.status !== 'SUCCEEDED' ||
+      (dto.rowCount !== undefined && dto.outputChecksum !== undefined),
+    {
+      message: 'A SUCCEEDED report must include rowCount and outputChecksum.',
+    },
+  )
+  .refine((dto) => dto.status !== 'FAILED' || !!dto.failureReason, {
+    message: 'A FAILED report must include failureReason.',
+  });
+
+export class InferenceWindowCompleteDto extends createZodDto(
+  InferenceWindowCompleteSchema,
+) {}
+
+export const InferenceWindowLogSchema = z.object({
+  level: z.enum(['info', 'warn', 'error']).default('info'),
+  message: z.string().max(4000),
+});
+
+export class InferenceWindowLogDto extends createZodDto(
+  InferenceWindowLogSchema,
+) {}
+
+export const InferenceWindowUploadUrlsSchema = z.object({
+  filenames: z.array(z.string()).min(1).max(2),
+});
+
+export class InferenceWindowUploadUrlsDto extends createZodDto(
+  InferenceWindowUploadUrlsSchema,
+) {}

@@ -75,7 +75,7 @@ export function CompareTagsPopover({
           />
         </div>
         <ScrollArea className="max-h-64">
-          <div className="space-y-0.5 p-1.5">
+          <div className="space-y-0.5 p-1.5 max-h-64">
             {ordered.length === 0 ? (
               <p className="px-2 py-3 text-center text-xs text-muted-foreground">
                 No tags match

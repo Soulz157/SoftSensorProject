@@ -7,21 +7,27 @@ import { useModelPipelineNav } from '@/hooks/model/use-model-pipeline-nav'
 import { useModelWizardMode } from '@/hooks/model/use-model-wizard-mode'
 import { WizardStepIndicator } from './wizard-step-indicator'
 import { Phase1Details } from './pipeline/phase-1-details'
-import { Phase2TrainingConfig } from './pipeline/phase-2-training-config'
-import { Phase3Evaluation } from './pipeline/phase-3-evaluation'
-import { Phase4Deploy } from './pipeline/phase-4-deploy'
+import { Phase2DatasetReview } from './pipeline/phase-2-dataset-review'
+import { Phase3TrainingConfig } from './pipeline/phase-3-training-config'
+import { Phase5Evaluation } from './pipeline/phase-5-evaluation'
+import { Phase6Deploy } from './pipeline/phase-6-deploy'
+import { Phase4ModelSelection } from './pipeline/phase-4-model-selection'
 
 const STEP_LABELS = [
   'Select Dataset',
+  'Dataset Review',
   'Training Config',
+  'Model Selection',
   'Evaluation',
   'Save Model',
 ]
 
 const NEXT_LABELS: Record<number, string> = {
   1: 'Continue',
-  2: 'View Results',
-  3: 'Save Model',
+  2: 'Continue',
+  3: 'View Results',
+  4: 'Continue',
+  5: 'Continue',
 }
 
 export function CreateModelForm() {
@@ -41,8 +47,8 @@ export function CreateModelForm() {
   const { mode, modelName } = useModelWizardMode()
   const isEdit = mode === 'edit'
 
-  // Deploy (4) is terminal with its own Save & Finish action.
-  const hideFooterNext = nav.currentStep === 4
+  // Deploy (6) is terminal with its own Save & Finish action.
+  const hideFooterNext = nav.currentStep === 6
   const nextLabel = NEXT_LABELS[nav.currentStep] ?? 'Next'
 
   let body
@@ -51,6 +57,7 @@ export function CreateModelForm() {
       body = (
         <Phase1Details
           mode={mode}
+          totalSteps={STEP_LABELS.length}
           name={form.name}
           description={form.description}
           workspaceId={form.workspaceId}
@@ -71,13 +78,19 @@ export function CreateModelForm() {
       )
       break
     case 2:
-      body = <Phase2TrainingConfig nav={nav} />
+      body = <Phase2DatasetReview nav={nav} />
       break
     case 3:
-      body = <Phase3Evaluation nav={nav} />
+      body = <Phase3TrainingConfig nav={nav} />
       break
     case 4:
-      body = <Phase4Deploy nav={nav} />
+      body = <Phase4ModelSelection nav={nav} />
+      break
+    case 5:
+      body = <Phase5Evaluation nav={nav} />
+      break
+    case 6:
+      body = <Phase6Deploy nav={nav} />
       break
     default:
       body = null
@@ -85,7 +98,7 @@ export function CreateModelForm() {
 
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
-      <div className="mx-auto max-w-7xl space-y-6">
+      <div className="mx-auto max-w-7xl space-y-6 xl:max-w-[96rem]">
         {/* Header */}
         <div className="space-y-1">
           <Button

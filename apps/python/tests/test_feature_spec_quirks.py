@@ -11,7 +11,14 @@ from __future__ import annotations
 
 import copy
 
-from services.feature_spec_service import build_feature_spec
+import pandas as pd
+
+from services.feature_spec_service import (
+    build_feature_spec,
+    compute_psi_ref_edges,
+    max_replay_lookback,
+)
+from softsensor_scaling import STATUS_BAD, STATUS_GOOD
 
 BASE_FEATURES = [
     {"id": "f1", "kind": "lag", "tag": "TI-101", "k": 3},
@@ -104,8 +111,17 @@ def test_spec_content_matches_the_ac_fields() -> None:
         "features",
         "selectedColumns",
         "scaling",
+        "scalingParams",
         "encoding",
         "featureHash",
+        # MODEL-SERVE-001-T13: default {} when build_feature_spec is called
+        # with no psi_ref_edges, same "absent -> {}" convention scalingParams
+        # already uses — never omitted outright, so a reader can tell
+        # "computed, nothing to report" from "this spec predates T13".
+        "psiRefEdges",
+        "psiBinCount",
+        "psiBinMode",
+        "psiRefCounts",
     }
     assert spec["features"][0]["name"] == "TI-101__lag3"
     assert spec["features"][1]["name"] == "VI-202__roll5_mean"
@@ -114,3 +130,371 @@ def test_spec_content_matches_the_ac_fields() -> None:
         "honest empty list, not an invented scheme"
     )
     assert isinstance(spec["featureHash"], str) and len(spec["featureHash"]) == 64
+
+
+# ── target threading (MODEL-FLOW-000-T02) ──────────────────────────────────
+
+
+def test_target_fields_absent_when_no_target_given() -> None:
+    """The nine AC fields are ALWAYS present; the three target fields are
+    present ONLY when target_y is passed — never as null placeholders."""
+    spec = _base_spec()
+    assert "target_y" not in spec
+    assert "target_scaled" not in spec
+    assert "derived_from_target" not in spec
+
+
+def test_target_fields_present_when_target_given() -> None:
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="TI-101",
+    )
+    assert set(spec) == {
+        "featureVersion", "features", "selectedColumns", "scaling",
+        "scalingParams", "encoding", "featureHash",
+        "psiRefEdges", "psiBinCount", "psiBinMode", "psiRefCounts",
+        "target_y", "target_scaled", "derived_from_target",
+    }
+    assert spec["target_y"] == "TI-101"
+    # MODEL-SERVE-010-T05. CONTRACT CHANGED, DELIBERATELY. This used to
+    # assert True "because TI-101 has a minmax scaler in BASE_SCALERS" —
+    # i.e. the flag reported what was REQUESTED. That is the defect: the
+    # same map drove `to_model_ready`, which scales any tag absent from it
+    # with DEFAULT_SCALER anyway, so the flag could never contradict the
+    # scaling and in production reported False over a target that had been
+    # min-max scaled to 0-1. The flag now reports what ACTUALLY happened,
+    # read from `scaling_params`, and the pipeline no longer scales the
+    # target at all — so requesting a scaler for it does NOT make it scaled.
+    assert spec["target_scaled"] is False
+    assert spec["derived_from_target"] == ["TI-101__lag3"]
+
+
+def test_target_scaled_is_TRUE_when_the_target_really_was_scaled() -> None:
+    """MODEL-SERVE-010-T05. The flag must still be able to say True, or it
+    would be a constant rather than a report. An artifact written before this
+    fix carries fitted params for its target, and reading THAT is what lets a
+    consumer inverse-transform such a model's predictions instead of
+    comparing scaled output to engineering units."""
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="TI-101",
+        scaling_params={"TI-101": {"min": 198.5, "max": 210.6}},
+    )
+    assert spec["target_scaled"] is True
+
+
+def test_target_scaled_is_false_when_only_FEATURES_were_scaled() -> None:
+    """The normal post-fix shape: features carry fitted params, the target
+    does not, so the target is unscaled and says so."""
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="TI-101",
+        scaling_params={"FC-310": {"min": 0.0, "max": 1.0}},
+    )
+    assert spec["target_scaled"] is False
+
+
+def test_target_scaled_is_explicit_false_when_unscaled() -> None:
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), {},
+        target_y="TI-101",
+    )
+    assert spec["target_scaled"] is False
+
+
+def test_derived_from_target_is_empty_when_nothing_reads_the_target() -> None:
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="FI-404",  # not read by any BASE_FEATURES config
+    )
+    assert spec["derived_from_target"] == []
+
+
+def test_derived_from_target_is_a_transitive_closure() -> None:
+    """A later feature can read an earlier feature's own derived column —
+    both must land in derived_from_target, not just the direct reader.
+    Y__lag1 reads Y directly; Y__lag1__roll5 reads Y__lag1, not Y."""
+    target = "Y"
+    chained = [
+        {"id": "f1", "kind": "lag", "tag": target, "k": 1},
+        {
+            "id": "f2", "kind": "rolling", "tag": "Y__lag1",
+            "window": 5, "agg": "mean",
+        },
+    ]
+    spec = build_feature_spec(chained, None, {}, target_y=target)
+    assert spec["derived_from_target"] == sorted(["Y__lag1", "Y__lag1__roll5_mean"])
+
+
+def test_target_fields_are_excluded_from_the_hash() -> None:
+    """The hash describes how the artifact was BUILT, not how a run reads
+    it — two runs with different targets against the same GOLD bytes must
+    still share a featureHash."""
+    no_target = _base_spec()
+    with_target_a = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="TI-101",
+    )
+    with_target_b = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="VI-202",
+    )
+    assert no_target["featureHash"] == with_target_a["featureHash"]
+    assert with_target_a["featureHash"] == with_target_b["featureHash"]
+
+
+# ── DS-LAKE-018-T04: max_replay_lookback ──────────────────────────────────
+
+
+def test_max_replay_lookback_is_zero_for_features_with_no_lookback() -> None:
+    assert max_replay_lookback([]) == 0
+    assert max_replay_lookback(
+        [{"id": "f1", "kind": "log", "tag": "TI-101"}]) == 0
+
+
+def test_max_replay_lookback_reads_lag_k_and_rolling_window_directly() -> None:
+    assert max_replay_lookback(
+        [{"id": "f1", "kind": "lag", "tag": "TI-101", "k": 3}]) == 3
+    assert max_replay_lookback(
+        [{"id": "f1", "kind": "rolling", "tag": "TI-101", "window": 60,
+          "agg": "mean"}]
+    ) == 60
+    assert max_replay_lookback(
+        [{"id": "f1", "kind": "delta", "tag": "TI-101"}]) == 1
+
+
+def test_max_replay_lookback_compounds_a_lag_of_a_rolling_column() -> None:
+    """The scope_note's own worked example: lag(5) of rolling(60) needs 65,
+    not 5 — reading only the outermost config would silently under-count."""
+    chained = [
+        {"id": "f1", "kind": "rolling", "tag": "TI-101", "window": 60,
+         "agg": "mean"},
+        {"id": "f2", "kind": "lag", "tag": "TI-101__roll60_mean", "k": 5},
+    ]
+    assert max_replay_lookback(chained) == 65
+
+
+def test_max_replay_lookback_compounds_through_a_formula_var() -> None:
+    """A `formula` config's `vars` mapping can ALSO read a derived column —
+    must compound exactly like `tag`/`tags` do, not be treated as
+    lookback-free just because `formula` itself has none."""
+    chained = [
+        {"id": "f1", "kind": "lag", "tag": "TI-101", "k": 10},
+        {
+            "id": "f2", "kind": "formula", "expr": "c0 * 2",
+            "vars": {"c0": "TI-101__lag10"},
+        },
+    ]
+    assert max_replay_lookback(chained) == 10
+
+
+def test_max_replay_lookback_takes_the_deeper_of_several_independent_chains() -> None:
+    chains = [
+        {"id": "f1", "kind": "lag", "tag": "TI-101", "k": 3},
+        {"id": "f2", "kind": "rolling", "tag": "VI-202", "window": 20,
+         "agg": "mean"},
+        {"id": "f3", "kind": "delta", "tag": "FI-404"},
+    ]
+    assert max_replay_lookback(chains) == 20
+
+
+def test_max_replay_lookback_does_not_compound_across_independent_tags() -> None:
+    """A rolling(60) on ONE tag must not inflate the lookback of an
+    unrelated lag(3) on a DIFFERENT tag — compounding only follows an
+    actual tag-name match through `_reads_tags`."""
+    independent = [
+        {"id": "f1", "kind": "rolling", "tag": "TI-101", "window": 60,
+         "agg": "mean"},
+        {"id": "f2", "kind": "lag", "tag": "VI-202", "k": 3},
+    ]
+    assert max_replay_lookback(independent) == 60
+
+
+# ── PSI reference edges (MODEL-SERVE-001-T13) ────────────────────────────────
+
+
+def _tag_frame(**tag_values: list[float]) -> pd.DataFrame:
+    """One column + its `__status` sidecar per kwarg, all STATUS_GOOD,
+    matching `compute_psi_ref_edges`'s documented precondition (the caller
+    passes a frame straight out of `apply_features`/`drop_bad_feature_rows`,
+    which already carries status columns for every tag)."""
+    data: dict[str, list[float] | list[int]] = {}
+    for tag, values in tag_values.items():
+        data[tag] = values
+        data[f"{tag}__status"] = [STATUS_GOOD] * len(values)
+    return pd.DataFrame(data)
+
+
+def test_psi_edges_continuous_tag_gets_bin_count_plus_one_edges() -> None:
+    """A tag with plenty of distinct Good values gets the full requested
+    bin count — `binCount + 1` ascending edges, quantile-spaced."""
+    values = [float(i) for i in range(100)]  # 100 distinct values
+    result = compute_psi_ref_edges(_tag_frame(**{"TI-101": values}), ["TI-101"])
+    edges = result["TI-101"]
+    assert edges["binMode"] == "continuous"
+    assert edges["binCount"] == 10
+    assert len(edges["edges"]) == 11
+    assert edges["edges"] == sorted(edges["edges"]), "edges must be ascending"
+
+
+def test_psi_edges_digital_tag_falls_back_to_categorical() -> None:
+    """T13's own named example: a valve open/closed tag has only 2 distinct
+    Good values — not a continuous-binning candidate, one bin per value.
+    `refCounts` is the REAL 40/60 split, not an assumed uniform 50/50 —
+    the exact case `softsensor_scaling.psi`'s own tests pin directly; this
+    test's job is only confirming `compute_psi_ref_edges` wires a frame's
+    Good values into that shared function correctly."""
+    values = [0.0] * 40 + [1.0] * 60
+    result = compute_psi_ref_edges(_tag_frame(**{"VALVE": values}), ["VALVE"])
+    edges = result["VALVE"]
+    assert edges == {
+        "binMode": "categorical", "binCount": 2,
+        "edges": [0.0, 1.0], "refCounts": [40, 60],
+    }
+
+
+def test_psi_edges_single_distinct_value_is_categorical_not_a_crash() -> None:
+    """A tag with exactly one distinct Good value in the whole train split
+    is not a continuous-binning candidate at all (degenerate-tag rule)."""
+    result = compute_psi_ref_edges(_tag_frame(**{"CONST": [5.0] * 10}), ["CONST"])
+    assert result["CONST"] == {
+        "binMode": "categorical", "binCount": 1,
+        "edges": [5.0], "refCounts": [10],
+    }
+
+
+def test_psi_edges_absent_for_a_tag_with_zero_good_values() -> None:
+    """All-Bad tag: nothing to bin. Absent from the result entirely — never
+    a fabricated edge set, same convention `scalingParams` uses for a
+    scaler that fit nothing."""
+    frame = pd.DataFrame({
+        "DEAD": [0.0] * 10,
+        "DEAD__status": [STATUS_BAD] * 10,
+    })
+    result = compute_psi_ref_edges(frame, ["DEAD"])
+    assert "DEAD" not in result
+
+
+def test_psi_edges_are_not_part_of_feature_hash() -> None:
+    """Same non-change-should-not-churn-the-hash contract `scalingParams`
+    already has (see module docstring) — PSI edges are a FIT result of the
+    same recipe, not part of the recipe itself."""
+    without = build_feature_spec(BASE_FEATURES, BASE_SELECTED, BASE_SCALERS)
+    with_edges = build_feature_spec(
+        BASE_FEATURES, BASE_SELECTED, BASE_SCALERS,
+        psi_ref_edges={"TI-101": {
+            "binMode": "continuous", "binCount": 2,
+            "edges": [0.0, 1.0, 2.0], "refCounts": [3, 7],
+        }},
+    )
+    assert without["featureHash"] == with_edges["featureHash"]
+    assert without["psiRefEdges"] == {}
+    assert with_edges["psiRefEdges"] == {"TI-101": [0.0, 1.0, 2.0]}
+    assert with_edges["psiBinCount"] == {"TI-101": 2}
+    assert with_edges["psiBinMode"] == {"TI-101": "continuous"}
+    assert with_edges["psiRefCounts"] == {"TI-101": [3, 7]}
+
+
+def test_scaling_records_the_effective_method_on_a_default_recipe() -> None:
+    """DS-LAKE-028-V01. The defect this feature exists to close, at the shape
+    that produced it: `scalers={}` — the overwhelmingly common path, since
+    `dwScalerConfigsAtom` starts `{}` and the UI had no way to decline —
+    used to write `scaling: []` over a frame every column of which WAS
+    min-max scaled. 21 of the 22 specs in MinIO are in that state.
+
+    Asserting only that `scaling` is non-empty would pass against a writer
+    that records ONE tag, which is the shape of the defect rather than its
+    fix — so this asserts the tag SET equals `scalingParams`' key set
+    exactly, which is the property the two fields were violating.
+    """
+    spec = build_feature_spec(
+        BASE_FEATURES,
+        BASE_SELECTED,
+        {},
+        scaling_params={"TI-101": {"min": 0.0, "max": 1.0},
+                        "TI-102": {"min": 2.0, "max": 4.0}},
+    )
+    assert {e["tag"] for e in spec["scaling"]} == set(spec["scalingParams"])
+    assert all(e["method"] == "minmax" for e in spec["scaling"])
+    assert spec["featureVersion"] == 4
+
+
+def test_correcting_scaling_did_not_move_the_feature_hash() -> None:
+    """DS-LAKE-028-V01B. `scaling` is written from the EFFECTIVE list but
+    HASHED from the EXPLICIT one, precisely so no recorded featureHash moved
+    when T02 corrected the field. Materialising a default must therefore be
+    invisible to the hash, while a real config change must still move it —
+    both halves, because only the pair discriminates a decoupled hash from a
+    hash that stopped depending on scalers at all.
+    """
+    defaulted = build_feature_spec(BASE_FEATURES, BASE_SELECTED, {})
+    with_params = build_feature_spec(
+        BASE_FEATURES, BASE_SELECTED, {},
+        scaling_params={"TI-101": {"min": 0.0, "max": 1.0}},
+    )
+    explicit = build_feature_spec(BASE_FEATURES, BASE_SELECTED, {"TI-101": "robust"})
+
+    assert defaulted["featureHash"] == with_params["featureHash"]
+    assert defaulted["featureHash"] != explicit["featureHash"]
+    assert with_params["scaling"] == [{"tag": "TI-101", "method": "minmax"}]
+    assert defaulted["scaling"] == []
+
+
+# ── MODEL-SERVE-010-T05: the target must never be scaled ────────────────────
+
+
+def test_scalable_tags_excludes_the_target_even_when_absent_from_the_map() -> None:
+    """THE ROOT CAUSE, PINNED. `to_model_ready` reads
+    `scalers.get(tag, DEFAULT_SCALER)` and DEFAULT_SCALER is "minmax", so
+    leaving the target out of the scaler map does NOT leave it unscaled — it
+    scales it with the default. Exclusion has to be by NAME, which is what
+    `_scalable_tags` does.
+
+    Measured before this fix: a GOLD target ranging exactly 0.0-1.0 while its
+    own feature_spec said `target_scaled: false`, and a model emitting
+    0.64-0.66 against a lab measuring 196.
+    """
+    import pandas as pd
+
+    from services.artifact_service import _scalable_tags
+
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-09-17", periods=2, freq="1min"),
+            "FC-310": [1.0, 2.0],
+            "FC-310__status": [0, 0],
+            "TI-101": [198.5, 210.6],
+            "TI-101__status": [0, 0],
+        }
+    )
+
+    assert _scalable_tags(df, "TI-101") == ["FC-310"]
+    # No target named: every tag is scalable, which is the pre-existing
+    # behaviour for a frame that has no y at all.
+    assert _scalable_tags(df, None) == ["FC-310", "TI-101"]
+
+
+def test_to_model_ready_would_scale_an_unmapped_target_without_the_exclusion() -> None:
+    """The negative control for the test above: this asserts the DEFAULT-scaler
+    behaviour that made the bug possible, so a future change to
+    DEFAULT_SCALER or to `scalers.get` cannot quietly make `_scalable_tags`
+    look unnecessary."""
+    import pandas as pd
+
+    from softsensor_scaling import to_model_ready
+
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-09-17", periods=2, freq="1min"),
+            "TI-101": [198.5, 210.6],
+            "TI-101__status": [0, 0],
+        }
+    )
+
+    # Target passed in the tag list with NO entry in the scaler map.
+    scaled, params = to_model_ready(df, ["TI-101"], {})
+
+    # It gets min-max scaled anyway — 0.0 and 1.0, exactly the shape found in
+    # the live GOLD artifact.
+    assert scaled["TI-101"].tolist() == [0.0, 1.0]
+    assert "TI-101" in params

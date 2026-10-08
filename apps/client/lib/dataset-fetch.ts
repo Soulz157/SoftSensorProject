@@ -215,6 +215,24 @@ export function parseDurationMs(duration: string): number | null {
   return value * unitMs
 }
 
+/**
+ * Format a DURATION in milliseconds as a zero-padded clock ("00:01:23") for the
+ * raw-fetch elapsed timer. Hours are never wrapped at 24 — a 30-hour pull reads
+ * "30:00:00", not "06:00:00". Negative/NaN input (a clock skew or a missing
+ * timestamp) clamps to "00:00:00" rather than rendering "NaN:NaN:NaN".
+ *
+ * Distinct from `dateToPiTime` below, which formats an ABSOLUTE instant.
+ */
+export function formatElapsed(ms: number): string {
+  const safeMs = Number.isFinite(ms) && ms > 0 ? ms : 0
+  const totalSec = Math.floor(safeMs / 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return (
+    `${p(Math.floor(totalSec / 3600))}:` +
+    `${p(Math.floor((totalSec % 3600) / 60))}:${p(totalSec % 60)}`
+  )
+}
+
 /** Format a Date as the PI space-separated time ("YYYY-MM-DD HH:MM:SS") using
  * LOCAL fields — never UTC — so the window is not silently shifted by the
  * viewer's timezone offset. */
@@ -287,4 +305,31 @@ export function piFetchInputError(
   const source = piSources[0]
   if (!source) return { ok: false, error: 'No PI source selected.' }
   return { ok: true, source }
+}
+
+/** Batches fetched at once — `runPool`'s width in `useDatasetStudioFetch`. */
+export const FETCH_CONCURRENCY = 4
+
+/** How far into the in-flight share the bar may run ahead before a batch
+ * lands. Never 1: the bar must not read "done" before anything is. */
+export const PRELOAD_FRACTION = 0.66
+
+/**
+ * Where the progress bar may PRELOAD to while a fetch is running. Real
+ * progress only moves when a whole batch lands, so a single-batch fetch sat
+ * at 0% until it jumped to 100%, reading as stuck. The bar may run ahead by
+ * `PRELOAD_FRACTION` of the batches currently in flight (at most
+ * `FETCH_CONCURRENCY`), never past 99, and never below real progress. With
+ * one batch that is 0 → 66 → 100.
+ */
+export function preloadProgress(
+  completedBatches: number,
+  totalBatches: number,
+): number {
+  if (totalBatches <= 0) return 0
+  const done = Math.min(completedBatches, totalBatches)
+  const inFlight = Math.min(FETCH_CONCURRENCY, totalBatches - done)
+  if (inFlight <= 0) return 100
+  const ahead = ((done + inFlight * PRELOAD_FRACTION) / totalBatches) * 100
+  return Math.min(99, Math.round(ahead))
 }

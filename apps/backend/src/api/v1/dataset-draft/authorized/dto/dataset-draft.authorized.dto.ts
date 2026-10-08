@@ -65,3 +65,27 @@ export const SaveDraftAsDatasetSchema = z.object({
 export class SaveDraftAsDatasetDto extends createZodDto(
   SaveDraftAsDatasetSchema,
 ) {}
+
+/**
+ * DS-LAKE-018-T06. The holdout picker moved from Step 2 to Step 3.1, which
+ * mounts AFTER the bronze warm has already materialized once with no
+ * holdout — so changing the holdout at 3.1 must re-split the EXISTING
+ * artifact rather than re-fetch. Draft-only (no `DatasetVersion` equivalent
+ * exists — a saved dataset's holdout is fixed at Save time), so this lives
+ * here rather than beside `CreateRawVersionSchema` in
+ * dataset-version.authorized.dto.ts.
+ *
+ * `holdout: null` clears a previously-picked holdout: `resplitDraftHoldoutService`
+ * treats that as "point the draft back at its own pristine root", never
+ * calling Python at all — the unsplit artifact already IS the no-holdout
+ * state, so there is nothing to re-split.
+ */
+export const ResplitDraftHoldoutSchema = z.object({
+  holdout: z
+    .object({ from: z.string().min(1), to: z.string().min(1) })
+    .nullable(),
+});
+
+export class ResplitDraftHoldoutDto extends createZodDto(
+  ResplitDraftHoldoutSchema,
+) {}

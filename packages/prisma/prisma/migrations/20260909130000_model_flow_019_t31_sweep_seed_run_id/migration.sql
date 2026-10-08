@@ -1,0 +1,23 @@
+-- MODEL-FLOW-019-T31 / AC66. The seed run whose recorded feature importance
+-- produced the ranking a sweep's rows share.
+--
+-- A separate column from `sweepId` (added in
+-- 20260909120000_model_flow_019_t31_feature_columns_sweep_id) rather than
+-- reusing the seed's id AS the sweep id: a second sweep launched from the same
+-- seed would then collide with the first and silently merge two ladders into
+-- one curve, with duplicate feature counts reading as scatter. Nor is it
+-- derivable from the rows — each row records its OWN importance, which is not
+-- the ranking that chose its columns.
+--
+-- Applied via psql in this session and marked with `prisma migrate resolve`,
+-- the same path the seven migrations before it document, forced by the
+-- pre-existing and unrelated DatasetArtifact.droppedBadRows drift. Drift
+-- re-confirmed harmless first: `prisma migrate diff --from-config-datasource
+-- --to-schema` against the LIVE database rendered this one ALTER and nothing
+-- else.
+--
+-- Purely additive: one nullable column, no default, no backfill. All 278
+-- existing runs read NULL, the honest "not part of a sweep" state.
+
+-- AlterTable
+ALTER TABLE "ModelTrainingRun" ADD COLUMN     "sweepSeedRunId" TEXT;

@@ -3,12 +3,13 @@
 import { useState } from 'react'
 import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
-import { workspacesAtom } from '@/store/workspace'
+import { workspacesAtom, workspacesRevisionAtom } from '@/store/workspace'
 import { workspaceService } from '@/services/workspace'
 import type { CreateWorkspaceInput } from '@/types'
 
 export function useCreateWorkspace() {
   const setWorkspaces = useSetAtom(workspacesAtom)
+  const bumpRevision = useSetAtom(workspacesRevisionAtom)
   const [isCreating, setIsCreating] = useState(false)
 
   const createWorkspace = async (data: CreateWorkspaceInput) => {
@@ -16,6 +17,7 @@ export function useCreateWorkspace() {
     try {
       const workspace = await workspaceService.createWorkspace(data)
       setWorkspaces(prev => [...prev, workspace])
+      bumpRevision(n => n + 1)
       return { success: true, workspace }
     } catch (error) {
       const message =

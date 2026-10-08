@@ -29,13 +29,13 @@ export class DatasetAuthorizedController {
   @Get('/')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'List datasets for the current user (by workspace)',
+    summary: 'List datasets in workspaces the current user belongs to',
   })
   async listDatasetController(
     @Users() user: Auth.UserPayload,
     @Query('workspaceId') workspaceId?: string,
   ) {
-    return this.service.listDatasetService(user.id, workspaceId);
+    return this.service.listDatasetService(user, workspaceId);
   }
 
   @Get('/:id')
@@ -45,7 +45,7 @@ export class DatasetAuthorizedController {
     @Users() user: Auth.UserPayload,
     @Param('id') id: string,
   ) {
-    return this.service.getDatasetService(user.id, id);
+    return this.service.getDatasetService(user, id);
   }
 
   @Post('/')
@@ -67,6 +67,21 @@ export class DatasetAuthorizedController {
     @Body() body: UpdateDatasetDto,
   ) {
     return this.service.updateDatasetService(user, id, body);
+  }
+
+  // DS-LAKE-030-T01. Read BEFORE the delete, by the confirm dialog. A GET
+  // rather than a field on the delete response, for the obvious reason: the
+  // point is to show the list while the delete can still be called off.
+  @Get('/:id/dependents')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Models that depend on this dataset (does not block deletion)',
+  })
+  async listDatasetDependentsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.service.listDatasetDependentsService(user, id);
   }
 
   @Delete('/:id')

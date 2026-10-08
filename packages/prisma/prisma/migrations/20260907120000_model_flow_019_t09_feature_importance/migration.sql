@@ -1,0 +1,12 @@
+-- MODEL-FLOW-019-T09. One nullable column on ModelTrainingRun:
+--   featureImportanceKey  object-storage key for feature_importance.json,
+--                         set only for the algorithms
+--                         images/trainer/app/importance.py can read a real
+--                         per-feature quantity from — null for every other
+--                         algorithm (which never writes this artifact) and
+--                         for a run trained before this column existed, the
+--                         same honest-legacy-null pattern cvFoldsKey and
+--                         validationMissingPct already use.
+-- Additive, nullable, no default — NULL is the correct value for every
+-- existing row (a run predating this feature simply never had the concept).
+ALTER TABLE "ModelTrainingRun" ADD COLUMN "featureImportanceKey" TEXT;

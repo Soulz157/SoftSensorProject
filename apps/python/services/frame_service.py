@@ -159,6 +159,64 @@ def from_pi_response(payload: Mapping[str, Any]) -> pd.DataFrame:
     return _finalise(timeline, values, statuses, tags)
 
 
+def diagnose_empty_pi_fetch(payload: Mapping[str, Any]) -> str | None:
+    """Why did a PI fetch come back with nothing?
+
+    An empty frame has two completely different causes that used to produce
+    one identical message: the range genuinely holds no samples, or the
+    fetch never reached the historian at all (host unresolvable, credentials
+    refused, timeout). `DataService.fetch` already knows which — it records
+    a per-tag `status` of "ok"/"partial"/"failed" and keeps the first error
+    string for every tag that failed — but `from_pi_response` above builds a
+    frame out of the datapoints alone, so by the time a caller sees zero
+    rows that knowledge has been dropped and the caller guesses. Public
+    here, alongside the function whose datapoint-only construction creates
+    the need — MODEL-SERVE-001-T18 promoted this from a single caller
+    (`inference_window_service.materialize_window`) to a second
+    (`ground_truth_service.join_window_truth`): the truth path was
+    swallowing the identical failure into a confident wrong answer ("the
+    lab has not reported yet") instead of an honest one ("we never reached
+    the historian").
+
+    Returns a diagnosis when the SOURCE reported failures, else None —
+    None means the tags really did answer and had nothing to say, which is
+    a legitimate empty result, not an error to dress up.
+    """
+    results = list(payload.get("results") or [])
+    if not results:
+        return None
+
+    failed = [r for r in results if str(r.get("status") or "") == "failed"]
+    if not failed:
+        return None
+
+    # Quoted verbatim, never paraphrased and never pattern-matched into a
+    # category: the connector's own text names the actual failure, and any
+    # guess layered on top would be the very thing this function exists to
+    # remove. De-duplicated because one unreachable host produces the same
+    # sentence once per tag.
+    reasons: list[str] = []
+    for result in failed:
+        reason = str(result.get("error") or "").strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+
+    scope = (
+        "every tag"
+        if len(failed) == len(results)
+        else f"{len(failed)} of {len(results)} tags"
+    )
+    if not reasons:
+        return (
+            f"the source reported a failure for {scope} without recording a "
+            "reason"
+        )
+    detail = "; ".join(reasons[:3])
+    if len(reasons) > 3:
+        detail += f"; (+{len(reasons) - 3} more)"
+    return f"the source failed for {scope}: {detail}"
+
+
 def from_sql_response(
     payload: Mapping[str, Any],
     timestamp_column: str,
@@ -212,6 +270,33 @@ def from_sql_response(
         return _empty_frame(selected)
 
     return _finalise(timestamps, values, statuses, selected)
+
+
+def utc_to_wall_clock(value: Any) -> pd.Timestamp:
+    """MODEL-SERVE-006. A caller-supplied REAL UTC instant, CONVERTED to the
+    naive Bangkok-local wall-clock convention every frame in this module
+    stores (see this module's own docstring).
+
+    Deliberately NOT `artifact_service._wall_clock`, despite the similar
+    name and the similar-looking bug that function's own doc comment
+    describes. That function exists for a boundary that was ALREADY
+    Bangkok-local wall-clock digits before it ever left Postgres (a
+    `timestamp WITHOUT time zone` column) and only picked up a `Z` suffix
+    because JS's `toISOString()` appends one unconditionally — stripping
+    the marker there recovers the original digits exactly.
+
+    `InferenceWindow.windowStart`/`windowEnd` are a genuinely different
+    case: they are real UTC instants, computed from `Date.now()` arithmetic
+    on the NestJS side. Stripping their `Z` the way `_wall_clock` does would
+    silently misalign every window boundary against this Bangkok-naive
+    frame by the UTC+7 offset — precisely the class of bug this module's own
+    docstring warns a trainer-side boundary comparison would create the
+    first real instance of.
+    """
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return ts.tz_convert("Asia/Bangkok").tz_localize(None)
 
 
 def mark_questionable(

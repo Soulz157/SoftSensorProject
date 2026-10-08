@@ -1,0 +1,866 @@
+/**
+ * MODEL-FLOW-019-T02 — a metric's SOURCE travels with its value, in the type.
+ *
+ * Pure module — no React, no IO (the `lib/run-selection.ts` pattern). Three
+ * sources exist in this system and they are three different claims about a
+ * model, never three readings of one thing:
+ *
+ * - `test-split`   — scored on rows drawn from the SAME cleaned artifact the
+ *                    model trained on, past the same crop/outlier/imputation
+ *                    rules.
+ * - `holdout`      — the dataset's raw validation holdout, split off at
+ *                    BRONZE, that no fit ever saw. Under DS-LAKE-018's
+ *                    resolved no-imputation decision it stays RAW, so a
+ *                    MISSING_VALUE hole reaches predict() and depresses the
+ *                    score for reasons that are not the model's fault —
+ *                    which is why a holdout value here cannot be constructed
+ *                    without its own row/dropped counts (DS-LAKE-018-T05).
+ * - `cv-fold-estimate` — a fold MEAN with a spread, an estimate of the
+ *                    CONFIGURATION rather than a measurement of the shipped
+ *                    model. It deliberately has no TOP-LEVEL `rmse`/`r2`/
+ *                    `mae` field: a single number named like a measurement
+ *                    is exactly the conflation MODEL-FLOW-016's finding 3
+ *                    caught once already. The figures themselves are neither
+ *                    absent nor anonymous — they live in NAMED `mean` and
+ *                    `std` triples, one pair per metric, so a caller asking
+ *                    for MAE gets the MAE fold mean and never another
+ *                    metric's (MODEL-FLOW-019-T36).
+ *
+ * WHY A TAGGED UNION AND NOT A COLUMN HEADER: a header is a promise the
+ * renderer makes; a tag is a fact the renderer cannot drop. MODEL-FLOW-004
+ * had to RENAME a shipped heading ("Validation residual diagnostics" ->
+ * "Test-split residual diagnostics") because a header had drifted from the
+ * data beneath it. A header can drift again; `source` cannot go missing
+ * without the value going with it.
+ */
+
+/** The three claims a number on this screen can be. */
+export type MetricSource = 'test-split' | 'holdout' | 'cv-fold-estimate'
+
+/** Short display word per source. `Est. CV` keeps the estimate/measurement
+ *  distinction visible in the two characters a table column can afford —
+ *  the same wording `StandaloneRunRow` shipped under MODEL-FLOW-018-T06. */
+export const METRIC_SOURCE_LABELS: Record<MetricSource, string> = {
+  'test-split': 'Test',
+  holdout: 'Validate',
+  'cv-fold-estimate': 'Est. CV',
+}
+
+/** The three regression figures every source produces under the same
+ *  spellings (one `regression_metrics()` helper in the trainer feeds test,
+ *  train and holdout alike — images/trainer/app/metrics.py). */
+export interface MetricTriple {
+  r2: number | null
+  rmse: number | null
+  mae: number | null
+}
+
+/** A run's own test split. */
+export interface TestSplitMetrics extends MetricTriple {
+  source: 'test-split'
+}
+
+/**
+ * The dataset's raw validation holdout. The counts are NOT optional
+ * decoration — they are the only thing that separates "this model scores
+ * 0.81" from "this model scored 0.81 on a holdout that was a third holes",
+ * and DS-LAKE-018-T05 requires them beside every figure this source backs.
+ * Each is independently nullable: a run scored before those keys existed
+ * records the figure and not the counts, which must read as "not recorded"
+ * rather than as zero dropped rows (MODEL-FLOW-010-T06's honest-legacy-null
+ * pattern).
+ */
+export interface HoldoutMetrics extends MetricTriple {
+  source: 'holdout'
+  rowCount: number | null
+  droppedUnlabelled: number | null
+  droppedBadFeatures: number | null
+}
+
+/**
+ * A CV run's fold aggregate. `mean` WITHOUT `std` is not the same claim —
+ * a model at 0.6 ± 0.02 and one at 0.6 ± 0.4 are different findings, and
+ * ranking on the mean alone discards the one thing k fits were paid for
+ * (MODEL-FLOW-019 openDecisions item 2).
+ */
+export interface CvFoldEstimate {
+  source: 'cv-fold-estimate'
+  nSplits: number | null
+  mean: MetricTriple
+  std: MetricTriple
+}
+
+export type SourcedMetrics = TestSplitMetrics | HoldoutMetrics | CvFoldEstimate
+
+/**
+ * Why a holdout figure is absent — three different situations with three
+ * different next actions, never one blank cell (MODEL-FLOW-019 AC11):
+ *
+ * - `no-dataset-holdout` — this dataset never had one. Not an error; the
+ *   common case for much of this system. Nothing to do about it here.
+ * - `not-scored-yet`     — the dataset HAS a holdout (confirmed, not
+ *   assumed) and this run has not been through a scoring phase that could
+ *   produce a figure. The next action is to trigger scoring (MODEL-FLOW-016
+ *   for a CV run; MODEL-FLOW-019-T20 widened the same trigger to any
+ *   SUCCEEDED run — a stale non-CV run whose inline training-time replay
+ *   failed is retroactively fixable through the exact same action, not a
+ *   dead end).
+ * - `not-recorded`       — EITHER the dataset-holdout fact itself is
+ *   unknown (`datasetHasHoldout === null` — the lookup was skipped or
+ *   soft-failed, which must read as "not recorded" rather than as a guess
+ *   in either direction), or this run's own status makes the question
+ *   moot. Never reached for a SUCCEEDED run on a CONFIRMED holdout-bearing
+ *   dataset as of T20 — that case is always `not-scored-yet` now, since a
+ *   remedy always exists.
+ */
+export type HoldoutAbsence =
+  | 'no-dataset-holdout'
+  | 'not-scored-yet'
+  | 'not-recorded'
+
+/** A CV run's own scoring phase — moved here from
+ *  `hooks/model/use-draft-run-evaluation` (MODEL-FLOW-016-T11) so the pure
+ *  derivation lives in `lib/` with the rest of this module's source rules;
+ *  that hook re-exports it, so every existing caller is unchanged. */
+export type CvScoringPhase =
+  | 'not-cv'
+  | 'awaiting-scoring'
+  | 'scoring'
+  | 'scored'
+
+/** The three run columns every source decision in this module reads. Named
+ *  structurally rather than as `ModelTrainingRun`/`CandidateResult` so both
+ *  shapes (and a test fixture) satisfy it without a cast. */
+export interface CvScoringSignals {
+  cvFoldsKey: string | null
+  predictionsKey: string | null
+  scoringContainerId: string | null
+}
+
+/**
+ * Reads the three raw signals into the one phase Step 4/5 render from, so
+ * that branching exists in exactly one place. A non-SUCCEEDED run has no
+ * defined phase — callers check `status`/`fit` first, unchanged from where
+ * this function previously lived.
+ */
+export function cvScoringPhaseOf(run: CvScoringSignals | null): CvScoringPhase {
+  if (!run?.cvFoldsKey) return 'not-cv'
+  if (run.predictionsKey) return 'scored'
+  if (run.scoringContainerId) return 'scoring'
+  return 'awaiting-scoring'
+}
+
+/** A metrics blob's numeric field, or null — never NaN, never a string
+ *  coerced into a number. `metrics`/`holdoutMetrics` are untyped Json
+ *  columns end to end (schema.prisma), so every read through them is a
+ *  narrowing, not an assertion. */
+function num(bag: Record<string, unknown> | null | undefined, key: string) {
+  const v = bag?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/** The run fields this module derives from. Satisfied by
+ *  `ModelTrainingRunListItem` and by a candidate's own run projection. */
+export interface MetricSourceRun extends CvScoringSignals {
+  metrics: Record<string, unknown> | null
+  holdoutMetrics: Record<string, unknown> | null
+}
+
+/**
+ * Every figure this run can honestly show, each carrying what it is a
+ * figure OF. Order is stable — the run's own training-side source first
+ * (test split, or the fold estimate for a CV run), holdout second — so a
+ * table's columns do not reorder between polls.
+ *
+ * A CV run contributes NO test-split entry: its `metrics` carry only
+ * `cv_*` aggregates (no bare `rmse`), confirmed against every real CV run
+ * in this system. A run whose dataset has no holdout contributes no
+ * holdout entry — see `holdoutAbsenceOf` for why it is absent.
+ */
+export function sourcedMetricsOf(
+  run: MetricSourceRun | null | undefined,
+): SourcedMetrics[] {
+  if (!run) return []
+  const out: SourcedMetrics[] = []
+  const metrics = run.metrics
+  const isCv = Boolean(run.cvFoldsKey)
+
+  if (isCv) {
+    const mean: MetricTriple = {
+      r2: num(metrics, 'cv_r2_mean'),
+      rmse: num(metrics, 'cv_rmse_mean'),
+      mae: num(metrics, 'cv_mae_mean'),
+    }
+    const std: MetricTriple = {
+      r2: num(metrics, 'cv_r2_std'),
+      rmse: num(metrics, 'cv_rmse_std'),
+      mae: num(metrics, 'cv_mae_std'),
+    }
+    if (mean.r2 !== null || mean.rmse !== null || mean.mae !== null) {
+      out.push({
+        source: 'cv-fold-estimate',
+        nSplits: num(metrics, 'n_splits'),
+        mean,
+        std,
+      })
+    }
+  } else if (metrics) {
+    out.push({
+      source: 'test-split',
+      r2: num(metrics, 'r2'),
+      rmse: num(metrics, 'rmse'),
+      mae: num(metrics, 'mae'),
+    })
+  }
+
+  const holdout = run.holdoutMetrics
+  if (holdout) {
+    out.push({
+      source: 'holdout',
+      r2: num(holdout, 'r2'),
+      rmse: num(holdout, 'rmse'),
+      mae: num(holdout, 'mae'),
+      rowCount: num(holdout, 'row_count'),
+      droppedUnlabelled: num(holdout, 'dropped_unlabelled'),
+      droppedBadFeatures: num(holdout, 'dropped_bad_features'),
+    })
+  }
+
+  return out
+}
+
+/**
+ * Why this run shows no holdout figure, or null when it shows one (and so
+ * has nothing to explain). `datasetHasHoldout` is the dataset-level fact
+ * the run row itself cannot answer — pass `null` when it is unknown, which
+ * reads as `not-recorded` rather than as a guess.
+ *
+ * Only meaningful for a SUCCEEDED run: a queued, running or failed run has
+ * no figure of any kind yet, and saying "not recorded" about it would
+ * describe the wrong thing.
+ */
+export function holdoutAbsenceOf(
+  run: (MetricSourceRun & { status: string }) | null | undefined,
+  datasetHasHoldout: boolean | null,
+): HoldoutAbsence | null {
+  if (!run || run.status !== 'SUCCEEDED') return null
+  if (run.holdoutMetrics) return null
+  if (datasetHasHoldout === false) return 'no-dataset-holdout'
+  // MODEL-FLOW-019-T20. Was `cvScoringPhaseOf(run) !== 'not-cv' && ...` —
+  // CV-only, because only a CV run could trigger scoring. Now any
+  // SUCCEEDED run can, so a CONFIRMED holdout-bearing dataset with no
+  // figure yet is always actionable, never a bare defect claim.
+  if (datasetHasHoldout === true) return 'not-scored-yet'
+  return 'not-recorded'
+}
+
+/**
+ * The one figure a single-value surface (a comparison row, a summary line)
+ * should lead with, and what it is a figure OF. The shipped model's own
+ * holdout score wins where it exists — it is the only number no fit ever
+ * saw; otherwise the run's own training-side figure. Null when the run
+ * produced nothing.
+ *
+ * This is a DISPLAY choice for a one-number surface, deliberately NOT a
+ * ranking rule: ranking a holdout-scored row against a test-scored one in
+ * one column is what MODEL-FLOW-019-T03 forbids, and it needs the whole set
+ * to decide, not one row.
+ */
+export function headlineMetricOf(
+  sourced: SourcedMetrics[],
+): SourcedMetrics | null {
+  return (
+    sourced.find(m => m.source === 'holdout') ??
+    sourced.find(m => m.source !== 'holdout') ??
+    null
+  )
+}
+
+/**
+ * One figure out of a sourced value, ALWAYS of the metric asked for.
+ *
+ * For a CV estimate that is `mean[key]` — THAT METRIC'S OWN fold mean, not a
+ * single shared one. Callers showing it are responsible for showing the
+ * matching spread, `std[key]`, beside it.
+ *
+ * MODEL-FLOW-019-T36 was filed believing this returned the RMSE fold mean
+ * whatever `key` asked for, and closed on the finding that it never did: the
+ * prior wording here ("the fold MEAN ... the only number of that shape it
+ * has") described the `CvFoldEstimate` shape as holding ONE anonymous mean,
+ * which it has not since MODEL-FLOW-019-T02 created it with `MetricTriple`
+ * `mean`/`std` pairs. Stated positively now, because that sentence alone
+ * cost two ledger entries: there is no metric whose figure this function can
+ * answer with another metric's number.
+ */
+export function metricValueOf(
+  metric: SourcedMetrics,
+  key: keyof MetricTriple,
+): number | null {
+  return metric.source === 'cv-fold-estimate' ? metric.mean[key] : metric[key]
+}
+
+/** A sourced value's own rmse — the metric this system ranks and compares
+ *  on by default (MODEL-FLOW-005 chose it over r2 after a real run scored
+ *  r2 = -1,110,858 while its rmse stayed readable). */
+export function rmseOf(metric: SourcedMetrics): number | null {
+  return metricValueOf(metric, 'rmse')
+}
+
+/**
+ * MODEL-FLOW-019 AC2. What fraction of the holdout's rows never reached a
+ * score, beside the figure it qualifies — a holdout value with a third of
+ * its rows dropped as unlabelled/bad-feature is a different claim than one
+ * with none, and this system does not let the two look the same (DS-LAKE-
+ * 018-T05's own reasoning, `HoldoutMetrics`'s own doc comment above).
+ *
+ * `rowCount` is the SCORED count (post-drop); the original sample is
+ * `rowCount + droppedUnlabelled + droppedBadFeatures`, so the rate is
+ * dropped-over-original, never dropped-over-scored.
+ *
+ * `'missing rate not recorded'`, never `'0.0% missing'`, when any of the
+ * three counts is null — a run scored before these columns existed carries
+ * a figure with no counts beside it, and reporting 0% would claim a clean
+ * sample this run never actually measured (the same honest-legacy-null
+ * discipline `holdoutAbsenceOf` already follows).
+ */
+export function holdoutMissingRateText(metric: HoldoutMetrics): string {
+  const { rowCount, droppedUnlabelled, droppedBadFeatures } = metric
+  if (
+    rowCount === null ||
+    droppedUnlabelled === null ||
+    droppedBadFeatures === null
+  ) {
+    return 'missing rate not recorded'
+  }
+  const dropped = droppedUnlabelled + droppedBadFeatures
+  const original = rowCount + dropped
+  const rate = original > 0 ? (dropped / original) * 100 : 0
+  return `${rate.toFixed(1)}% missing (n=${rowCount})`
+}
+
+/**
+ * MODEL-FLOW-019-T20. AC2 for a GROUP of candidates sharing one holdout
+ * chart, rather than for a single figure.
+ *
+ * AC2 ("a holdout figure is never shown without its own missing rate") was
+ * written for one number in one cell; a chart plots many candidates' rows at
+ * once and needs the same fact stated once. Candidates in a job share a
+ * dataset and so normally share one rate — but that is a fact to CHECK, not
+ * to assume: the standalone path can group runs across artifacts, and
+ * silently printing the first candidate's rate over a group with several
+ * would be a wrong number wearing a precise format.
+ *
+ * `undefined` when no candidate here has a holdout figure at all — the
+ * caller then has no holdout chart to qualify, which is not the same as a
+ * clean 0% sample and must not read like one.
+ */
+export function holdoutGroupMissingRateText(
+  perCandidate: SourcedMetrics[][],
+): string | undefined {
+  const texts = new Set<string>()
+  for (const sourced of perCandidate) {
+    const holdout = sourced.find(m => m.source === 'holdout')
+    if (holdout) texts.add(holdoutMissingRateText(holdout))
+  }
+  if (texts.size === 0) return undefined
+  const [only] = [...texts]
+  if (texts.size === 1) return `Holdout ${only}.`
+  return `Holdout missing rate differs by candidate: ${[...texts].join('; ')}.`
+}
+
+/**
+ * MODEL-FLOW-019-T20 follow-up. Why a population's overlay CHART has no
+ * SERIES to draw — a different question from `HoldoutAbsence`, which
+ * answers whether a holdout FIGURE (the aggregate r2/rmse/mae) is present.
+ *
+ * The two diverge for the common case: training scores a run's holdout
+ * inline and keeps the aggregate, but discards the per-row frame a chart
+ * needs — 188 of 252 SUCCEEDED runs in this system carry `holdoutMetrics`
+ * with no series, live-counted 2026-09-09. A chart that asked
+ * `HoldoutAbsence` for that case got `null` ("a figure is present, nothing
+ * to explain") and fell through to a generic "nothing recorded" sentence —
+ * exactly wrong, since a score exists and only the frame is missing.
+ *
+ * - `no-dataset-holdout` — nothing to score against; same fact as
+ *   `HoldoutAbsence`'s member of the same name.
+ * - `scoring`            — a scoring container is in flight for at least
+ *   one candidate; the series is coming, not missing.
+ * - `aggregate-only`     — the common case above: a score exists, the
+ *   frame does not. Scoring again (MODEL-FLOW-019-T20's widened trigger)
+ *   produces it.
+ * - `not-scored-yet`     — no figure and no frame. Same remedy as
+ *   `aggregate-only`.
+ */
+export type HoldoutSeriesAbsence =
+  | 'no-dataset-holdout'
+  | 'scoring'
+  | 'aggregate-only'
+  | 'not-scored-yet'
+  | 'sequence-not-scoreable'
+
+/**
+ * MODEL-FLOW-019-T29. Score-mode has no windowing path — `score.py` calls
+ * `score_holdout` with no `sequence_length` (images/trainer/app/
+ * pipelines/score.py, justified there as "CV is TABULAR ONLY"), which
+ * takes the TABULAR branch of `holdout.py`'s two mutually exclusive
+ * branches. Training's own inline pass took the WINDOWED branch for these
+ * two algorithms (`result.holdout_sequence_length`,
+ * images/trainer/app/pipelines/__init__.py) — the two branches write
+ * `row_count`/`dropped_unlabelled` in different units (windows vs rows,
+ * `holdout.py`'s own comment says so), so a backfill against a sequence
+ * run either fails loudly or writes a mismatched pair. `triggerScoringService`
+ * carries the matching server-side refusal; this is the client's half of
+ * one guard, not two independent ones. String literals rather than the
+ * `Algorithm` union — this module stays a pure, dependency-free `lib/`
+ * file (see the module doc comment), and a typo here fails safe (the run
+ * stays offered, the server refusal is the backstop, not this list).
+ *
+ * Declared HERE, ahead of `holdoutSeriesAbsenceOf` below, because that is
+ * the ONE place a sequence run's holdout absence is decided — a check
+ * bolted on separately at `scoreableRunIds` (this feature's first draft)
+ * let the absence TEXT keep telling a reader "scoring fixes this" for a
+ * run `scoreableRunIds` had already excluded from the button. One
+ * decision, not three that can drift.
+ */
+export const SEQUENCE_ALGORITHMS: readonly string[] = ['lstm', 'gru']
+
+export function isSequenceAlgorithm(algorithm: string | null | undefined) {
+  return algorithm !== null && algorithm !== undefined
+    ? SEQUENCE_ALGORITHMS.includes(algorithm)
+    : false
+}
+
+/** The per-candidate facts `holdoutSeriesAbsenceOf` needs. Deliberately
+ *  reads `holdoutAbsence` (the metric-level verdict) rather than a raw
+ *  `datasetHasHoldout` boolean — a SUCCEEDED candidate's `holdoutAbsence`
+ *  is already `null` exactly when `holdoutMetrics` is present (both
+ *  `holdoutAbsenceOf` above and the backend's twin `holdoutAbsenceFor`
+ *  guarantee this), so re-deriving `datasetHasHoldout` here would be a
+ *  second copy of a fact this module already computed once. `algorithm`
+ *  added by T29 — the ONLY way `sequence-not-scoreable` below can be told
+ *  apart from an ordinary unscored run. */
+export interface HoldoutSeriesCandidate {
+  status: string
+  algorithm: string
+  cvFoldsKey: string | null
+  predictionsKey: string | null
+  holdoutPredictionsKey: string | null
+  scoringContainerId: string | null
+  holdoutAbsence: HoldoutAbsence | null
+}
+
+/**
+ * Why this candidate's holdout OVERLAY CHART has no series to plot, or null
+ * when a series exists and there is nothing to explain.
+ *
+ * WHICH COLUMN carries the series is the same asymmetry
+ * `apps/backend/src/lib/run-prediction-source.ts`'s `predictionKeyFor`
+ * owns server-side: a CV run's `predictionsKey` IS its holdout (it never
+ * had a test split); a non-CV run's holdout lands in `holdoutPredictionsKey`
+ * instead, because its `predictionsKey` is already its test split. Restated
+ * here rather than imported — that module is backend-only TypeScript, a
+ * different package this client cannot reach across.
+ *
+ * MODEL-FLOW-019-T29. `sequence-not-scoreable` is checked BEFORE
+ * `scoringContainerId`/`holdoutAbsence` and is TERMINAL — no remedy, no
+ * button, never confused with an ordinary "not scored yet" a click can
+ * fix. A container already in flight from before this guard existed still
+ * reports `'scoring'` (a real, if legacy, in-progress state); the terminal
+ * check only fires once nothing is already running.
+ */
+export function holdoutSeriesAbsenceOf(
+  candidate: HoldoutSeriesCandidate | null | undefined,
+): HoldoutSeriesAbsence | null {
+  if (!candidate || candidate.status !== 'SUCCEEDED') return null
+  const isCv = Boolean(candidate.cvFoldsKey)
+  const seriesKey = isCv
+    ? candidate.predictionsKey
+    : candidate.holdoutPredictionsKey
+  if (seriesKey) return null
+  if (candidate.scoringContainerId) return 'scoring'
+  // MODEL-FLOW-019-T29. Unconditional — no `!isCv` guard — matching
+  // `triggerScoringService`'s own server-side refusal exactly, which
+  // carries no CV exception either. A CV+sequence row cannot exist today
+  // (config-time refused, `model-run-launch.authorized.service.ts`'s own
+  // lstm/gru check fires before a CV run is ever created) — but score.py's
+  // CV branch is "TABULAR ONLY" too, so if one ever did exist, the
+  // server's blanket refusal is the CORRECT one, and a client-side
+  // exception for it would only reopen the dead end this guard exists to
+  // close. Checked BEFORE `no-dataset-holdout` deliberately: both are
+  // terminal, but a sequence run's OWN algorithm is the more specific fact
+  // — the same most-informative-first ordering `groupAbsenceText` already
+  // documents for its own branches.
+  if (isSequenceAlgorithm(candidate.algorithm)) {
+    return 'sequence-not-scoreable'
+  }
+  if (candidate.holdoutAbsence === 'no-dataset-holdout') {
+    return 'no-dataset-holdout'
+  }
+  // A SUCCEEDED candidate's `holdoutAbsence` is null exactly when a figure
+  // is present (see the interface doc above) — the series is what is
+  // missing, not the score.
+  if (candidate.holdoutAbsence === null) return 'aggregate-only'
+  return 'not-scored-yet'
+}
+
+/** MODEL-FLOW-030. The out-of-fold BATCH itself failed (network, a refused
+ *  chunk) — a different fact from the object being absent, and never worded as
+ *  "trained before they were saved", which would send the reader to retrain a
+ *  run that is fine. */
+export const OOF_LOAD_FAILED_TEXT =
+  'Could not load the out-of-fold predictions — try again in a moment.'
+
+/** MODEL-FLOW-030. A CV run's out-of-fold key always resolves; the object
+ *  exists only if the trainer that ran it wrote one (image 1.0.21+). */
+const OOF_MISSING_TEXT =
+  'No out-of-fold predictions are stored — runs trained before they were ' +
+  'saved have none. Retrain to see this chart.'
+
+/**
+ * MODEL-FLOW-019-T28/T29. Why ONE candidate's OWN chart — for the given
+ * population — has no series to draw, in one sentence. The per-candidate
+ * twin of `groupAbsenceText`, for T28's expanded-row pair: each of the two
+ * charts states its own reason, never the group's.
+ *
+ * `test-split`: a CV candidate has no test split BY DEFINITION — never
+ * unscored work with an action attached, the same rule `groupAbsenceText`
+ * already applies at group level (`:496` above). A non-CV SUCCEEDED
+ * candidate always has one; there is nothing to explain, so this branch
+ * needs no absence lookup of its own.
+ *
+ * `holdout`: delegates to `holdoutSeriesAbsenceOf`, and collapses
+ * `aggregate-only`/`not-scored-yet` into the SAME sentence
+ * `groupAbsenceText` now uses, for the same reason — both share one
+ * remedy. Never renders a per-candidate action: MODEL-FLOW-019-T29 keeps
+ * the "Score against holdout" trigger a GROUP action (one blast radius,
+ * one gate), so this names the remedy and points at it rather than
+ * offering a second button here.
+ */
+export function candidateAbsenceText(
+  candidate: HoldoutSeriesCandidate,
+  population: EvaluationPopulation,
+): string | null {
+  if (population === 'test-split') {
+    if (candidate.cvFoldsKey) {
+      return (
+        'This candidate is cross-validated and has no test split — its ' +
+        'held-out figure comes from the separate holdout scoring phase ' +
+        'instead.'
+      )
+    }
+    return null
+  }
+
+  if (population === 'cv-oof') {
+    if (!candidate.cvFoldsKey) {
+      return 'Only a cross-validated candidate has an out-of-fold series.'
+    }
+    return OOF_MISSING_TEXT
+  }
+
+  const absence = holdoutSeriesAbsenceOf(candidate)
+  if (!absence) return null
+  if (absence === 'scoring') {
+    return 'Holdout scoring is in progress for this candidate — this chart will draw once it finishes.'
+  }
+  if (absence === 'no-dataset-holdout') {
+    return 'This dataset has no validation holdout, so there is nothing to score against.'
+  }
+  // MODEL-FLOW-019-T29. TERMINAL, never the actionable sentence below — a
+  // sequence candidate is excluded from `scoreableRunIds` (via this SAME
+  // `holdoutSeriesAbsenceOf` call, so the two can never disagree), and
+  // telling a reader "the group's Score action produces it" for a run
+  // that action explicitly skips would be a chart pointing at a control
+  // that does nothing for it — the exact dead end this feature exists to
+  // prevent, arriving through the one absence path that forgot the
+  // exclusion applies to the TEXT too, not only the button.
+  if (absence === 'sequence-not-scoreable') {
+    return (
+      `This candidate trained ${candidate.algorithm}, and holdout scoring ` +
+      'has no windowing path for a sequence model — not available for ' +
+      'this run.'
+    )
+  }
+  // aggregate-only | not-scored-yet — same collapsed remedy groupAbsenceText
+  // states for the group; see that function's own comment for why the two
+  // are one sentence.
+  return (
+    'This candidate has not been scored against the validation holdout — ' +
+    'either it predates this system keeping a per-row series, or it has ' +
+    "simply never been scored. The group's Score action above produces " +
+    'it either way.'
+  )
+}
+
+/** `holdoutSeriesAbsenceOf`'s candidate shape, plus the one field needed to
+ *  name WHICH run to score. */
+export interface ScoreableCandidate extends HoldoutSeriesCandidate {
+  runId: string | null
+}
+
+/**
+ * MODEL-FLOW-019-T20 follow-up, narrowed by T29. Every runId in this group
+ * that a "Score against holdout" click should act on — SUCCEEDED, with a
+ * run to name, missing a series for a reason scoring actually fixes
+ * (`'aggregate-only'`/`'not-scored-yet'`). Excludes `'no-dataset-holdout'`
+ * (scoring would 400), `'scoring'` (already in flight) and
+ * `'sequence-not-scoreable'` (score-mode cannot correctly serve lstm/gru —
+ * see `isSequenceAlgorithm`'s own comment) all through the ONE
+ * `holdoutSeriesAbsenceOf` call below, rather than a second, separate
+ * algorithm check that could drift from what the absence TEXT says (T29's
+ * own recorded mistake, caught before this task closed).
+ */
+export function scoreableRunIds(candidates: ScoreableCandidate[]): string[] {
+  return candidates
+    .filter((c): c is ScoreableCandidate & { runId: string } => {
+      if (!c.runId) return false
+      const absence = holdoutSeriesAbsenceOf(c)
+      return absence === 'aggregate-only' || absence === 'not-scored-yet'
+    })
+    .map(c => c.runId)
+}
+
+/** The per-candidate facts `groupAbsenceText` needs — the STRUCTURAL
+ *  minimum, so both of phase-4's shapes and Step 3's run rows satisfy it. */
+export interface GroupAbsenceCandidate {
+  cvFoldsKey: string | null
+  holdoutSeriesAbsence: HoldoutSeriesAbsence | null
+}
+
+/**
+ * MODEL-FLOW-019-T20 follow-up. WHY a population's overlay chart has no
+ * series to draw, in one sentence, for the group as a whole.
+ *
+ * Until now that chart rendered `null` — it vanished. Vanishing is the one
+ * outcome this feature exists to prevent: a reader who sees a test-split
+ * chart and no holdout chart cannot tell whether the holdout does not
+ * apply, was never scored, or failed to load, and the empty screen argues
+ * for whichever they already believed. AC11 already refused a blank CELL
+ * for exactly this reason ("three facts, three different next actions —
+ * never one blank cell"); a missing chart is a blank cell the size of the
+ * panel.
+ *
+ * It also made AC2 unreachable in practice: `holdoutGroupMissingRateText`
+ * is passed to a chart that returns null whenever no candidate has a
+ * holdout series, which is every real draft today, so the qualifier it
+ * produces has never once appeared on screen.
+ *
+ * Stated by the GROUP rather than per candidate because the chart is one
+ * figure over many runs — the same discipline `holdoutGroupMissingRateText`
+ * follows directly above.
+ */
+export function groupAbsenceText(
+  population: EvaluationPopulation,
+  candidates: GroupAbsenceCandidate[],
+): string {
+  if (candidates.length === 0) return 'No candidates in this group.'
+
+  if (population === 'test-split') {
+    // A CV run has no test split AT ALL — cv_folds.json describes the fold
+    // configuration, and the refit model that ships is scored separately.
+    // So an all-CV group is not missing anything; naming it "missing" would
+    // invent a defect out of a run kind behaving correctly.
+    if (candidates.every(c => c.cvFoldsKey)) {
+      return (
+        'Every candidate here is cross-validated, and a cross-validated ' +
+        'run has no test split — its held-out figure comes from the ' +
+        'separate holdout scoring phase instead.'
+      )
+    }
+    return artifactAbsenceText(population)
+  }
+
+  if (population === 'cv-oof') {
+    return candidates.some(c => c.cvFoldsKey)
+      ? OOF_MISSING_TEXT
+      : 'No candidate here is cross-validated, so none has an out-of-fold series.'
+  }
+
+  const absences = new Set(candidates.map(c => c.holdoutSeriesAbsence))
+  // Ordered most-informative-first — a mixed group states the most
+  // actionable fact any candidate carries, rather than the first one found.
+  if (absences.has('scoring')) {
+    return (
+      'Holdout scoring is in progress for one or more candidates — this ' +
+      'chart will draw once it finishes.'
+    )
+  }
+  // MODEL-FLOW-019-T29. `aggregate-only` and `not-scored-yet` share ONE
+  // sentence, deliberately — both resolve to the SAME "Score against
+  // holdout" button, and T18 part 2's own rule applies here: a distinction
+  // that changes nothing a reader can act on reads as though someone found
+  // a real difference. Kept as separate union members below (T33's SD
+  // columns key on them), collapsed only in this copy.
+  //
+  // `aggregate-only` no longer means "training discarded the frame" — T26
+  // closed that discard for every run trained after the image that keeps
+  // it. What remains is a DISJUNCTION, not one cause, and the copy says so
+  // rather than naming the pre-T26 explanation as if it were the only one:
+  // either this run predates the kept frame, or its inline holdout scoring
+  // soft-failed (`_score_holdout_if_present`'s own best-effort `except`,
+  // images/trainer/app/pipelines/__init__.py). Either way the remedy is the
+  // same separate scoring phase — matches this repo's own shape for the
+  // same kind of fact (`phase-5-evaluation.tsx`'s feature-importance
+  // absence: "not recorded for this run — either it predates X, or Y").
+  if (absences.has('aggregate-only') || absences.has('not-scored-yet')) {
+    return (
+      'One or more candidates have not been scored against the validation ' +
+      'holdout — either the run predates this system keeping a per-row ' +
+      'series, or it has simply never been scored. Scoring produces it ' +
+      'either way.'
+    )
+  }
+  // MODEL-FLOW-019-T29. Checked AFTER the actionable branch above on
+  // purpose — a MIXED group with at least one scoreable candidate still
+  // gets the actionable sentence, since scoring genuinely helps that
+  // candidate and `scoreCount` (the caller's own figure, not this
+  // function's) already reflects only the runs the button will touch.
+  // Reached only when EVERY remaining candidate is sequence-not-scoreable:
+  // a distinct, TERMINAL fact — "Scoring produces it either way" would be
+  // false for a group with nothing scoreable in it.
+  if (absences.size === 1 && absences.has('sequence-not-scoreable')) {
+    return (
+      'Every candidate here trained lstm or gru, and holdout scoring has ' +
+      'no windowing path for a sequence model — not available for these ' +
+      'candidates.'
+    )
+  }
+  if (absences.size === 1 && absences.has('no-dataset-holdout')) {
+    return 'This dataset has no validation holdout, so there is nothing to score against.'
+  }
+  return artifactAbsenceText(population)
+}
+
+/**
+ * The plainest absence a population can report: nothing recorded, no reason
+ * known beyond that.
+ *
+ * The population word is DERIVED from `populationLabel`, never spelled into
+ * the sentence. This module's display vocabulary is live — 'Holdout' was
+ * respelled to 'Validate' mid-flight to match `METRIC_SOURCE_LABELS` — and a
+ * blanket rename over a hardcoded copy of it produced "a validate
+ * predictions artifact", which is not English. Deriving keeps the next
+ * rewording grammatical for free.
+ */
+function artifactAbsenceText(population: EvaluationPopulation): string {
+  return `No candidate recorded a ${populationLabel(population)} predictions artifact.`
+}
+
+/**
+ * MODEL-FLOW-019-T20 follow-up. The candidates a chart could NOT draw, when
+ * it drew at least one — named, never silently dropped.
+ *
+ * The PARTIAL case is more dangerous than the empty one: a chart headed
+ * "Overall candidate comparison" that quietly omits two of five candidates
+ * looks complete and is not. The standalone path can group a CV run and a
+ * non-CV run onto one target, and then each population's chart drops
+ * whichever candidates lack that population — in opposite directions, with
+ * neither chart saying so.
+ *
+ * `undefined` when every candidate is drawn, so a complete chart carries no
+ * caveat at all.
+ */
+export function groupOmittedText(
+  drawnRunIds: Set<string>,
+  candidates: { runId: string | null; label: string }[],
+): string | undefined {
+  const omitted = candidates.filter(c => !c.runId || !drawnRunIds.has(c.runId))
+  if (omitted.length === 0) return undefined
+  return `Not drawn (no series for this population): ${omitted
+    .map(c => c.label)
+    .join(', ')}.`
+}
+
+/**
+ * MODEL-FLOW-019-T15. WHICH POPULATION a predictions file describes.
+ *
+ * DERIVED from `MetricSource`, never declared beside it: a predictions
+ * file is written by training (the test split) or by scoring (the raw
+ * validation holdout), and is never a fold ESTIMATE — so this is that
+ * union minus the one member it cannot be. A hand-written second union
+ * would be the second-source-of-truth this feature's own T11 and T12 each
+ * refused for pair lists and MODEL-FLOW-013-T05a refused for render
+ * modes, and it would drift the moment `MetricSource` gains a member or
+ * respells one.
+ */
+export type EvaluationPopulation = 'test-split' | 'holdout' | 'cv-oof'
+
+/**
+ * MODEL-FLOW-030. `cv-oof` — a CV run's OUT-OF-FOLD series: each expanding
+ * fold's test rows as predicted by that fold's own model. Declared here as an
+ * explicit member rather than widening the `Extract` of `MetricSource` it used
+ * to be: a fold ESTIMATE is a `MetricSource`, an out-of-fold SERIES is not
+ * (it is a population to chart), and folding it into `MetricSource` would put
+ * a fourth claim into every column of every table that keys on it.
+ *
+ * It describes the CONFIGURATION's k fold fits, not the refit that ships.
+ */
+
+/** The query-parameter spelling the predictions endpoints pin
+ *  (`PredictionPopulation`, services/model-draft.ts) — a separate vocabulary
+ *  from the display one above, on purpose. One mapping, here, so no caller
+ *  respells it. */
+export function wirePopulationOf(
+  population: EvaluationPopulation,
+): 'test' | 'holdout' | 'cv-oof' {
+  return population === 'test-split' ? 'test' : population
+}
+
+/**
+ * The population a run's predictions file describes, from its own scoring
+ * phase. EXHAUSTIVE OVER ALL FOUR PHASES BY CONSTRUCTION rather than by
+ * control flow: `awaiting-scoring` and `scoring` are CV runs that have no
+ * test split to name at all, and today they only avoid being mislabelled
+ * because two early returns fire before any chart renders. A fifth phase
+ * fails to compile here (`never`) instead of silently defaulting to a
+ * label — T01 already recorded that `cvScoringPhaseOf` has FOUR states
+ * after this feature's own finding said three.
+ */
+export function populationOf(phase: CvScoringPhase): EvaluationPopulation {
+  switch (phase) {
+    case 'not-cv':
+      return 'test-split'
+    case 'scored':
+      return 'holdout'
+    // A CV run before its own scoring phase has produced no predictions
+    // file yet. Callers reach a chart only past an early return, so this
+    // names the population that file WILL have rather than inventing a
+    // test split the run never had.
+    case 'awaiting-scoring':
+    case 'scoring':
+      return 'holdout'
+    default: {
+      const unreachable: never = phase
+      return unreachable
+    }
+  }
+}
+
+/**
+ * THREE LABEL FORMS, ALL IN THIS FILE, because an axis, a sentence and a
+ * heading each need different words, and the file that owns the source
+ * owns every name for it. This deliberately does NOT resolve
+ * Holdout-vs-Validate (MODEL-FLOW-019-T04 argues for 'Holdout' since
+ * `validate` names the dataset QUALITY GATE in this codebase;
+ * MODEL-FLOW-021 records a concurrent partial rename toward 'Validate'
+ * and leaves it an open user decision) — it makes that decision a
+ * one-line change in one file, whichever way it goes.
+ */
+
+/** Axis/column form, in the split vocabulary `METRIC_SOURCE_LABELS`
+ *  already uses for Step 4's own columns — 'Test' / 'Validate'. */
+export function populationAxisLabel(p: EvaluationPopulation): string {
+  return p === 'cv-oof' ? 'Out-of-fold' : METRIC_SOURCE_LABELS[p]
+}
+
+/** Prose form, for the middle of a sentence. */
+export function populationLabel(p: EvaluationPopulation): string {
+  if (p === 'cv-oof') return 'out-of-fold'
+  return p === 'holdout' ? 'validation holdout' : 'test split'
+}
+
+/** Heading form — capitalised, standalone. */
+export function populationTitle(p: EvaluationPopulation): string {
+  if (p === 'cv-oof') return 'Out-of-fold (CV)'
+  return p === 'holdout' ? 'Validate' : 'Test-split'
+}

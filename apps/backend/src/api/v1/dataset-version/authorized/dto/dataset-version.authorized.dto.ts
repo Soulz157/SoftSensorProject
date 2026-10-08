@@ -41,6 +41,12 @@ export const CleaningOperationSchema = z.object({
   value: z.number().optional(),
   min: z.number().optional(),
   max: z.number().optional(),
+  // DS-LAKE-032. Inclusive naive wall-clock window for clip/crop/exclude.
+  // Must be declared: `z.object` strips unknown keys, so leaving these out
+  // would silently clean the whole series while the browser previewed only
+  // the window.
+  startTime: z.string().optional(),
+  endTime: z.string().optional(),
 });
 
 export type CleaningOperation = z.infer<typeof CleaningOperationSchema>;
@@ -91,6 +97,45 @@ export const CreateFeaturesSchema = z.object({
   selectedColumns: z.array(z.string()).nullable().optional(),
   scalers: z.record(z.string(), z.string()).default({}),
   overwrite: z.boolean().optional(),
+  // The tag a downstream training run predicts (MODEL-FLOW-000-T02).
+  // Optional: this endpoint also writes GOLD artifacts nothing will ever
+  // train on. Forwarded to python as target_y, never scaled, force-kept
+  // through column selection — see FeaturesRequest.target_y.
+  targetY: z.string().nullable().optional(),
+  /**
+   * DS-LAKE-022-T03. Which pipeline ORDER this job belongs to, expressed as
+   * "does this stage also scale?" rather than a version number the client
+   * would have to know.
+   *
+   * Omitted / true (every client that exists today): legacy combined write —
+   * applyFeatures -> selectColumns -> toModelReady, feature_spec.json written
+   * here, committed as GOLD. Unchanged in every observable way.
+   *
+   * false (the reordered wizard, DS-LAKE-022-T04..T07): feature stage only —
+   * applyFeatures -> selectColumns, NO scaling and NO feature_spec.json,
+   * committed as SILVER with pipelineVersion 2. The scaling tail runs at the
+   * end of the CLEAN job instead (StartCleanJobSchema.scaleRecipe), which is
+   * what lets cleaning act on un-laundered Bad cells — the whole point of the
+   * reorder (DS-LAKE-022-T02's own finding: to_model_ready forces every
+   * finite cell Good, so cleaning after the combined write has nothing left
+   * to clean).
+   */
+  scale: z.boolean().optional(),
+  /**
+   * DS-LAKE-023-T01. The validation holdout window, selected AFTER feature
+   * engineering rather than at fetch time (`CreateRawVersionSchema`'s own
+   * `holdout` field, DS-LAKE-018-T03) — same shape, different pipeline
+   * stage. Absent means no holdout, exactly as today. Present means this
+   * job's Python call splits AFTER applyFeatures/selectColumns: the
+   * committed SILVER becomes the train side, and `validate_data.parquet`
+   * (written beside it) carries the holdout window WITH its derived
+   * columns already computed — no lead-in, no later replay for this
+   * artifact. Forwarded to Python as `FeaturesRequest.holdout`, same
+   * `{from_time, to_time}` field names as `MaterializeRequest.holdout`.
+   */
+  holdout: z
+    .object({ from: z.string().min(1), to: z.string().min(1) })
+    .optional(),
 });
 
 // ── requests ───────────────────────────────────────────────────────────────
@@ -118,12 +163,54 @@ export const CreateRawVersionSchema = z.object({
    * session can stay in the same run rather than orphaning the lineage.
    */
   runId: z.string().uuid().optional(),
+  /**
+   * DS-LAKE-018-T03. The raw validation holdout window, selected beside
+   * `startTime`/`endTime` at Step 2 (`dwHoldoutRangeAtom`,
+   * `describeHoldoutSelection` in lib/holdout.ts). Optional: absent means no
+   * holdout, the dataset behaves exactly as today (acceptance criterion).
+   */
+  holdout: z
+    .object({ from: z.string().min(1), to: z.string().min(1) })
+    .optional(),
 });
 
 export const StartCleanJobSchema = z.object({
-  operations: z.array(CleaningOperationSchema).min(1),
+  /**
+   * No `.min(1)` since DS-LAKE-022-T03: a reordered-wizard clean job may
+   * legitimately carry ZERO operations — a draft with features but no
+   * cleaning rules still needs its GOLD written, and under the new order the
+   * scaling tail that writes it lives here (`scaleRecipe` below).
+   *
+   * An empty array with NO `scaleRecipe` is still refused, just one layer
+   * later: the runner's own `if (!stats)` guard fails the job with "A
+   * cleaning job needs at least one operation" rather than committing an
+   * artifact nothing was applied to. Kept there rather than re-added here as
+   * a cross-field `.refine`, which would turn this schema into a ZodEffects
+   * and change what `createZodDto` generates for the whole endpoint.
+   */
+  operations: z.array(CleaningOperationSchema),
   /** Per-tag decimal places; Python cannot see the client's tagMeta. */
   precision: z.record(z.string(), z.number().int()).default({}),
+  /**
+   * DS-LAKE-022-T03. Present ONLY from the reordered wizard: the feature
+   * recipe whose scaling tail runs after this job's cleaning operations,
+   * turning `clean` into clean-then-scale and committing GOLD (pipelineVersion
+   * 2) instead of SILVER.
+   *
+   * Deliberately NOT named `features`, and that is load-bearing. Both
+   * `readOperations` and `readFeatureRecipe` disambiguate a stored job payload
+   * by asking whether a top-level `features` key is present — a CLEAN payload
+   * carrying `features` would trip `readOperations`' "this is a feature
+   * recipe, refusing to run as CLEAN" guard and fail every reordered clean
+   * job. A distinct key keeps both guards meaning exactly what they mean
+   * today.
+   *
+   * The recipe is carried, not re-applied: the source artifact already holds
+   * the engineered and selected columns. Python needs it only to write
+   * feature_spec.json at the stage that now owns it (DS-LAKE-022 decision
+   * feature_spec_ownership_moves_to_scale_stage).
+   */
+  scaleRecipe: CreateFeaturesSchema.optional(),
 });
 
 export const ListRowsSchema = z.object({
@@ -246,6 +333,44 @@ export const BoxplotRequestSchema = z.object({
 });
 
 export class BoxplotRequestDto extends createZodDto(BoxplotRequestSchema) {}
+
+/**
+ * MODEL-FLOW-014-T04. Deliberately narrower than `BoxplotRequestSchema`: no
+ * `operations`, no `precision`, no `startTime`/`endTime`. This reads a
+ * committed FINAL artifact for a fixed, server-derived split — there is no
+ * live-editing scrubber state to replay operations against, and
+ * `precision` was dropped from the Python schema entirely (traced
+ * `apply_operations`: it is a no-op with an empty `operations` list, so
+ * keeping the field here would carry a value the connector can never use).
+ * `splitRatio` bounds are INCLUSIVE (0.5-0.95), matching
+ * `CreateTrainingRunSchema.trainTestSplit` — the launch path the wizard
+ * actually calls — not `CreateModelRunSchema.splitRatio`'s exclusive
+ * `gt/lt`, a second, older bound this codebase also carries.
+ */
+export const SplitStatsRequestSchema = z
+  .object({
+    tags: z.array(z.string()).min(1).max(20),
+    targetY: z.string().min(1),
+    // MODEL-FLOW-016-T02/T09. EXACTLY ONE of splitRatio / nSplits — mirrors
+    // the Python schema's own `_exactly_one_of_ratio_or_splits` validator.
+    // A single chronological cut and a k-fold expanding plan answer
+    // different questions with different response shapes.
+    splitRatio: z.number().min(0.5).max(0.95).optional(),
+    nSplits: z.number().int().min(2).max(10).optional(),
+    sampleRows: z.number().int().min(1).max(50_000).optional(),
+    outlierCap: z.number().int().min(1).max(500).optional(),
+  })
+  .refine((v) => (v.splitRatio === undefined) !== (v.nSplits === undefined), {
+    message:
+      'Provide exactly one of splitRatio or nSplits — a single chronological ' +
+      'cut and a k-fold expanding plan are different questions with ' +
+      'different response shapes.',
+    path: ['splitRatio'],
+  });
+
+export class SplitStatsRequestDto extends createZodDto(
+  SplitStatsRequestSchema,
+) {}
 
 /**
  * DS-LAKE-005B-D-T04. Similar payload shape to `HistogramRequestSchema`/
@@ -392,9 +517,53 @@ export const ArtifactStatsSchema = z.object({
    * parses.
    */
   skipped_features: z.array(z.string()).optional(),
+  /**
+   * DS-LAKE-018-T03. Rows written to `validate_data.parquet` — set only by
+   * `materialize` when the request carried a `holdout`. Null/absent means
+   * no holdout (every non-materialize call, and every materialize call
+   * before this task) — persisted onto DatasetArtifact.validationRowCount.
+   */
+  validation_row_count: z.number().int().nonnegative().nullable().optional(),
+  /**
+   * DS-LAKE-018-T06. The resolved holdout boundary (canonicalised by
+   * `pd.Timestamp` at split time) — set by `materialize` and `resplit-
+   * holdout` alike whenever a holdout was applied. Persisted onto
+   * DatasetArtifact.validationHoldoutFrom, which `replay_holdout_for_run`'s
+   * caller (`model-run.authorized.service.ts`) reads to know where the
+   * holdout window starts. Optional/nullable so a pre-this-field response
+   * still parses.
+   */
+  validation_holdout_from: z.string().nullable().optional(),
+  /**
+   * MODEL-FLOW-010-T06. Share of `validate_data.parquet` cells that are not
+   * Good, captured at write time (`missing_pct(validate_frame)`) — set by
+   * `materialize` and `resplit-holdout` alike whenever a holdout was
+   * applied. Persisted onto DatasetArtifact.validationMissingPct. Null under
+   * the same condition as validation_row_count above; optional so a
+   * pre-this-field response still parses.
+   */
+  validation_missing_pct: z.number().nullable().optional(),
+  /**
+   * DS-LAKE-023-T05. Rows `drop_bad_feature_rows` removed before
+   * `to_model_ready` ran on THIS write — set only by `scale` and
+   * `features` (when it scales). Null/absent means either no scaling
+   * happened on this write, or a pre-this-field response — persisted onto
+   * DatasetArtifact.droppedBadRows.
+   */
+  dropped_bad_rows: z.number().int().nonnegative().nullable().optional(),
 });
 
 export type ArtifactStats = z.infer<typeof ArtifactStatsSchema>;
+
+/** Mirrors apps/python `schemas.preprocess.ExportStatsResponse`. */
+export const ExportStatsSchema = z.object({
+  object_key: z.string().min(1),
+  row_count: z.number().int().nonnegative(),
+  column_count: z.number().int().nonnegative(),
+  size_bytes: z.number().int().nonnegative(),
+  checksum: z.string().length(64),
+});
+export type ExportStats = z.infer<typeof ExportStatsSchema>;
 
 // ── validation (DS-LAKE-007) ────────────────────────────────────────────
 // ValidateArtifactSchema itself lives earlier, alongside the other request
@@ -402,7 +571,7 @@ export type ArtifactStats = z.infer<typeof ArtifactStatsSchema>;
 // belong in this section, same convention as ArtifactStatsSchema above.
 
 /** Mirrors apps/python `schemas.preprocess.ValidationCheckResponse`. */
-const ValidationCheckSchema = z.object({
+export const ValidationCheckSchema = z.object({
   name: z.string(),
   passed: z.boolean(),
   skipped: z.boolean(),
@@ -410,6 +579,9 @@ const ValidationCheckSchema = z.object({
   measured: z.number().nullable().optional(),
   threshold: z.number().nullable().optional(),
   offenders: z.array(z.string()),
+  // DS-LAKE-019-T03. A property of the check's NAME, mirrored from
+  // validation_service.BLOCKING_CHECKS — never re-derived here.
+  severity: z.enum(['blocking', 'advisory']),
 });
 
 /** Mirrors apps/python `schemas.preprocess.ValidationReportResponse`. */
@@ -418,6 +590,12 @@ export const ValidationReportSchema = z.object({
   quality_score: z.number(),
   checks: z.array(ValidationCheckSchema),
   failed_checks: z.array(z.string()),
+  // DS-LAKE-019-T03. Failed checks that did NOT flip `status` to FAIL — a
+  // strict subset of `failed_checks`. zod strips unknown fields by default
+  // (no `.strict()`/`.passthrough()` here), so this MUST be declared or it
+  // is silently dropped past this boundary — same class of failure
+  // DS-LAKE-005B-B-T01's #7 percentile work already hit once.
+  advisory_failures: z.array(z.string()).default([]),
   validation_report_key: z.string(),
 });
 
@@ -448,6 +626,36 @@ export const PythonColumnStatsSchema = z.object({
   source_key: z.string(),
   column_stats_key: z.string(),
   stats: z.record(z.string(), TagColumnStatsSchema),
+});
+
+/**
+ * apps/python `schemas.preprocess.FeatureSpecResponse` (DS-LAKE-025-T06).
+ * No request DTO, same reasoning as `PythonColumnStatsSchema` directly above.
+ *
+ * `spec` is `passthrough()` rather than a modelled shape, mirroring Python's
+ * own decision to type it `dict[str, Any]`: `feature_spec.json` is a
+ * VERSIONED document (`featureVersion`) whose fields widen over time, and a
+ * strict schema here would reject a legacy sidecar that reads perfectly
+ * well. Only `scalingParams` is pinned, because that is the one field this
+ * endpoint exists to serve (T06 read 3) — and it is `.optional()` because an
+ * artifact written before DS-LAKE-018-T02 has none.
+ *
+ * Each entry is the params its scaler actually FIT: `{min,max}` for minmax,
+ * `{mean,std}` for standard, `{median,iqr}` for robust. Kept as a loose
+ * record of numbers rather than a union of those three — the method lives in
+ * `spec.scaling`, and pairing them is the CALLER's job (`inverseScale`),
+ * not this parse's.
+ */
+export const PythonFeatureSpecSchema = z.object({
+  source_key: z.string(),
+  feature_spec_key: z.string(),
+  spec: z
+    .object({
+      scalingParams: z
+        .record(z.string(), z.record(z.string(), z.number()))
+        .optional(),
+    })
+    .passthrough(),
 });
 
 /**
@@ -607,6 +815,25 @@ export const PythonMetadataSchema = z.object({
 });
 
 /**
+ * apps/python `schemas.preprocess.ArtifactAdoptResponse` (DS-LAKE-025).
+ *
+ * The keys Save writes back onto the adopted `DatasetArtifact` rows, so a
+ * saved dataset stops pointing at `drafts/{draftId}/...` for the rest of its
+ * life. The three sidecar fields are nullable for the same reason their
+ * columns are: an artifact that never had a feature spec or a validation
+ * report has no key to record.
+ */
+export const PythonArtifactAdoptSchema = z.object({
+  source_prefix: z.string(),
+  destination_prefix: z.string(),
+  object_key: z.string(),
+  feature_spec_key: z.string().nullable(),
+  validation_key: z.string().nullable(),
+  column_stats_key: z.string().nullable(),
+  keys: z.array(z.string()),
+});
+
+/**
  * apps/python `schemas.preprocess.HistogramResponse` (DS-LAKE-005B-D-T01).
  * `domain_min`/`domain_max` are `null` together when no requested tag
  * qualifies (fewer than 2 Good values) — never independently null, since the
@@ -665,8 +892,57 @@ export const PythonBoxplotSchema = z.object({
   /** Requested tags with 0 Good values in this window. Gated on
    * `count > 0` server-side — NOT the client's `hasData` check
    * (`min != max or median != 0`), which would mislabel an all-zero-
-   * valued tag as insufficient (`boxplot_service.py::_qualifies`). */
+   * valued tag as insufficient (`boxplot_service.py::qualifies`). */
   insufficient_tags: z.array(z.string()),
+});
+
+/**
+ * apps/python `schemas.preprocess.SplitStatsResponse` (MODEL-FLOW-014-T03).
+ * `train`/`test` are `BoxplotResponse`-shaped (minus `source_key`, which
+ * belongs once at the top) so the client's existing `TagBoxplotChart`
+ * renders either side with no translation layer.
+ */
+const PythonSplitStatsSideSchema = z.object({
+  tags: z.array(PythonTagBoxplotSchema),
+  insufficient_tags: z.array(z.string()),
+});
+
+/** MODEL-FLOW-016-T09. One expanding-window fold's plan — no box
+ * statistics, per this feature's own userDecisions. Mirrors apps/python
+ * `schemas.preprocess.SplitStatsFold` field for field. */
+const PythonSplitStatsFoldSchema = z.object({
+  cut_timestamp: z.string(),
+  train_rows: z.number().int().nonnegative(),
+  test_rows: z.number().int().nonnegative(),
+  distinct: z.number().int().nonnegative(),
+});
+
+export const PythonSplitStatsSchema = z.object({
+  source_key: z.string(),
+  target_y: z.string(),
+  /** Present only in ratio mode — null in n_splits (CV) mode, where there
+   * is no single cut. MODEL-FLOW-016-T09 widens every field below to
+   * nullable for the same reason. */
+  split_ratio: z.number().nullable(),
+  /** The resolved cut, ECHOED back — the client never derives it. The
+   * FIRST TEST ROW's timestamp (train = strictly before, test = at or
+   * after), matching `train.py::chronological_split`'s own convention. */
+  cut_timestamp: z.string().nullable(),
+  train_labelled_rows: z.number().int().nonnegative().nullable(),
+  test_labelled_rows: z.number().int().nonnegative().nullable(),
+  source_rows: z.number().int().nonnegative(),
+  train: PythonSplitStatsSideSchema.nullable(),
+  test: PythonSplitStatsSideSchema.nullable(),
+  /** MODEL-FLOW-016-T02. ALWAYS present, in both modes — see
+   * `build_split_stats`'s own docstring for why: the wizard needs these
+   * before the user ever opens CV mode, to disable-with-reason at config
+   * time rather than after a round trip. */
+  distinct_labelled_values: z.number().int().nonnegative(),
+  max_admissible_k: z.number().int().nonnegative(),
+  /** Present only in n_splits (CV) mode — echoes the request, same as
+   * split_ratio does for ratio mode. */
+  n_splits: z.number().int().nullable(),
+  folds: z.array(PythonSplitStatsFoldSchema).nullable(),
 });
 
 const PythonScatterPointSchema = z.object({

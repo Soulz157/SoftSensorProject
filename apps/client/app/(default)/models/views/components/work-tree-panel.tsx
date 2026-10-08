@@ -1,5 +1,6 @@
 'use client'
 import { useMemo, useState } from 'react'
+import { isAbnormal } from '@/lib/overview-status'
 import { useAtomValue } from 'jotai'
 import {
   Building2,
@@ -14,6 +15,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useModelHierarchy } from '@/hooks/model/use-model-hierarchy'
 import {
@@ -87,6 +93,24 @@ function EmptyHint({ label }: { label: string }) {
 }
 
 const childIndent = 'ml-4 border-l border-border/40 pl-2'
+
+/** A tree row's name: truncated to fit the panel, full name in a tooltip on
+ *  hover. A short delay keeps the tooltip from flashing while the pointer
+ *  travels down the tree. */
+function TreeLabel({ name, className }: { name: string; className?: string }) {
+  return (
+    <Tooltip delayDuration={400}>
+      <TooltipTrigger asChild>
+        <span className={cn('flex-1 truncate text-[11px]', className)}>
+          {name}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="right" className="break-all">
+        {name}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
 
 // A row with a chevron that toggles expansion and a body that selects the scope.
 // Chevron click is isolated so expanding never changes the active filter.
@@ -233,7 +257,11 @@ export function WorkTreePanel({
         </Button>
       </div>
 
-      <ScrollArea className="flex-1 min-h-0 overflow-hidden">
+      {/* Radix wraps the viewport content in a `display: table` div that
+          grows to its widest child, which defeats every `truncate` below —
+          long model names pushed past the 15rem panel. Forcing it to block
+          (same fix as dataset-tag-sidebar.tsx) lets names ellipsize. */}
+      <ScrollArea className="flex-1 min-h-0 overflow-hidden [&_[data-radix-scroll-area-viewport]>div]:!block">
         {loading ? (
           <div className="space-y-2 px-3 py-4">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -270,12 +298,7 @@ export function WorkTreePanel({
                       className={cn('h-2 w-2 shrink-0 rounded-full', colorBg)}
                     />
                     <WsIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    <span
-                      className="flex-1 truncate text-[11px] font-medium"
-                      title={ws.name}
-                    >
-                      {ws.name}
-                    </span>
+                    <TreeLabel name={ws.name} className="font-medium" />
                     <CountBadge n={ws.plants.length} />
                   </ScopeRow>
 
@@ -296,12 +319,10 @@ export function WorkTreePanel({
                               onSelect={onSelectScope}
                             >
                               <Factory className="h-3 w-3 shrink-0 text-muted-foreground" />
-                              <span
-                                className="flex-1 truncate text-[11px] font-medium"
-                                title={plant.name}
-                              >
-                                {plant.name}
-                              </span>
+                              <TreeLabel
+                                name={plant.name}
+                                className="font-medium"
+                              />
                               <CountBadge n={plant.nodes.length} />
                             </ScopeRow>
 
@@ -325,17 +346,15 @@ export function WorkTreePanel({
                                         <span
                                           className={cn(
                                             'h-1.5 w-1.5 shrink-0 rounded-full',
-                                            node.status === 'normal'
-                                              ? 'bg-green-500'
-                                              : 'bg-red-500',
+                                            isAbnormal(node.status)
+                                              ? 'bg-red-500'
+                                              : 'bg-green-500',
                                           )}
                                         />
-                                        <span
-                                          className="flex-1 truncate text-[11px] font-medium"
-                                          title={node.name}
-                                        >
-                                          {node.name}
-                                        </span>
+                                        <TreeLabel
+                                          name={node.name}
+                                          className="font-medium"
+                                        />
                                         <CountBadge n={node.models.length} />
                                       </ScopeRow>
 
@@ -364,12 +383,7 @@ export function WorkTreePanel({
                                                 onSelect={onSelectScope}
                                               >
                                                 <Package className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                                <span
-                                                  className="flex-1 truncate text-[11px]"
-                                                  title={model.name}
-                                                >
-                                                  {model.name}
-                                                </span>
+                                                <TreeLabel name={model.name} />
                                               </ScopeRow>
                                             ))
                                           )}

@@ -59,6 +59,16 @@ interface Options<T> {
    * unconditionally reset state without re-deriving whether anything
    * actually changed. */
   onIdle: () => void
+  /** MODEL-FLOW-016-T11. `false` (default) is every existing caller's
+   * behaviour, unchanged. A poll-driven caller that mints a unique
+   * `cacheKey` per tick purely to force a fresh fetch (see
+   * `use-draft-run-evaluation.ts`'s scoring poll) must pass `true` on
+   * those ticks — the module-level cache has no size bound or LRU
+   * (`chart-request-cache.ts`'s own header: short TTL, not "forever", but
+   * still unbounded storage until each entry's own TTL lapses), so a
+   * never-reused key written on every tick is a pure leak, one entry per
+   * tick for as long as the caller keeps polling. */
+  skipCache?: boolean
 }
 
 const DEFAULT_DEBOUNCE_MS = 600
@@ -71,6 +81,7 @@ export function useDebouncedAbortableRequest<T>({
   onLoading,
   onSettled,
   onIdle,
+  skipCache = false,
 }: Options<T>): void {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const controllerRef = useRef<AbortController | null>(null)
@@ -97,7 +108,7 @@ export function useDebouncedAbortableRequest<T>({
       return
     }
 
-    const cached = getCached<T>(cacheKey)
+    const cached = skipCache ? undefined : getCached<T>(cacheKey)
     if (cached !== undefined) {
       onSettledRef.current({ status: 'ready', data: cached })
       return
@@ -113,7 +124,7 @@ export function useDebouncedAbortableRequest<T>({
         try {
           const data = await fetcherRef.current(controller.signal)
           if (tokenRef.current !== token) return
-          setCached(cacheKey, data)
+          if (!skipCache) setCached(cacheKey, data)
           onSettledRef.current({ status: 'ready', data })
         } catch (err) {
           if (tokenRef.current !== token) return
@@ -131,5 +142,5 @@ export function useDebouncedAbortableRequest<T>({
       controllerRef.current?.abort()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, cacheKey, debounceMs])
+  }, [enabled, cacheKey, debounceMs, skipCache])
 }

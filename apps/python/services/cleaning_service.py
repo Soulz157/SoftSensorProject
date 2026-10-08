@@ -42,11 +42,21 @@ import numpy as np
 import pandas as pd
 
 from intergrations.object_store import (
+    STATUS_BAD,
     STATUS_GOOD,
     TIMESTAMP_COLUMN,
     status_column,
     tag_columns,
 )
+from softsensor_scaling import _js_round, _median_sorted, _round_to
+
+# MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+# _js_round/_round_to/_median_sorted moved to softsensor_scaling (imported
+# above), since `to_model_ready`'s scaling depends on them too and serving
+# must not import this module (it pulls object_store -> config.settings,
+# requiring SYS_USER/SYS_PASS/PI_NAME at import time). Re-imported here
+# under their original names so every existing call in this file below is
+# unchanged.
 
 DEFAULT_PRECISION = 2
 DEFAULT_SMOOTH_WINDOW = 3
@@ -56,35 +66,6 @@ DEFAULT_EMA_ALPHA = 0.3
 
 class CleaningError(ValueError):
     """Invalid operation or parameter, safe to surface to the caller."""
-
-
-# ── numeric helpers matching the browser exactly ─────────────────────────
-
-
-def _js_round(value: float) -> float:
-    """JavaScript `Math.round`: half rounds toward +Infinity.
-
-    `Math.round(2.5) === 3` and `Math.round(-2.5) === -2`. Python's built-in
-    `round` uses banker's rounding and returns 2 and -2, so every rounded cell
-    could differ in its last decimal place.
-    """
-    if math.isnan(value) or math.isinf(value):
-        return value
-    return math.floor(value + 0.5)
-
-
-def _round_to(value: float, precision: int) -> float:
-    factor = 10**precision
-    return _js_round(value * factor) / factor
-
-
-def _median_sorted(sorted_values: Sequence[float]) -> float:
-    n = len(sorted_values)
-    if n == 0:
-        return 0.0
-    mid = n // 2
-    hi = sorted_values[mid]
-    return (sorted_values[mid - 1] + hi) / 2 if n % 2 == 0 else hi
 
 
 def _good_values(values: np.ndarray, statuses: np.ndarray) -> np.ndarray:
@@ -212,15 +193,66 @@ def _op_zscore(values, statuses, step, precision, drop_rows) -> None:
             statuses[i] = STATUS_GOOD
 
 
-def _op_clip(values, statuses, step, precision, drop_rows) -> None:
-    """Winsorise to [paramLow, param]. No rounding, no status change."""
+def _op_clip(values, statuses, step, precision, drop_rows, window=None) -> None:
+    """Winsorise to [paramLow, param]. No rounding, no status change.
+
+    `window` (DS-LAKE-032): optional boolean mask; rows where it is False are
+    left alone. Shared by `crop`/`exclude`, built in `preprocess_pipelines`.
+    """
     low = step.get("paramLow")
     high = step.get("param")
     for i in range(len(values)):
+        if window is not None and not window[i]:
+            continue
         if low is not None and values[i] < low:
             values[i] = float(low)
         if high is not None and values[i] > high:
             values[i] = float(high)
+
+
+def _op_crop(values, statuses, step, precision, drop_rows, window=None) -> None:
+    """Keep the [paramLow, param] band; DROP the rows outside it.
+
+    Row-level like `drop`, so the union across tags is removed once at the end
+    — cropping one tag trims that timestamp for the others too.
+
+    A no-op while neither bound is set: an unbounded crop would drop every
+    row, so adding the step before typing a bound must change nothing. Mirrors
+    `applyCleaningStep`'s `crop` branch exactly.
+    """
+    low = step.get("paramLow")
+    high = step.get("param")
+    if low is None and high is None:
+        return
+    for i in range(len(values)):
+        if window is not None and not window[i]:
+            continue
+        outside = (low is not None and values[i] < low) or (
+            high is not None and values[i] > high
+        )
+        if outside:
+            drop_rows.add(i)
+
+
+def _op_exclude(values, statuses, step, precision, drop_rows, window=None) -> None:
+    """Mark everything INSIDE [paramLow, param] Bad — the inverse of `crop`.
+
+    Bad rather than dropped: null-equivalent, so a later fill step in the same
+    pipeline can impute it, and only THIS tag is affected. No rounding, values
+    untouched. Same both-bounds-unset no-op guard as `crop`.
+    """
+    low = step.get("paramLow")
+    high = step.get("param")
+    if low is None and high is None:
+        return
+    for i in range(len(values)):
+        if window is not None and not window[i]:
+            continue
+        inside = (low is None or values[i] >= low) and (
+            high is None or values[i] <= high
+        )
+        if inside:
+            statuses[i] = STATUS_BAD
 
 
 def _op_outlier_median(values, statuses, step, precision, drop_rows) -> None:
@@ -282,6 +314,63 @@ def _op_fill_factory(strategy: str) -> Callable:
     return _apply
 
 
+# ── time window (DS-LAKE-032) ────────────────────────────────────────────
+
+#: Methods that honour a step's `startTime`/`endTime`. Every other op ignores
+#: the window, mirroring `applyCleaningStep`, which only reads it for these.
+_WINDOWED_OPS = frozenset({"clip", "crop", "exclude"})
+
+#: The wall clock artifact timestamps are written in (frame_service.py's
+#: `tz_convert("Asia/Bangkok").tz_localize(None)`); lib/time-window.ts's
+#: `WALL_CLOCK_TIME_ZONE` on the browser side.
+_WALL_CLOCK_TZ = "Asia/Bangkok"
+
+
+def _window_bound(stamp: str, edge: str) -> pd.Timestamp:
+    """A window bound as a naive wall-clock Timestamp.
+
+    Accepts the browser's `yyyy-MM-ddTHH:mm` stamp (parity fixtures replay the
+    browser's own step dicts) and the server's `YYYY-MM-DD HH:MM:SS[.ffffff]`
+    (what the mapper sends). A minute-only END covers its whole minute, so
+    both forms mean exactly what the browser's `inStepWindow` means. Never
+    tz-converted: the timestamp column is naive Bangkok wall clock.
+    """
+    ts = pd.Timestamp(stamp.replace("T", " "))
+    if ts.tzinfo is not None:
+        raise CleaningError(
+            f"Window bound {stamp!r} carries a timezone; send naive wall clock."
+        )
+    if edge == "end" and len(stamp.strip()) <= 16:
+        ts = ts + pd.Timedelta(minutes=1) - pd.Timedelta(microseconds=1)
+    return ts
+
+
+def _step_window(frame: pd.DataFrame, step: Mapping[str, Any]) -> np.ndarray | None:
+    """Boolean mask of the rows inside `step`'s window, or None for no window.
+
+    Inclusive at both ends. Computed on the frame as it is at this point in the
+    pipeline — before the final row drop — so indices line up with the value
+    arrays the ops mutate.
+    """
+    start = step.get("startTime")
+    end = step.get("endTime")
+    if not start and not end:
+        return None
+    times = pd.to_datetime(frame[TIMESTAMP_COLUMN])
+    # An artifact's column is already naive wall clock. A tz-aware one (the
+    # parity fixtures' ISO `Z` stamps) is restated on that same clock first —
+    # exactly what the browser's `toWallClock` does — so both engines put the
+    # same rows inside the window.
+    if times.dt.tz is not None:
+        times = times.dt.tz_convert(_WALL_CLOCK_TZ).dt.tz_localize(None)
+    mask = np.ones(len(frame), dtype=bool)
+    if start:
+        mask &= (times >= _window_bound(start, "start")).to_numpy()
+    if end:
+        mask &= (times <= _window_bound(end, "end")).to_numpy()
+    return mask
+
+
 # ── registry ─────────────────────────────────────────────────────────────
 #
 # Keys are the browser's `CleaningMethod` values, so a saved recipe replays
@@ -299,6 +388,8 @@ CLEANING_OPS: dict[str, Callable] = {
     # outliers
     "zscore": _op_zscore,
     "clip": _op_clip,
+    "crop": _op_crop,
+    "exclude": _op_exclude,
     "outlier_median": _op_outlier_median,
     # smoothing
     "moving_avg": _op_moving_avg,
@@ -383,9 +474,24 @@ def preprocess_pipelines(
                     f"Unknown cleaning method {method!r} for tag {tag!r}. "
                     f"Supported: {sorted(CLEANING_OPS)}."
                 )
-            CLEANING_OPS[method](
-                columns[tag], statuses[tag], step, tag_precision, drop_rows
-            )
+            # DS-LAKE-032-D01: a step scoped to other tags skips this one.
+            # Absent `tags` = every tag, as before the field existed.
+            scope = step.get("tags")
+            if scope is not None and tag not in scope:
+                continue
+            if method in _WINDOWED_OPS:
+                CLEANING_OPS[method](
+                    columns[tag],
+                    statuses[tag],
+                    step,
+                    tag_precision,
+                    drop_rows,
+                    window=_step_window(out, step),
+                )
+            else:
+                CLEANING_OPS[method](
+                    columns[tag], statuses[tag], step, tag_precision, drop_rows
+                )
 
     for tag in tags:
         out[tag] = columns[tag]
@@ -467,6 +573,11 @@ def _build_step(method: str, operation: Mapping[str, Any]) -> dict[str, Any]:
     for source, destination in _PARAM_ALIASES:
         if source in operation and destination not in step:
             step[destination] = operation[source]
+    # DS-LAKE-032: the window rides along; tag scope is already applied by
+    # `apply_operations` through the operation's own `tags`.
+    for key in ("startTime", "endTime"):
+        if operation.get(key):
+            step[key] = operation[key]
     return step
 
 

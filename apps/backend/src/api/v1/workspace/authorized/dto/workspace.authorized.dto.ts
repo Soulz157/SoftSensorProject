@@ -8,6 +8,12 @@ export const InviteMemberSchema = z.object({
 
 export const UpdateMemberRoleSchema = z.object({
   role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
+  // Read-only feature grants, meaningful only for a VIEWER (stored empty for
+  // any other role). Omitted → the member keeps their current grants.
+  permissions: z
+    .array(z.enum(['MONITORING_VIEW', 'NOTIFICATIONS_VIEW']))
+    .max(2)
+    .optional(),
 });
 
 export const GetLogsQuerySchema = z.object({
@@ -15,19 +21,6 @@ export const GetLogsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 
-export const EdgeItemSchema = z.object({
-  sourceId: z.string(),
-  targetId: z.string(),
-  sourceHandle: z.string().optional(),
-  targetHandle: z.string().optional(),
-});
-
-export const ReplaceEdgesSchema = z.object({
-  edges: z.array(EdgeItemSchema),
-});
-
 export class InviteMemberDto extends createZodDto(InviteMemberSchema) {}
 export class UpdateMemberRoleDto extends createZodDto(UpdateMemberRoleSchema) {}
 export class GetLogsQueryDto extends createZodDto(GetLogsQuerySchema) {}
-export class EdgeItemDto extends createZodDto(EdgeItemSchema) {}
-export class ReplaceEdgesDto extends createZodDto(ReplaceEdgesSchema) {}

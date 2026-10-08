@@ -110,17 +110,24 @@ def test_the_error_is_still_actionable(client: TestClient) -> None:
 
 
 def test_the_handler_does_not_reject_a_well_formed_body(client: TestClient) -> None:
-    """It must not turn structurally valid requests into 422s.
+    """It must not turn structurally valid requests into schema rejections.
 
-    This body passes schema validation and fails later, on storage. A 422 here
-    would come from the ROUTER's ObjectStoreError branch — whose message names
-    the missing key — never from the schema.
+    This body passes schema validation and fails later, on storage. Whatever
+    comes back is the ROUTER's own error branch — whose message names the
+    missing key — never the schema's.
+
+    DS-LAKE-025 added 404 to the accepted set: a missing object now raises
+    `ObjectNotFoundError` and maps to 404, splitting "the bytes are gone" out
+    of the 422 that means "storage refused an otherwise-valid operation". This
+    key is deliberately nonexistent, so 404 is the expected answer here now;
+    422/502 stay accepted because this test is about the schema not
+    intercepting the request, not about which storage failure occurs.
     """
     response = client.post(
         "/v1/preprocess/rows",
         json={"source_key": "definitely-missing/v1.parquet", "offset": 0, "limit": 10},
     )
 
-    assert response.status_code in (422, 502)
-    if response.status_code == 422:
+    assert response.status_code in (404, 422, 502)
+    if response.status_code in (404, 422):
         assert "definitely-missing" in response.text

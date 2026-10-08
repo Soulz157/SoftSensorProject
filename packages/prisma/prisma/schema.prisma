@@ -47,6 +47,53 @@ enum WorkspaceRole {
   VIEWER
 }
 
+/// Read-only feature grants an OWNER can give a VIEWER member. OWNER and
+/// STAFF already have both, so the list is always empty for them
+/// (`normalizePermissions` clears it on every role change).
+enum WorkspacePermission {
+  MONITORING_VIEW
+  NOTIFICATIONS_VIEW
+}
+
+/// MODEL-SERVE-022. Which channel kind a `NotificationChannel` row sends
+/// through. Teams uses a Workflows ("webhook request received") URL, not the
+/// legacy O365 incoming-webhook connector — D05.
+enum NotificationChannelKind {
+  TEAMS_WORKFLOW
+  EMAIL
+}
+
+/// MODEL-SERVE-022. A channel's `minSeverity` floor and an event's own
+/// severity, both graded against this one order. Matches the ledger's own
+/// event_catalogue severities (critical/warning/info) under names that don't
+/// collide with `HealthStatus`'s WARN/ALERT — these grade a NOTIFICATION,
+/// never a health axis.
+enum NotificationSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+/// MODEL-SERVE-022-D04. The outbox row's own lifecycle — drained by
+/// `NotificationDeliveryService`'s sweep, same shape every other sweep in
+/// this codebase uses (attempts + geometric backoff + a terminal state).
+enum NotificationDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
+/// MODEL-SERVE-022. Which axis a `ModelAlertState` row or a
+/// `NotificationDelivery` row is about. Mirrors the two-axis contract
+/// `lib/deploy-status.ts`/`lib/model-health.ts` already establish — see
+/// MODEL-SERVE-022-D08 for why only MONITORING is ever written by the sweep;
+/// DEPLOY-axis events are one-shot, enqueued straight from their write sites.
+enum AlertAxis {
+  DEPLOY
+  MONITORING
+}
+
 model User {
   id            String         @id @default(uuid())
   email         String         @unique
@@ -65,17 +112,29 @@ model User {
   authLogs      AuthLog[]
   workspaceLogs WorkspaceLog[]
 
-  subscriptions       Subscription[]
-  passwordResetTokens PasswordResetToken[]
-  workspaceMembers    WorkspaceMember[]
-  dataSources         DataSource[]
-  datasets            Dataset[]
-  datasetVersions     DatasetVersion[]
-  datasetArtifacts    DatasetArtifact[]
-  datasetDrafts       DatasetDraft[]
-  preprocessingJobs   PreprocessingJob[]
-  presetImports       FeaturePresetImport[]
-  loaderJobs          LoaderJob[]
+  subscriptions          Subscription[]
+  passwordResetTokens    PasswordResetToken[]
+  workspaceMembers       WorkspaceMember[]
+  dataSources            DataSource[]
+  datasets               Dataset[]
+  datasetVersions        DatasetVersion[]
+  datasetArtifacts       DatasetArtifact[]
+  datasetDrafts          DatasetDraft[]
+  modelDrafts            ModelDraft[]
+  modelCandidateJobs     ModelCandidateJob[]
+  preprocessingJobs      PreprocessingJob[]
+  presetImports          FeaturePresetImport[]
+  loaderJobs             LoaderJob[]
+  promotedModelVersions  ModelVersion[]
+  manualPredictions      ManualPrediction[]
+  predictionJobs         PredictionJob[]
+  inferenceSchedules     InferenceSchedule[]
+  notificationChannels   NotificationChannel[]
+  /// MODEL-SERVE-022-T07. At most one row per user — see
+  /// NotificationReadMarker's own doc comment.
+  notificationReadMarker NotificationReadMarker?
+  notificationUserMutes  NotificationUserMute[]
+  notificationDismissals NotificationDismissal[]
 }
 
 model Account {
@@ -94,26 +153,31 @@ model Account {
 }
 
 model Workspace {
-  id            String                @id @default(uuid())
-  ownerId       String
-  owner         User                  @relation(fields: [ownerId], references: [id])
-  name          String
-  icon          String
-  color         String
-  description   String?
-  thumbnailUrl  String?
-  createdAt     DateTime              @default(now())
-  updatedAt     DateTime              @updatedAt
-  deletedAt     DateTime?
-  logs          WorkspaceLog[]
-  members       WorkspaceMember[]
-  nodes         Nodes[]
-  models        Model[]
-  edges         Edge[]
-  plans         WorkspacePlant[]
-  datasets      Dataset[]
-  datasetDrafts DatasetDraft[]
-  presetImports FeaturePresetImport[]
+  id                   String                @id @default(uuid())
+  ownerId              String
+  owner                User                  @relation(fields: [ownerId], references: [id])
+  name                 String
+  icon                 String
+  color                String
+  description          String?
+  thumbnailUrl         String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  deletedAt            DateTime?
+  logs                 WorkspaceLog[]
+  members              WorkspaceMember[]
+  nodes                Nodes[]
+  models               Model[]
+  plans                WorkspacePlant[]
+  datasets             Dataset[]
+  dataSources          DataSource[]
+  datasetDrafts        DatasetDraft[]
+  modelDrafts          ModelDraft[]
+  presetImports        FeaturePresetImport[]
+  /// MODEL-SERVE-022-D07. Channels configured, per workspace, per D-scope
+  /// (workspace channels + per-channel per-model mute, not per-model channels).
+  notificationChannels NotificationChannel[]
+  notificationEvents   NotificationEvent[]
 
   @@index([ownerId])
 }
@@ -150,14 +214,15 @@ model Nodes {
 }
 
 model WorkspaceMember {
-  id          String        @id @default(uuid())
+  id          String                @id @default(uuid())
   workspaceId String
-  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   userId      String
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role        WorkspaceRole @default(VIEWER)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        WorkspaceRole         @default(VIEWER)
+  permissions WorkspacePermission[] @default([])
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
 
   @@unique([workspaceId, userId])
   @@index([workspaceId])
@@ -165,18 +230,32 @@ model WorkspaceMember {
 }
 
 model Model {
-  id                String             @id @default(uuid())
-  workspaceId       String
-  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  name              String
-  data              Json?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  nodes             Nodes?             @relation(fields: [nodesId], references: [id])
-  nodesId           String?
-  dataset           Dataset?           @relation(fields: [datasetId], references: [id])
-  datasetId         String?
-  modelTrainingRuns ModelTrainingRun[]
+  id                    String                 @id @default(uuid())
+  workspaceId           String
+  workspace             Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name                  String
+  data                  Json?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  nodes                 Nodes?                 @relation(fields: [nodesId], references: [id])
+  nodesId               String?
+  dataset               Dataset?               @relation(fields: [datasetId], references: [id])
+  datasetId             String?
+  modelTrainingRuns     ModelTrainingRun[]
+  versions              ModelVersion[]
+  predictionJobs        PredictionJob[]
+  candidateJobs         ModelCandidateJob[]
+  predictionLogs        PredictionLog[]
+  manualPredictions     ManualPrediction[]
+  inferenceWindows      InferenceWindow[]
+  inferenceSchedule     InferenceSchedule?
+  tagObservations       TagObservation[]
+  /// MODEL-SERVE-022. Current notified state per axis — at most one DEPLOY
+  /// and one MONITORING row per model, upserted in place, never a history
+  /// table (see ModelAlertState's own doc comment).
+  alertStates           ModelAlertState[]
+  notificationEvents    NotificationEvent[]
+  notificationUserMutes NotificationUserMute[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -271,21 +350,30 @@ model PasswordResetToken {
 }
 
 model DataSource {
-  id               String   @id @default(uuid())
+  id               String     @id @default(uuid())
   name             String
   type             String
-  host             String   @default("")
-  username         String   @default("")
-  secretCiphertext String   @default("")
-  dbName           String   @default("")
-  status           String   @default("connected")
+  host             String     @default("")
+  username         String     @default("")
+  secretCiphertext String     @default("")
+  dbName           String     @default("")
+  status           String     @default("connected")
   config           Json?
-  createdBy        User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdBy        User       @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById      String
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  /// Workspace the source is shared with. Members (owner or WorkspaceMember)
+  /// can list it and run queries through it with the stored credentials;
+  /// edit/delete stay with `createdById`. Null = private to the creator
+  /// (every source before this column, unless the backfill found a dataset
+  /// using it). SetNull on workspace delete: the source falls back to
+  /// private rather than disappearing with its credentials.
+  workspaceId      String?
+  workspace        Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
   @@index([createdById])
+  @@index([workspaceId])
 }
 
 model Dataset {
@@ -311,20 +399,9 @@ model Dataset {
   artifacts  DatasetArtifact[]
   loaderJobs LoaderJob[]
 
-  /// Version the wizard hydrates from. Null for every pre-existing dataset,
-  /// which is why the client must keep a fallback until they are backfilled.
-  ///
-  /// The FK was MISSING until DS-LAKE-002: migration 20260801163509 added this
-  /// column with a bare ADD COLUMN and no AddForeignKey, so it was a dangling
-  /// pointer. NoAction (not Cascade/SetNull) matches the DatasetVersion.parent
-  /// convention and avoids a cascade cycle — deleting a Dataset cascades to its
-  /// versions, and this constraint is checked at end-of-statement by which time
-  /// the referencing Dataset row is gone too.
   currentVersionId String?
   currentVersion   DatasetVersion? @relation("DatasetCurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  /// Artifact the wizard hydrates rows from. Replaces currentVersionId as the
-  /// hydration pointer once DS-LAKE-004 lands; both coexist during migration.
   currentArtifactId String?
   currentArtifact   DatasetArtifact? @relation("DatasetCurrentArtifact", fields: [currentArtifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -337,6 +414,7 @@ enum DatasetVersionStage {
   RAW
   CLEAN
   FEATURE
+  EXPORT
 }
 
 enum DatasetDraftStatus {
@@ -345,33 +423,21 @@ enum DatasetDraftStatus {
   ABANDONED
 }
 
-/// A dataset being built in the wizard, before it is worth persisting.
-///
-/// Exists so the four processing stages can run as real async jobs — with
-/// progress, cancellation and retry — WITHOUT creating a Dataset row that would
-/// be orphaned the moment the user closes the tab. Artifacts and jobs hang off
-/// a draft; Save Dataset promotes the draft by ADOPTING those artifacts rather
-/// than regenerating them.
 model DatasetDraft {
   id          String    @id @default(uuid())
   name        String?
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  /// Sources the wizard may read. This is the draft's answer to
-  /// `Dataset.sourceIds`, and it is the guard that stops a caller naming an
-  /// arbitrary DataSource id and having the server connect with that source's
-  /// decrypted credentials.
   sourceIds String[]
 
   status DatasetDraftStatus @default(ACTIVE)
 
-  /// Latest artifact in the chain, for wizard hydration.
   currentArtifactId String?
 
-  /// Set when the draft is promoted, so a saved dataset is traceable back to
-  /// the run that produced it.
   savedDatasetId String?
+
+  editingDatasetId String?
 
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
@@ -384,22 +450,17 @@ model DatasetDraft {
   @@index([workspaceId])
   @@index([createdById])
   @@index([status])
+  @@index([editingDatasetId])
 }
 
-/// Which Lakehouse layer produced an artifact.
-///
-/// This is the ARTIFACT axis. DatasetVersion.versionNumber is the VERSION axis.
-/// The two were conflated on DatasetVersion.stage, which is exactly why every
-/// intermediate stage used to create a Dataset Version.
 enum DatasetArtifactType {
   BRONZE
   SILVER
   GOLD
   FINAL
+  EXPORT
 }
 
-/// Registry lifecycle of a saved dataset version. Promotion moves a row through
-/// these states and changes NOTHING else — no artifact is copied or rewritten.
 enum DatasetStatus {
   DRAFT
   VALIDATED
@@ -416,9 +477,6 @@ enum PreprocessingJobStatus {
   CANCELED
 }
 
-/// DS-LAKE-011: mirrors PreprocessingJobStatus exactly, so the existing
-/// runner patterns (boot sweep, retry, attempt counting) transfer without
-/// inventing a second state machine.
 enum LoaderJobStatus {
   QUEUED
   RUNNING
@@ -427,63 +485,29 @@ enum LoaderJobStatus {
   CANCELED
 }
 
-/// The Dataset Registry row. Created ONLY by Save Dataset (DS-LAKE-009) — see
-/// ADR-DS-LAKE-005B-B-006 for why this points to an already-completed FINAL
-/// artifact instead of owning its own bytes.
-///
-/// Reshaped by DS-LAKE-009-T06 from the old shape (stage/objectKey/
-/// parentVersionId/operations/columnStats — a version used to own storage
-/// AND a live parent chain, which is exactly why every intermediate stage
-/// used to wrongly create one). DatasetArtifact now owns storage and the
-/// live, queryable lineage chain (`parentArtifactId`); this table owns the
-/// REGISTRY facts about one saved version — semantic label, quality-gate
-/// result at Save time, promotion status — plus a FROZEN lineage snapshot,
-/// not a second live parent-pointer chain.
-///
-/// Creating one of these is NOT a Model commit: CLAUDE.md §8 reserves that for
-/// Save Model, and nothing here touches the Model table.
 model DatasetVersion {
   id              String  @id @default(uuid())
   datasetId       String
   dataset         Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   versionNumber   Int
-  /// Display label, e.g. "1.0.0" — a human-facing tag, distinct from
-  /// `versionNumber`'s raw sequence. DS-LAKE-009-T03 keys concurrency-safe
-  /// allocation off `versionNumber`, never this field.
   semanticVersion String?
 
-  /// The FINAL artifact this version points to, by reference — never a byte
-  /// copy (ADR-DS-LAKE-005B-B-006). Nullable: a row backfilled by
-  /// DS-LAKE-002-T04 (before this reshape existed) has no FINAL artifact to
-  /// point at; DS-LAKE-009-T07's migration decides whether/how to backfill
-  /// it from the shared legacy id the backfill already gave every such row.
   artifactId String?
-  artifact   DatasetArtifact? @relation(fields: [artifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  artifact   DatasetArtifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
-  /// sha256 of the artifact's stored Parquet bytes, copied at Save time —
-  /// not re-derived from `artifact.checksum` on every read.
   checksum      String?
   schemaVersion Int     @default(1)
 
-  /// LOGICAL tag count — excludes `timestamp` and every `__status` sidecar.
   columnCount  Int    @default(0)
   featureCount Int    @default(0)
   rowCount     Int    @default(0)
   missingPct   Float  @default(0)
-  /// 64-bit on purpose, matching DatasetArtifact.sizeBytes (DS-LAKE-002-T02)
-  /// — the old 32-bit Int here topped out around 2.1 GB, and an 8,000-tag
-  /// artifact already reaches it.
   sizeBytes    BigInt @default(0)
 
-  /// DS-LAKE-007's quality score (0-100) at Save time, frozen — re-running
-  /// validation later never changes what a saved version already promised.
-  qualityScore Float?
-  status       DatasetStatus @default(DRAFT)
+  qualityScore       Float?
+  validationAdvisory Json?
+  status             DatasetStatus @default(DRAFT)
 
-  /// Frozen BRONZE -> SILVER -> GOLD -> FINAL chain (ids/checksums/types) as
-  /// of Save time — a point-in-time snapshot, not a live FK walk.
-  /// DatasetArtifact.parentArtifactId remains the live, queryable chain;
-  /// this is what a saved version promises never changes underneath it.
   lineage Json?
 
   durationMs Int?
@@ -496,7 +520,6 @@ model DatasetVersion {
   jobsAsResult PreprocessingJob[] @relation("JobResult")
   loaderJobs   LoaderJob[]
 
-  /// Back-relation for Dataset.currentVersionId, which finally has a real FK.
   currentOf Dataset[] @relation("DatasetCurrentVersion")
 
   @@unique([datasetId, versionNumber])
@@ -504,39 +527,22 @@ model DatasetVersion {
   @@index([artifactId])
 }
 
-/// One immutable Lakehouse stage output, stored as Parquet in object storage.
-/// Postgres holds metadata and a pointer only — never the rows.
-///
-/// Created freely, once per stage per run. Creating one of these is NOT a
-/// Dataset Version: DS-LAKE-009 reserves that for Save Dataset. It is also not
-/// a Model commit — CLAUDE.md §8 reserves that for Save Model.
 model DatasetArtifact {
   id String @id @default(uuid())
 
-  /// EXACTLY ONE of datasetId / draftId is set — enforced by a CHECK
-  /// constraint in the migration, because Prisma cannot express it. Both
-  /// columns are nullable at the column level so that a draft artifact can
-  /// exist before any Dataset does; the CHECK is what makes "never neither"
-  /// true. An artifact starts owned by a draft and is ADOPTED (datasetId set,
-  /// draftId kept for traceability) at Save — never copied, never rewritten.
   datasetId String?
   dataset   Dataset?      @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   draftId   String?
   draft     DatasetDraft? @relation(fields: [draftId], references: [id], onDelete: Cascade)
 
-  /// Groups one wizard run's BRONZE -> SILVER -> GOLD -> FINAL chain, so a
-  /// re-run is a new chain rather than a mutation of the previous one.
   runId String
 
-  /// Lineage. Null for a BRONZE root. NoAction matches DatasetVersion.parent.
   parentArtifactId String?
-  parent           DatasetArtifact?  @relation("ArtifactLineage", fields: [parentArtifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  parent           DatasetArtifact?  @relation("ArtifactLineage", fields: [parentArtifactId], references: [id], onDelete: SetNull, onUpdate: NoAction)
   children         DatasetArtifact[] @relation("ArtifactLineage")
 
   type DatasetArtifactType
 
-  /// e.g. "{datasetId}/artifacts/{artifactId}/data.parquet". Legacy rows
-  /// backfilled from DatasetVersion keep the old "{datasetId}/{versionId}.parquet".
   objectKey String
   format    String @default("parquet")
 
@@ -545,47 +551,51 @@ model DatasetArtifact {
   checksum      String @default("")
   schemaVersion Int    @default(1)
 
-  /// LOGICAL tag count — excludes `timestamp` and every `__status` sidecar.
   columnCount  Int   @default(0)
   featureCount Int   @default(0)
   rowCount     Int   @default(0)
   missingPct   Float @default(0)
 
-  /// 64-bit on purpose: DatasetVersion.sizeBytes is a 32-bit Int, and a 396 MB
-  /// artifact is already documented (preview_service.py), so the old column
-  /// tops out around 2.1 GB.
+  validationRowCount Int?
+
+  validationHoldoutFrom DateTime?
+
+  validationMissingPct Float?
+
+  droppedBadRows Int?
+
+  /// MODEL-SERVE-015-T04. False for every existing holdout shape (BRONZE
+  /// legacy replay, SILVER/GOLD DS-LAKE-023 prepare) — both still need
+  /// `to_model_ready` applied because their `validate_data.parquet` is
+  /// feature-bearing but UNSCALED. True only for a retrain-augmentation
+  /// combined GOLD's frozen-eval slice: it is cut straight out of the
+  /// already-scaled base FINAL artifact, so re-running it through
+  /// `prepare_holdout_for_run`'s `to_model_ready(fitted_params=...)` would
+  /// double-scale it (checked and ruled out, along with inverse-scaling it
+  /// back to raw form, which `inverse_scale_column`'s own docstring warns
+  /// is never byte-exact and never meant to be fed back into another
+  /// transform). `tryReplayHoldout` reads this flag to choose a passthrough
+  /// copy over the prepare/replay transform; nothing else reads it.
+  validationAlreadyScaled Boolean @default(false)
+
   sizeBytes BigInt @default(0)
 
-  /// Operations that produced THIS artifact from its parent.
   operations Json
 
-  /// column_stats.json sidecar key, written beside the data at write time
-  /// (DS-LAKE-005B-A-T07) — NOT the stats themselves. Per-tag coverage/
-  /// outlier/drift/etc. for an 8,000-tag artifact is not something Postgres
-  /// should hold as JSONB; MinIO already holds the data these stats
-  /// describe, and this column is a pointer into the same layout
-  /// featureSpecKey/validationKey below use. Null for an artifact written
-  /// before this task or via a write path this task did not reach.
   columnStatsKey String?
 
-  /// Sidecar object keys written beside the data. featureSpecKey is set on GOLD
-  /// (DS-LAKE-006), validationKey on FINAL (DS-LAKE-007).
   featureSpecKey String?
   validationKey  String?
   durationMs     Int?
+
+  pipelineVersion Int?
 
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
   createdAt   DateTime @default(now())
 
-  /// DS-LAKE-009B-T09: set when ArtifactCleanupService has deleted this
-  /// artifact's MinIO objects. The row itself is NEVER deleted — it is the
-  /// audit trail and the only place `operations` (the recipe that produced
-  /// it) survives, per decisions.cleanup_scope. Null means the bytes are
-  /// still in MinIO; non-null means only the row remains.
   objectReclaimedAt DateTime?
 
-  /// Back-relation for Dataset.currentArtifactId.
   currentOf Dataset[] @relation("DatasetCurrentArtifact")
 
   jobsAsSource PreprocessingJob[] @relation("JobSourceArtifact")
@@ -788,18 +798,61 @@ model FeaturePreset {
   @@index([importId])
 }
 
-model Edge {
-  id           String    @id @default(uuid())
-  workspaceId  String
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  sourceId     String
-  targetId     String
-  sourceHandle String?
-  targetHandle String?
-  createdAt    DateTime  @default(now())
+enum ModelDraftStatus {
+  ACTIVE
+  /// Set when a run owned by this draft completes SUCCEEDED
+  /// (MODEL-FLOW-003-T07). Still editable — PATCH only refuses once SAVED —
+  /// so the wizard can adjust config and retrain without a status detour.
+  TRAINED
+  SAVED
+  ABANDONED
+}
 
-  @@unique([workspaceId, sourceId, targetId, sourceHandle, targetHandle])
+/// A model being configured and trained in the wizard, before it is worth
+/// persisting as a Model. Mirrors DatasetDraft's role: exists so training
+/// can run as a real job — authenticating via a run token hashed into a
+/// row, reading its spec from an HTTP endpoint, reporting logs/metrics back
+/// — WITHOUT creating a Model row a browserless training container could
+/// never reach. Runs hang off a draft; Save Model promotes the draft by
+/// ADOPTING its winning run's artifacts rather than regenerating them.
+/// See CLAUDE.md §8 and decisions.draft_persistence (MODEL-FLOW-002).
+model ModelDraft {
+  id          String    @id @default(uuid())
+  name        String?
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  plantId String?
+  nodeId  String?
+
+  datasetId String?
+
+  targetY         String?
+  algorithm       String?
+  hyperparameters Json    @default("{}")
+  splitRatio      Float?
+
+  status ModelDraftStatus @default(ACTIVE)
+
+  currentRunId String?
+
+  selectedRunId String?
+
+  savedModelId String?
+
+  objectsReclaimedAt DateTime?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  trainingRuns  ModelTrainingRun[]
+  candidateJobs ModelCandidateJob[]
+
   @@index([workspaceId])
+  @@index([createdById])
+  @@index([status])
 }
 
 enum ModelRunStatus {
@@ -810,10 +863,19 @@ enum ModelRunStatus {
   CANCELED
 }
 
+/// MODEL-SERVE-015-T04. What a run's `holdoutMetrics` was scored against —
+/// see `ModelTrainingRun.evalSetKind`'s own comment for the two meanings.
+enum ModelEvalSetKind {
+  DATASET_HOLDOUT
+  FROZEN_INCUMBENT_TEST
+}
+
 model ModelTrainingRun {
-  id      String @id @default(uuid())
-  modelId String
-  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  id           String      @id @default(uuid())
+  modelId      String?
+  model        Model?      @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  modelDraftId String?
+  modelDraft   ModelDraft? @relation(fields: [modelDraftId], references: [id], onDelete: Cascade)
 
   /// For tracing back to Data Studio only. NOT how the container resolves
   /// data: a dataset is editable (see initDatasetWizardForEditAtom), so an
@@ -828,6 +890,22 @@ model ModelTrainingRun {
   /// reproducible rather than merely repeatable.
   artifactChecksum String
   featureSpecKey   String?
+
+  /// MODEL-FLOW-019-T31. The explicit feature subset this run was ASKED to
+  /// train on, as a JSON array of column names in the order requested — null
+  /// (the overwhelming majority) means "every column the artifact offers",
+  /// the derivation the container does for itself. Set only by a
+  /// feature-count sweep, whose whole axis is n and which `featureSpecKey`
+  /// cannot express: every row of that ladder shares ONE artifact and one
+  /// feature spec, so nothing else on this row tells them apart.
+  ///
+  /// This is the REQUEST, not the record. What the run actually used is
+  /// `run_manifest.json`'s own `feature_columns`, and the sweep table reads
+  /// its `n` from there — the container refuses outright when a named column
+  /// is absent, so the two agree or the run failed.
+  featureColumns Json?
+  sweepId        String?
+  sweepSeedRunId String?
 
   /// One run predicts one Y. N targets on one artifact = N runs.
   targetY String
@@ -845,8 +923,17 @@ model ModelTrainingRun {
 
   /// Digest, never a tag. `:latest` makes the image a moving target and the
   /// run unreproducible by construction.
-  imageDigest String
-  containerId String?
+  imageDigest        String
+  containerId        String?
+  /// MODEL-FLOW-016-T07. The CONTAINER running this run's separate,
+  /// user-triggered holdout-scoring phase — distinct from `containerId`
+  /// (that field tracks the TRAINING spawn, whose container has already
+  /// exited by the time scoring starts). Null before scoring is ever
+  /// triggered, and after it completes (scored or failed) — its ONLY
+  /// purpose is letting the UI poll "scoring is currently running", which
+  /// neither `predictionsKey` (null/set = not-scored/scored) nor `status`
+  /// (already terminal by the time scoring starts) can represent.
+  scoringContainerId String?
 
   /// sha256 of the run token, never the token. A leaked table dump must not
   /// yield working credentials.
@@ -860,13 +947,167 @@ model ModelTrainingRun {
   /// a non-zero exit code the runner observed.
   failureReason String?
 
-  modelKey       String?
-  metricsKey     String?
-  manifestKey    String?
-  predictionsKey String?
+  modelKey                              String?
+  metricsKey                            String?
+  manifestKey                           String?
+  predictionsKey                        String?
+  /// MODEL-FLOW-019-T20. A NON-CV SUCCEEDED run's own holdout series
+  /// ({timestamp,y_true,y_pred} over the dataset's raw validation holdout)
+  /// — deliberately a SEPARATE column from `predictionsKey`, never the same
+  /// slot: `predictionsKey` is the run's TEST-split series and nothing may
+  /// overwrite it (a non-CV run already has one live in `predictionsKey` the
+  /// moment training finishes). A CV run's scored holdout still lands in
+  /// `predictionsKey`, unchanged from MODEL-FLOW-016-T07 — it has no test
+  /// split to lose, so no second column was needed there; this column stays
+  /// null for every CV run regardless of scoring phase.
+  ///
+  /// MODEL-FLOW-019-T26. TWO writers, not one, and the timing changed with
+  /// it. This was once written ONLY by scoreCompleteService and was
+  /// therefore "null until scoring has run at least once" — the reason a
+  /// user had to click to see a Validate chart. A non-CV run now writes its
+  /// holdout series INLINE at training time, so complete() populates this
+  /// column alongside `predictionsKey` and a fresh run needs no user
+  /// action. Scoring remains the BACKFILL path for runs trained before that
+  /// landed. Still null for: a dataset with no holdout, a CV run, a run
+  /// whose inline holdout scoring soft-failed, and any pre-T26 run never
+  /// backfilled. Not cleared on a re-score failure, so a prior successful
+  /// score is not lost by a later attempt that fails.
+  holdoutPredictionsKey                 String?
+  /// MODEL-FLOW-013-T05. Set only for the algorithms train.py can extract a
+  /// real iteration-by-iteration loss trajectory from (mlp, lightgbm,
+  /// xgboost, hist_gradient_boosting) — null for a closed-form algorithm
+  /// (ols/ridge/pls/grp/svm/random_forest), which never writes this
+  /// artifact, and null for a series that exceeded MAX_LOSS_HISTORY_POINTS
+  /// (soft-skipped, not a training failure).
+  lossHistoryKey                        String?
+  /// MODEL-FLOW-016-T04. Per-fold CV metrics (cv_folds.json) — set only for
+  /// a CV run (splitSpec.method === "cv_expanding"); null for every other
+  /// run, the same honest-legacy-null pattern MODEL-FLOW-010-T06 established
+  /// for validationMissingPct. BOUNDED by construction: n_splits is already
+  /// capped (MIN_LABELS_PER_FOLD, split_stats_service.py / train.py) before
+  /// a fold ever fits, so an oversized artifact is unreachable — no
+  /// redundant size guard needed on this column.
+  cvFoldsKey                            String?
+  /// MODEL-FLOW-019-T09. Per-feature importance (feature_importance.json) —
+  /// set only for the algorithms images/trainer/app/importance.py can read
+  /// a real quantity from (random_forest/lightgbm/xgboost via
+  /// feature_importances_; ols/ridge/pls/a linear-kernel svm via coef_);
+  /// null for every other algorithm (hgb/hist_gradient_boosting, mlp, grp,
+  /// a non-linear svm, lstm, gru), which never writes this artifact, and
+  /// null for a run trained before this column existed — the same
+  /// honest-legacy-null pattern `cvFoldsKey` above and MODEL-FLOW-010-T06's
+  /// `validationMissingPct` established. `null` means "not recorded for
+  /// this run"; never reconstructed on read (that would mean loading
+  /// model.joblib outside the trainer image, MODEL-FLOW-016-T07's own
+  /// finding that apps/python has no sklearn/joblib at all).
+  featureImportanceKey                  String?
+  /// MODEL-FLOW-023-T10. Population-scored importance
+  /// (permutation_importance.json) — set only for lstm/gru today (the one
+  /// strategy that populates `TrainingResult.permutation_population`,
+  /// `windowed.run`), scored on the run's own windowed TEST split. Same
+  /// honest-legacy-null pattern `featureImportanceKey` above uses; a SECOND
+  /// artifact, never a widened `featureImportanceKey` — a signed
+  /// population-scored drop and an always-non-negative fit-internal value
+  /// answer different questions (importance.py's own finding).
+  permutationImportanceKey              String?
   /// Denormalised from metrics.json for list/sort without an object read —
   /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
-  metrics        Json?
+  /// MODEL-FLOW-013-T04 added train_r2/train_mae/train_rmse keys alongside
+  /// the existing test-split r2/mae/rmse — no schema change needed, this
+  /// column is untyped Json.
+  metrics                               Json?
+  /// DS-LAKE-018-T05. The SAME shape as `metrics` (r2/mae/rmse/row counts),
+  /// scored on the replayed RAW validation holdout instead of the
+  /// chronological test split. Deliberately a SEPARATE column, never merged
+  /// into `metrics` — the whole point is a test score and a holdout score
+  /// answer different questions, and blending them into one number would
+  /// hide the gap this feature exists to expose. Null when the dataset has
+  /// no holdout (validationRowCount was never set) or the replay failed —
+  /// both cases leave training itself unaffected (see model-run.authorized.
+  /// service.ts's claim()).
+  holdoutMetrics                        Json?
+  /// MODEL-SERVE-015-T04. What `holdoutMetrics` above was actually scored
+  /// against — nullable, and null for every run predating this feature
+  /// (DATASET_HOLDOUT is the implicit legacy meaning). `DATASET_HOLDOUT`:
+  /// the dataset's own raw validation holdout, unchanged behavior.
+  /// `FROZEN_INCUMBENT_TEST`: an AUGMENT_DATA retrain candidate, scored on
+  /// the incumbent's own frozen test rows so its `holdoutMetrics` is
+  /// directly comparable to the incumbent's `ModelVersion.metrics` — see
+  /// `buildComparison` in model-retrain.authorized.service.ts, which
+  /// requires this discriminant (not just artifact/checksum equality) to
+  /// mark an augmented retrain `comparable`.
+  evalSetKind                           ModelEvalSetKind?
+  /// sha256 of the frozen-eval parquet the candidate was actually scored
+  /// against, set only alongside `evalSetKind: FROZEN_INCUMBENT_TEST`.
+  /// `buildComparison` checks this against the incumbent's own derived
+  /// frozen-eval checksum before publishing an `rmseDelta` — the same
+  /// checksum-drift discipline `claim()` already applies to the training
+  /// artifact, applied here to the eval artifact instead.
+  frozenEvalChecksum                    String?
+  /// The candidate's score on the operator-defined NEW-DATA validation
+  /// window, when a retrain carved one out of the newly merged dataset.
+  ///
+  /// Deliberately a SEPARATE column from `holdoutMetrics` above, for the
+  /// same reason `holdoutMetrics` is separate from `metrics`: these answer
+  /// different questions and must not be blended. `holdoutMetrics` is the
+  /// FROZEN incumbent-test slice — all OLD rows — and is what makes
+  /// `rmseDelta` comparable. This column is all NEW rows, which the
+  /// incumbent was never scored on, so it must NEVER be differenced
+  /// against the incumbent's metrics: such a delta would be meaningless.
+  /// It is reported on its own, as "performance on the new data".
+  ///
+  /// Null for every run that requested no validation window, and for every
+  /// run predating this feature.
+  newDataHoldoutMetrics                 Json?
+  /// Row count and the MEASURED first/last timestamps of the window
+  /// actually held out — not the bounds the operator asked for. Recorded so
+  /// the UI can state what the figure above was computed on.
+  newDataHoldoutRowCount                Int?
+  newDataHoldoutFrom                    DateTime?
+  newDataHoldoutTo                      DateTime?
+  /// MODEL-SERVE-020-T06. Object key of the per-row series
+  /// `{timestamp,y_true,y_pred}` the candidate produced on the new-data window
+  /// above — `new_data_holdout_predictions.parquet`. Until this column the
+  /// trainer scored that window and DISCARDED the frame (only the aggregate
+  /// reached `newDataHoldoutMetrics`), so the Retrain tab's charts had nothing
+  /// to draw for it. Nullable, and null means "no series recorded": a run with
+  /// no window, a run from before this column, a trainer image that predates
+  /// it (an additive artifact fails silently until the image is rebuilt), or
+  /// the window's scoring soft-failing. Never reconstructed on read.
+  newDataHoldoutPredictionsKey          String?
+  /// MODEL-SERVE-021. The CURRENT PRODUCTION model's score on the SAME
+  /// window above — never blended with `newDataHoldoutMetrics` (the
+  /// candidate's own score on it). This is what makes a New Data Only
+  /// (replace) retrain comparable at all: that strategy carves no frozen
+  /// slice any more (see `combine_for_retrain`'s own docstring), so scoring
+  /// both versions on one shared window, inside the candidate's own
+  /// training container, is the only basis left. Null for every run that is
+  /// not a NEW_DATA_ONLY candidate, for one whose incumbent could not be
+  /// resolved (lstm/gru, or a version recording no feature_columns — see
+  /// `prepareNewDataOnlyComparison`'s own comment), or whose scoring
+  /// soft-failed. Never written back onto the incumbent's OWN row.
+  incumbentNewDataHoldoutMetrics        Json?
+  /// Object key of the per-row series the SAME scoring produced for the
+  /// current version, mirroring `newDataHoldoutPredictionsKey`'s own
+  /// null-means-not-recorded discipline.
+  incumbentNewDataHoldoutPredictionsKey String?
+  /// MODEL-FLOW-014-T06. The train/test split distribution panel's own
+  /// response (SplitStatsResponse, apps/python schemas/preprocess.py),
+  /// frozen at RUN CREATION — the record of what the user was actually
+  /// looking at when they pressed Start Training. Written OUT OF BAND after
+  /// the row exists (mirrors `trackSpawn`'s own fire-and-forget shape,
+  /// never inside `buildRunData` — that sits in the Start Training request
+  /// path and a second full-artifact read there would make the button wait
+  /// on it). Same honest-legacy-null pattern MODEL-FLOW-010-T06 established
+  /// for `validationMissingPct` and MODEL-FLOW-007-T11 reused for
+  /// `frameworkVersions`: null means "not recorded for this run" — a run
+  /// predating this feature, OR the freeze call itself failed (which must
+  /// never fail the run) — never a value reconstructed on read. Single-run
+  /// launches only; a candidate run (`candidateJobId != null`) stores null
+  /// on purpose (N candidates sharing one split is N redundant artifact
+  /// reads for an identical answer; a candidate's provenance belongs to its
+  /// job, not to this column).
+  splitStats                            Json?
 
   createdAt  DateTime  @default(now())
   startedAt  DateTime?
@@ -874,8 +1115,29 @@ model ModelTrainingRun {
 
   logs ModelTrainingRunLog[]
 
+  /// MODEL-FLOW-005, generalized by MODEL-FLOW-013. Set only for a run that
+  /// is one candidate of a candidate job (a hyperparameter search OR an
+  /// algorithm sweep) — null for every ordinary single-run launch. The job
+  /// groups these; this run row is otherwise identical to any other and
+  /// goes through the SAME create/claim/complete path, so training never
+  /// has a second code path to drift from the first.
+  candidateJobId String?
+  candidateJob   ModelCandidateJob? @relation(fields: [candidateJobId], references: [id], onDelete: SetNull)
+
+  /// MODEL-SERVE-001. Back-relation for ModelVersion.sourceRunId (@unique) —
+  /// null until this run is turned into a version by Save Model or a
+  /// retrain; a SUCCEEDED run with no ModelVersion is unremarkable (most
+  /// candidate-job runs never become one).
+  modelVersion ModelVersion?
+
   @@index([modelId, createdAt])
+  @@index([modelDraftId])
   @@index([status])
+  @@index([candidateJobId])
+  /// MODEL-FLOW-019-T31. The sweep table's own read: every row of one sweep
+  /// on one draft. Compound with modelDraftId because a sweep is always read
+  /// within the draft that launched it, never across drafts.
+  @@index([modelDraftId, sweepId])
 }
 
 /// Per-run, not per-model: concurrent runs on one model would otherwise
@@ -890,4 +1152,1354 @@ model ModelTrainingRunLog {
   createdAt DateTime @default(now())
 
   @@index([runId, createdAt])
+}
+
+/// MODEL-SERVE-001. STAGING -> PRODUCTION -> ARCHIVED. Not a strict forward
+/// line like DatasetVersionStage: ARCHIVED -> PRODUCTION is legal (a
+/// rollback IS a promote pointed at the previous PRODUCTION, per this
+/// feature's own decisions — never a distinct mechanism). See
+/// lib/model-version-transitions.ts for the actual predicate.
+enum ModelVersionStage {
+  STAGING
+  PRODUCTION
+  ARCHIVED
+}
+
+model ModelVersion {
+  id      String @id @default(uuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Monotonic per model, starting at 1 — allocated by the creator inside
+  /// its own transaction (max(version)+1), never by a DB sequence: a
+  /// version's identity must be assignable inside the SAME transaction that
+  /// creates the row, for the same reason DS-LAKE-009's versionNumber
+  /// allocation does it this way.
+  version Int
+
+  stage ModelVersionStage @default(STAGING)
+
+  /// Optional operator label shown beside `v{version}` on the Versions tab.
+  /// Null = no label, the number alone. Editable only while STAGING (the
+  /// rename route refuses otherwise); kept unchanged once promoted, so a
+  /// served version's label cannot be rewritten after the fact.
+  name String?
+
+  /// One version per source run — a retrain that fails never gets a second
+  /// chance to mint a version from the SAME run; it fits again instead.
+  sourceRunId     String           @unique
+  /// NO ACTION, not the implicit Restrict a required relation would
+  /// otherwise get: a Model delete cascades onto ModelTrainingRun and
+  /// ModelVersion in the same statement, and Restrict is checked
+  /// immediately per row rather than deferred to end-of-statement — see
+  /// the migration's own comment for why that ordering breaks
+  /// deleteModelService. Explicit here so a future `migrate dev` does not
+  /// "fix" this back to the default and reintroduce the bug.
+  sourceRun       ModelTrainingRun @relation(fields: [sourceRunId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  sourceDatasetId String
+
+  /// Pinned off the source run row (goldArtifactId/goldObjectKey/
+  /// artifactChecksum/featureSpecKey), one hop, never re-derived through the
+  /// dataset's CURRENT artifact — see MODEL-SERVE-000-T03/T07's findings for
+  /// why re-deriving would be silently wrong for an edited dataset.
+  goldArtifactId   String
+  goldObjectKey    String
+  artifactChecksum String
+  featureSpecKey   String?
+
+  /// The actual object a serving process loads — the run's model.joblib,
+  /// NOT goldObjectKey (that is training DATA, kept for provenance/replay).
+  modelObjectKey String
+  /// sha256 of model.joblib, read from run_manifest.json's model_sha256 at
+  /// version-creation time. Nullable for the same "honest legacy null"
+  /// reason ModelConfigSchema.frameworkVersions is: a run trained before the
+  /// manifest recorded this has no honest value to fill in.
+  modelChecksum  String?
+
+  algorithm         String
+  hyperparameters   Json
+  frameworkVersions Json?
+  /// Digest, never a tag — same discipline as ModelTrainingRun.imageDigest.
+  /// Retention: MODEL-SERVE-000-T07 found no GHCR retention/GC workflow
+  /// exists in this repo, so nothing currently prunes the image this
+  /// points at; storing the digest here is what a future GC policy would
+  /// need to consult before it could safely add one.
+  imageDigest       String
+
+  /// Snapshot of ModelTrainingRun.metrics at creation time — r2/mae/rmse
+  /// (test split) and train_r2/train_mae/train_rmse. Never re-read from the
+  /// run after creation: this row is what promote's r2 floor (T06) checks
+  /// against, and it must not change under a row nothing else is touching.
+  metrics Json?
+
+  /// MODEL-SERVE-015. Copied off the winning candidate's
+  /// `ModelCandidateJob.retrainStrategy` at version-creation time — null for
+  /// every version created by Save Model or a plain (014) retrain,
+  /// `'AUGMENT_DATA'` for one minted from a combined artifact. No join
+  /// needed to answer "how was this version produced" from the version row
+  /// alone; `goldArtifactId` above already IS the combined artifact for
+  /// that case, and its own `parentArtifactId`/`operations` carry both
+  /// source datasets.
+  retrainStrategy String?
+
+  /// MODEL-SERVE-001-T06. Set only when a promote crossed the r2<=0 floor
+  /// with an explicit override — {actorId, actorName, reason, at}. Absent
+  /// for every version promoted above the floor. An override that left no
+  /// trace would be the same as no floor.
+  promotionOverride Json?
+
+  promotedById String?
+  promotedBy   User?     @relation(fields: [promotedById], references: [id], onDelete: SetNull)
+  promotedAt   DateTime?
+  /// Set when this version is demoted PRODUCTION -> ARCHIVED by a later
+  /// promote. Rollback's own "previous PRODUCTION" lookup orders by this
+  /// column, descending — see model.authorized.service.ts.
+  archivedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  predictionJobs    PredictionJob[]
+  predictionLogs    PredictionLog[]
+  manualPredictions ManualPrediction[]
+  inferenceWindows  InferenceWindow[]
+
+  @@unique([modelId, version])
+  @@index([modelId, stage])
+  @@index([modelId, archivedAt])
+}
+
+enum PredictionJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+/// MODEL-SERVE-003. Asynchronous batch scoring of a parquet already in
+/// object storage — the "submit, poll, collect by reference" half of
+/// prediction, alongside MODEL-SERVE-002's synchronous /predict. Mirrors
+/// LoaderJob/ModelTrainingRun's vocabulary and shape deliberately (see
+/// docs/feature_list_model.json's delta-re-audit finding: FOUR job models
+/// already share this exact five-value status enum).
+model PredictionJob {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Pinned at job START, never re-resolved — MODEL-SERVE-003-T05. A batch
+  /// spanning a promote must not silently score its first half on one
+  /// model version and its second on another; a job whose model is
+  /// "whatever was PRODUCTION at some point" cannot be reproduced or
+  /// defended later.
+  modelVersionId String
+  /// NO ACTION, not the implicit Restrict a required relation would
+  /// otherwise get — same footgun and same fix as ModelVersion.sourceRun
+  /// above: deleting a Model cascades onto ModelVersion AND PredictionJob
+  /// (via its own direct modelId FK) in the same statement. Restrict is
+  /// checked immediately per row and would fire while ModelVersion's own
+  /// cascade is still being processed, before the referencing
+  /// PredictionJob row is gone.
+  modelVersion   ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+
+  /// The committed dataset artifact being scored — validated against
+  /// is_committed_artifact_key before this row is ever created, not
+  /// re-checked here.
+  inputKey String
+
+  outputKey      String?
+  /// sha256 of the output parquet, written by the container on completion.
+  outputChecksum String?
+  rowCount       Int?
+
+  /// NULL for a job submitted without a key. Uniqueness is scoped
+  /// (modelId, idempotencyKey) by a HAND-WRITTEN partial unique index —
+  /// Prisma's schema DSL cannot express WHERE — see the migration.
+  idempotencyKey String?
+
+  status        PredictionJobStatus @default(QUEUED)
+  /// Present only on FAILED. Written from the container's own report or
+  /// from a non-zero exit code the runner observed.
+  failureReason String?
+
+  /// Digest, never a tag — same discipline as ModelTrainingRun.imageDigest.
+  imageDigest String
+  containerId String?
+
+  /// sha256 of the job token, never the token — same discipline as
+  /// ModelTrainingRun.tokenHash. A leaked table dump must not yield working
+  /// credentials.
+  tokenHash      String
+  /// Callbacks are refused past this even if the token is right.
+  tokenExpiresAt DateTime
+
+  /// Mirrors LoaderJob/PreprocessingJob.attempts: incremented by the runner
+  /// on start, carried forward (not reset) by retry.
+  attempts Int @default(0)
+
+  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([modelId, createdAt])
+  @@index([status])
+}
+
+enum ModelCandidateJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+/// MODEL-FLOW-013. Whether every candidate shares one algorithm (a
+/// hyperparameter search over it), each candidate names its own (an
+/// algorithm sweep, "Find Best Model"), or both toggles are on and phase 2
+/// tunes phase 1's winner (SWEEP_THEN_TUNE, MODEL-FLOW-013-T11). All three
+/// walk the exact same candidates[]/advanceJobForRun machinery — this only
+/// labels intent for the client and for `advanceJobForRun`'s phase-2
+/// append decision.
+enum ModelCandidateJobKind {
+  HYPERPARAMETER_SEARCH
+  ALGORITHM_SWEEP
+  SWEEP_THEN_TUNE
+}
+
+/// MODEL-FLOW-005, generalized by MODEL-FLOW-013 from a hyperparameter-search
+/// -only job into a candidate job whose elements can also vary algorithm.
+/// "Fine-tuning" was originally defined (2026-08-25,
+/// decisions.fine_tuning_undefined) as a HYPERPARAMETER SEARCH: one
+/// algorithm, one artifact, one train/test split, N hyperparameter sets tried
+/// in sequence, the best kept — NOT a retrain on different data or a
+/// warm-start (train.py fits once and exits; no algorithm here supports one).
+/// A search/sweep is orchestrated ABOVE the container, not inside it: each
+/// candidate is one ordinary ModelTrainingRun, chained by this row. No new
+/// spawn/claim/complete path exists — every candidate run goes through the
+/// exact machinery MODEL-FLOW-003 already built and live-verified.
+model ModelCandidateJob {
+  id String @id @default(uuid())
+
+  /// MODEL-SERVE-004. EXACTLY ONE of modelDraftId / modelId is set —
+  /// enforced by a CHECK constraint in the migration, the same shape
+  /// ModelTrainingRun_owner_present already uses one table over (but XOR,
+  /// not "at least one": a job is never adopted from a draft to a Model the
+  /// way a RUN is by Save Model, so "both" is meaningless here).
+  /// A DRAFT-owned job is the wizard's hyperparameter search / algorithm
+  /// sweep (MODEL-FLOW-005/013). A MODEL-owned job is a retrain: same
+  /// machinery, same chained ModelTrainingRuns, but it lands a new STAGING
+  /// ModelVersion instead of pointing a draft at its winner, and it
+  /// promotes nothing.
+  modelDraftId String?
+  modelDraft   ModelDraft? @relation(fields: [modelDraftId], references: [id], onDelete: Cascade)
+  modelId      String?
+  model        Model?      @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// MODEL-SERVE-004, retrain only (null for every draft-owned job). The
+  /// incumbent PRODUCTION version this retrain was triggered against,
+  /// PINNED at trigger time — a promote landing mid-search must not
+  /// silently re-point the comparison at a different incumbent, the same
+  /// reason PredictionJob.modelVersionId is pinned at submit.
+  /// A bare String, not a relation: an FK here would put a third edge into
+  /// the Model -> ModelVersion / ModelTrainingRun cascade diamond that
+  /// already broke deleteModelService once (see the
+  /// ModelVersion_sourceRunId_fkey comment in migration
+  /// 20260901090000_model_serve_001_model_version).
+  sourceVersionId String?
+  /// The STAGING ModelVersion this job minted from its winning run, written
+  /// in the SAME transaction that marks the job SUCCEEDED. Null while the
+  /// job is live, and for every draft-owned job. Bare String for the same
+  /// reason as sourceVersionId.
+  resultVersionId String?
+  /// MODEL-SERVE-004-T02. Optional caller-supplied dedupe key, scoped to
+  /// the model by a partial unique index — the same shape and semantics
+  /// PredictionJob.idempotencyKey already has. The per-model live lock
+  /// (ModelCandidateJob_one_live_per_model) is what stops three concurrent
+  /// triggers becoming three containers; this key is what makes a RETRY
+  /// after a dropped response return the original job instead of a second
+  /// one once the first has finished.
+  idempotencyKey  String?
+
+  /// MODEL-SERVE-015. Null for every ordinary retrain (014's KEEP_EXISTING
+  /// path) and for every draft-owned job. `'AUGMENT_DATA'` when this job
+  /// was triggered against a combined artifact — a caller-facing label, NOT
+  /// a `ModelCandidateJobKind`: `kind` describes how candidates vary
+  /// (algorithm vs hyperparameters, see the enum's own comment) and
+  /// `advanceJobForRun` switches on it, while augmentation is orthogonal —
+  /// an AUGMENT_DATA retrain can still be a hyperparameter search over N
+  /// candidates. Bare String, not an enum, matching `sourceVersionId`'s own
+  /// reasoning: this is intent metadata carried on a row already
+  /// constrained by the Model cascade diamond, not a value anything
+  /// switches control flow on inside this service.
+  retrainStrategy            String?
+  /// The dataset VERSION the incumbent was actually trained on (resolved
+  /// from the incumbent's ModelTrainingRun, never from `Model.datasetId` —
+  /// 015-T01's own finding that the latter can have moved since). Set only
+  /// alongside `retrainStrategy: 'AUGMENT_DATA'`.
+  baseDatasetVersionId       String?
+  /// The operator-selected DatasetVersion merged in. Set only alongside
+  /// `retrainStrategy: 'AUGMENT_DATA'`.
+  additionalDatasetVersionId String?
+  /// The combined GOLD DatasetArtifact this job trains its candidates
+  /// against — set only alongside `retrainStrategy: 'AUGMENT_DATA'`, at job
+  /// creation, before any candidate launches. Bare String for the same
+  /// no-FK reason as the ids above; `goldArtifactId` below is a copy of
+  /// this value once the strategy is AUGMENT_DATA, kept in step for every
+  /// other reader of this row that never learns about augmentation.
+  combinedArtifactId         String?
+
+  /// The fixed spec every candidate shares — validated once, the same way
+  /// buildRunData validates a single run's spec. `algorithm` moved INTO
+  /// each candidate (see `candidates` below) so an algorithm sweep and a
+  /// hyperparameter search share one shape; targetY/goldArtifactId/
+  /// trainTestSplit stay here because varying them would make candidates
+  /// incomparable.
+  targetY            String
+  goldArtifactId     String
+  trainTestSplit     Float?
+  /// MODEL-SERVE-026-T05. Expanding folds for the CV-GAP measurement: every
+  /// candidate of this job also refits its configuration per fold and scores
+  /// it beside the current version (images/trainer/app/pipelines/cv_gap.py).
+  /// A MEASUREMENT only — candidates stay chronological runs and still rank on
+  /// their own test RMSE. NEW_DATA_ONLY only; capped at config time by the
+  /// combined artifact's distinct labelled values // 10. Null = no CV.
+  cvFolds            Int?
+  /// MODEL-FLOW-029. Expanding-fold CROSS-VALIDATION for every candidate of a
+  /// draft-owned HYPERPARAMETER_SEARCH: each variant launches as an ordinary
+  /// `cv_expanding` run with this k, and the job's winner is the lowest
+  /// `cv_rmse_mean` rather than test `rmse`. NOT `cvFolds` above, which is a
+  /// measurement beside chronological retrain candidates. Mutually exclusive
+  /// with `trainTestSplit`; refused for a sweep (MODEL-FLOW-016). Null = not CV.
+  nSplits            Int?
+  /// MODEL-SERVE-026-T07. The acceptance criteria the operator chose BEFORE
+  /// the retrain started (lib/acceptance-criteria.ts shapes, 'retrain'
+  /// scope). A stated verdict only — never blocks a retrain or a promote.
+  /// Null = none chosen (every job before this field).
+  acceptanceCriteria Json?
+
+  /// MODEL-FLOW-020-T04/T02. The dataset's own two size figures AS THE
+  /// CLIENT SAW THEM at job creation — `sizedRowCount` is /split-stats'
+  /// `source_rows` (the PRE-MASK row count), `sizedDistinctLabelled` its
+  /// `distinct_labelled_values` (distinct values of the target among
+  /// labelled rows). Both come from one `/split-stats` response the Step 3
+  /// panel had already fetched; neither is recomputed here.
+  ///
+  /// SINCE MODEL-FLOW-024-T10 `sizedRowCount` HAS TWO SOURCES. The size tier
+  /// keys on rows, so a job created before Apply (and any lstm/gru job, which
+  /// never fetches split stats) records the saved dataset's own row count
+  /// there instead, with `sizedDistinctLabelled` null. The two counts were not
+  /// compared; a reader recomputing which tier a job's phase 2 came from
+  /// should not assume `source_rows`.
+  ///
+  /// THOSE TWO FIELDS SPECIFICALLY because they are the only two that
+  /// /split-stats guarantees in BOTH ratio and CV mode —
+  /// train/test_labelled_rows are null in n_splits mode
+  /// (MODEL-FLOW-016-T09), so a job created with CV on would capture a null
+  /// row count for no reason if it read those instead.
+  ///
+  /// STORED RATHER THAN LOOKED UP because they are not reachable where they
+  /// will eventually be used: `advanceJobForRun` holds this row and no size
+  /// figure, and `distinct_labelled_values` needs a full artifact read that
+  /// `model-run-launch.authorized.service.ts` explicitly refuses to add to
+  /// the launch path. Captured once, at the only point that has them free.
+  ///
+  /// BOTH, NEVER ONE. On this system's own data they diverge by up to 260x
+  /// (an 8,350-row artifact holds 32 distinct labelled values), which is the
+  /// whole reason MODEL-FLOW-020 exists — a reader shown only one figure
+  /// cannot see why any bound derived from it is what it is.
+  ///
+  /// NAMED `sized*`, NOT `derivedFrom*`: they are the figures the client saw,
+  /// not a derivation. Since MODEL-FLOW-024 `sizedRowCount` picks the tuning
+  /// grid's size tier (and LSTM/GRU `batch_size`); `sizedDistinctLabelled` is
+  /// recorded and picks nothing. A name promising a derivation the code does
+  /// not perform is the trap MODEL-FLOW-018's "Carrying forward" copy fell
+  /// into.
+  ///
+  /// NULLABLE, and null means "not captured", never "reconstruct it" — the
+  /// honest-legacy-null pattern MODEL-FLOW-010-T06 established for
+  /// validationMissingPct. Live sources of null, both correct: a job created
+  /// before this migration, and (for `sizedRowCount`) a dataset with no row
+  /// count on record. `sizedDistinctLabelled` is also null whenever split
+  /// stats were not fetched — before Apply, and for lstm/gru — but is never
+  /// populated without `sizedRowCount`: the job schema refuses that pair.
+  sizedRowCount         Int?
+  sizedDistinctLabelled Int?
+
+  /// MODEL-SERVE-019. The test split's own row count and time range over
+  /// this job's training artifact — `PythonSplitStatsSchema`'s response,
+  /// frozen ONCE PER JOB, out of band, right after the row exists (mirrors
+  /// `freezeSplitStats`'s own fire-and-forget shape on ModelTrainingRun,
+  /// never inside the trigger request path). Every candidate run under this
+  /// job shares one answer, so it is captured here rather than N times on
+  /// each ModelTrainingRun (`ModelTrainingRun.splitStats`'s own comment
+  /// records exactly this "N redundant reads" reasoning for why a candidate
+  /// run stores null on purpose).
+  ///
+  /// Populated only for a job that ingests new data (`retrainStrategy` is
+  /// 'AUGMENT_DATA' or 'NEW_DATA_ONLY') — this is what backs the
+  /// "candidate's own test data (existing + new)" figure a new-data retrain
+  /// shows, which otherwise has no persisted range. Null means "not
+  /// recorded for this job": a job created before this column, a
+  /// KEEP_EXISTING/draft-owned job (never populated), or the freeze call
+  /// itself failing — never reconstructed on read.
+  splitStats Json?
+
+  kind ModelCandidateJobKind @default(HYPERPARAMETER_SEARCH)
+
+  /// Ordered array of `{algorithm, hyperparameters, phase}`. Index
+  /// `completedRuns` is the candidate currently in flight or about to
+  /// launch. A hyperparameter search repeats the same algorithm on every
+  /// element; an algorithm sweep varies it. `phase` (1 or 2, stamped
+  /// server-side, never client-supplied) is only meaningful for
+  /// SWEEP_THEN_TUNE: `advanceJobForRun` appends phase-2 elements to this
+  /// SAME array once phase 1 exhausts (MODEL-FLOW-013-T11) — no second
+  /// migration needed for that, just longer arrays.
+  candidates    Json
+  totalRuns     Int
+  completedRuns Int  @default(0)
+
+  status        ModelCandidateJobStatus @default(QUEUED)
+  failureReason String?
+
+  /// The run for the CURRENTLY in-flight (or just-finished, not yet
+  /// advanced) candidate.
+  currentRunId  String?
+  /// The lowest-RMSE run seen so far. RMSE, not R² — always present and
+  /// well-behaved even for a degenerate fit (an observed real run scored
+  /// R² = -1,110,858; RMSE stayed a sane, comparable number). Selection
+  /// metric is intentionally not configurable in this pass — see
+  /// MODEL-FLOW-005-T01's own note on why.
+  bestRunId     String?
+  bestRmse      Float?
+  /// MODEL-FLOW-013-T08. A user's override of bestRunId, written only once
+  /// the job is terminal and only to one of its own SUCCEEDED runs — never
+  /// bestRunId itself, which stays the metric's own answer even when
+  /// overridden. null means "accept the metric's answer." Evaluation/Save
+  /// Model resolve via `selectedRunId ?? bestRunId`, never currentRunId
+  /// directly — ModelDraft.currentRunId keeps its existing single writer,
+  /// advanceJobForRun's completion branch, untouched by this field.
+  selectedRunId String?
+
+  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  runs ModelTrainingRun[]
+
+  @@index([modelDraftId])
+  @@index([modelId])
+  @@index([status])
+}
+
+/// MODEL-SERVE-005-T01. The queryable INDEX of a sampled synchronous
+/// /predict request — never the payload. The actual rows (raw + model-
+/// ready feature values, predictions) are a Parquet object in MinIO
+/// (`serving_log_key`, object_store.py); this row is what a time-range
+/// query and a drift computation can filter/aggregate without opening
+/// every object. Written by ModelServingIngestAuthorizedService on a
+/// ServingTokenGuard-authenticated callback from apps/serving — there is
+/// no user session on this path, matching PredictionJob's own container-
+/// callback rows.
+/// One row per Run Predict button press that produced a score — the warm
+/// /predict reading the Monitoring tab draws on Actual vs Predict. Written
+/// ONLY by the run-now route; never by the scheduler or the live prediction
+/// driver. PredictionLog cannot serve this purpose: it carries no source
+/// column, so a press is indistinguishable there from the driver's sweep.
+model ManualPrediction {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// The PRODUCTION version that answered, so a promote between two presses
+  /// stays readable on the chart.
+  modelVersionId String
+  modelVersion   ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: Cascade)
+
+  predicted Float
+
+  /// The DATA time scored (the newest source row's timestamp), not the press
+  /// time — it is the chart's x position, on the same axis as Actual. The
+  /// press time is `createdAt`.
+  predictedAt DateTime
+
+  requestedById String?
+  requestedBy   User?   @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([modelId, predictedAt])
+}
+
+model PredictionLog {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Pinned to whatever /predict actually served, read off the descriptor
+  /// apps/serving already resolved — never re-resolved to "current
+  /// PRODUCTION" here, so a promote mid-flight cannot retarget a row that
+  /// already describes a specific request. Same reasoning as
+  /// PredictionJob.modelVersionId.
+  modelVersionId String
+  /// NO ACTION, not the implicit Restrict a required relation would
+  /// otherwise get — identical footgun and identical fix to
+  /// PredictionJob.modelVersion: deleting a Model cascades onto
+  /// ModelVersion AND PredictionLog (via its own direct modelId FK) in the
+  /// same statement, and Restrict fires per-row before ModelVersion's own
+  /// cascade has finished removing the referencing rows.
+  modelVersion   ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+
+  /// Null means the object write did not happen (a python/MinIO failure
+  /// after the row's aggregates were already computed) — the aggregates
+  /// below are still real and still usable for drift; only the raw-row
+  /// detail is unavailable. Never implied from a missing key; always this
+  /// explicit null, the same discipline PredictionJob.outputKey uses for
+  /// "not there yet" vs "never happening" — except here `objectChecksum`
+  /// null WITH a non-null objectKey is also legitimate (checksum recorded
+  /// best-effort).
+  objectKey      String?
+  objectChecksum String?
+
+  /// Rows in the ORIGINAL /predict request — may exceed loggedRows if the
+  /// per-request row cap (SERVING_LOG_MAX_ROWS) trimmed what was written.
+  /// Both are kept, deliberately not collapsed into one number: a series
+  /// that only ever shows loggedRows cannot tell a caller its own log is
+  /// truncated.
+  rowCount   Int
+  loggedRows Int
+
+  /// MODEL-SERVE-005-T01. The sampling rate IN FORCE for this specific
+  /// request, on the row — never a global config value looked up later,
+  /// because a rate that changes over time (an operator turning it up
+  /// during an incident) must not silently reinterpret every prior row's
+  /// implied population. "A rate chosen by accident makes every downstream
+  /// statistic uninterpretable" — this column is what keeps it accidental
+  /// only once.
+  samplingRate Float
+
+  /// Per model-ready (scaled) feature column: {n, sum, sumsq, min, max} —
+  /// sufficient statistics for an EXACT pooled mean/std across many rows
+  /// without ever re-opening the Parquet objects. Keyed by feature column
+  /// name, matching featureColumns order from the serving descriptor.
+  featureStats    Json
+  /// Same shape, one entry, for the request's own predictions.
+  predictionStats Json
+
+  /// MODEL-SERVE-001-T13. Per RAW-engineering-unit feature column, binned
+  /// against that column's frozen `feature_spec.json` psiRefEdges:
+  /// {tag: {counts: number[], below: number, above: number}}. `counts[i]`
+  /// is this request's row count in bin i; `below`/`above` are mass outside
+  /// the trained edge range, kept separate rather than folded into the end
+  /// bins so out-of-range drift is never silently absorbed into them.
+  ///
+  /// NULLABLE, deliberately, unlike `featureStats` above: every row written
+  /// before this column existed has no histogram, and that must read as
+  /// "not recorded" — a real gap — never as an empty/zero distribution. A
+  /// row also reads null when the descriptor it was served under carries
+  /// no psiRefEdges at all (a model whose spec predates T13), for the
+  /// identical reason.
+  ///
+  /// Bucketed from RAW `rows` at write time (apps/serving/services/
+  /// prediction_log.py), never `scaled` — PSI's bin edges are frozen in
+  /// engineering units (T13 STEP 4), unlike `featureStats`/`featureHash`
+  /// above which are model-ready/scaled. Binning at WRITE time against the
+  /// frozen edges, not read time, is what lets `poolHistograms` pool many
+  /// requests by simple elementwise addition without ever re-opening the
+  /// raw-row Parquet object — re-binning per read would let the read-time
+  /// binner contaminate the metric, the same failure DS-LAKE-005B-A-V06's
+  /// shared-bucket-basis rule exists to prevent for the scrubber.
+  featureHistograms Json?
+
+  requestedAt DateTime @default(now())
+
+  @@index([modelId, requestedAt])
+  @@index([modelVersionId, requestedAt])
+}
+
+enum InferenceWindowStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+  /// MODEL-SERVE-001-T20. A human stopped the schedule while this row was
+  /// still PENDING — never dispatched, never a failure, and never evidence
+  /// the record is "still being written" the way SKIPPED is: excluded from
+  /// gapCount and from lastSucceededAt/staleness reads. Set only on the
+  /// disable branch of putScheduleService, only against rows still PENDING
+  /// at that moment (a RUNNING window keeps running and is left to the
+  /// reconcile sweep).
+  ///
+  /// PERMANENT, BY DECISION (2026-09-15) — re-enable does NOT resurrect a
+  /// CANCELED row. insertDueWindows's own createMany({ skipDuplicates: true
+  /// }) keys on (modelVersionId, windowStart), the same slot this row
+  /// already occupies, so that windowStart is never re-inserted as PENDING
+  /// while it falls inside INFERENCE_BACKFILL_HORIZON_HOURS — a real,
+  /// permanent hole in the monitoring record for that window, which
+  /// gapCount's own CANCELED exclusion will NOT surface. Accepted
+  /// deliberately: "cancelled means cancelled," not "cancelled means
+  /// paused."
+  CANCELED
+}
+
+/// MODEL-SERVE-006-T01. THE UNIT IS A TIME WINDOW, NOT A TICK. One row per
+/// (modelVersionId, windowStart), created by the scheduler ahead of any
+/// work and by a backfill range through the SAME insert — never by the
+/// worker. That one unique constraint is the whole design: it is the
+/// idempotency mechanism (so this entity needs no idempotencyKey of the
+/// kind PredictionJob carries), it makes gaps queryable (status !=
+/// 'SUCCEEDED'), and it makes backfill an insert rather than a code path.
+///
+/// SKIPPED IS A REAL TERMINAL STATUS, NOT A SYNONYM FOR FAILED: a window
+/// with too few usable input rows was correctly not attempted, and
+/// conflating it with a failure would make the staleness alarm cry wolf on
+/// a quiet plant. It is also why that alarm measures "the record is still
+/// being written" (SUCCEEDED or SKIPPED) rather than "predictions exist".
+model InferenceWindow {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// MODEL-SERVE-006-T07. Pinned at window CREATION, never re-resolved —
+  /// a promote landing mid-series must not retarget windows that already
+  /// exist, or two adjacent points from different model versions render as
+  /// a step change on the same axis as a real process shift. Pinning also
+  /// yields shadow evaluation for free: two rows, one windowStart, two
+  /// versions.
+  modelVersionId String
+  /// NO ACTION, not the implicit Restrict a required relation would
+  /// otherwise get — same footgun and same fix as PredictionJob/
+  /// PredictionLog: deleting a Model cascades onto ModelVersion AND this
+  /// table (via its own direct modelId FK) in the same statement, and
+  /// Restrict is checked per row before ModelVersion's own cascade has
+  /// finished.
+  modelVersion   ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+
+  /// Half-open [windowStart, windowEnd). Both are computed by ONE pure
+  /// helper (lib/inference-windows.ts) that the tick and the backfill route
+  /// both call — an unaligned boundary from either side would mint a second
+  /// row for a window that already exists, and the unique constraint could
+  /// not catch it because the timestamps would differ.
+  windowStart DateTime
+  windowEnd   DateTime
+
+  status InferenceWindowStatus @default(PENDING)
+
+  /// The PRE-SCALE feature frame apps/python materialized for this window
+  /// (raw engineering units, derived feature columns computed, no scaling).
+  /// Same contract MODEL-SERVE-002's /predict and MODEL-SERVE-003's batch
+  /// input already use, so the container applies the identical
+  /// `to_model_ready` and the three paths cannot disagree.
+  inputKey      String?
+  inputChecksum String?
+
+  /// Written server-side on /infer-complete from this row's own ids, never
+  /// trusted from the container's request body — the discipline
+  /// completeJobService already applies to a batch output key.
+  predictionsKey String?
+  metricsKey     String?
+
+  /// MODEL-SERVE-006-T05. ON THE ROW, not only inside the output object, so
+  /// a series query can join them without opening parquet. Without this, a
+  /// prediction series that starts wandering is indistinguishable between
+  /// real process drift and a sensor that stopped reporting — and the
+  /// second is far more common. `inputRows` counts the rows actually
+  /// SCORED (rows carrying a hole are dropped, never imputed);
+  /// `missingPct` is the share of feature cells absent across the window as
+  /// fetched.
+  inputRows  Int?
+  missingPct Float?
+
+  /// MODEL-SERVE-001-T17. PSI's window-plane data source — per RAW
+  /// engineering-unit feature column, binned against that column's frozen
+  /// `feature_spec.json` `psiRefEdges` AT MATERIALIZE TIME (never at read
+  /// time, so `poolHistograms` can pool many windows by simple elementwise
+  /// addition without ever re-opening `inputKey`'s Parquet object — the
+  /// same write-time-binning discipline `PredictionLog.featureHistograms`
+  /// already establishes, restated here in full because this is a SEPARATE
+  /// column, not a shared one: `PredictionLog` is /predict-only,
+  /// `InferenceWindow` is scheduled-only, and the two streams are never
+  /// unioned — see decisions.short_lived_containers_for_scheduled_inference
+  /// for why the two planes exist at all): `{tag: {counts: number[],
+  /// below: number, above: number}}`.
+  ///
+  /// NULLABLE, and deliberately never an empty/zero distribution in that
+  /// case — same "absent means not recorded, not measured-and-empty"
+  /// discipline `PredictionLog.featureHistograms`'s own doc comment states.
+  /// Null on every row written before this column existed, and on any row
+  /// whose pinned `ModelVersion` carries a `feature_spec.json` with no
+  /// `psiRefEdges` at all (a spec that predates MODEL-SERVE-001-T13).
+  ///
+  /// SET REGARDLESS OF `status` — including SKIPPED and a container FAILED
+  /// after `inputKey` was already written. `put_frame` runs before either
+  /// outcome is known, so a SKIPPED window (too few rows to SCORE) still
+  /// carries a real, fetched, cleaned input distribution: PSI asks a
+  /// question about the INPUT population, not about a prediction, so a
+  /// window nothing was scored from is still valid PSI evidence. A reader
+  /// pooling these must consult `status` for DISCLOSURE (a figure computed
+  /// mostly from windows that never scored must say so), never as a filter
+  /// on which rows to include.
+  featureHistograms Json?
+
+  featureStats Json?
+
+  targetStats     Json?
+  targetHistogram Json?
+
+  imageDigest String?
+  containerId String?
+
+  tokenHash      String
+  tokenExpiresAt DateTime
+
+  /// Incremented by the dispatcher on every spawn. Deliberately NOT the
+  /// declared-and-never-written column PredictionJob.attempts is: FAILED is
+  /// terminal here (the dispatcher only ever picks PENDING, so a
+  /// permanently failing window is never re-spawned every tick), and the
+  /// explicit retry route carries this value forward the way
+  /// LoaderJobService.retry does rather than resetting it.
+  attempts Int @default(0)
+
+  /// Present only on FAILED, SKIPPED and CANCELED. On SKIPPED it is not an
+  /// error: it says which threshold was not met, which is what stops a quiet plant
+  /// reading as an outage.
+  failureReason String?
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  logs  InferenceWindowLog[]
+  truth InferenceWindowTruth?
+
+  @@unique([modelVersionId, windowStart])
+  @@index([modelId, windowStart])
+  @@index([status])
+}
+
+model InferenceWindowTruth {
+  id String @id @default(uuid())
+
+  /// Cascade: the join is meaningless without the window it scores, and a
+  /// Model delete already cascades onto InferenceWindow.
+  windowId String          @unique
+  window   InferenceWindow @relation(fields: [windowId], references: [id], onDelete: Cascade)
+
+  /// Denormalised for the range read (a monitoring series asks by model and
+  /// time, never by window id), mirroring InferenceWindow's own
+  /// @@index([modelId, windowStart]). Never a second source of truth —
+  /// copied from the window row at join time.
+  modelId        String
+  modelVersionId String
+  windowStart    DateTime
+
+  /// The target these pairs were joined against, resolved from the window's
+  /// OWN pinned version (ModelVersion -> sourceRun -> ModelTrainingRun.
+  /// targetY). ON THE ROW, not re-derived at read time: MODEL-SERVE-006-T07
+  /// deliberately allows two windows at one windowStart under two versions,
+  /// and two versions can carry DIFFERENT targets — so a read must be able
+  /// to see that before it pools them into one RMSE about nothing.
+  ///
+  /// NULL only on a row that exists solely to record a FAILED join (see
+  /// `failureReason`): resolving the target is itself one of the things
+  /// that can fail, so a row written to hold a backoff may not know it yet.
+  /// Every row carrying pairs (`n > 0`) has one.
+  targetColumn String?
+
+  /// Present only on a join that FAILED. Its existence is load-bearing, not
+  /// diagnostic: a failed join must still leave a row, because the
+  /// sweeper's candidate query treats "no truth row" as eligible and orders
+  /// oldest-first — so a window that can never join (a version with no
+  /// target, a deleted DataSource) would otherwise sit at the head of every
+  /// sweep forever, consuming the batch and starving every newer window
+  /// behind it, with log lines as the only symptom.
+  failureReason String?
+
+  /// The joined (timestamp, predicted, actual, residual) pairs.
+  pairsKey      String?
+  pairsChecksum String?
+
+  /// `truthRows` = lab samples found in the fetch range. `pairedRows` =
+  /// those that matched a prediction inside tolerance. `predictionRows` =
+  /// rows in the window's own predictions.parquet. All three, because
+  /// "no error published" has three different causes (no lab sample, no
+  /// sample close enough, no prediction) and a single count hides which.
+  truthRows      Int
+  pairedRows     Int
+  predictionRows Int
+
+  /// SUFFICIENT STATISTICS, not finished metrics — the same trick
+  /// lib/prediction-drift.ts's poolFeatureStats already uses for drift.
+  /// Pooling these across N windows yields an EXACT rolling r2/rmse/mae/sd
+  /// (never an average of averages), and a metric added to the registry
+  /// later is backfillable from them with no second truth fetch.
+  ///
+  /// Sign convention: residual = predicted - actual, matching
+  /// apps/client/lib/model-evaluation.ts's computeMetrics exactly, so
+  /// Monitoring and Evaluation can never report opposite signs.
+  n           Int
+  sumSe       Float
+  sumAe       Float
+  sumSigned   Float
+  sumActual   Float
+  sumActualSq Float
+
+  /// The tolerance actually in force for THIS join, on the row — never
+  /// re-derived from current config when read back later. Same rule and
+  /// same reason as PredictionLog.samplingRate.
+  toleranceSeconds Int
+
+  /// `joinedThrough` is the fetch end this row's numbers reflect.
+  /// `nextJoinAfter` is a backoff: without it the sweeper re-fetches every
+  /// window on every pass until the horizon elapses (~168 round trips per
+  /// window at the default horizon and an hourly cadence), almost all of
+  /// them returning rows it already has.
+  joinedThrough DateTime
+  nextJoinAfter DateTime?
+  joinAttempts  Int       @default(0)
+  lastJoinedAt  DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([modelId, windowStart])
+  @@index([nextJoinAfter])
+}
+
+/// MODEL-SERVE-006. Per-window container logs, mirroring
+/// ModelTrainingRunLog exactly. PredictionJob deliberately has no such
+/// table (its logs are a console echo), but this feature's acceptance
+/// criteria require per-window logs readable AFTER the container exits —
+/// scheduled work has no caller watching stderr, which is the whole
+/// difference.
+model InferenceWindowLog {
+  id       String          @id @default(uuid())
+  windowId String
+  window   InferenceWindow @relation(fields: [windowId], references: [id], onDelete: Cascade)
+
+  level     String   @default("info")
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([windowId, createdAt])
+}
+
+/// MODEL-SERVE-006. Per-MODEL schedule (not per-version: the version is
+/// pinned per window at creation from whatever is PRODUCTION then).
+///
+/// `fetchConfig` is a SNAPSHOT taken at enable time, not a live read of
+/// Dataset.pipelineConfig — the recipe a window replays is pinned through
+/// ModelVersion.featureSpecKey, and leaving the fetch half re-derived
+/// through a mutable dataset row would reintroduce exactly the
+/// silently-wrong-for-an-edited-dataset failure MODEL-SERVE-000-T03 found.
+/// It holds the source's own fetch settings (intervalTime, calcType,
+/// calcBasis) plus the base tags to request.
+///
+/// MODEL-SERVE-006-T09 (a later pass) adds the wizard's five existing
+/// deploy fields here — autoRetrain, warnSd, criticalSd, driftMonitor,
+/// driftThresholdPct — under THOSE names, so the wizard and the scheduler
+/// never describe one setting in two vocabularies.
+model TagObservation {
+  /// MODEL-SERVE-009-T02. The CURRENT per-tag state as of the last fetch —
+  /// one row per (model, tag), UPDATED IN PLACE, never one row per fetch.
+  ///
+  /// NOT A TIMESERIES, DELIBERATELY. feature_list.preprocessing's
+  /// architecture.storage_authority is explicit that MinIO is the single
+  /// source of truth for rows and Postgres holds metadata and pointers only
+  /// — not one of its Prisma models stores timeseries rows. At 21 tags x 24
+  /// fetches x 365 days a per-fetch table would be ~184,000 rows a year to
+  /// answer a question that one current row answers. The history already
+  /// exists anyway: each window's own input.parquet holds the frame and
+  /// featureStats holds its aggregates. What was missing is the CURRENT
+  /// state, which is exactly one row.
+  id      String @id @default(uuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// The feature column this row is about, as it appears in the model's own
+  /// feature_spec — a base tag or a derived one; both are observed the same
+  /// way because both are columns in the materialized frame.
+  tag String
+
+  /// The last value this tag carried, REGARDLESS of `lastStatus`. A Bad cell
+  /// still holds a number; a reader deciding whether the tag moved must read
+  /// both fields, because treating a Bad cell's number as a reading is the
+  /// fabricate-a-plausible-number trade this ledger has refused repeatedly.
+  lastValue Float?
+
+  /// The FETCH PATH's arrival health (`{tag}__status`: 0 Good, 1 Bad,
+  /// 2 Questionable), read BEFORE `drop_bad_feature_rows` — after it, every
+  /// surviving row is Good by construction and a status taken from it is a
+  /// constant dressed as a measurement (MODEL-SERVE-001-T15 measured exactly
+  /// that). This is NOT PI's own good/questionable/substituted flag, which
+  /// reaches this system only on the snapshot path and answers a different
+  /// question; decisions.arrival_health_and_pi_quality_are_two_fields keeps
+  /// them apart on purpose.
+  lastStatus Int?
+
+  /// The most recent fetch that returned this tag AT ALL. Advances even when
+  /// the value is unchanged and even when the cell was Bad — it is about
+  /// arrival, not about movement.
+  lastSeenAt DateTime?
+
+  /// The most recent fetch whose value DIFFERED from the one before it. This
+  /// is the whole feature: `lastSeenAt` minus `lastChangedAt` is how long a
+  /// tag has been flat, measured rather than inferred from a pooled range
+  /// over N windows (MODEL-SERVE-001-T29's shipped signal quantises to whole
+  /// windows and cannot see a run shorter than three of them). Collapsing
+  /// these two fields into one gives that inference straight back.
+  lastChangedAt DateTime?
+
+  /// How the LAST fetch went for this tag: SUCCEEDED, FAILED, SKIPPED.
+  /// A failed fetch MUST write this rather than leaving the row untouched —
+  /// an absent fetch is not a flat tag, and PI is measurably intermittent
+  /// from this environment (MODEL-SERVE-001-V12's NXDOMAIN, and a host
+  /// observed succeeding and failing an hour apart). Without it a multi-hour
+  /// outage is indistinguishable from a multi-hour freeze.
+  lastFetchOutcome String?
+
+  /// The window whose fetch last wrote this row, so a reader can get from
+  /// the current state back to the evidence. Not a relation: a window may be
+  /// deleted by retention while the tag's current state remains true.
+  lastWindowId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One row per (model, tag) — the constraint that makes "updated in place"
+  /// enforceable by the database rather than by every caller remembering to.
+  @@unique([modelId, tag])
+  @@index([modelId])
+}
+
+model InferenceSchedule {
+  id String @id @default(uuid())
+
+  modelId String @unique
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  enabled Boolean @default(false)
+
+  /// Minutes. `lagMinutes` is MODEL-SERVE-006-T04's deliberate ingestion
+  /// lag: windowEnd = now() - lag. It is never zero and never derived from
+  /// the cadence — PI tags do not arrive together, so a window ending at
+  /// now() is structurally complete and factually empty in places, and the
+  /// model scores it without error because the columns exist.
+  cadenceMinutes Int @default(60)
+  lagMinutes     Int @default(15)
+
+  /// MODEL-SERVE-001-T14. The "too few usable rows -> SKIPPED" floor for
+  /// THIS schedule — a real per-schedule column, matching `lagMinutes`
+  /// above, rather than the GLOBAL `env.INFERENCE_MIN_ROWS` constant every
+  /// schedule was evaluated against before this task. That global bakes in
+  /// an assumed 1-minute sampling interval; any schedule fetching at a
+  /// different interval read SKIPPED forever at a floor sized for the
+  /// wrong cadence. Always computed and written by `putScheduleService` on
+  /// every enable/update — `lib/inference-windows.ts`'s `deriveMinRows`
+  /// from this row's own `cadenceMinutes` and `fetchConfig.intervalTime`
+  /// when derivable (a PI source with a parseable interval), falling back
+  /// to `env.INFERENCE_MIN_ROWS` otherwise (a non-PI source with no
+  /// interval concept, or an unparseable one) — the SAME safe default
+  /// every schedule already used, never a fabricated per-schedule guess.
+  /// The `@default(30)` below is a schema-level safety net only, matching
+  /// `env.INFERENCE_MIN_ROWS`'s own default; the service always writes an
+  /// explicit computed value, the same discipline `lagMinutes` follows.
+  minRows Int @default(30)
+
+  /// MODEL-SERVE-005-T03. The GROUND-TRUTH half of the same trade, and a
+  /// deliberately different, much larger number than `lagMinutes` — that
+  /// distinction is MODEL-SERVE-006-T04's own ("the lab target's own
+  /// latency is a different and much longer number"). `lagMinutes` buys
+  /// feature completeness for scoring; `truthLagMinutes` is how long after
+  /// a window closes its lab measurement is expected to exist at all.
+  ///
+  /// `truthToleranceMinutes` is how near a lab sample must fall to a
+  /// prediction timestamp to pair with it — the server-side twin of the
+  /// `toleranceMs` `lib/lab-ingestion.ts`'s alignLabToPredictions already
+  /// applies client-side, so both surfaces mean one thing by "aligned".
+  ///
+  /// `truthHorizonHours` ends the re-join. Truth is late AND incremental
+  /// (a window joined at 24h with one sample may have three at 72h), so a
+  /// join is not once-and-terminal; past this the row's numbers are final.
+  truthLagMinutes       Int @default(1440)
+  truthToleranceMinutes Int @default(30)
+  truthHorizonHours     Int @default(168)
+
+  /// The DataSource the window frame is fetched from, resolved against the
+  /// pinned version's own sourceDatasetId rather than Model.datasetId —
+  /// live-verified those two can differ.
+  sourceId    String
+  fetchConfig Json
+
+  /// MODEL-SERVE-006-T09, Pass B. The wizard's five deploy-step guardrails,
+  /// adopted under THEIR names (store/model-pipeline.ts's mpAutoRetrainAtom/
+  /// mpRetrainWarnSdAtom/mpRetrainCriticalSdAtom/mpDriftMonitorAtom/
+  /// mpDriftThresholdPctAtom) rather than a second, parallel vocabulary —
+  /// this row is the ONE place they now persist; `Model.data.config.
+  /// deployment` (lib/model-config.ts's DeploymentConfig) is a SEPARATE,
+  /// pre-existing, still-dead snapshot field this feature deliberately does
+  /// not touch or duplicate into.
+  autoRetrain  Boolean @default(false)
+  /// Invariant enforced client-side (use-model-pipeline-nav.ts's clamped
+  /// setters) and re-checked server-side at write: warnSd < criticalSd.
+  warnSd       Float   @default(1.5)
+  criticalSd   Float   @default(3.0)
+  driftMonitor Boolean @default(false)
+  /// MODEL-SERVE-001-T31 dropped `driftThresholdPct Float @default(10)` from
+  /// here. It was the operator-facing name for the z-score verdict's
+  /// out-of-range clause, and that clause is gone: drift answers mean shift
+  /// only, PSI answers distribution shape. A knob nothing reads is worse
+  /// than no knob, so it was removed rather than kept as a display-only
+  /// field.
+
+  /// MODEL-SERVE-001-T28. The monitoring axis's own bands, per schedule
+  /// rather than in env, for the reason T14 MEASURED rather than assumed:
+  /// one global constant is evaluated against the wrong axis the moment two
+  /// schedules differ. INFERENCE_MIN_ROWS assumed a 1-minute sampling
+  /// interval, so a schedule fetching every 5 minutes — 12 rows in a
+  /// complete, healthy hour — read SKIPPED forever against a 30-row floor.
+  ///
+  /// `missingPctWarn`/`missingPctAlert` grade Bad CELLS (the window row's own
+  /// `missingPct`), not missing tags — T25's preflight owns structural
+  /// absence. Ordering `warn < alert` is re-checked SERVER-SIDE against the
+  /// MERGED state, never by the DTO refine alone: a partial update naming
+  /// only one of the pair is exactly the gap T09 found for warnSd/criticalSd.
+  ///
+  /// `skipStreakAlert` counts a CONSECUTIVE RUN, never a total. T01/T10/T11
+  /// each hold that SKIPPED is a legitimate terminal status for a quiet
+  /// plant and must neither raise nor suppress the alarm; a run of them is a
+  /// different fact from a count of them.
+  ///
+  /// `frozenTolerancePct` is a FRACTION OF THE TRAINING RANGE, not an
+  /// absolute value — `featureStats` are in scaled units, so only `0` (exact
+  /// flatness) is meaningful without reference to what the column's spread
+  /// was in training. It defaults to 0 for that reason, and is therefore
+  /// `.nonnegative()` in the DTO, not `.positive()` like its siblings.
+  ///
+  /// NOT ADDED HERE, though T28 names it: the stale-cadence count. Staleness
+  /// already works through env.INFERENCE_STALE_AFTER_CADENCES inside
+  /// `isStale`, and per-scheduling it means changing that function's
+  /// signature and every caller for no behaviour this slice needs.
+  missingPctWarn     Float @default(5)
+  missingPctAlert    Float @default(20)
+  skipStreakAlert    Int   @default(3)
+  frozenWindows      Int   @default(3)
+  frozenTolerancePct Float @default(0)
+
+  /// MODEL-SERVE-001-T25. EVIDENCE FROM THE ENABLE-TIME LIVE PROBE, not a
+  /// status: `classifyDeployStatus` still derives Running/Offline at read
+  /// time (T12's rule), it just reads a recorded fact instead of inferring
+  /// warmup from window history. Same class of field as `promotedAt`.
+  ///
+  /// `preflightOk` is NULLABLE with three meanings, and the null is load-
+  /// bearing: true = the source answered, false = it did not and the enable
+  /// was refused, NULL = NOT PROBED. Null covers both a schedule enabled
+  /// before this migration and a SQL-sourced schedule, which is deliberately
+  /// never probed — `input-status` accepts PI only (rejected at
+  /// data-source.connect.service.ts's `src.type !== 'aveva'`), and
+  /// intergrations/sql_connect.py binds the time range as VARCHAR so a SQL
+  /// probe would fail for a CONNECTOR bug rather than the operator's config.
+  /// Refusing a whole source class for that is worse than not probing it.
+  ///
+  /// `preflightReason` is the connector's OWN TEXT, verbatim, via
+  /// frame_service.diagnose_empty_pi_fetch — V09 exists because a guessed
+  /// category sent a reader to audit a config that was already correct.
+  /// Redacted at the READ boundary with lib/redact-urls.ts (same treatment
+  /// T09 gave failureReason), never at write: server logs keep full evidence.
+  preflightAt     DateTime?
+  preflightOk     Boolean?
+  preflightReason String?
+
+  /// MODEL-SERVE-008-T02. The LIVE PREDICTION driver, which is a separate
+  /// switch from `enabled` on purpose: `enabled` governs the SCHEDULED
+  /// plane (windows, containers, InferenceWindow rows) and this governs the
+  /// SERVING plane (synchronous /predict, PredictionLog rows). The two
+  /// planes stay separate per MODEL-SERVE-001-T10 item (6), and a model may
+  /// legitimately run either, both, or neither — turning the dense series
+  /// on must never start scoring windows, and stopping the schedule must
+  /// never silently stop the live chart.
+  ///
+  /// `livePredictCadenceMinutes` has a MEASURED floor, not a chosen one.
+  /// Live PI snapshot ages for this plant's own 18 feature tags on
+  /// 2026-09-17 ran from 1s to 541s — most tags refresh within seconds, the
+  /// slowest (TI205.PV) within about nine minutes. Driving faster than the
+  /// slowest tag re-scores inputs that have not changed and manufactures
+  /// precision the historian does not have, so 10 minutes is the default
+  /// and anything below it is a deliberate override. This also sets the
+  /// storage bill: at 10 minutes one model writes ~144 PredictionLog rows
+  /// and ~144 serving-logs/ objects a day, not the ~1,440 a one-minute
+  /// cadence would.
+  livePredictEnabled        Boolean @default(false)
+  livePredictCadenceMinutes Int     @default(10)
+
+  /// When the driver last completed a scoring pass. Read to decide whether
+  /// this model is due, so a restart cannot replay a burst of catch-up
+  /// calls: the driver scores the CURRENT moment or not at all, and a
+  /// missed tick is a gap in a live chart rather than a backfill debt.
+  /// Null until the first pass.
+  livePredictLastRunAt DateTime?
+
+  createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled])
+}
+
+/// MODEL-SERVE-022. One row per configured channel. `NotificationRule` from
+/// the ledger's own sketch is folded in here (D07): `events` and
+/// `mutedModelIds` ARE the rule, so a channel with no separate rule table
+/// has nothing a join would express that these columns do not.
+model NotificationChannel {
+  id String @id @default(uuid())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  kind NotificationChannelKind
+  name String
+
+  /// The Teams Workflows URL (TEAMS_WORKFLOW) — a BEARER CAPABILITY, treated
+  /// exactly like a DataSource secret: `encryptSecret`/`decryptSecret`
+  /// (lib/crypto.ts), never a second encryption scheme (D-audit finding).
+  /// Null/unused for an EMAIL channel.
+  encryptedTarget String?
+
+  /// EMAIL only. Workspace member user ids, resolved to e-mail addresses at
+  /// SEND time (never stored as addresses) — membership can change, and a
+  /// removed member must stop receiving mail without an extra write here.
+  /// Per D-user-decision: members only this pass, no external-address list.
+  recipientUserIds String[]
+
+  enabled     Boolean              @default(true)
+  minSeverity NotificationSeverity @default(WARNING)
+  /// Event kind strings from the ledger's own event_catalogue (e.g.
+  /// "MONITORING_ALERT", "PREFLIGHT_FAILED"). Not a Prisma enum: the
+  /// catalogue is expected to grow, and a schema migration per new event
+  /// kind is exactly the friction a string column avoids.
+  events      String[]
+
+  /// STORED BUT UNREAD THIS PASS (D-openDecisions FLAPPING, T03 finding):
+  /// cooldown/flapping suppression is left undecided rather than shipped
+  /// half-designed against this pass's own acceptance criteria. Default 0.
+  cooldownMinutes Int      @default(0)
+  /// Model ids this channel notifies for — an explicit ALLOW-list (user's
+  /// call, 2026-10-01; replaced the old `mutedModelIds` exclude list). Empty
+  /// means the channel sends for NO model; the form refuses to save it empty
+  /// and offers "Select all". A model created later is not included until it
+  /// is selected.
+  focusModelIds   String[] @default([])
+
+  createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries NotificationDelivery[]
+
+  @@index([workspaceId])
+}
+
+/// MODEL-SERVE-022. THE CURRENT NOTIFIED STATE, one row per (model, axis),
+/// UPDATED IN PLACE — never a history table. Same rule MODEL-SERVE-009-D01
+/// already applies to per-tag last-seen state: this answers "what did we
+/// last tell a channel about this model's axis", not "what has this model's
+/// history been" (InferenceWindow/InferenceWindowLog already own that).
+model ModelAlertState {
+  modelId String
+  model   Model     @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  axis    AlertAxis
+
+  /// The health axis's own status vocabulary (lib/model-health.ts's
+  /// HealthStatus, stored as its wire string) — OFF/UNKNOWN/OK/WARN/
+  /// CRITICAL/ALERT/FROZEN. Only ever MONITORING rows are written by the
+  /// sweep (D08); a DEPLOY row is reserved for a future pass that needs one.
+  status        String
+  reason        String?
+  frozenColumns String[]
+
+  /// MODEL-SERVE-031. The numbers behind `status` as of the LAST evaluation
+  /// (worst-column PSI, max out-of-range %, residual-SD ratio + the schedule's
+  /// warn/crit bands) — written on EVERY pass, not only on a status change,
+  /// so the workspace digest can be built from persisted state instead of
+  /// whichever subset of models one sweep covered. Null until first written.
+  metrics Json?
+
+  updatedAt DateTime @updatedAt
+
+  @@id([modelId, axis])
+}
+
+/// MODEL-SERVE-022-D04. The outbox. One row per (channel, transition),
+/// drained by its own sweep — same pattern the truth sweeper and the
+/// live-predict driver already use, so an unreachable Teams endpoint or a
+/// slow SMTP server can never delay the scheduler tick or the evaluator.
+model NotificationDelivery {
+  id String @id @default(uuid())
+
+  channelId String
+  channel   NotificationChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  /// Nullable: a "send test notification" delivery has no real model behind
+  /// it. Every transition/discrete-event delivery sets this.
+  modelId String?
+  axis    AlertAxis?
+
+  /// Event kind string (event_catalogue) and its own severity at enqueue
+  /// time — a channel's minSeverity may change later; the delivery keeps
+  /// what it was actually graded against.
+  event    String
+  severity NotificationSeverity
+
+  /// UNIQUE PER CHANNEL: model + axis + transition + a time bucket, built by
+  /// the enqueuer — see lib/notification-transition.ts. Guarantees a
+  /// retried evaluator pass, or a retried write-site call, cannot enqueue
+  /// the same transition twice for the same channel.
+  eventKey String
+
+  /// The FULLY RENDERED, ALREADY-REDACTED message content (title, body,
+  /// card/e-mail fields) — redacted BEFORE this row is written, never after:
+  /// this row is itself a sink for whatever failureReason/preflightReason
+  /// text it carries (V02).
+  payload Json
+
+  status        NotificationDeliveryStatus @default(PENDING)
+  attempts      Int                        @default(0)
+  nextAttemptAt DateTime                   @default(now())
+  lastError     String?
+  sentAt        DateTime?
+
+  createdAt DateTime @default(now())
+
+  /// MODEL-SERVE-022-T07/D10. The single row this delivery came from — every
+  /// transition/discrete-event delivery sets this (D10: Teams, e-mail and the
+  /// navbar bell all read from the ONE `NotificationEvent` row an evaluator
+  /// or write site wrote). Null only for a "send test notification" delivery,
+  /// which has no real event behind it (unchanged from T04).
+  eventId           String?
+  notificationEvent NotificationEvent? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, eventKey])
+  @@index([status, nextAttemptAt])
+  @@index([channelId, createdAt])
+}
+
+/// MODEL-SERVE-022-T07/D10. THE SINGLE SOURCE OF TRUTH for "what happened" —
+/// written ONCE by the evaluator (transitions) or a write site (discrete
+/// events), independent of how many channels exist or whether any are
+/// configured at all: an event exists even with zero NotificationChannel
+/// rows in the workspace, because the in-app feed is unconditional (T07
+/// audit_findings). `NotificationDelivery.eventId` points back here for
+/// Teams/e-mail; the navbar bell reads THIS table directly and sends
+/// nothing.
+///
+/// `dedupeKey` is the SAME uniqueness the evaluator already computes for
+/// `NotificationDelivery.eventKey` (model + axis + transition + time, or the
+/// discrete event's own row id) — one write per real occurrence, replay-safe
+/// via `skipDuplicates`, matching D01/D04's own guarantees one level up.
+model NotificationEvent {
+  id String @id @default(uuid())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  axis     AlertAxis?
+  kind     String
+  severity NotificationSeverity
+
+  /// The five-word vocabulary (normal/warning/alert/offline/frozen), computed
+  /// SERVER-SIDE via `lib/notification-monitoring-status.ts` (D09) — never
+  /// re-derived client-side, per D02's one-decider rule. Null for a discrete
+  /// event with no axis reading (VERSION_PROMOTED, RETRAIN_*).
+  fromStatus String?
+  toStatus   String?
+
+  /// The raw HealthReason code (e.g. SOURCE_UNREACHABLE) — the CLIENT labels
+  /// it via the existing shared HEALTH_REASON_LABEL map, the same convention
+  /// T04/T05 already established; this table never stores a display string.
+  reason String?
+
+  /// The SAME already-redacted payload NotificationDelivery stores — this
+  /// row is a sink too (V02's own rule: every sink gets the same guarantee).
+  payload Json
+
+  dedupeKey String @unique
+
+  createdAt DateTime @default(now())
+
+  deliveries NotificationDelivery[]
+  dismissals NotificationDismissal[]
+
+  @@index([workspaceId, createdAt])
+  @@index([modelId, createdAt])
+  @@index([createdAt])
+}
+
+/// MODEL-SERVE-022-T07. Per-user READ WATERMARK — a single row per user,
+/// never one row per (user, event): T02's own addendum picked this over a
+/// per-event NotificationRead table specifically because nothing in T07's
+/// audit found a need to mark individual events read (opening the bell marks
+/// everything up to `lastReadAt` as seen, matching the ledger's own "opening
+/// the list marks what was seen as read").
+model NotificationReadMarker {
+  userId String @id
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  lastReadAt DateTime @default(now())
+
+  /// "Clear all" in the bell: events created at or before this are hidden
+  /// from THIS user's feed and count. Per user — the event rows are shared
+  /// with every member and with Teams/e-mail delivery history, so they are
+  /// never deleted. Null = never cleared.
+  clearedAt DateTime?
+}
+
+/// Per-user removal of ONE event from the bell (the row's X). Hides it for
+/// this user only; the event, other members' feeds and delivery history are
+/// untouched. "Clear all" uses NotificationReadMarker.clearedAt instead of
+/// one row per event.
+model NotificationDismissal {
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  eventId String
+  event   NotificationEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([userId, eventId])
+  @@index([eventId])
+}
+
+/// MODEL-SERVE-022-T07. Per-user, per-model mute for the IN-APP feed only —
+/// a SEPARATE control from `NotificationChannel.mutedModelIds` (which mutes
+/// a WORKSPACE CHANNEL for everyone). Muting the bell for one model must
+/// never touch, or be touched by, a channel's own mute list.
+model NotificationUserMute {
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([userId, modelId])
 }

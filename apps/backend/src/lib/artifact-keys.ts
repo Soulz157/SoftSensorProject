@@ -27,6 +27,73 @@ export const DATA_FILENAME = 'data.parquet';
 export const MANIFEST_FILENAME = 'manifest.json';
 export const FEATURE_SPEC_FILENAME = 'feature_spec.json';
 export const VALIDATION_REPORT_FILENAME = 'validation_report.json';
+/**
+ * DS-LAKE-018-T03. The raw validation-holdout sidecar, beside a BRONZE's own
+ * data key. Mirrored from `VALIDATE_DATA_FILENAME` in object_store.py —
+ * change both.
+ */
+export const VALIDATE_DATA_FILENAME = 'validate_data.parquet';
+
+/**
+ * The SECOND validation holdout an augmented retrain may carve out of the
+ * NEW dataset over an operator-chosen window. Deliberately its own
+ * filename: beside a combined GOLD, `VALIDATE_DATA_FILENAME` holds the
+ * FROZEN incumbent-test slice that keeps `rmseDelta` comparable, and
+ * overwriting it would silently destroy that comparison. Mirrored from
+ * `VALIDATE_NEW_DATA_FILENAME` in object_store.py — change both.
+ */
+export const VALIDATE_NEW_DATA_FILENAME = 'validate_new_data.parquet';
+
+/**
+ * The run-scoped, model-ready copy of the above, written at claim time
+ * alongside `VALIDATE_READY_FILENAME` so one run can carry BOTH holdouts:
+ * the frozen slice it is compared to the incumbent on, and the new-data
+ * window it is reported on. Run-scoped and overwritten freely, exactly
+ * like its sibling.
+ */
+export const VALIDATE_NEW_READY_FILENAME = 'validate_new_ready.parquet';
+
+/**
+ * MODEL-FLOW-016-T08. The model-ready holdout `prepare_holdout_for_run`/
+ * `replay_holdout_for_run` write under a run's own prefix
+ * (`tryReplayHoldout`, model-run.authorized.service.ts) — a run-scoped
+ * object, never a committed dataset artifact, so it is read via
+ * `presignRunObject`, not `presignArtifact`. Mirrored from
+ * `VALIDATE_READY_FILENAME` in object_store.py — change both.
+ */
+export const VALIDATE_READY_FILENAME = 'validate_ready.parquet';
+
+/**
+ * DS-LAKE-021-T01. The CSV export sidecar, beside a committed artifact's own
+ * data key. Mirrored from `EXPORT_CSV_FILENAME` in object_store.py — change
+ * both.
+ */
+export const EXPORT_CSV_FILENAME = 'export.csv';
+
+/**
+ * DS-LAKE-016: stage-suffixed data filenames, for diagnosability — telling a
+ * BRONZE from a GOLD while browsing a MinIO console today requires a
+ * Postgres round trip. No FINAL entry on purpose: it never gets a file of
+ * its own — `promoteDraftArtifactToFinalService` copies `objectKey` from its
+ * source verbatim (DS-LAKE-012-V03 proved live that GOLD and FINAL share one
+ * checksum, "promotion by pointer, not byte-copy"), and
+ * `global_definition_of_done` forbids copying bytes at promotion outright.
+ * Mirrored from `DATA_FILENAME_BY_TYPE` in object_store.py — change both.
+ *
+ * DS-LAKE-021-T04: EXPORT gets its OWN entry (unlike FINAL) — an export is
+ * a real, independently-reclaimable object, not a promoted pointer. Reuses
+ * `EXPORT_CSV_FILENAME` rather than a second string literal for the same
+ * name.
+ */
+export const DATA_FILENAME_BY_TYPE: Record<
+  'BRONZE' | 'SILVER' | 'GOLD' | 'EXPORT',
+  string
+> = {
+  BRONZE: 'data_bronze.parquet',
+  SILVER: 'data_silver.parquet',
+  GOLD: 'data_gold.parquet',
+  EXPORT: EXPORT_CSV_FILENAME,
+};
 
 /**
  * Root prefix for imported soft-sensor feature presets.
@@ -38,20 +105,177 @@ export const VALIDATION_REPORT_FILENAME = 'validation_report.json';
 export const PRESET_ROOT = 'feature-presets/';
 export const SDTA_FILENAME = 'sdta.json';
 
+/**
+ * MODEL-FLOW-028-T01. A CV run's out-of-fold series. Named, unlike its
+ * siblings, because `predictionKeyFor` resolves it by convention (no run column
+ * records its key) and needs the filename. Mirrored from
+ * CV_OOF_PREDICTIONS_FILENAME in object_store.py and
+ * images/trainer/app/artifacts.py — change all three.
+ */
+export const CV_OOF_PREDICTIONS_FILENAME = 'cv_oof_predictions.parquet';
+
 export const RUN_UPLOAD_FILENAMES = [
   'model.joblib',
   'metrics.json',
   'run_manifest.json',
   'predictions.parquet',
+  // MODEL-FLOW-013-T05. Only present for the algorithms train.py can
+  // extract a real loss trajectory from — absent, not empty, for a
+  // closed-form fit. Mirrored from LOSS_HISTORY_FILENAME in
+  // object_store.py — change both.
+  'loss_history.json',
+  // MODEL-FLOW-016-T04. Per-fold CV metrics — present only on a CV run.
+  // Mirrored from CV_FOLDS_FILENAME in object_store.py and train.py —
+  // change all three.
+  'cv_folds.json',
+  // MODEL-FLOW-019-T09. Per-feature importance — present only for the
+  // algorithms images/trainer/app/importance.py can read a real quantity
+  // from. Mirrored from FEATURE_IMPORTANCE_FILENAME in object_store.py and
+  // that same importance.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 7.
+  'feature_importance.json',
+  // MODEL-FLOW-023-T10. Population-scored importance — a SECOND, independent
+  // artifact from feature_importance.json above, present only for the
+  // strategy that scores a permutation population (windowed.run, i.e.
+  // lstm/gru today). Mirrored from PERMUTATION_IMPORTANCE_FILENAME in
+  // object_store.py and images/trainer/app/artifacts.py — change all three,
+  // and add the MIRRORS.md entry.
+  'permutation_importance.json',
+  // MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series, written by
+  // score-mode only — a run's predictions.parquet, if it has one, is
+  // always the TEST split, and scoring must never overwrite it. Mirrored
+  // from HOLDOUT_PREDICTIONS_FILENAME in object_store.py and
+  // images/trainer/app/artifacts.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 8.
+  'holdout_predictions.parquet',
+  // MODEL-SERVE-020-T06. The retrain candidate's per-row series on the
+  // operator's NEW-DATA window — its own filename, a different population from
+  // both predictions.parquet and holdout_predictions.parquet. Mirrored from
+  // NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME in object_store.py and
+  // images/trainer/app/artifacts.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 9.
+  'new_data_holdout_predictions.parquet',
+  // MODEL-SERVE-021. The CURRENT PRODUCTION model's per-row series on the
+  // SAME window — scored by the candidate's own training container so the
+  // two are comparable, and uploaded under its own filename for the same
+  // "never overwrite a different population" reason the sibling above has.
+  // Mirrored from an equivalent constant in object_store.py and
+  // images/trainer/app/artifacts.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 10.
+  'incumbent_new_data_holdout_predictions.parquet',
+  // MODEL-SERVE-026-T05. The CV-gap series — FIVE columns {fold, timestamp,
+  // y_true, y_pred, y_pred_current}, not its siblings' three, so it is read by
+  // its own python reader (`run_cv_gap`). No run column records its key: it
+  // is resolved by `buildRunKey` convention and is present only when the job
+  // carried `cvFolds`. Mirrored from CV_GAP_PREDICTIONS_FILENAME in
+  // object_store.py and images/trainer/app/artifacts.py — change all three.
+  // See images/trainer/app/MIRRORS.md entry 11.
+  'cv_gap_predictions.parquet',
+  // MODEL-FLOW-028-T01. A CV run's OUT-OF-FOLD series — {timestamp, y_true,
+  // y_pred}, every expanding fold's test rows predicted by that fold's own
+  // model. Its own filename: a different population from predictions.parquet
+  // (a non-CV run's test split), holdout_predictions.parquet and the refit
+  // that ships. No run column records its key: it is the sibling of
+  // `cvFoldsKey` (see run-prediction-source.ts). Mirrored from
+  // CV_OOF_PREDICTIONS_FILENAME in object_store.py and
+  // images/trainer/app/artifacts.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 12.
+  CV_OOF_PREDICTIONS_FILENAME,
 ] as const;
+
+/**
+ * DS-LAKE-016. Every accepted data filename, legacy `data.parquet` included —
+ * the FULL set `splitDataKey` recognises. Mirrored from `ALL_DATA_FILENAMES`
+ * in object_store.py — change both. Only ever WIDENS: a committed object is
+ * immutable and pre-existing objects can never be renamed, so old spellings
+ * must keep resolving forever, not be replaced.
+ */
+export const ALL_DATA_FILENAMES: readonly string[] = [
+  DATA_FILENAME,
+  ...Object.values(DATA_FILENAME_BY_TYPE),
+];
 
 export function artifactPrefix(datasetId: string, artifactId: string): string {
   return `${datasetId}/artifacts/${artifactId}/`;
 }
 
-export function artifactKey(datasetId: string, artifactId: string): string {
-  return `${artifactPrefix(datasetId, artifactId)}${DATA_FILENAME}`;
+/**
+ * DS-LAKE-018/MODEL-FLOW-010-T06 fix. Mirrored from `split_data_key` in
+ * object_store.py — change both. Returns `[prefix, dataFilename]` (`prefix`
+ * is everything up to and including the trailing `/`) if `key` ends in any
+ * accepted data filename, else `null`.
+ */
+export function splitDataKey(key: string): [string, string] | null {
+  for (const filename of ALL_DATA_FILENAMES) {
+    const suffix = `/${filename}`;
+    if (key.endsWith(suffix)) {
+      return [key.slice(0, -filename.length), filename];
+    }
+  }
+  return null;
 }
+
+/**
+ * DS-LAKE-018/MODEL-FLOW-010-T06 fix. Sidecar beside an ARBITRARY data key —
+ * mirrored from `sidecar_key` in object_store.py — change both.
+ *
+ * Needed because the caller is handed a stored `objectKey` and does not
+ * always know the dataset/artifact ids that produced it (a draft-scoped
+ * artifact's `objectKey` starts with `drafts/{draftId}/…`, not a real
+ * `datasetId` — rebuilding the prefix from `datasetId` instead of reading
+ * `objectKey` is exactly the bug this function exists to stop reintroducing:
+ * a validate_data.parquet written beside a draft-scoped BRONZE was
+ * unreachable at read time via `validateDataKey(datasetId, bronze.id)`).
+ * Falls back to appending a suffix when the key is not in the artifact
+ * layout, so a legacy or tmp key still gets a sidecar instead of silently
+ * getting none.
+ */
+export function sidecarKey(dataKey: string, filename: string): string {
+  const split = splitDataKey(dataKey);
+  if (split !== null) {
+    const [prefix] = split;
+    return `${prefix}${filename}`;
+  }
+  return `${dataKey}.${filename}`;
+}
+
+/**
+ * `artifactType` is OPTIONAL and trailing (DS-LAKE-016-T03) so every
+ * existing caller keeps compiling and keeps producing the legacy
+ * `data.parquet` name until explicitly updated to pass one — mirrors
+ * `artifact_key`'s own widening in object_store.py exactly. Omitted/FINAL
+ * both fall back to the legacy name (FINAL has no entry in
+ * `DATA_FILENAME_BY_TYPE` — see that constant's own doc comment).
+ */
+export function artifactKey(
+  datasetId: string,
+  artifactId: string,
+  artifactType?: 'BRONZE' | 'SILVER' | 'GOLD' | 'EXPORT',
+): string {
+  const filename = artifactType
+    ? DATA_FILENAME_BY_TYPE[artifactType]
+    : DATA_FILENAME;
+  return `${artifactPrefix(datasetId, artifactId)}${filename}`;
+}
+
+/**
+ * DS-LAKE-022-T03. The value written to `DatasetArtifact.pipelineVersion` by
+ * a stage that ran the REORDERED pipeline (features -> clean -> scale).
+ *
+ * There is deliberately no `PIPELINE_VERSION_LEGACY` counterpart: the legacy
+ * order writes NULL, which is the same value every artifact created before
+ * this column existed already carries. Those two really are the same claim —
+ * "this came out of the pre-reorder order" — and inventing a `1` would split
+ * one meaning across two values, forcing every future reader to check for
+ * both.
+ *
+ * Lives here, beside `artifactKey`, because the stage decision and the object
+ * key are made together at both write sites and must never disagree: a row
+ * typed GOLD whose key says silver, or a pipelineVersion 2 on a legacy-order
+ * artifact, are the exact unmarked lies DS-LAKE-016's stage-suffixed
+ * filenames and this column respectively exist to prevent.
+ */
+export const PIPELINE_VERSION_REORDERED = 2;
 
 export function manifestKey(datasetId: string, artifactId: string): string {
   return `${artifactPrefix(datasetId, artifactId)}${MANIFEST_FILENAME}`;
@@ -63,6 +287,20 @@ export function featureSpecKey(datasetId: string, artifactId: string): string {
 
 export function validationKey(datasetId: string, artifactId: string): string {
   return `${artifactPrefix(datasetId, artifactId)}${VALIDATION_REPORT_FILENAME}`;
+}
+
+/**
+ * DS-LAKE-018-T03.
+ *
+ * @deprecated Rebuilds the prefix from `datasetId`, which is wrong for a
+ * draft-scoped artifact — its `validate_data.parquet` was written beside
+ * `objectKey` (e.g. `drafts/{draftId}/artifacts/{artifactId}/…`), not beside
+ * `{datasetId}/artifacts/{artifactId}/…`. Both former call sites now use
+ * `sidecarKey(bronze.objectKey, VALIDATE_DATA_FILENAME)` instead. Kept only
+ * for any caller not yet migrated — do not add new callers.
+ */
+export function validateDataKey(datasetId: string, artifactId: string): string {
+  return `${artifactPrefix(datasetId, artifactId)}${VALIDATE_DATA_FILENAME}`;
 }
 
 /**
@@ -109,6 +347,13 @@ export function tmpPrefix(datasetId: string, jobId: string): string {
 }
 
 export const MODEL_ROOT = 'models/';
+/**
+ * A run started from the wizard has no modelId yet — Save Model has not
+ * happened (MODEL-FLOW-003-T08). Its outputs write here instead, under the
+ * ModelDraft that owns it, and Save Model adopts them by pointer rather than
+ * copying bytes (see decisions.artifact_scope in docs/feature_list.json).
+ */
+export const DRAFT_ROOT = 'drafts/';
 
 export function modelRunPrefix(modelId: string, runId: string): string {
   return `${MODEL_ROOT}${modelId}/runs/${runId}/`;
@@ -120,4 +365,169 @@ export function modelRunKey(
   filename: string,
 ): string {
   return `${modelRunPrefix(modelId, runId)}${filename}`;
+}
+
+export function draftRunPrefix(draftId: string, runId: string): string {
+  return `${DRAFT_ROOT}${draftId}/runs/${runId}/`;
+}
+
+export function draftRunKey(
+  draftId: string,
+  runId: string,
+  filename: string,
+): string {
+  return `${draftRunPrefix(draftId, runId)}${filename}`;
+}
+
+/**
+ * MODEL-SERVE-003. Where a PredictionJob's output lands. Deliberately NOT
+ * under MODEL_ROOT — that root names TRAINING-run outputs, and a batch
+ * score is a different lifecycle keyed to its own PredictionJob, never a
+ * ModelTrainingRun. Deliberately NOT under `inference/` either — the
+ * ledger has already reserved that root for MODEL-SERVE-006's hourly-window
+ * layout (docs/feature_list_model.json), and picking a colliding root now
+ * would turn a free choice into a migration later. Mirrored in Python at
+ * object_store.py — change both.
+ */
+export const PREDICTION_ROOT = 'predictions/';
+export const OUTPUT_FILENAME = 'output.parquet';
+export const BATCH_MANIFEST_FILENAME = 'batch_manifest.json';
+
+export function predictionJobPrefix(modelId: string, jobId: string): string {
+  return `${PREDICTION_ROOT}${modelId}/${jobId}/`;
+}
+
+export function predictionJobKey(
+  modelId: string,
+  jobId: string,
+  filename: string,
+): string {
+  return `${predictionJobPrefix(modelId, jobId)}${filename}`;
+}
+
+/**
+ * MODEL-SERVE-005. Root for sampled synchronous-/predict logging, one
+ * object per request under `{modelId}/{modelVersionId}/dt=YYYY-MM-DD/
+ * hour=HH/{uuid}.parquet` — reserved here purely to keep this root from
+ * colliding with PREDICTION_ROOT (batch) or the inference/ root
+ * MODEL-SERVE-006 already reserves. apps/python (object_store.py's
+ * `serving_log_key`/`is_serving_log_key`) is the only writer and the only
+ * key-builder: it mints the uuid and computes dt/hour from its own write-
+ * time clock, so NestJS never constructs this key — it only stores
+ * whatever key python's `/prediction-log/append` response returns. No TS
+ * builder function exists here for that reason; adding one with no caller
+ * would be dead code the next reader has to explain away.
+ */
+export const SERVING_LOG_ROOT = 'serving-logs/';
+
+/**
+ * MODEL-SERVE-006-T06. The hourly-window record — the root PREDICTION_ROOT
+ * and SERVING_LOG_ROOT's own doc comments both name and reserve.
+ *
+ * Unlike SERVING_LOG_ROOT (whose key is a fresh uuid python mints, with no
+ * server-side ability to predict it), NestJS DOES need to construct this
+ * key itself: `completeService`'s own discipline (matching
+ * `completeJobService:392` one entity over) is that `predictionsKey` is
+ * built HERE, from the window's own ids, never trusted from the
+ * container's request body. `inferenceWindowKey` below MUST stay
+ * byte-for-byte identical to python's `object_store.inference_window_key`
+ * — change both files together.
+ */
+export const INFERENCE_ROOT = 'inference/';
+
+export function inferenceWindowPrefix(
+  modelId: string,
+  modelVersionId: string,
+  dt: string,
+  hour: string,
+): string {
+  return `${INFERENCE_ROOT}${modelId}/${modelVersionId}/dt=${dt}/hour=${hour}/`;
+}
+
+export function inferenceWindowKey(
+  modelId: string,
+  modelVersionId: string,
+  dt: string,
+  hour: string,
+  filename: string,
+): string {
+  return `${inferenceWindowPrefix(modelId, modelVersionId, dt, hour)}${filename}`;
+}
+
+/* ── retention classes (MODEL-SERVE-007) ─────────────────────────────── */
+
+/**
+ * The object-tag key python writes on every PUT. T01 chose ONE BUCKET plus a
+ * retention-class tag (Option B), rejecting a separate `inference` bucket
+ * (Option C) because `inference/` already held 31 objects by the time this
+ * landed — MODEL-SERVE-006-T06 shipped first — so its bucket was no longer
+ * free, and rejecting three buckets (Option A) because that reverses
+ * PRESET_ROOT's recorded "a prefix needs no bootstrap" reasoning. See
+ * object_store.py's own RETENTION_TAG_KEY comment, which is authoritative.
+ */
+export const RETENTION_TAG_KEY = 'retention';
+
+/** Reclaimable. Expressible as a tag-filtered lifecycle rule. */
+export const RETENTION_SWEEPABLE = 'sweepable';
+
+/**
+ * Retained while referenced — model run outputs.
+ *
+ * NOT ENFORCEABLE BY ANY LIFECYCLE RULE: "still referenced" is a reference
+ * check, which a bucket rule cannot perform. Only application-level cleanup
+ * (ArtifactCleanupService, plus MODEL-FLOW-011-T05's run-level guard) is
+ * authoritative. This tag is a label for humans and audits — a lifecycle
+ * rule matching it would DELETE on schedule, reference or no reference.
+ */
+export const RETENTION_REFERENCED = 'referenced';
+
+/** Never reclaimed — the operational inference record and serving logs. */
+export const RETENTION_PERMANENT = 'permanent';
+
+export type RetentionClass =
+  | typeof RETENTION_SWEEPABLE
+  | typeof RETENTION_REFERENCED
+  | typeof RETENTION_PERMANENT;
+
+/**
+ * MODEL-SERVE-007-T03. Whether `key` is a well-formed draft-scoped
+ * training-run output object — the TS twin of python's `is_draft_run_key`.
+ *
+ * NEW ON THIS SIDE, and that is the point: this file mirrors python's key
+ * BUILDERS but had no predicates at all, so `classForKey` below had nothing
+ * to discriminate the shared `drafts/` root with. Structural, not a
+ * substring match: exactly 4 non-empty segments after the root with `runs`
+ * second, byte-for-byte the same rule as object_store.py's version — change
+ * both together, since only python's is covered by that module's own tests.
+ */
+export function isDraftRunKey(key: string): boolean {
+  if (!key.startsWith(DRAFT_ROOT)) return false;
+  const parts = key.slice(DRAFT_ROOT.length).split('/');
+  if (parts.length !== 4 || parts[1] !== 'runs') return false;
+  return parts.every((s) => s !== '' && s !== '.' && s !== '..');
+}
+
+/**
+ * MODEL-SERVE-007-T03. The retention class of `key` — python's
+ * `class_for_key` mirrored. Change both together.
+ *
+ * DISPATCHES ON THE NAMED ROOTS, NEVER ON THE FIRST PATH SEGMENT: a dataset
+ * key begins with a bare `{datasetId}` UUID (see `versionKey`) and has no
+ * root to dispatch on, so a first-segment resolver classes every dataset
+ * object by whatever its UUID happens to be.
+ *
+ * `drafts/` is shared by two entities and is the only root whose class
+ * depends on more than the root: a run output is REFERENCED, a dataset
+ * draft artifact SWEEPABLE. The rootless default is NOT a fallback — it is
+ * the historically correct answer for every dataset object ever written.
+ */
+export function classForKey(key: string): RetentionClass {
+  if (key.startsWith(INFERENCE_ROOT) || key.startsWith(SERVING_LOG_ROOT)) {
+    return RETENTION_PERMANENT;
+  }
+  if (key.startsWith(MODEL_ROOT)) return RETENTION_REFERENCED;
+  if (key.startsWith(DRAFT_ROOT)) {
+    return isDraftRunKey(key) ? RETENTION_REFERENCED : RETENTION_SWEEPABLE;
+  }
+  return RETENTION_SWEEPABLE;
 }

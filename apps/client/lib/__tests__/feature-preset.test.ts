@@ -10,8 +10,10 @@ import {
   type PresetDocument,
   type PresetFeature,
   type SdtaConfig,
+  type TagLookup,
 } from '@/lib/feature-preset'
 import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
+import type { TagResolution } from '@/hooks/dataset/use-tag-resolution'
 import { compileFormula, evalFormulaRow } from '@/lib/formula'
 import type { FormulaFeature } from '@/lib/feature-engineering'
 
@@ -43,6 +45,7 @@ function feature(overrides: Partial<PresetFeature> = {}): PresetFeature {
     formula: '(QQ001A2.PV*GG001.PV)/(GG003.PV+GG001.PV)',
     description: 'Spgr in feed',
     range: '-',
+    range_parsed: null,
     relation: '+',
     required_base_tags: ['QQ001A2.PV', 'GG001.PV', 'GG003.PV'],
     parse_warnings: [],
@@ -74,14 +77,45 @@ function row(
   tagName: string,
   status: 'good' | 'error' = 'good',
   errorReason?: string,
+  sourceId: string | null = 'src-1',
 ): DatasetTagRow {
   return {
     id: `src::${tagName}`,
     tagName,
     originalName: tagName,
     dataSource: 'PI',
-    status,
+    status: status === 'error' ? 'bad' : 'good',
     errorReason,
+    sourceId,
+  }
+}
+
+/** Wraps rows (and, optionally, a PI resolution map) into the `TagLookup`
+ * shape `compareTags`/`planSdtaApplication` actually take — a bare row array
+ * is no longer accepted directly. */
+function lookup(
+  rows: DatasetTagRow[],
+  resolved: Map<string, TagResolution> = new Map(),
+): TagLookup {
+  return { resolved, rows }
+}
+
+function resolution(
+  sourceId: string,
+  overrides: Partial<TagResolution> = {},
+): TagResolution {
+  return {
+    sourceId,
+    actualName: null,
+    description: null,
+    unit: null,
+    pointType: null,
+    value: null,
+    isGood: true,
+    questionable: false,
+    substituted: false,
+    timestamp: null,
+    ...overrides,
   }
 }
 
@@ -93,7 +127,7 @@ const HEALTHY = [row('QQ001A2.PV'), row('GG001.PV'), row('GG003.PV')]
 
 describe('compareTags', () => {
   it('matches a tag whose row is present and healthy', () => {
-    const result = compareTags(doc(), HEALTHY)
+    const result = compareTags(doc(), lookup(HEALTHY))
 
     expect(result.matched).toBe(3)
     expect(result.missing).toBe(0)
@@ -110,7 +144,7 @@ describe('compareTags', () => {
       row('GG003.PV'),
     ]
 
-    const result = compareTags(doc(), rows)
+    const result = compareTags(doc(), lookup(rows))
 
     expect(result.matched).toBe(2)
     expect(result.unhealthy).toBe(1)
@@ -119,23 +153,28 @@ describe('compareTags', () => {
   })
 
   it('blocks apply on an errored tag exactly as it does on a missing one', () => {
-    const errored = compareTags(doc(), [
-      row('QQ001A2.PV'),
-      row('GG001.PV', 'error'),
-      row('GG003.PV'),
-    ])
-    const absent = compareTags(doc(), [row('QQ001A2.PV'), row('GG003.PV')])
+    const errored = compareTags(
+      doc(),
+      lookup([row('QQ001A2.PV'), row('GG001.PV', 'error'), row('GG003.PV')]),
+    )
+    const absent = compareTags(
+      doc(),
+      lookup([row('QQ001A2.PV'), row('GG003.PV')]),
+    )
 
     expect(canApply(doc(), errored)).toBe(false)
     expect(canApply(doc(), absent)).toBe(false)
   })
 
   it('reports WHY an errored tag is unusable, so the user is not sent hunting', () => {
-    const result = compareTags(doc(), [
-      row('QQ001A2.PV'),
-      row('GG001.PV', 'error', 'Tag not found on server'),
-      row('GG003.PV'),
-    ])
+    const result = compareTags(
+      doc(),
+      lookup([
+        row('QQ001A2.PV'),
+        row('GG001.PV', 'error', 'Tag not found on server'),
+        row('GG003.PV'),
+      ]),
+    )
     const check = result.checks.find(c => c.tag === 'GG001.PV')
 
     expect(check?.status).toBe('error')
@@ -143,7 +182,10 @@ describe('compareTags', () => {
   })
 
   it('marks an absent tag missing', () => {
-    const result = compareTags(doc(), [row('QQ001A2.PV'), row('GG003.PV')])
+    const result = compareTags(
+      doc(),
+      lookup([row('QQ001A2.PV'), row('GG003.PV')]),
+    )
 
     expect(result.missing).toBe(1)
     expect(result.checks.find(c => c.tag === 'GG001.PV')?.status).toBe(
@@ -152,11 +194,10 @@ describe('compareTags', () => {
   })
 
   it('resolves a case or whitespace near-miss and records what it resolved to', () => {
-    const result = compareTags(doc(), [
-      row('qq001a2.pv'),
-      row('  GG001.PV  '),
-      row('GG003.PV'),
-    ])
+    const result = compareTags(
+      doc(),
+      lookup([row('qq001a2.pv'), row('  GG001.PV  '), row('GG003.PV')]),
+    )
 
     expect(result.ready).toBe(true)
     expect(result.checks.find(c => c.tag === 'QQ001A2.PV')?.mappedTo).toBe(
@@ -165,7 +206,7 @@ describe('compareTags', () => {
   })
 
   it('leaves mappedTo null when the tag resolved to itself', () => {
-    const result = compareTags(doc(), HEALTHY)
+    const result = compareTags(doc(), lookup(HEALTHY))
 
     expect(result.checks.every(c => c.mappedTo === null)).toBe(true)
   })
@@ -173,7 +214,9 @@ describe('compareTags', () => {
   it('honours an explicit override for a tag that would otherwise be missing', () => {
     const rows = [row('QQ001A2.PV'), row('GG003.PV'), row('GG001_ALT.PV')]
 
-    const result = compareTags(doc(), rows, { 'GG001.PV': 'GG001_ALT.PV' })
+    const result = compareTags(doc(), lookup(rows), {
+      'GG001.PV': 'GG001_ALT.PV',
+    })
 
     expect(result.ready).toBe(true)
     expect(result.checks.find(c => c.tag === 'GG001.PV')?.mappedTo).toBe(
@@ -184,7 +227,7 @@ describe('compareTags', () => {
   it('does not let a duplicate errored row shadow a healthy one', () => {
     const rows = [...HEALTHY, row('GG001.PV', 'error', 'stale duplicate')]
 
-    expect(compareTags(doc(), rows).ready).toBe(true)
+    expect(compareTags(doc(), lookup(rows)).ready).toBe(true)
   })
 
   it('lists every feature that needs a shared tag', () => {
@@ -195,7 +238,7 @@ describe('compareTags', () => {
       ],
     })
 
-    const check = compareTags(document, HEALTHY).checks.find(
+    const check = compareTags(document, lookup(HEALTHY)).checks.find(
       c => c.tag === 'GG001.PV',
     )
 
@@ -215,7 +258,7 @@ describe('compareTags', () => {
       ],
     })
 
-    const result = compareTags(document, HEALTHY)
+    const result = compareTags(document, lookup(HEALTHY))
 
     expect(result.checks.find(c => c.tag === 'WW001Spgr.Lab')?.status).toBe(
       'missing',
@@ -238,16 +281,16 @@ describe('canApply', () => {
     // Four of the nine presets in the reference workbook are like this.
     const empty = doc({ features: [], incomplete: true })
 
-    expect(canApply(empty, compareTags(empty, HEALTHY))).toBe(false)
+    expect(canApply(empty, compareTags(empty, lookup(HEALTHY)))).toBe(false)
   })
 
   it('allows a fully matched, complete preset', () => {
-    expect(canApply(doc(), compareTags(doc(), HEALTHY))).toBe(true)
+    expect(canApply(doc(), compareTags(doc(), lookup(HEALTHY)))).toBe(true)
   })
 
   it('ignores the target, which is a lab tag no PI catalogue will have', () => {
     // Gating on it would block every preset in the source workbook.
-    const result = compareTags(doc(), HEALTHY)
+    const result = compareTags(doc(), lookup(HEALTHY))
 
     expect(result.checks.some(c => c.tag === 'U101FBP.lab')).toBe(false)
     expect(canApply(doc(), result)).toBe(true)
@@ -391,58 +434,58 @@ describe('requiredDatasetTags', () => {
 })
 
 describe('planPresetApplication', () => {
-  it('unions required tags into the existing selection', () => {
-    const plan = planPresetApplication(
-      doc(),
-      ['GG001.PV', 'GG003.PV'],
-      ['TT202.PV'],
-      HEALTHY,
-    )
+  it('builds one sourceId-keyed selection key per matched tag', () => {
+    const comparison = compareTags(doc(), lookup(HEALTHY))
 
-    expect(plan.selectedTags.sort()).toEqual(
-      ['GG001.PV', 'GG003.PV', 'TT202.PV'].sort(),
+    const plan = planPresetApplication(doc(), comparison, new Map())
+
+    expect(plan.selectionKeys.sort()).toEqual(
+      ['src-1::GG001.PV', 'src-1::GG003.PV', 'src-1::QQ001A2.PV'].sort(),
     )
   })
 
-  it('does not duplicate a tag already in the selection', () => {
-    const plan = planPresetApplication(
-      doc(),
-      ['GG001.PV'],
-      ['GG001.PV'],
-      HEALTHY,
-    )
+  it('marks a matched tag with no PI source as unselectable, not dropped', () => {
+    // A manual row has no sourceId, so it cannot be keyed for selection — it
+    // must still be reported, not silently disappear from the plan.
+    const rows = [
+      row('QQ001A2.PV'),
+      row('GG001.PV', 'good', undefined, null),
+      row('GG003.PV'),
+    ]
+    const comparison = compareTags(doc(), lookup(rows))
 
-    expect(plan.selectedTags.filter(t => t === 'GG001.PV')).toHaveLength(1)
+    const plan = planPresetApplication(doc(), comparison, new Map())
+
+    expect(plan.unselectable).toEqual(['GG001.PV'])
+    expect(plan.selectionKeys.some(k => k.endsWith('::GG001.PV'))).toBe(false)
   })
 
-  it('adds the target when it resolves to a healthy row', () => {
-    const rows = [...HEALTHY, row('U101FBP.lab')]
+  it('adds the target when PI resolves it, keyed by the resolution source', () => {
+    const comparison = compareTags(doc(), lookup(HEALTHY))
+    const resolved = new Map([['U101FBP.lab', resolution('src-2')]])
 
-    const plan = planPresetApplication(doc(), [], [], rows)
+    const plan = planPresetApplication(doc(), comparison, resolved)
 
     expect(plan.targetInCatalogue).toBe(true)
-    expect(plan.selectedTags).toContain('U101FBP.lab')
+    expect(plan.selectionKeys).toContain('src-2::U101FBP.lab')
   })
 
-  it('records the target but does NOT add it when absent', () => {
+  it('records the target but does NOT add it when PI never resolved it', () => {
     // Every workbook target is a .lab tag, absent from PI by construction —
-    // requiring it here would mean Apply always drops it.
-    const plan = planPresetApplication(doc(), [], [], HEALTHY)
+    // requiring it here would mean Apply always drops it. The target is
+    // resolved-or-not purely via the `resolved` map — `comparison`/rows are
+    // never consulted for it, since every workbook target is a `.lab` tag
+    // that would never appear as a `required_base_tags` check in the first
+    // place.
+    const comparison = compareTags(doc(), lookup(HEALTHY))
+
+    const plan = planPresetApplication(doc(), comparison, new Map())
 
     expect(plan.targetTag).toBe('U101FBP.lab')
     expect(plan.targetInCatalogue).toBe(false)
-    expect(plan.selectedTags).not.toContain('U101FBP.lab')
-  })
-
-  it('does NOT add the target when its row exists but is in error', () => {
-    // Present-but-broken must not silently become "selected for fetching" —
-    // same rule as compareTags treating error as distinct from matched.
-    const rows = [...HEALTHY, row('U101FBP.lab', 'error', 'No lab data')]
-
-    const plan = planPresetApplication(doc(), [], [], rows)
-
-    expect(plan.targetInCatalogue).toBe(false)
-    expect(plan.selectedTags).not.toContain('U101FBP.lab')
+    expect(plan.selectionKeys.some(k => k.endsWith('::U101FBP.lab'))).toBe(
+      false,
+    )
   })
 })
 
@@ -454,7 +497,7 @@ describe('planSdtaApplication', () => {
   })
 
   it('turns each range into a time-only exclusion', () => {
-    const plan = planSdtaApplication(sdta(), [row('GG203.PV')])
+    const plan = planSdtaApplication(sdta(), lookup([row('GG203.PV')]))
 
     expect(plan.exclusions).toEqual([
       {
@@ -464,8 +507,12 @@ describe('planSdtaApplication', () => {
     ])
   })
 
-  it('turns a condition on a healthy tag into an enabled drop rule', () => {
-    const plan = planSdtaApplication(sdta(), [row('GG203.PV')], () => 'rule-1')
+  it('turns a condition on a healthy tag into an enabled drop-row rule', () => {
+    const plan = planSdtaApplication(
+      sdta(),
+      lookup([row('GG203.PV')]),
+      () => 'rule-1',
+    )
 
     expect(plan.conditionalRules).toEqual([
       {
@@ -473,7 +520,7 @@ describe('planSdtaApplication', () => {
         tag: 'GG203.PV',
         op: '<',
         value: 1700,
-        action: 'drop',
+        action: 'drop_row',
         enabled: true,
       },
     ])
@@ -481,20 +528,25 @@ describe('planSdtaApplication', () => {
   })
 
   it('drops a condition whose tag is not in the dataset, rather than a dangling rule', () => {
-    const plan = planSdtaApplication(sdta(), [])
+    const plan = planSdtaApplication(sdta(), lookup([]))
 
     expect(plan.conditionalRules).toEqual([])
     expect(plan.droppedConditions).toEqual([
-      { tag: 'GG203.PV', reason: 'Tag not in this dataset' },
+      {
+        tag: 'GG203.PV',
+        op: '<',
+        value: 1700,
+        reason: 'Tag not in the selected dataset',
+      },
     ])
   })
 
   it('drops a condition whose tag exists but is in error — same rule as compareTags', () => {
-    const plan = planSdtaApplication(sdta(), [row('GG203.PV', 'error')])
+    const plan = planSdtaApplication(sdta(), lookup([row('GG203.PV', 'error')]))
 
     expect(plan.conditionalRules).toEqual([])
     expect(plan.droppedConditions).toEqual([
-      { tag: 'GG203.PV', reason: 'Tag not in this dataset' },
+      { tag: 'GG203.PV', op: '<', value: 1700, reason: 'Tag is in error' },
     ])
   })
 
@@ -503,12 +555,17 @@ describe('planSdtaApplication', () => {
     // guarantee — an unrecognised op must not become an uninterpretable rule.
     const plan = planSdtaApplication(
       sdta({ conditions: [{ tag: 'GG203.PV', op: '<>', value: 1700 }] }),
-      [row('GG203.PV')],
+      lookup([row('GG203.PV')]),
     )
 
     expect(plan.conditionalRules).toEqual([])
     expect(plan.droppedConditions).toEqual([
-      { tag: 'GG203.PV', reason: 'Unsupported operator "<>"' },
+      {
+        tag: 'GG203.PV',
+        op: '<>',
+        value: 1700,
+        reason: 'Unsupported operator "<>"',
+      },
     ])
   })
 
@@ -519,7 +576,10 @@ describe('planSdtaApplication', () => {
       value: 100,
     }))
 
-    const plan = planSdtaApplication(sdta({ conditions }), [row('GG203.PV')])
+    const plan = planSdtaApplication(
+      sdta({ conditions }),
+      lookup([row('GG203.PV')]),
+    )
 
     expect(plan.conditionalRules).toHaveLength(5)
     expect(plan.droppedConditions).toEqual([])
@@ -533,13 +593,18 @@ describe('planSdtaApplication', () => {
           { tag: 'MISSING.PV', op: '<', value: 100 },
         ],
       }),
-      [row('GG203.PV')],
+      lookup([row('GG203.PV')]),
     )
 
     expect(plan.conditionalRules).toHaveLength(1)
     expect(plan.conditionalRules[0]?.tag).toBe('GG203.PV')
     expect(plan.droppedConditions).toEqual([
-      { tag: 'MISSING.PV', reason: 'Tag not in this dataset' },
+      {
+        tag: 'MISSING.PV',
+        op: '<',
+        value: 100,
+        reason: 'Tag not in the selected dataset',
+      },
     ])
   })
 })

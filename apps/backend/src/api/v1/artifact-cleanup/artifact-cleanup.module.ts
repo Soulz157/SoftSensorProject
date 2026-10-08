@@ -5,9 +5,10 @@ import { ArtifactCleanupAdminService } from './admin/artifact-cleanup.admin.serv
 /**
  * DS-LAKE-009B: intermediate-artifact lifecycle and cleanup.
  *
- * Admin-only today (no public/authorized surface) — see
- * ArtifactCleanupAdminService's doc comment for why this is a plain
- * admin-triggered operation rather than a recurring job.
+ * Admin-only surface (no public/authorized route). DS-LAKE-014 additionally
+ * runs this as a periodic sweep — see ArtifactCleanupAdminService's own doc
+ * comment and lifecycle hooks (`onModuleInit`/`onApplicationShutdown`) for
+ * the scheduler; the admin endpoint keeps working unchanged either way.
  */
 @Module({
   controllers: [ArtifactCleanupAdminController],

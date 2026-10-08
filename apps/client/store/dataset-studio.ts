@@ -12,7 +12,10 @@ import {
   type FeatureConfig,
 } from '@/lib/feature-engineering'
 import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
+import type { TimeWindow } from '@/lib/time-window'
 import type { SavedDataset } from '@/store/datasets'
+import type { DatasetArtifactStage } from '@/services/dataset-draft'
+import type { SyntheticCause } from '@/hooks/dataset/use-dataset-version-rows'
 import type {
   ConditionalRule,
   CropRange,
@@ -31,9 +34,23 @@ import {
   DEFAULT_FETCH_CONFIG,
   type HistoricalFetchConfig,
 } from '@/lib/fetch-config'
-import type { PresetSummary, SdtaConfig } from '@/lib/feature-preset'
+import type {
+  ParsedRange,
+  PresetDocument,
+  PresetSummary,
+  SdtaConfig,
+} from '@/lib/feature-preset'
+import {
+  SdtaPreset,
+  isEmptySdta,
+  upsertSdtaPreset,
+} from '@/lib/feature-preset-apply'
 
-export const DW_TOTAL_STEPS = 5
+// DS-LAKE-022-T04..T07: 5 -> 6. Data Cleaning moves off Step 3 (sub-step 3.2)
+// onto its own Step 5, after Feature Engineering (now Step 4); Review & Save
+// becomes Step 6. See dwDraftFeatureArtifactIdAtom below for the artifact-id
+// plumbing this reorder needs.
+export const DW_TOTAL_STEPS = 6
 
 const EMPTY_DATASET: Dataset = { tags: [], rows: [] }
 
@@ -59,11 +76,165 @@ export const dwCsvDatasetAtom = atom<Dataset>(EMPTY_DATASET)
 /** Name of the uploaded CSV — display only (the "CSV Dataset Ready" card). */
 export const dwCsvFileNameAtom = atom<string>('')
 export const dwTagConstantsAtom = atom<Record<string, number>>({})
+/**
+ * Per-tag engineering unit, snapshotted from `useDatasetTagMetadata`'s
+ * `metaByTag` while Step 1 is mounted (DS-LAKE-020-T03) — that hook's state
+ * is hook-local and dies with the component, so a later step (Step 3.2's
+ * range-cutoff unit gate) would otherwise see no unit at all. `null` for a
+ * tag with no known unit (CSV-uploaded, manually inserted, or not yet
+ * resolved) — a real absence, not a loading state.
+ */
+export const dwTagUnitsAtom = atom<Record<string, string | null>>({})
+
+/**
+ * User-entered unit for a tag with no PI-reported unit (CSV/manual, or a PI
+ * tag whose metadata omits it) — fills the gap `dwTagUnitsAtom` alone leaves
+ * as `null`, so the T03 range-cutoff unit gate isn't permanently refused for
+ * those tags. Session-scoped, same lifetime as `dwTagUnitsAtom` itself (not
+ * restored on edit hydration — matches that atom's own documented limit).
+ */
+export const dwTagUnitOverridesAtom = atom<Record<string, string>>({})
+
+/**
+ * One proposed range cutoff per `raw_tag` preset feature with a parseable,
+ * non-`'none'` range, snapshotted at Apply Preset time (DS-LAKE-020-T05) —
+ * `dwFeaturePresetAtom` only keeps the metadata `PresetSummary`, and the full
+ * `PresetDocument.features[].range_parsed` is otherwise discarded once the
+ * apply-preset modal closes (DS-LAKE-020-T01 finding). Ephemeral proposal
+ * scaffolding, not the persisted truth: once a candidate is toggled on, its
+ * RESOLVED bound is baked into a `ConditionalRule.presetRange` (T07), which
+ * is what actually survives Save / reopen. Ranges on `equation` features are
+ * never candidates here — the derived column does not exist until Step 4.
+ */
+export interface PresetRangeCandidate {
+  tag: string
+  /** The feature's generated name — may carry a `_2` suffix when the same
+   * physical tag appears twice in one config; kept for row provenance. */
+  rowLabel: string
+  quotedRange: string
+  parsed: ParsedRange
+  presetId: string
+  configNo: number
+  /** Process unit / sheet the config came from (`document.unit`). */
+  sheet: string
+}
+/**
+ * DS-LAKE-020-T05, extracted. Every "Apply Preset" entry point (Step 1's
+ * `unified-tag-table.tsx` in create mode, Step 3.1's edit-mode-only button)
+ * needs the same range-candidate mapping — kept in one place so a schema
+ * change to `PresetFeature` only needs fixing here, not per caller. Lives
+ * beside `PresetRangeCandidate` rather than in `lib/feature-preset.ts`: that
+ * module holds pure preset types this file already imports, and this
+ * function returns a type (`PresetRangeCandidate`) that lives here instead —
+ * putting the function in `feature-preset.ts` would need it importing back
+ * from this file, a circular import neither module has today.
+ */
+export function presetRangeCandidatesFromDocument(
+  document: PresetDocument,
+): PresetRangeCandidate[] {
+  return document.features
+    .filter(
+      f =>
+        f.type === 'raw_tag' &&
+        f.range_parsed !== null &&
+        f.range_parsed.kind !== 'none',
+    )
+    .map(f => ({
+      tag: f.required_base_tags[0] ?? f.name,
+      rowLabel: f.name,
+      quotedRange: f.range,
+      parsed: f.range_parsed!,
+      presetId: document.preset_id,
+      configNo: document.config_no,
+      sheet: document.unit,
+    }))
+}
+
+/**
+ * DS-LAKE-020-T05 sibling, for the edit-mode-only Apply Preset button
+ * (Step 3.1, "Feature apply preset"). Tags are locked once a dataset exists
+ * (`step-1-tags.tsx`'s edit-mode lock — changing them would break downstream
+ * model schemas), so unlike Step 1's own apply path this never adds a tag:
+ * a preset's range candidate for a tag the dataset doesn't already have is
+ * dropped, not staged. Pure so the filtering is unit-testable without
+ * rendering the step.
+ */
+export interface LockedPresetRangeResult {
+  candidates: PresetRangeCandidate[]
+  /** Candidates dropped because their tag isn't in `lockedTags`. */
+  skippedCount: number
+}
+
+export function lockedPresetRangeCandidates(
+  document: PresetDocument,
+  lockedTags: ReadonlySet<string> | readonly string[],
+): LockedPresetRangeResult {
+  const locked = lockedTags instanceof Set ? lockedTags : new Set(lockedTags)
+  const all = presetRangeCandidatesFromDocument(document)
+  const candidates = all.filter(c => locked.has(c.tag))
+  return { candidates, skippedCount: all.length - candidates.length }
+}
+
+export const dwPresetRangeAtom = atom<PresetRangeCandidate[]>([])
+/**
+ * True when the applied preset predates range-cutoff support
+ * (`schema_version < 2`, DS-LAKE-020-T02) — the document genuinely has no
+ * `range_parsed` on any feature, not merely none worth proposing. Lets Step
+ * 3.2 tell "nothing to propose" apart from "re-import to enable this".
+ */
+export const dwPresetRangeStaleAtom = atom<boolean>(false)
 
 export const dwFetchTagsAtom = atom<string[] | null>(null)
 export const dwTimeRangeAtom = atom<FetchPeriod>('1min')
 export const dwCustomDateRangeAtom = atom<CustomDateRange | null>(null)
 export const dwCustomIntervalAtom = atom<CustomInterval | null>(null)
+/**
+ * DS-LAKE-018-T01: the raw validation holdout window, selected beside the
+ * fetch range above. Null means no holdout — the dataset behaves exactly as
+ * today (acceptance criterion). Distinct atom rather than a field on the
+ * fetch range itself: the holdout is optional and independently editable,
+ * and `describeHoldoutSelection` (lib/holdout.ts) needs both ranges at once
+ * to run its guards.
+ */
+export const dwHoldoutRangeAtom = atom<CustomDateRange | null>(null)
+
+/**
+ * MODEL-SERVE-017. True while this wizard session is building a dataset that
+ * a retrain sent the operator here to create.
+ *
+ * It suppresses the validation holdout, which is not merely unnecessary for a
+ * retrain but actively harmful: `combine_for_retrain` evaluates the candidate
+ * on the BASE artifact's own frozen test rows (`base_frozen`), so a holdout
+ * carved out of the new dataset is never scored against — while
+ * `_split_holdout` keeps only rows OUTSIDE the holdout window in the
+ * committed SILVER ("the holdout genuinely leaves the training path"). The
+ * net effect of picking one here is silently fewer training rows and no
+ * evaluation benefit whatsoever.
+ *
+ * A session-scoped atom rather than a read of the sessionStorage handoff
+ * record: that record survives until Save consumes it, so an operator who
+ * wandered off and started an unrelated dataset would still get the holdout
+ * hidden. This is cleared by every other seeder, so it cannot leak.
+ */
+export const dwFromRetrainAtom = atom<boolean>(false)
+
+/**
+ * MODEL-SERVE-017. The incumbent's computed split boundary, carried into the
+ * wizard so Step 2's own fetch pickers can clamp to it.
+ *
+ * The window used to be picked in the retrain dialog, which meant choosing a
+ * date range twice — once there and again here. The pickers now live only in
+ * Step 2, but the RULE had to travel with them: `assertCompatible` refuses a
+ * dataset starting at or before this instant, because those rows are the
+ * frozen evaluation set the candidate is scored on. Without it the operator
+ * would build and save an entire dataset before the retrain told them the
+ * window was never allowed.
+ *
+ * Null outside a retrain session, and also within one whose source run
+ * recorded no boundary — the same case the server 422s on. The picker is
+ * then left unclamped and the server remains the guard.
+ */
+export const dwRetrainCutTimestampAtom = atom<string | null>(null)
 export const dwSourceFetchConfigsAtom = atom<Record<string, DataSourceConfig>>(
   {},
 )
@@ -105,6 +276,15 @@ export interface FetchProgress {
   completedTags: number
   etaMs: number | null
   failedBatches: string[][]
+  /**
+   * Epoch ms of the current run's start — the SAME clock `etaMs` is derived
+   * from, so the elapsed timer and the ETA can never disagree. Epoch stamps
+   * only: a ticking `elapsedMs` here would re-render every atom subscriber
+   * once a second.
+   */
+  startedAt: number | null
+  /** Epoch ms of completion (success or partial failure); null while running. */
+  finishedAt: number | null
 }
 
 export const EMPTY_FETCH_PROGRESS: FetchProgress = {
@@ -115,6 +295,8 @@ export const EMPTY_FETCH_PROGRESS: FetchProgress = {
   completedTags: 0,
   etaMs: null,
   failedBatches: [],
+  startedAt: null,
+  finishedAt: null,
 }
 
 export const dwFetchProgressAtom = atom<FetchProgress>({
@@ -133,11 +315,25 @@ export const dwFeaturePresetAtom = atom<PresetSummary | null>(null)
 // it would block every preset — see canApply() in lib/feature-preset.ts. Its
 // absence is instead surfaced as a loud, non-blocking warning at Step 5.
 export const dwTargetTagAtom = atom<string | null>(null)
-// SD&TA (shutdown/turnaround) cut config from the same workbook, if it had one.
-// Parsed and available for the opt-in "Apply SD/TA cut config" card; consuming
-// it into dwExclusionsAtom / dwConditionalRulesAtom is FP-8. Not persisted in
-// pipelineConfig — it is import-time state, not part of the saved recipe.
-export const dwSdtaConfigAtom = atom<SdtaConfig | null>(null)
+
+// SD&TA (shutdown/turnaround) cut configs from imported workbooks. Staged
+// here by the preset manager; nothing is cut until the user selects presets
+// and applies in Step 3.2's card. Not persisted in pipelineConfig — the
+// resulting exclusions/rules are, this list is import-time state.
+export const dwSdtaPresetsAtom = atom<SdtaPreset[]>([])
+
+export type StageSdtaResult = 'staged' | 'replaced' | 'empty'
+
+export const dwStageSdtaPresetAtom = atom(
+  null,
+  (get, set, preset: SdtaPreset): StageSdtaResult => {
+    if (isEmptySdta(preset.config)) return 'empty'
+    const current = get(dwSdtaPresetsAtom)
+    const existed = current.some(p => p.id === preset.id)
+    set(dwSdtaPresetsAtom, upsertSdtaPreset(current, preset))
+    return existed ? 'replaced' : 'staged'
+  },
+)
 
 // DS-LAKE-006-AC5 / DS-LAKE-005B-B-T04: a real bounded page of the draft's
 // current source artifact, fetched via the server's bounded /rows endpoint
@@ -149,6 +345,36 @@ export const dwSdtaConfigAtom = atom<SdtaConfig | null>(null)
 export const dwFeaturePreviewSampleAtom = atom<BoundedSample>(
   brandBoundedSample({ tags: [], rows: [] }),
 )
+// DS-LAKE-015-T02: lets a caller tell "in flight" from "resolved empty" from
+// "failed" for the fetch above — today it cannot, since the hook swallows
+// failures and returns void. The swallow stays the ERROR-HANDLING policy (an
+// empty sample is not a broken state, per that hook's own doc comment); this
+// only adds the ABILITY to distinguish the three windows. 'ready' covers a
+// successfully resolved fetch whether or not `dwFeaturePreviewSampleAtom` ends
+// up with rows — Step 3.1 derives "ready but empty" itself by reading both.
+// 'refreshing' is 'loading' for a sample that is ALREADY on screen (the EDA
+// time window changed). `describeAnalysisReadiness` reads it as ready, so the
+// analysis card stays mounted instead of dropping to a skeleton.
+export type PreviewSampleFetchState =
+  | 'idle'
+  | 'loading'
+  | 'refreshing'
+  | 'ready'
+  | 'error'
+export const dwFeaturePreviewSampleStateAtom =
+  atom<PreviewSampleFetchState>('idle')
+
+// The EDA time window (a month, today). Read by `useDatasetFeaturePreviewSample`
+// — the bounded page above is fetched WITHIN it — and by `DataAnalysisCard`,
+// which forwards it to the four server-computed tabs so every view agrees on
+// what is being shown. `null` means the whole artifact (the overview).
+// Cleared alongside the sample on every wizard reset: a month left over from a
+// previous dataset would otherwise filter a new one to nothing.
+export const dwEdaWindowAtom = atom<TimeWindow | null>(null)
+// Rows the server holds INSIDE that window — the whole match, not the loaded
+// page. The page is capped, so this is what lets the card say "first N of M"
+// instead of implying the sample is everything. `null` until a fetch resolves.
+export const dwEdaSampleTotalAtom = atom<number | null>(null)
 
 // Feature-engineered preview for Step 4's own UI (panels, analysis card,
 // tag sidebar) — recomputed live from the recipe, but over the BOUNDED
@@ -194,15 +420,22 @@ export const dwSelectedColumnsAtom = atom<string[] | null>(null)
 // Per-column model-ready scaler; missing key defaults to min-max.
 export const dwScalerConfigsAtom = atom<Record<string, ScalerMethod>>({})
 
-// Step 3 — Processing sub-step (3.1 preprocessing / 3.2 imputation)
-export const dwProcessingSubStepAtom = atom<1 | 2>(1)
-
 // Draft-first architecture (DS-LAKE-005/DS-LAKE-004B) — the wizard's
 // server-side owner while no Dataset row exists yet. `dwDraftArtifactIdAtom`
 // is the BRONZE (or latest SILVER) artifact a clean job reads from; both stay
 // null until the first "Save Cleaned Tags" triggers the server sync.
 export const dwDraftIdAtom = atom<string | null>(null)
 export const dwDraftArtifactIdAtom = atom<string | null>(null)
+// DS-LAKE-015-T01: PROGRESS for `useDatasetBronzeWarm`'s background
+// materialize — separate from `dwDraftSyncStateAtom`, which stays the
+// user-facing FAILURE banner and is deliberately never touched by the warm
+// (DS-LAKE-005B-B-T01's Q2 decision; see that hook's own doc comment).
+// `failed` exists so the state machine stops reading "preparing" forever,
+// NOT to drive an error banner — the lazy retry on the user's first real
+// Apply (`ensureBronze` in `useDatasetDraftPipeline`) is still the only
+// recovery path. Reset to 'idle' alongside the other draft-scoped atoms.
+export type BronzeWarmState = 'idle' | 'materializing' | 'ready' | 'failed'
+export const dwBronzeWarmStateAtom = atom<BronzeWarmState>('idle')
 // DS-LAKE-006-T06. The GOLD artifact Step 4's background warm produces from
 // `dwDraftArtifactIdAtom` (normally SILVER) — kept SEPARATE from it on
 // purpose: overwriting `dwDraftArtifactIdAtom` with the GOLD result would
@@ -214,6 +447,27 @@ export const dwDraftArtifactIdAtom = atom<string | null>(null)
 // so Step 4 itself satisfies its own AC ("drives the transform server-side"),
 // not because Save reads it yet.
 export const dwDraftGoldArtifactIdAtom = atom<string | null>(null)
+/**
+ * DS-LAKE-022-T04..T07. The features-only SILVER a reordered-order Step 4
+ * warm produces (`useDatasetGoldWarm` sending `scale: false`) — CREATE MODE
+ * ONLY. Named distinctly from `dwDraftArtifactIdAtom` (which stays the
+ * cleaning chain's own source/output in both modes) because the two must
+ * never collide: under the reorder, Step 5's clean+scale job reads FROM
+ * this atom and writes its GOLD result into `dwDraftGoldArtifactIdAtom`,
+ * while `dwDraftArtifactIdAtom` (BRONZE) stays untouched as the fixed
+ * source every "Save Cleaned Tags" batch replays against (D4 — cleaning
+ * sources the SILVER, it does not chain onto itself).
+ *
+ * Stays null in EDIT mode on purpose. Editing a saved dataset only allows
+ * changing the preprocessing pipeline (features/tags/time-range are
+ * locked and hydrated for display only), so edit mode keeps the legacy
+ * combined write untouched: Step 4's warm there still writes the final
+ * GOLD straight into `dwDraftGoldArtifactIdAtom`, exactly as before this
+ * feature. Every reader that falls back through
+ * `goldArtifactId ?? featureArtifactId ?? draftArtifactId` therefore still
+ * resolves correctly in edit mode — the middle term is just always null.
+ */
+export const dwDraftFeatureArtifactIdAtom = atom<string | null>(null)
 // Surfaces `useDatasetGoldWarm`'s own failures (formula-kind 422s chief among
 // them — feature presets emit ONLY `kind: 'formula'`, unimplemented server-
 // side). Previously swallowed silently; now read by Step 4 and folded into
@@ -221,6 +475,40 @@ export const dwDraftGoldArtifactIdAtom = atom<string | null>(null)
 // finish…" states the real reason instead of nothing. Cleared on a fresh
 // warm attempt, on success, and on wizard reset alongside the other two.
 export const dwGoldWarmErrorAtom = atom<string | null>(null)
+
+/**
+ * DS-LAKE-023 (edit-mode re-split pass). `useDatasetGoldWarm`'s own
+ * pending/settled state, published here (not just returned from the hook)
+ * so a sibling component — `ValidationHoldoutSection`, mounted alongside
+ * the recipe editors rather than inside them — can read it without a prop
+ * drilled through `Step4FeatureEngineering`. 'idle' before the first warm;
+ * 'pending' while the debounced job is scheduled or in flight; 'ready' on
+ * the last SUCCEEDED response; 'error' mirrors `dwGoldWarmErrorAtom` being
+ * non-null (kept as a separate atom, not derived, so a consumer that only
+ * cares about "is it safe to commit" doesn't have to also branch on the
+ * error atom's null-ness).
+ */
+export type FeatureWarmState = 'idle' | 'pending' | 'ready' | 'error'
+export const dwFeatureWarmStateAtom = atom<FeatureWarmState>('idle')
+
+/**
+ * DS-LAKE-023. A stable signature of the recipe
+ * `{features, selectedColumns, scalers, targetY, holdout}` that the LAST
+ * successfully committed feature artifact was actually built from —
+ * written by `useDatasetGoldWarm` alongside the artifact id, on the same
+ * SUCCEEDED branch. `useDatasetCleaningScaleCommit` compares this against
+ * the CURRENT recipe's own signature before committing Step 5's clean+scale
+ * job: a mismatch means the artifact in `dwDraftFeatureArtifactIdAtom` (or
+ * `dwDraftGoldArtifactIdAtom` in edit mode) describes a recipe the user has
+ * since changed — most concretely, a holdout applied and then navigated
+ * away from before its warm landed (D4/AC3: `goTo` unlocks Step 5 the
+ * instant `highestUnlocked` allows it, with no wait on this hook's own
+ * pending state). Comparing the FULL recipe, not just the holdout, is
+ * deliberate — see this atom's own consumer for why trimming it to
+ * `holdout` alone would silently under-gate create mode.
+ */
+export const dwFeatureArtifactStampAtom = atom<string | null>(null)
+
 export interface DraftSyncState {
   status: 'idle' | 'syncing' | 'synced' | 'error'
   error?: string
@@ -259,6 +547,24 @@ export const dwEditingDatasetIdAtom = atom<string>('')
 export const dwEditingDatasetAtom = atom<SavedDataset | null>(null)
 
 /**
+ * DS-LAKE-024-T04. The edit draft's own root BRONZE's `validationRowCount`,
+ * copied from `resolveOrCreateForDataset`'s response
+ * (`use-dataset-edit-hydration.ts`) alongside `dwDraftArtifactIdAtom` —
+ * both set together, so by the time a consumer sees `dwDraftArtifactIdAtom`
+ * non-null in edit mode this atom already reflects ground truth. `null`
+ * means the underlying dataset was never split (pristine, re-splittable);
+ * non-null means it was split at materialize time. `startFeaturesJob`
+ * (edit mode's live holdout-apply path, `useDatasetGoldWarm`) has NO guard
+ * of its own against re-splitting an already-split source — unlike the
+ * legacy `resplitHoldout`/`resplitDraftHoldoutService` 422, which this
+ * wizard no longer calls (see `useDatasetHoldoutResplit`'s own doc
+ * comment) — so this atom is the ONLY thing standing between a user and a
+ * silent second split. Always null in create mode, where the source is
+ * always a fresh, never-split fetch.
+ */
+export const dwEditRootValidationRowCountAtom = atom<number | null>(null)
+
+/**
  * Where the rows in `dwRawDatasetAtom` actually came from.
  *
  * `'synthetic'` means GENERATED, not read from the source. The UI is required
@@ -269,6 +575,31 @@ export const dwRowSourceAtom = atom<'stored' | 'synthetic' | null>(null)
 
 /** Why synthetic rows were used, for the banner. Null unless synthetic. */
 export const dwSyntheticReasonAtom = atom<string | null>(null)
+
+/**
+ * DS-LAKE-025. The edit-mode twin of `VersionRowsState.syntheticCause` — the
+ * machine-readable cause behind `dwSyntheticReasonAtom`'s prose, written by
+ * `useDatasetEditHydration`. Null unless synthetic.
+ *
+ * Step 6 blocks Save on `'bytes-missing'`. Editing a dataset whose stored
+ * object had been reclaimed used to fall back to generated rows with only a
+ * banner to show for it, and Save would then write `tags`, `rowCount` and
+ * `missingPct` computed from those invented numbers straight onto the real
+ * dataset row — turning a dataset that had merely lost its bytes into one
+ * that also lies about what it contains.
+ */
+export const dwSyntheticCauseAtom = atom<SyntheticCause | null>(null)
+
+/**
+ * Pipeline stage of the artifact `dwRawDatasetAtom` was hydrated from — the
+ * edit-mode twin of `VersionRowsState.stage`
+ * (`hooks/dataset/use-dataset-version-rows.ts`), written by
+ * `useDatasetEditHydration`. Null while `dwRowSourceAtom !== 'stored'` or
+ * before hydration resolves. `wizard-shell.tsx` reads this to warn when the
+ * hydrated rows are already past BRONZE — Step 3's crop/clean/impute would
+ * otherwise double-apply on top of an already-processed artifact.
+ */
+export const dwRowStageAtom = atom<DatasetArtifactStage | null>(null)
 
 export interface InitDatasetWizardSeed {
   name: string
@@ -298,9 +629,16 @@ export const initDatasetWizardAtom = atom(
     set(dwCsvDatasetAtom, EMPTY_DATASET)
     set(dwCsvFileNameAtom, '')
     set(dwTagConstantsAtom, {})
+    set(dwTagUnitsAtom, {})
+    set(dwTagUnitOverridesAtom, {})
+    set(dwPresetRangeAtom, [])
+    set(dwPresetRangeStaleAtom, false)
     set(dwFetchTagsAtom, null)
     set(dwTimeRangeAtom, '1min')
     set(dwCustomDateRangeAtom, null)
+    set(dwHoldoutRangeAtom, null)
+    set(dwFromRetrainAtom, false)
+    set(dwRetrainCutTimestampAtom, null)
     set(dwCustomIntervalAtom, null)
     set(dwSourceFetchConfigsAtom, {})
     set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
@@ -310,7 +648,7 @@ export const initDatasetWizardAtom = atom(
     set(dwFeatureConfigsAtom, [])
     set(dwFeaturePresetAtom, null)
     set(dwTargetTagAtom, null)
-    set(dwSdtaConfigAtom, null)
+    set(dwSdtaPresetsAtom, [])
     set(dwCropRangeAtom, null)
     set(dwExclusionsAtom, [])
     set(dwValueCropAtom, {})
@@ -321,7 +659,26 @@ export const initDatasetWizardAtom = atom(
     set(dwCleanedTagsAtom, [])
     set(dwSelectedColumnsAtom, null)
     set(dwScalerConfigsAtom, {})
-    set(dwProcessingSubStepAtom, 1)
+    set(dwValueClipAtom, {})
+    set(dwSelectedTagKeysAtom, new Set<string>())
+    // Draft-first server state. Mirrors resetDatasetWizardAtom's own fix for
+    // "THE GROUP THAT CAUSED THE DRIFT" — a stale dwFeaturePreviewSampleAtom
+    // is what the tag sidebar and every chart actually read their tag list
+    // from, not dwSelectedTagsAtom above, so leaving it here leaks a prior
+    // EDIT session's tags into a fresh create run.
+    set(dwDraftIdAtom, null)
+    set(dwDraftArtifactIdAtom, null)
+    set(dwDraftFeatureArtifactIdAtom, null)
+    set(dwDraftGoldArtifactIdAtom, null)
+    set(dwBronzeWarmStateAtom, 'idle')
+    set(dwGoldWarmErrorAtom, null)
+    set(dwFeatureWarmStateAtom, 'idle')
+    set(dwFeatureArtifactStampAtom, null)
+    set(dwDraftSyncStateAtom, { status: 'idle' })
+    set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
+    set(dwFeaturePreviewSampleStateAtom, 'idle')
+    set(dwEdaWindowAtom, null)
+    set(dwEdaSampleTotalAtom, null)
     set(dwHiddenTagsAtom, [])
     set(dwFocusedTagAtom, '')
     set(dwTagSidebarCollapsedAtom, false)
@@ -335,6 +692,9 @@ export const initDatasetWizardAtom = atom(
     set(dwEditingDatasetAtom, null)
     set(dwRowSourceAtom, null)
     set(dwSyntheticReasonAtom, null)
+    set(dwSyntheticCauseAtom, null)
+    set(dwRowStageAtom, null)
+    set(dwEditRootValidationRowCountAtom, null)
   },
 )
 
@@ -344,6 +704,8 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwDescriptionAtom, '')
   set(dwWorkspaceIdAtom, '')
   set(dwSelectedSourcesAtom, [])
+
+  // Step 1
   set(dwSelectedTagsAtom, [])
   set(dwRemovedTagsAtom, [])
   set(dwEditedTagsAtom, {})
@@ -353,47 +715,79 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwCsvDatasetAtom, EMPTY_DATASET)
   set(dwCsvFileNameAtom, '')
   set(dwTagConstantsAtom, {})
+  set(dwTagUnitsAtom, {})
+  set(dwTagUnitOverridesAtom, {})
+  set(dwPresetRangeAtom, [])
+  set(dwPresetRangeStaleAtom, false)
+
+  // Step 2
   set(dwFetchTagsAtom, null)
   set(dwTimeRangeAtom, '1min')
   set(dwCustomDateRangeAtom, null)
+  set(dwHoldoutRangeAtom, null)
+  set(dwFromRetrainAtom, false)
+  set(dwRetrainCutTimestampAtom, null)
   set(dwCustomIntervalAtom, null)
   set(dwSourceFetchConfigsAtom, {})
   set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
   set(dwFetchStateAtom, { status: 'idle', progress: 0 })
   set(dwFetchProgressAtom, { ...EMPTY_FETCH_PROGRESS })
   set(dwRawDatasetAtom, EMPTY_DATASET)
-  set(dwFeatureConfigsAtom, [])
-  set(dwFeaturePresetAtom, null)
-  set(dwTargetTagAtom, null)
-  set(dwSdtaConfigAtom, null)
+
+  // Step 3
   set(dwCropRangeAtom, null)
+  set(dwValueCropAtom, {})
+  set(dwValueClipAtom, {})
+  set(dwExclusionsAtom, [])
   set(dwConditionalRulesAtom, [])
   set(dwStatisticalRulesAtom, [])
   set(dwCleaningPipelinesAtom, {})
   set(dwCleaningTagsAtom, [])
+  set(dwCleanedTagsAtom, [])
+  set(dwSelectedTagKeysAtom, new Set<string>())
+
+  // Step 4
+  set(dwFeatureConfigsAtom, [])
+  set(dwFeaturePresetAtom, null)
+  set(dwTargetTagAtom, null)
+  set(dwSdtaPresetsAtom, [])
   set(dwSelectedColumnsAtom, null)
   set(dwScalerConfigsAtom, {})
-  set(dwProcessingSubStepAtom, 1)
+
+  // Draft-first server state. THE GROUP THAT CAUSED THE DRIFT — a stale
+  // preview sample is what leaked the previous dataset's tags into a fresh
+  // create run, because the sidebar and every chart read their tag list from
+  // it, not from the atoms that WERE being cleared.
+  set(dwDraftIdAtom, null)
+  set(dwDraftArtifactIdAtom, null)
+  set(dwDraftFeatureArtifactIdAtom, null)
+  set(dwDraftGoldArtifactIdAtom, null)
+  set(dwBronzeWarmStateAtom, 'idle')
+  set(dwGoldWarmErrorAtom, null)
+  set(dwFeatureWarmStateAtom, 'idle')
+  set(dwFeatureArtifactStampAtom, null)
+  set(dwDraftSyncStateAtom, { status: 'idle' })
+  set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
+  set(dwFeaturePreviewSampleStateAtom, 'idle')
+  set(dwEdaWindowAtom, null)
+  set(dwEdaSampleTotalAtom, null)
+
+  // Analysis selection
   set(dwHiddenTagsAtom, [])
   set(dwFocusedTagAtom, '')
   set(dwTagSidebarCollapsedAtom, false)
+
+  // Nav + mode
   set(dwCurrentStepAtom, 1)
   set(dwHighestUnlockedAtom, 1)
   set(dwModeAtom, 'create')
   set(dwEditingDatasetIdAtom, '')
-  // Same reason as initDatasetWizardAtom: this runs right after Save, and the
-  // next wizard run must not inherit this one's provenance verdict.
   set(dwEditingDatasetAtom, null)
   set(dwRowSourceAtom, null)
   set(dwSyntheticReasonAtom, null)
-  // DS-LAKE-005B-B-T01 (Step 5 leg). Without this, a second wizard run in
-  // the same session would inherit the just-SAVED draft's id — every
-  // .../artifacts/:id/finalize and .../save call would target a draft
-  // DS-LAKE-009-T03's own guard now 409s on (already saved once).
-  set(dwDraftIdAtom, null)
-  set(dwDraftArtifactIdAtom, null)
-  set(dwDraftGoldArtifactIdAtom, null)
-  set(dwGoldWarmErrorAtom, null)
+  set(dwSyntheticCauseAtom, null)
+  set(dwRowStageAtom, null)
+  set(dwEditRootValidationRowCountAtom, null)
 })
 
 /**
@@ -424,6 +818,33 @@ export const initDatasetWizardForEditAtom = atom(
 
     set(dwModeAtom, 'edit')
     set(dwEditingDatasetIdAtom, dataset.id)
+    // DS-LAKE-023 fix: this init never used to touch these two, unlike
+    // `initDatasetWizardAtom`/`resetDatasetWizardAtom` which both null them.
+    // A create session that switches into editing a different dataset in the
+    // same tab (no route-level remount — this is an SPA nav, not a fresh
+    // page load) left a FOREIGN draft id live; every draft-scoped call
+    // (bronze warm, features job, holdout resplit) then fired against
+    // someone else's draft instead of no-opping the way a truly fresh edit
+    // session does.
+    set(dwDraftIdAtom, null)
+    set(dwDraftArtifactIdAtom, null)
+    set(dwEditRootValidationRowCountAtom, null)
+    // DS-LAKE-027. The same "THE GROUP THAT CAUSED THE DRIFT" block both
+    // sibling initializers already carry, which this one never got. A
+    // create -> edit switch in the same tab is an SPA nav, not a remount, so
+    // a prior session's `dwFeaturePreviewSampleStateAtom: 'error'` survived
+    // into the edit session and rendered Step 3's "Preview sample
+    // unavailable" before a single request had been made. The preview sample
+    // itself matters for the same reason it does over there: it, not
+    // `dwSelectedTagsAtom`, is what the sidebar and every chart read their
+    // tag list from.
+    set(dwDraftGoldArtifactIdAtom, null)
+    set(dwBronzeWarmStateAtom, 'idle')
+    set(dwDraftSyncStateAtom, { status: 'idle' })
+    set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
+    set(dwFeaturePreviewSampleStateAtom, 'idle')
+    set(dwEdaWindowAtom, null)
+    set(dwEdaSampleTotalAtom, null)
 
     set(dwNameAtom, dataset.name)
     set(dwDescriptionAtom, dataset.description ?? '')
@@ -446,6 +867,20 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwFetchTagsAtom, baseTags)
     set(dwTimeRangeAtom, config.timeRange)
     set(dwCustomDateRangeAtom, config.customDateRange)
+    // Legacy recipes predate the holdout field — hydrate to null, same as
+    // valueCrop/exclusions above. RESOLVED (DS-LAKE-024): edit mode's picker
+    // arms as soon as `useDatasetEditHydration` resolves the edit draft's
+    // own root BRONZE into `dwDraftArtifactIdAtom` — not gated on a prior
+    // clean pass, since the reordered pipeline (DS-LAKE-022/023) cuts the
+    // holdout at the FEATURES stage, before cleaning runs, in both modes.
+    // A SEPARATE gate, layered on top, disables it when that root's own
+    // `dwEditRootValidationRowCountAtom` is non-null — i.e. the underlying
+    // dataset was already split at materialize time and splitting it again
+    // would silently double-cut rows (`startFeaturesJob` has no guard of
+    // its own; see that atom's own doc comment).
+    set(dwHoldoutRangeAtom, config.holdoutDateRange ?? null)
+    set(dwFromRetrainAtom, false)
+    set(dwRetrainCutTimestampAtom, null)
     set(dwCustomIntervalAtom, config.customInterval)
     set(dwSourceFetchConfigsAtom, config.sourceFetchConfigs)
     // Fetch is locked in edit mode (raw query is rebuilt deterministically, not
@@ -465,6 +900,8 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwEditingDatasetAtom, dataset)
     set(dwRowSourceAtom, null)
     set(dwSyntheticReasonAtom, null)
+    set(dwSyntheticCauseAtom, null)
+    set(dwRowStageAtom, null)
 
     // Step 3 — Preprocessing (EDITABLE surface).
     set(dwCropRangeAtom, config.cropRange)
@@ -489,15 +926,131 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwFeaturePresetAtom, config.featurePreset ?? null)
     set(dwTargetTagAtom, config.targetTag ?? null)
     // Not persisted (see the atom's own comment) — nothing to hydrate.
-    set(dwSdtaConfigAtom, null)
+    set(dwSdtaPresetsAtom, [])
 
-    set(dwProcessingSubStepAtom, 1)
     set(dwHiddenTagsAtom, [])
     set(dwFocusedTagAtom, '')
     set(dwTagSidebarCollapsedAtom, false)
+    // Hygiene only — these atoms are never SET by a fresh edit-mode session
+    // before Step 4 mounts (see dwDraftFeatureArtifactIdAtom's own doc
+    // comment), but a prior create-mode session in the same tab could leave
+    // them populated before the user switches into editing a different
+    // dataset.
+    set(dwDraftFeatureArtifactIdAtom, null)
+    set(dwFeatureWarmStateAtom, 'idle')
+    set(dwFeatureArtifactStampAtom, null)
 
-    // Land on Data Processing with every step unlocked for review.
+    // DS-LAKE-022-T04..T07 landed edit mode on Step 5 directly, reasoning
+    // that its only editable surface (cleaning) lives there and Step 3's
+    // EDA is nothing edit mode can change. DS-LAKE-023 changes that
+    // reasoning: Step 4 is now ALSO editable in edit mode (the holdout
+    // window, recipe still locked — see A4's `ensureDraft`/`ensureBronze`
+    // call at Step 4 mount), so landing straight on Step 5 skipped past a
+    // step worth seeing on the way in. Land on Step 3 instead and let the
+    // wizard's own forward nav carry the user through Step 4 naturally.
+    // `dwHighestUnlockedAtom` stays every step — this only moves where
+    // edit mode FIRST lands, not what is reachable via the step indicator.
     set(dwCurrentStepAtom, 3)
     set(dwHighestUnlockedAtom, DW_TOTAL_STEPS)
+  },
+)
+
+export interface InitDatasetWizardFromBaseRecipeSeed {
+  /** The model's base dataset — the recipe to copy, never the one edited. */
+  dataset: SavedDataset
+  sources: SavedDataSource[]
+  /** Name for the NEW sibling dataset. */
+  name: string
+  /**
+   * The incumbent's split boundary. New data must start strictly after it
+   * (`assertCompatible`), and Step 2's own From picker clamps to it — the
+   * window itself is chosen there, not before the handoff, so the operator
+   * picks a date range once instead of twice. Null when the source run
+   * recorded no boundary; the picker is then unclamped and the server is the
+   * guard.
+   */
+  cutTimestamp: string | null
+}
+
+/**
+ * MODEL-SERVE-017. Opens the wizard on a NEW dataset that inherits a base
+ * dataset's recipe but covers a DIFFERENT time range — the retrain flow's
+ * "fetch new data" handoff.
+ *
+ * It deliberately reuses `initDatasetWizardForEditAtom` to seed the recipe
+ * rather than re-listing the ~60 atoms that setter touches. A parallel copy
+ * would be the drifting second implementation this store has been bitten by
+ * before: a recipe field added to the edit path and forgotten here would
+ * silently produce a dataset built from a different recipe than the base,
+ * which `assertCompatible` then rejects with a tag mismatch the operator
+ * cannot explain.
+ *
+ * What it overrides afterwards is exactly what makes this a CREATE session
+ * for a sibling, not an edit of the base:
+ *  - `mode: 'create'` + no `editingDatasetId`, so Save mints a new Dataset
+ *    instead of a new version of the base (which would repoint the base's
+ *    `currentVersionId` at a slice holding only the new range).
+ *  - `mode: 'create'` also unlocks Step 1/2, which edit mode locks — the
+ *    whole point here is to fetch a range the base does not have.
+ *  - The raw rows are cleared: the base's rows belong to the base's window.
+ *  - Lands on Step 2 (Fetch Data), the first step with anything to do.
+ */
+export const initDatasetWizardFromBaseRecipeAtom = atom(
+  null,
+  (_get, set, seed: InitDatasetWizardFromBaseRecipeSeed) => {
+    set(initDatasetWizardForEditAtom, {
+      dataset: seed.dataset,
+      sources: seed.sources,
+    })
+
+    set(dwModeAtom, 'create')
+    // '' is this atom's own "no dataset being edited" value, not null — a
+    // create session that left a real id here would Save over the base.
+    set(dwEditingDatasetIdAtom, '')
+    set(dwEditingDatasetAtom, null)
+    set(dwNameAtom, seed.name)
+    set(dwDescriptionAtom, '')
+    // No window yet — Step 2's pickers are where it gets chosen, and the
+    // base's own range belongs to the base's data, not this one.
+    set(dwCustomDateRangeAtom, null)
+    // A holdout window chosen for the base's range is meaningless inside a
+    // different one, and a stale window silently splits the wrong rows.
+    set(dwHoldoutRangeAtom, null)
+    set(dwFromRetrainAtom, true)
+    set(dwRetrainCutTimestampAtom, seed.cutTimestamp ?? null)
+    set(dwRawDatasetAtom, EMPTY_DATASET)
+
+    // The edit seeder describes a dataset whose bytes already exist, so it
+    // leaves these describing REAL data. This session has none yet — it is
+    // about to fetch a window nothing has read. Every atom below is reset to
+    // exactly what `initDatasetWizardAtom` (the real create path) sets, and
+    // for the same reason its own comment gives: a stale value here shows a
+    // completed fetch over empty rows, or a synthetic-rows banner in a
+    // session with no rows — neither of which raises an error.
+    //
+    // Kept in lockstep with the create path by
+    // `dataset-studio-wizard-reset-parity.test.ts`, which exists because two
+    // hand-maintained seeders already drifted once.
+    set(dwHasInvalidTagsAtom, false)
+    set(dwFetchTagsAtom, null)
+    set(dwFetchStateAtom, { status: 'idle', progress: 0 })
+    set(dwBronzeWarmStateAtom, 'idle')
+    set(dwFeatureWarmStateAtom, 'idle')
+    set(dwFeatureArtifactStampAtom, null)
+    set(dwDraftSyncStateAtom, { status: 'idle' })
+    set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
+    set(dwFeaturePreviewSampleStateAtom, 'idle')
+    set(dwEdaWindowAtom, null)
+    set(dwEdaSampleTotalAtom, null)
+    set(dwRowSourceAtom, null)
+    set(dwSyntheticReasonAtom, null)
+    set(dwSyntheticCauseAtom, null)
+    set(dwRowStageAtom, null)
+
+    set(dwCurrentStepAtom, 2)
+    // Only Step 2 is reachable: the recipe is inherited, but nothing past
+    // the fetch has been re-derived for THIS window. The edit seeder unlocks
+    // every step because its dataset already has bytes at each stage.
+    set(dwHighestUnlockedAtom, 2)
   },
 )

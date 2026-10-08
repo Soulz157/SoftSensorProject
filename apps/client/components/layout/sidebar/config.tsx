@@ -6,13 +6,11 @@ import {
   CirclePlus,
   // CheckCircle2,
   // ClipboardCheck,
-  Cog,
   Database,
   Eye,
   Factory,
   Gauge,
   LayoutDashboard,
-  LineChart,
   Settings,
   Table,
   TextSearch,
@@ -75,12 +73,6 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
         icon: <Gauge className="h-4 w-4" />,
         href: '/models/evaluation',
       },
-      {
-        id: 'models-monitoring',
-        name: 'Model Monitoring',
-        icon: <BarChart3 className="h-4 w-4" />,
-        href: '/models/monitoring',
-      },
     ],
   },
   {
@@ -99,18 +91,6 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
         name: 'Datasets',
         icon: <Table className="h-4 w-4" />,
         href: '/datasets',
-      },
-      {
-        id: 'analytics',
-        name: 'Analytics',
-        icon: <BarChart3 className="h-4 w-4" />,
-        href: '/analytics',
-      },
-      {
-        id: 'data-visualization',
-        name: 'Data Visualization',
-        icon: <LineChart className="h-4 w-4" />,
-        href: '/data-visualize',
       },
     ],
   },
@@ -148,9 +128,11 @@ export const adminNavItems: NavItem[] = [
     href: '/admin/workspaces',
   },
   {
-    id: 'admin-settings',
-    name: 'System Settings',
-    icon: <Cog className="h-4 w-4" />,
-    href: '/admin/settings',
+    // All-workspaces analytics is admin-only; each workspace keeps its own
+    // view under the workspace section's "Data Management" link.
+    id: 'admin-analytics',
+    name: 'Data Analytics',
+    icon: <BarChart3 className="h-4 w-4" />,
+    href: '/admin/analytics',
   },
 ]

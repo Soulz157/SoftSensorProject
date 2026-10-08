@@ -227,6 +227,65 @@ Use `prisma.$transaction([...])` for all multi-step writes.
 
 ---
 
+## Object Storage Retention (MODEL-SERVE-007)
+
+One MinIO bucket (`S3_BUCKET`, `datasets` locally). Every object written by
+`apps/python` carries an object tag `retention=<class>`, set from its key by
+`class_for_key` (`apps/python/intergrations/object_store.py`, mirrored as
+`classForKey` in `apps/backend/src/lib/artifact-keys.ts`).
+
+| Class        | What                                                                     | Can tooling enforce it?                        |
+| ------------ | ------------------------------------------------------------------------ | ---------------------------------------------- |
+| `sweepable`  | Dataset artifacts and drafts, `tmp/`, feature presets, batch predictions | **Yes** — a tag-filtered lifecycle rule        |
+| `permanent`  | `inference/` window records, `serving-logs/`                             | **Yes** — by the ABSENCE of any matching rule  |
+| `referenced` | Model run outputs (`models/…`, `drafts/{id}/runs/{id}/…`)                | **NO. Not expressible as any lifecycle rule.** |
+
+**`referenced` is the one that is not enforced by storage.** "Still referenced"
+is a reference check, and a bucket lifecycle rule cannot perform one — only
+application-level cleanup is authoritative for it (`ArtifactCleanupService`,
+plus MODEL-FLOW-011-T05's run-level guard). The tag is a label for humans and
+audits. A lifecycle rule written against it would delete on schedule, reference
+or no reference. This limit is recorded rather than papered over: a retention
+scheme that merely looks fully enforced is more dangerous than one that admits
+where it is not.
+
+Existing tag-filtered rule: `ds-lake-009b-tmp-expiry` expires objects tagged
+`lifecycle=tmp` after 7 days. That tag is separate from and narrower than
+`retention=sweepable`; `tag_retention` refuses tmp keys so it can never
+overwrite it.
+
+### Operational notes
+
+- **Objects written before this feature are untagged** and no tag-filtered rule
+  reaches them. Intentional — it fails in the safe direction (nothing is
+  reclaimed by surprise). There was no backfill.
+- **There are three write paths, not one.** `put_object_stream` (covering
+  `put_frame` / `put_object_bytes`) and `put_json` tag at write time;
+  `copy_prefix` mints objects with `copy_object`, which carries the SOURCE's
+  tags, so it tags from the DESTINATION key instead — a copy out of `drafts/`
+  into a dataset's own namespace is a root change and therefore possibly a
+  class change.
+- **Presigned uploads cannot be tagged at write time.** Trainer run outputs,
+  batch prediction outputs and an inference window's `predictions.parquet` are
+  PUT straight to MinIO by a container. They get their class from
+  `store.tag_retention(key)` on the first server-side touch afterwards, in
+  `artifact_service.presign_run_object` / `presign_prediction_job_object` /
+  `presign_inference_window_object`. Remove those calls and those objects go
+  permanently untagged.
+- **Bucket creation is manual.** `ensure_bucket()` has no runtime caller and
+  MinIO is not in `docker-compose`; the local instance (`minio-local`, ports
+  9000/9001) was created by hand.
+- **`S3_BUCKET_MODEL` in `.env` is unused.** No code reads it, and the `models`
+  bucket it names is empty — every model run output lives under `models/` or
+  `drafts/` inside `S3_BUCKET`. Delete it or give it a caller; leaving it is how
+  the next reader concludes the store is split when it is not.
+- **Trainer image changes need a manual rebuild.** Nothing in CI builds
+  `images/trainer`, so `run_manifest.json`'s new `gold_bucket` /
+  `gold_artifact_id` fields do not appear until the image is rebuilt and its tag
+  bumped.
+
+---
+
 ## Key Architectural Decisions
 
 | Decision       | Choice                                       | Reason                                                |

@@ -21,6 +21,19 @@ import { TagResolution } from '@/hooks/dataset/use-tag-resolution'
 // Document shapes (mirror apps/python/services/preset_parser.py)
 // ---------------------------------------------------------------------------
 
+/**
+ * `range` resolved to a numeric bound (DS-LAKE-020-T02, parsed server-side at
+ * import time). `null` on a preset imported before this field existed
+ * (schema_version 1) — re-import to enable range cutoffs for it.
+ */
+export interface ParsedRange {
+  kind: 'none' | 'closed' | 'lower' | 'upper'
+  min: number | null
+  max: number | null
+  unit: string | null
+  raw: string
+}
+
 export interface PresetFeature {
   /** `raw_tag` names an existing column; `equation` derives a new one. */
   type: 'equation' | 'raw_tag'
@@ -30,9 +43,14 @@ export interface PresetFeature {
   formula: string | null
   description: string
   range: string
+  range_parsed: ParsedRange | null
   relation: string
   required_base_tags: string[]
-  /** Ambiguities a human should confirm (a tag whose name contains a slash). */
+  /**
+   * Ambiguities a human should confirm: a tag whose name contains a slash,
+   * or a `range` cell that looked like an attempted bound but could not be
+   * parsed.
+   */
   parse_warnings: string[]
 }
 
@@ -67,6 +85,32 @@ export interface PresetSummary {
   rawTagCount: number
   requiredBaseTags: string[]
   incomplete: boolean
+}
+
+export type TagHealth = (tag: string) => 'good' | 'bad' | 'unknown'
+
+/** Step 1: a loaded row wins, then PI resolution — same order as `compareTags`. */
+export function lookupHealth(lookup: TagLookup): TagHealth {
+  const status = new Map<string, 'good' | 'bad'>()
+  // First writer wins, so a healthy row is not shadowed by a later duplicate
+  // in error — same reason `compareTags` builds its maps this way.
+  for (const row of lookup.rows) {
+    if (status.has(row.tagName)) continue
+    if (row.status === 'good') status.set(row.tagName, 'good')
+    else if (row.status === 'bad') status.set(row.tagName, 'bad')
+  }
+  return tag =>
+    status.get(tag) ?? (lookup.resolved.has(tag) ? 'good' : 'unknown')
+}
+
+/**
+ * Step 3.2 onward: membership in the fetched dataset IS health. A tag only
+ * reaches `dwRawDatasetAtom` by surviving Step-1 validation and a successful
+ * fetch, so there is no `bad` to report here — anything absent is `unknown`.
+ */
+export function datasetHealth(tags: Iterable<string>): TagHealth {
+  const present = new Set(tags)
+  return tag => (present.has(tag) ? 'good' : 'unknown')
 }
 
 /**
@@ -391,9 +435,16 @@ export function toFeatureConfigs(
 // SD&TA (shutdown/turnaround) cut config -> Step-3 cleaning rules
 // ---------------------------------------------------------------------------
 
-/** One condition the parser produced but this plan could not carry through. */
+/**
+ * One condition the parser produced but this plan could not carry through.
+ * Carries `op`/`value` (not just `tag`) so the UI can show the FULL
+ * condition — "GG203.PV < 1700, not applied: tag not in this dataset" — not
+ * just the bare tag name a user has no way to recognise on its own.
+ */
 export interface DroppedSdtaCondition {
   tag: string
+  op: string
+  value: number
   reason: string
 }
 
@@ -436,22 +487,18 @@ function isCutoffOp(op: string): op is CutoffOp {
  */
 export function planSdtaApplication(
   sdta: SdtaConfig,
-  lookup: TagLookup,
+  health: TagHealth | TagLookup,
   makeId: () => string = () => crypto.randomUUID(),
 ): SdtaApplication {
-  const { resolved, rows } = lookup
+  // A `TagLookup` is an object, a `TagHealth` a function — no discriminant
+  // needed, and the old two-arg call sites keep working unchanged.
+  const healthOf: TagHealth =
+    typeof health === 'function' ? health : lookupHealth(health)
 
   const exclusions: RangeExclusion[] = sdta.ranges.map(range => ({
     time: { from: range.from, to: range.to },
     value: null,
   }))
-
-  const badRows = new Set(
-    rows.filter(r => r.status === 'bad').map(r => r.tagName),
-  )
-  const healthyRows = new Set(
-    rows.filter(r => r.status === 'good').map(r => r.tagName),
-  )
 
   const conditionalRules: ConditionalRule[] = []
   const droppedConditions: DroppedSdtaCondition[] = []
@@ -460,20 +507,28 @@ export function planSdtaApplication(
     if (!isCutoffOp(condition.op)) {
       droppedConditions.push({
         tag: condition.tag,
+        op: condition.op,
+        value: condition.value,
         reason: `Unsupported operator "${condition.op}"`,
       })
       continue
     }
-    if (badRows.has(condition.tag)) {
-      droppedConditions.push({ tag: condition.tag, reason: 'Tag is in error' })
-      continue
-    }
-    // Checking rows alone dropped conditions on tags that exist but sit on
-    // another catalog page.
-    if (!healthyRows.has(condition.tag) && !resolved.has(condition.tag)) {
+    const status = healthOf(condition.tag)
+    if (status === 'bad') {
       droppedConditions.push({
         tag: condition.tag,
-        reason: 'Tag not in this dataset',
+        op: condition.op,
+        value: condition.value,
+        reason: 'Tag is in error',
+      })
+      continue
+    }
+    if (status === 'unknown') {
+      droppedConditions.push({
+        tag: condition.tag,
+        op: condition.op,
+        value: condition.value,
+        reason: 'Tag not in the selected dataset',
       })
       continue
     }
@@ -482,7 +537,7 @@ export function planSdtaApplication(
       tag: condition.tag,
       op: condition.op,
       value: condition.value,
-      action: 'drop',
+      action: 'drop_row',
       enabled: true,
     })
   }

@@ -21,9 +21,439 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   /** Digest, resolved once at boot. See resolveDigest. */
   imageDigest = '';
 
+  // 1.0.2: build_model widened from 3 branches (ols/ridge/hgb) to 10 —
+  // TrainingAlgorithmEnum now allows all 10, so the default image MUST
+  // agree or every other algorithm passes validation, spawns a container,
+  // downloads and checksums the artifact, and only then dies on
+  // "Unsupported algorithm" (images/trainer/train.py). Bump this default
+  // alongside any future build_model change that isn't purely additive.
+  //
+  // 1.0.3 (MODEL-FLOW-007-T11): purely additive, not a build_model change —
+  // run_manifest.json gained a `framework_versions` field. Bumped anyway,
+  // for the same reason `image_digest` is recorded on every run at all:
+  // provenance. A pre-1.0.3 run's manifest simply lacks the field — every
+  // reader treats it as optional, so nothing branches on this tag.
+  //
+  // 1.0.4 (MODEL-FLOW-009-T04): build_model widened again — lstm/gru now
+  // construct a real SequenceRegressor (sequence_model.py, torch) instead
+  // of raising. Same rule as the 1.0.2 bump: TrainingAlgorithmEnum now
+  // allows lstm/gru, so the default image MUST agree or a run passes
+  // validation, spawns a container, and only then dies inside it.
+  //
+  // 1.0.5 (MODEL-FLOW-016-T03/T07): TWO main()-path changes in one bump, on
+  // purpose — bumping twice would leave a window where a scoring container
+  // runs a CV-only image. (a) train.py handles splitSpec.method
+  // 'cv_expanding' (k expanding folds + a refit, cv_folds.json, no
+  // predictions.parquet); (b) a MODE=score entrypoint (run_score) that
+  // reloads model.joblib and scores the validation holdout. Same rule as
+  // the 1.0.2/1.0.4 bumps: the DTO now accepts nSplits and this service
+  // now spawns with MODE=score, so the default image MUST agree or a run
+  // passes validation, spawns, and only then dies inside the container.
+  // Both paths verified against this exact tag before the bump landed —
+  // MODE=score reaches /score-claim, /score-log, /score-complete and NEVER
+  // a training endpoint (including on its crash path); MODE unset still
+  // reaches /log and /complete.
+  //
+  // 1.0.6 (MODEL-SERVE-003): MODE=batch entrypoint added (pipelines/batch.py)
+  // — reaches /batch-claim, /batch-log, /batch-complete and never a training
+  // or score endpoint. Same rule as every prior bump: this service now spawns
+  // batch jobs with MODE=batch, so the default image MUST carry batch.py or a
+  // job passes validation, spawns, and dies inside the container on the old
+  // train.py's MODE dispatch (no such branch existed before this tag).
+  // Verified against this exact tag before the bump landed: images/trainer's
+  // own pytest suite (27/27) plus a live in-container run against real
+  // fitted-model + parquet fixtures.
+  //
+  // 1.0.7 (MODEL-FLOW-019-T09): purely additive, bumped for the reason 1.0.3
+  // was — a new artifact, not a new mode. `_publish` now writes
+  // feature_importance.json (importance.py) for the algorithms carrying a
+  // readable importance; every other algorithm writes nothing, as before.
+  // No DTO or enum widened, so unlike the 1.0.2/1.0.4/1.0.5/1.0.6 bumps a
+  // stale image here does NOT kill a run — it is a SILENT no-op, which is
+  // why this bump was easy to forget and was forgotten: 1.0.6 was built
+  // 2026-09-02, importance.py landed 2026-09-08, and every run in between
+  // recorded featureImportanceKey null while Step 5 honestly read "not
+  // recorded for this run" against working code on both sides of it.
+  // Verified against this exact tag before the bump landed, in-image and
+  // measured rather than dated: `from importance import
+  // extract_feature_importance` raises ModuleNotFoundError on 1.0.6 and
+  // imports on 1.0.7, and a real fitted RandomForestRegressor through the
+  // image's own extract_feature_importance returns the documented
+  // {algorithm, method, standardized, scaling_methods, features[]} shape.
+  // images/trainer's pytest suite is NOT runnable in-image (the test/ tree
+  // and pytest itself are excluded from the build), so suite-level evidence
+  // for importance.py remains T09's own throwaway-venv run, 12/12.
+  //
+  // "PURELY ADDITIVE" IS A MEASURED CLAIM HERE, NOT AN ASSUMPTION — a rebuild
+  // ships whatever the tree holds, so the whole 1.0.6..1.0.7 delta was
+  // checked, not just this task's own commit. Three commits touched
+  // images/trainer/app after 1.0.6's build: 4f20227 (MODE=batch), 8d1d59d
+  // (models.py, COMMENT-ONLY — the MIRRORS.md entry-5 note on the grp
+  // row-count guard, no behavior), and e9fcdf6 (this feature). 4f20227 is
+  // the subtle one: it is dated 2026-09-03, AFTER 1.0.6's 2026-09-02 build,
+  // which would mean 1.0.6 lacks batch.py and every MODE=batch job has been
+  // dying inside the container. It does not — `ls pipelines/` inside 1.0.6
+  // shows batch.py present, i.e. 1.0.6 was built from that working tree the
+  // evening before it was committed. So the only BEHAVIORAL change 1.0.7
+  // adds over 1.0.6 is importance.py plus its artifacts.py constant and
+  // _publish wiring.
+  //
+  // 1.0.8 (MODEL-FLOW-019-T20): score.py's OWN upload filename changed —
+  // not additive like 1.0.3/1.0.7, closer to the 1.0.5 shape. Scoring was
+  // CV-only through 1.0.7 (predictions.parquet only, since a CV run never
+  // has one already); this service now also triggers it for a non-CV run,
+  // whose predictions.parquet already holds its TEST split. score.py reads
+  // `spec["isCvRun"]` (scoreClaimService's new field) and uploads
+  // predictions.parquet for a CV run, holdout_predictions.parquet
+  // otherwise — a stale pre-1.0.8 image would upload predictions.parquet
+  // for EVERY scored run regardless of kind, silently destroying a non-CV
+  // run's own test-split predictions the moment its first score completes.
+  // Verified against this exact tag before the bump landed, in-image:
+  // `docker run --entrypoint python <tag>:1.0.8 -c "from artifacts import
+  // HOLDOUT_PREDICTIONS_FILENAME"` imports cleanly and `inspect.getsource
+  // (run_scoring)` shows the isCvRun branch present. images/trainer's own
+  // pytest suite is not runnable in-image (see the 1.0.7 note above); no
+  // trainer-level test exists for score.py specifically at this tag.
+  //
+  // 1.0.9 (MODEL-FLOW-019-T31 + T32): TWO changes in one bump, both purely
+  // ADDITIVE and therefore in the SILENT class the 1.0.7 note above exists to
+  // record — a stale image yields a null key and an honest absence sentence,
+  // indistinguishable on screen from the legacy path. One bump for both, per
+  // MODEL-FLOW-016-T07's rule of one bump per sequencing.
+  //
+  //   T32 — importance.py's `standardized` predicate CORRECTED, plus the new
+  //   `standardized-coefficient` method. The old predicate read
+  //   `bool(feature_spec["scaling"])`, the trap packages/py-scaling's own
+  //   `assert_scaling_coverage` documents: `scaling` holds an entry only for
+  //   an EXPLICIT scaler choice, while `to_model_ready` defaults every
+  //   unlisted tag to minmax and records what it fitted in `scalingParams`.
+  //   Measured 2026-09-09 across all five feature specs in the dev DB: every
+  //   one has `scaling: []`, four carry 22 populated `scalingParams` and one
+  //   carries none — so EVERY coefficient run read "not ranked", scaled or
+  //   not. Coverage is now checked per feature column against
+  //   `scalingParams`. The reverse exposure is worth stating: on a stale
+  //   image a scaled linear run keeps reading "not ranked", which is the
+  //   status quo, never a wrong ranking.
+  //
+  //   T31 — the run spec's optional `featureColumns` restricts training to a
+  //   named subset and REFUSES a column the artifact lacks rather than
+  //   intersecting. A stale image IGNORES the field and trains on every
+  //   column, so a sweep row would record feature_count = 21 while its
+  //   request claimed n = 4. That is the one non-silent consequence here: the
+  //   table reads each row's `n` from the run's OWN recorded feature_count,
+  //   so such rows land on the curve at 21 rather than masquerading as the
+  //   count they asked for.
+  //
+  // Verified against this exact tag before the bump landed, in-image, the
+  // same discipline the 1.0.8 note applies: `docker run --entrypoint python
+  // <tag>:1.0.9` imports importance/pipelines.context and confirms
+  // `standardized-coefficient`, the `scalingParams` predicate, `feature_std`,
+  // `resolve_feature_columns` and TrainingResult's `train_feature_std` field
+  // all present; a real Ridge fit returns method `standardized-coefficient`
+  // with figures equal to |coef| * std(X), the live scaled shape (`scaling:
+  // []` with populated `scalingParams`) now ranks as plain `coefficient`
+  // naming minmax, and a run with no coverage and no width is STILL refused
+  // (AC27 intact). images/trainer's pytest suite is not runnable in-image
+  // (see the 1.0.7 note); it passes on the host at 53 tests.
+  //
+  // PUSH PENDING AT THE TIME THIS LANDED — `docker push` returned
+  // `insufficient_scope: authorization failed` for this registry, so 1.0.9
+  // exists LOCALLY on the machine that built it and not yet in the registry.
+  // `resolveDigest` below inspects the local image first and pulls only when
+  // it is absent, so this default is correct where it was built and fails
+  // LOUDLY at boot elsewhere (a warn, then a rejected pull) rather than
+  // silently running old code. Push the tag to close that gap.
+  //
+  // 1.0.10 (MODEL-FLOW-019-T26): purely ADDITIVE, and therefore in the SILENT
+  // class the 1.0.7 note above exists to record — a stale image yields a null
+  // key and an honest absence sentence, indistinguishable on screen from the
+  // legacy path. A NON-CV run now writes `holdout_predictions.parquet` INLINE
+  // at training time: `_score_holdout_if_present` already computed the
+  // per-row holdout frame and bound it to `_`, discarding it, which is the
+  // single reason 0 of 252 SUCCEEDED runs carried a holdout SERIES while 188
+  // carried a holdout AGGREGATE. Nothing else changed — no second predict
+  // pass, no model reload, no new dependency, and CV is untouched
+  // (`holdout_eligible` is False there, so its holdout still arrives through
+  // score.py). Cost is one parquet write plus one PUT.
+  //
+  // WHY 1.0.10 AND NOT 1.0.9, since T26's own ledger detail says 1.0.8 ->
+  // 1.0.9: 1.0.9 was already taken by T31+T32 and its note above records a
+  // specific in-image verification for THAT content. Rebuilding 1.0.9 with a
+  // third task's change would falsify a record that already claims to have
+  // been verified, so the bump goes forward instead of being reused.
+  //
+  // Verified against this exact tag before the bump landed, in-image, the
+  // same discipline the 1.0.8/1.0.9 notes apply — by SOURCE and by BEHAVIOUR,
+  // not by tag: `docker run --entrypoint python <tag>:1.0.10` confirms
+  // `HOLDOUT_PREDICTIONS_FILENAME` reaches `_publish`, `_publish` carries a
+  // `holdout_predictions` parameter, and `_score_holdout_if_present` returns
+  // the PAIR (`holdout_metrics, _ =` is gone). Functionally, a stub estimator
+  // through `score_holdout` returns a {timestamp,y_true,y_pred} frame of 4
+  // rows from a 5-row holdout with one unlabelled row, and that frame
+  // round-trips through `ArtifactSet.add_parquet` at 2,638 bytes.
+  //
+  // CORRECTION TO THE 1.0.7/1.0.9 NOTES ABOVE: images/trainer's pytest suite
+  // IS runnable in-image, contrary to what those notes assert. It needs
+  // `--user root` (the image runs as `trainer`, so the pip install is
+  // otherwise silently ineffective) plus `pip install pytest`, with the test
+  // directory mounted. Measured at this tag: 55 passed (53 inherited, 2 added
+  // by T26). Recorded because that claim has been repeated across three bump
+  // notes and sent every prior verification to the host unnecessarily.
+  //
+  // PUSH FAILED, SAME AS 1.0.9 — `docker push` returned `insufficient_scope:
+  // authorization failed`, so 1.0.10 exists LOCALLY on the machine that built
+  // it and not in the registry. Every environment other than that machine
+  // fails LOUDLY at boot (a warn, then a rejected pull) rather than silently
+  // running old code. Push the tag to close the gap.
+  // 1.0.11 (MODEL-SERVE-006-T03): adds a FOURTH container mode, `infer` —
+  // dispatched in pipelines/infer.py, structurally batch.py's own
+  // chunked-scoring shape with a different claim/complete route base
+  // (/authorized/inference-windows/{id}/infer-*) and a different output
+  // layout (inference/{modelId}/{modelVersionId}/dt=.../hour=.../). A MODE
+  // addition is NOT in the 1.0.10 note's "purely additive, SILENT" class —
+  // an image without infer.py fails every scheduled window with a route
+  // 404, not a null-key-and-honest-absence degradation. Verified in-image,
+  // not just by inspection: `docker build` (compileall passed on config.py/
+  // api.py/train.py/pipelines/infer.py), then `docker run --entrypoint
+  // python` confirmed `RunContext.from_env()` with MODE=infer sets
+  // `is_infer_mode`, resolves `api` to `/authorized/inference-windows/
+  // {id}`, and `_ROUTES['claim']['infer']`/`['complete']['infer']` resolve
+  // to `/infer-claim`/`/infer-complete`. Existing pytest suite: 56 passed
+  // (no per-mode dispatch test file exists for batch mode either — this
+  // bump added none for infer, following that same precedent), `docker run
+  // --user root` per the 1.0.10 note's own correction that the suite IS
+  // runnable in-image.
+  //
+  // PUSH STILL PENDING, same unclosed gap the 1.0.9/1.0.10 notes record —
+  // `ghcr.io/soft-sensor-project` (this repo's CI build target) does not
+  // exist as a GitHub org or user (checked 2026-09-10: 404 both ways), and
+  // the deployed tag lives under a DIFFERENT namespace (`scgc/`) that CI
+  // never pushes to. `.github/workflows/trainer-image.yml` builds and
+  // Trivy-scans this Dockerfile on every relevant path change (`push:
+  // false`, confirmed present — the ledger's "nothing in CI builds this"
+  // claim was stale before this pass even started), but the registry gap
+  // means 1.0.11 exists only on the machine that built it until someone
+  // fixes push auth. Every OTHER environment fails LOUDLY at boot (a warn,
+  // then a rejected pull) rather than silently running old code — same
+  // `resolveDigest` behaviour the 1.0.9/1.0.10 notes already describe.
+  //
+  // 1.0.12 (MODEL-FLOW-023-T10): permutation importance for lstm/gru.
+  // `importance.extract_permutation_importance` — a SECOND, independent
+  // artifact (`permutation_importance.json`), channel-block permutation on
+  // the windowed strategy's own test split, wired beside the existing
+  // `extract_feature_importance` call in `pipelines/__init__.py._publish`.
+  // Not in the 1.0.10 note's "purely additive, SILENT" class either way: a
+  // stale image simply never writes the new file, which reads as the same
+  // honest null `permutationImportanceKey` a pre-1.0.12 run already has —
+  // additive, therefore silent, same class as 1.0.9/1.0.10's own artifacts.
+  //
+  // COST MEASURED IN-IMAGE, UNDER PRODUCTION LIMITS (`--cpus=2 --memory=8g
+  // -e TRAINER_CPU_BUDGET=2`, matching this service's own
+  // `nanoCpus`/`memoryBytes` defaults below) — the figure the 2026-09-09
+  // exclusion rested on (MODEL-FLOW-009-T04's ">10 minutes") was a FIT,
+  // pre-thread-pool-fix, multiplied for PER-CELL permutation; this measures
+  // the actual PER-CHANNEL predict-only sweep the chosen method performs.
+  // 21 features x 10 repeats = 211 predict calls (210 + 1 baseline), real
+  // fitted `SequenceRegressor`:
+  //   lstm,  500 test windows: fit 2.2s,  permutation sweep 4.5s  (21ms/call)
+  //   lstm, 2000 test windows: fit 6.9s,  permutation sweep 16.4s (78ms/call)
+  //   gru,   500 test windows: fit 21.0s, permutation sweep 19.2s (91ms/call)
+  // Seconds, not minutes, at every scale tried — the exclusion's premise
+  // does not hold for this method. `n_repeats=10`
+  // (`DEFAULT_PERMUTATION_REPEATS`, importance.py) stands as measured
+  // rather than being lowered.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR, NOT BY TAG: `docker run --user root`
+  // (1.0.10's own correction — the suite needs `--user root` plus a
+  // `pip install pytest` with the test directory mounted) — 65 passed (56
+  // inherited through 1.0.11, 9 added here for
+  // `extract_permutation_importance`: channel isolation — permuting an
+  // UNUSED channel leaves a stub model's score EXACTLY unchanged, proving
+  // the shuffle targets `X[:, :, j]` as a whole axis rather than a cell or
+  // a row — artifact shape, seed reproducibility, the `_MIN_PERMUTATION_
+  // WINDOWS` refusal, a malformed-X refusal, and the best-effort
+  // exception/non-finite-baseline paths writing nothing rather than a
+  // partial table).
+  //
+  // PUSH FAILED, SAME AS EVERY PRIOR BUMP — `docker push` returned
+  // `insufficient_scope: authorization failed`, so 1.0.12 exists LOCALLY on
+  // the build machine only. `resolveDigest` inspects the local image first,
+  // so this default is correct where it was built and fails LOUDLY at boot
+  // elsewhere rather than silently running old code.
+  //
+  // 1.0.13 (DS-LAKE-028-T03) — the SVR scaling warning no longer branches on
+  // `feature_spec["scaling"]` being non-empty. That field held the user's
+  // EXPLICIT scaler config only, and the common path configures nothing while
+  // to_model_ready min-max scales every tag at the default, so the trainer
+  // asserted "reports no scaling on the input features" over fully-scaled
+  // frames on 21 of the 22 specs that exist. It now resolves from
+  // `scalingParams` first (authoritative at every featureVersion) and falls
+  // back to the effective method list.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR, NOT BY TAG, same as every prior bump:
+  // `docker run --user root` with the test directory mounted plus a
+  // `pip install pytest` — 69 passed (65 inherited through 1.0.12, 4 added
+  // here for the gate: a REAL legacy spec shape — `scaling: []` with a
+  // populated `scalingParams` — draws no warning; a featureVersion 1 spec
+  // with no `scalingParams` KEY does not crash; an all-"none" recipe, which
+  // DS-LAKE-028-T04 makes reachable, still warns because it really is
+  // unscaled; a post-T02 spec carrying only `scaling` draws none).
+  //
+  // PUSH NOT ATTEMPTED — every prior bump's `docker push` returned
+  // `insufficient_scope: authorization failed`, so like 1.0.9 through 1.0.12
+  // this tag exists LOCALLY on the build machine only. `resolveDigest`
+  // inspects the local image first, so this default is correct where it was
+  // built and fails LOUDLY at boot elsewhere rather than silently running old
+  // code.
+  //
+  // 1.0.14 (MODEL-FLOW-026) — `build_model`'s random_forest branch reads three
+  // more keys: `max_leaf_nodes` (nullable, null = unlimited, the same shape as
+  // `max_depth`), `min_samples_leaf` and `min_samples_split`. ADDITIVE: every
+  // key keeps its sklearn default, so a run launched with the old four-key
+  // payload builds a bit-identical estimator. The bump is still required,
+  // because on 1.0.13 the new keys reach the container and are SILENTLY
+  // IGNORED — `build_model` reads by name and never inspects extra keys — so
+  // the form would offer knobs that do nothing.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR, NOT BY TAG, same as every prior bump:
+  // `docker run --user root` with the test directory mounted plus a
+  // `pip install pytest` — 69 passed (all inherited; this change adds no
+  // Python test). The keys were then proven to reach the estimator by fitting
+  // a 400-row synthetic frame at seed 42 and reading the forest back:
+  // min_samples_leaf=50 collapses 12,590 leaves to 199 (depth 19 -> 2),
+  // min_samples_split=100 to 205 (depth 3), max_leaf_nodes=8 to exactly 400
+  // (8 per tree x 50 trees), each predicting differently from the baseline —
+  // and max_leaf_nodes=null reproduces the baseline BIT-IDENTICALLY, which is
+  // what proves the nullable path is not coerced through int().
+  //
+  // PUSH NOT ATTEMPTED — every bump from 1.0.9 through 1.0.13 returned
+  // `insufficient_scope: authorization failed`, so like those this tag exists
+  // LOCALLY on the build machine only. `resolveDigest` inspects the local
+  // image first, so this default is correct where it was built and fails
+  // LOUDLY at boot elsewhere rather than silently running old code.
+  //
+  // 1.0.15 (MODEL-FLOW-027) — `build_model` gains capacity knobs for the
+  // five algorithms MODEL-FLOW-026 left out: xgboost (subsample,
+  // colsample_bytree, min_child_weight), lightgbm (n_estimators, max_depth,
+  // min_child_samples), hist_gradient_boosting (max_depth, min_samples_leaf,
+  // l2_regularization), ridge (fit_intercept, solver — reversing the prior
+  // "random_state dropped" design: sag/saga now receive it), svm (tol,
+  // max_iter). ADDITIVE: every key keeps its library default, so a run
+  // launched with the old payload builds a bit-identical estimator. The bump
+  // is still required for the same reason as 1.0.14 — on 1.0.14 these new
+  // keys reach the container and are SILENTLY IGNORED.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR: `docker run --entrypoint bash` with the
+  // test directory mounted plus `pip install pytest` — 69 passed (all
+  // inherited; this change adds no Python test). Each new knob was then
+  // proven to reach its estimator by fitting a 400-row synthetic frame at
+  // seed 42: pushing xgboost's subsample/colsample_bytree/min_child_weight,
+  // lightgbm's n_estimators/max_depth/min_child_samples,
+  // hist_gradient_boosting's max_depth/min_samples_leaf/l2_regularization,
+  // ridge's fit_intercept, and svm's tol/max_iter each changed the fitted
+  // model's predictions from the library-default fit. The two nullable
+  // knobs (lightgbm/svm's max_iter-shaped fields, mapped to -1;
+  // hist_gradient_boosting's max_depth, which stays None) reproduce the
+  // default BIT-IDENTICALLY when passed null, proving neither path is
+  // coerced through int(). ridge's seed reversal was proven directly:
+  // solver=sag/saga gives identical predictions across two fits at the SAME
+  // seed and different predictions across two different seeds — the seed
+  // reaches the estimator now, where before this feature it never did.
+  //
+  // NOT RE-VERIFIED: no run has been launched through the wizard UI against
+  // 1.0.15, and the image is not pushed (same registry gap as every prior
+  // bump), so only this build host has it. random_forest, mlp, grp, pls,
+  // ols, lstm, gru receive no code change here and were not re-run.
+  //
+  // 1.0.16 (MODEL-SERVE-020-T06) — the Retrain tab's charts need the per-row
+  // series behind the operator's NEW-DATA window. `_score_new_data_holdout_if_
+  // present` used to return only the aggregate and discard the frame; it now
+  // returns both, and `_publish` uploads the frame as
+  // `new_data_holdout_predictions.parquet` (MIRRORS.md entry 9). ADDITIVE, so
+  // the bump is required for the reason 1.0.6 taught: on 1.0.15 the artifact is
+  // simply never uploaded, `complete()` records `newDataHoldoutPredictionsKey`
+  // NULL, and the tab states an honest absence while every layer of code is
+  // correct.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR (the image ships no pytest): `docker run
+  // --entrypoint python` with PYTHONPATH=/workspace/images/trainer/app and a
+  // script mounted in — the REAL `_score_new_data_holdout_if_present` against
+  // a REAL fitted Ridge on a 24-row window returned (metrics, frame) with the
+  // {timestamp,y_true,y_pred} columns and y_pred equal to `model.predict`;
+  // (None, None) with no window and for a non-eligible (CV) run; and the frame
+  // reached `ArtifactSet` as a parquet under its own filename. The same
+  // import on 1.0.15 answers `hasattr(artifacts,
+  // 'NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME') == False`.
+  //
+  // NOT RE-VERIFIED: no full retrain has been launched against 1.0.16, so
+  // `_publish`'s upload of the new file and `complete()` recording the key are
+  // proven by their unit specs and source inspection, not by a live run. The
+  // image is not pushed (same registry gap as every prior bump), so only this
+  // build host has it.
+  //
+  // 1.0.17 (MODEL-SERVE-021-T03) — "New Data Only" now REPLACES the training
+  // data outright and carves no frozen slice of the incumbent's own rows, so
+  // `_score_new_data_holdout_if_present` now ALSO scores the current
+  // PRODUCTION model on the same window when claim() presigned one
+  // (`incumbentModelUrl`/`incumbentModelChecksum`/`incumbentFeatureColumns`),
+  // and `_publish` uploads its series as
+  // `incumbent_new_data_holdout_predictions.parquet` (MIRRORS.md entry 10).
+  // ADDITIVE, same reason as every prior bump: on 1.0.16 this key is simply
+  // never uploaded, `complete()` records `incumbentNewDataHoldoutPredictionsKey`
+  // NULL, and the Retrain tab states an honest absence while every layer of
+  // code is correct.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR (the image ships no pytest): `docker run
+  // --entrypoint python` against a script mounted in that fits TWO real Ridge
+  // models on DIFFERENT synthetic data, calls the REAL
+  // `_score_new_data_holdout_if_present` with `download_verified` swapped for
+  // local paths (standing in for the presigned-URL fetch, itself covered
+  // elsewhere), and scores both on the SAME 40-row window. Candidate (fit on
+  // that exact data) scored r2=0.9979; incumbent (fit on unrelated data)
+  // scored r2=-1.876 on the SAME rows — proving two DISTINCT models were
+  // actually scored, not one model twice, and that both predictions frames
+  // share the {timestamp,y_true,y_pred} shape.
+  //
+  // NOT RE-VERIFIED: no full NEW_DATA_ONLY retrain has been launched against
+  // 1.0.17, so the presign/claim wiring upstream and `_publish`'s upload are
+  // proven by their unit specs and this behavioural check, not by a live run.
+  // The image is not pushed (same registry gap as every prior bump), so only
+  // this build host has it.
+  //
+  // 1.0.18 — MODEL-SERVE-026-T05. Adds pipelines/cv_gap.py: when claim()
+  // puts `cvGap` in the spec (a NEW_DATA_ONLY job with cvFolds), each
+  // candidate also refits its configuration per expanding fold and scores it
+  // beside the current version, uploading `cv_gap_predictions.parquet`
+  // (MIRRORS.md entry 11). ADDITIVE like every prior bump: absent spec field
+  // = no CV, so every other run is byte-for-byte the 1.0.17 behaviour.
+  // Built by the user on this host (2026-10-02, image 6ce4f8ee2d7e) after
+  // this session's own build could not reach docker.io; the trainer suite
+  // (75 tests, incl. test/test_cv_gap.py) passed INSIDE it. Not pushed.
+  //
+  // 1.0.19 — MODEL-SERVE-027. pipelines/chronological.py cuts the test split
+  // on the OLD rows only when claim() sends `augmentNewDataFrom` (an
+  // Existing + new retrain), so every new row trains; before this, the new
+  // rows were always the newest 30% and all landed in test. ADDITIVE: absent
+  // field = the plain split, byte-for-byte 1.0.18. Built by the user
+  // (2026-10-02, image a4597bcbd504); trainer suite 78/78 inside it.
+  //
+  // 1.0.20 — MODEL-SERVE-027. api.complete() sends non-finite floats as null
+  // (json_safe): a 1-row frozen holdout's r2 is NaN, and requests refused the
+  // whole completion, failing good runs. Built by the user (2026-10-02, image
+  // e27b112f7562); trainer suite 80/80 inside it.
+  //
+  // 1.0.21 — MODEL-FLOW-028. pipelines/cv_expanding.py keeps each fold's
+  // out-of-fold predictions and publishes them as `cv_oof_predictions.parquet`
+  // (new TrainingResult.extra_parquet; MIRRORS.md entry 12) instead of
+  // discarding them. ADDITIVE: every non-CV run is byte-for-byte 1.0.20. A CV
+  // run trained on an older image has no such file and never will. Built by
+  // the user (2026-10-08, image 51d727619caa); trainer suite 83/83 run against
+  // the mounted source, and the built image confirmed to contain the new code.
+  // Not pushed.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.0';
-  private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.21';
+  // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
+  private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(
     process.env.TRAINING_MEMORY_BYTES ?? 8 * 1024 ** 3,
   );
@@ -33,6 +463,208 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
 
   async onModuleInit() {
     await this.resolveDigest();
+    await this.reconcileOrphanedRuns();
+  }
+
+  /**
+   * MODEL-FLOW-011-T04. `watch()`'s in-memory `container.wait()` promise
+   * dies with the process — a `nest --watch` restart (or a real deploy) can
+   * therefore strand a run at RUNNING forever with a container the daemon
+   * either no longer has, or that finished without anyone noticing.
+   * `ModelTrainingRun.containerId` is what survives the restart; this walks
+   * every RUNNING row and reconciles it against the daemon's own state.
+   *
+   * Deliberately an EXISTENCE check per row, not the blanket
+   * `updateMany({status:'RUNNING'} -> FAILED)` `PreprocessingJobService`/
+   * `LoaderJobService` use for their own boot sweeps: unlike a preprocessing
+   * job, a training container is independent of the Node process and can
+   * still be alive (or already finished) across a `nest --watch` restart —
+   * failing it outright would kill a run that was never actually orphaned.
+   */
+  private async reconcileOrphanedRuns() {
+    const orphans = await this.prisma.modelTrainingRun.findMany({
+      where: { status: 'RUNNING' },
+      select: { id: true, containerId: true },
+    });
+    // MODEL-FLOW-016-T07. A scoring container never touches `status` (it
+    // stays at the run's own terminal value throughout — see
+    // `scoringContainerId`'s doc comment), so the training sweep above
+    // cannot see it. Same restart hazard, same fix: without this, a
+    // restart during scoring strands `scoringContainerId` set forever and
+    // the UI polls a phase that will never finish.
+    const scoringOrphans = await this.prisma.modelTrainingRun.findMany({
+      where: { scoringContainerId: { not: null } },
+      select: { id: true, scoringContainerId: true },
+    });
+
+    let reconciled = 0;
+    for (const run of orphans) {
+      if (!run.containerId) {
+        await this.prisma.modelTrainingRun.update({
+          where: { id: run.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              'No container was ever recorded for this run — it never spawned.',
+            finishedAt: new Date(),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+
+      const container = this.docker.getContainer(run.containerId);
+      try {
+        await container.inspect();
+      } catch {
+        await this.prisma.modelTrainingRun.update({
+          where: { id: run.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              `Container ${run.containerId} no longer exists — the server ` +
+              'restarted while this run was in flight.',
+            finishedAt: new Date(),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+
+      // The container still exists — re-attach the watcher regardless of
+      // whether it is still running or already exited: container.wait()
+      // resolves IMMEDIATELY for an already-stopped container, so this one
+      // call covers both cases through the same exit-code branch watch()
+      // already writes, rather than a second copy of that logic here.
+      void this.watch(run.id, container, 'train');
+      reconciled += 1;
+    }
+
+    for (const run of scoringOrphans) {
+      if (!run.scoringContainerId) continue;
+      const container = this.docker.getContainer(run.scoringContainerId);
+      try {
+        await container.inspect();
+      } catch {
+        // Container gone — clear the in-flight marker, same as watch()'s
+        // own "exited without reporting" branch for scoring below. The
+        // training run's own status/metrics are untouched.
+        await this.prisma.modelTrainingRun.update({
+          where: { id: run.id },
+          data: { scoringContainerId: null },
+        });
+        reconciled += 1;
+        continue;
+      }
+      void this.watch(run.id, container, 'score');
+      reconciled += 1;
+    }
+
+    // MODEL-SERVE-003-V01. Same existence-check discipline as the training
+    // sweep above, not PreprocessingJobService/LoaderJobService's blanket
+    // updateMany — a batch container is independent of the Node process for
+    // the identical reason a training one is. NOTE (recorded deliberately,
+    // not inherited silently): this only reconciles RUNNING, so a job that
+    // dies between row-create and spawn stays QUEUED forever — the same gap
+    // trainning-container's own training sweep has always had. Acceptable
+    // here for the same reason: creation and spawn are both synchronous and
+    // fast (createContainer, not a pull), so the window is a process crash
+    // landing inside a few hundred milliseconds, not an image pull that can
+    // take minutes.
+    const batchOrphans = await this.prisma.predictionJob.findMany({
+      where: { status: 'RUNNING' },
+      select: { id: true, containerId: true },
+    });
+    for (const job of batchOrphans) {
+      if (!job.containerId) {
+        await this.prisma.predictionJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              'No container was ever recorded for this job — it never spawned.',
+            finishedAt: new Date(),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+      const container = this.docker.getContainer(job.containerId);
+      try {
+        await container.inspect();
+      } catch {
+        await this.prisma.predictionJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              `Container ${job.containerId} no longer exists — the server ` +
+              'restarted while this job was in flight.',
+            finishedAt: new Date(),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+      void this.watch(job.id, container, 'batch');
+      reconciled += 1;
+    }
+
+    // MODEL-SERVE-006. Same existence-check discipline, one entity over —
+    // this is the BOOT-time reconcile (a restart while a window's
+    // container was running); InferenceWindowSchedulerService's own
+    // reconcileStuckWindows is the separate, TICK-time, TIMEOUT-based
+    // reconcile for a window whose container hung without ever posting
+    // /infer-complete, which an existence check alone cannot catch. Same
+    // acceptable QUEUED-forever-equivalent gap as batch's own note above:
+    // a window that dies between row-create and spawn stays PENDING, and
+    // the next tick's dispatch simply picks it up again.
+    const inferOrphans = await this.prisma.inferenceWindow.findMany({
+      where: { status: 'RUNNING' },
+      select: { id: true, containerId: true },
+    });
+    for (const window of inferOrphans) {
+      if (!window.containerId) {
+        await this.prisma.inferenceWindow.update({
+          where: { id: window.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              'No container was ever recorded for this window — it never spawned.',
+            finishedAt: new Date(),
+            tokenExpiresAt: new Date(0),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+      const container = this.docker.getContainer(window.containerId);
+      try {
+        await container.inspect();
+      } catch {
+        await this.prisma.inferenceWindow.update({
+          where: { id: window.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              `Container ${window.containerId} no longer exists — the ` +
+              'server restarted while this window was in flight.',
+            finishedAt: new Date(),
+            tokenExpiresAt: new Date(0),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+      void this.watch(window.id, container, 'infer');
+      reconciled += 1;
+    }
+
+    if (reconciled > 0) {
+      this.log.warn(
+        `Reconciled ${reconciled} orphaned run/container(s) at boot.`,
+      );
+    }
   }
 
   /**
@@ -65,16 +697,47 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
     this.log.log(`Training image pinned to ${this.imageDigest}`);
   }
 
-  async spawn(runId: string, token: string) {
+  /**
+   * MODEL-FLOW-016-T07 / MODEL-SERVE-003. `mode` parameterizes ONE spawn
+   * path rather than a near-copy per mode — the HostConfig below is ~25
+   * lines of security-critical settings (CapDrop, ReadonlyRootfs, Tmpfs,
+   * memory caps); separate copies is how they drift out of sync with each
+   * other. `train-${id}`, `score-${id}`, `batch-${id}` are deliberately
+   * DIFFERENT container names — the training container has already exited
+   * by the time scoring starts (see `claim()`'s doc comment), but a stale
+   * name collision would still be possible if the training container were
+   * ever kept (`TRAINING_KEEP_FAILED=1`).
+   *
+   * `id` is a `ModelTrainingRun.id` for train/score, a `PredictionJob.id`
+   * for batch — the Docker Env var stays the generic `RUN_ID` either way
+   * (see `RunContext.api`'s own doc comment on the trainer side for why the
+   * route BASE branches on mode there, not the env var name here).
+   */
+  async spawn(
+    id: string,
+    token: string,
+    mode: 'train' | 'score' | 'batch' | 'infer' = 'train',
+  ) {
     const container = await this.docker.createContainer({
       Image: this.imageDigest || this.imageRef,
-      name: `train-${runId}`,
+      name: `${mode}-${id}`,
       Env: [
-        `RUN_ID=${runId}`,
+        `RUN_ID=${id}`,
         `RUN_TOKEN=${token}`,
         `API_BASE=${process.env.INTERNAL_API_BASE ?? 'http://backend:3000'}`,
+        `MODE=${mode}`,
       ],
-      Labels: { 'dslake.role': 'training', 'dslake.runId': runId },
+      Labels: {
+        'dslake.role':
+          mode === 'score'
+            ? 'scoring'
+            : mode === 'batch'
+              ? 'batch-predict'
+              : mode === 'infer'
+                ? 'scheduled-inference'
+                : 'training',
+        'dslake.runId': id,
+      },
       HostConfig: {
         NetworkMode: this.network,
         // No host filesystem, ever. Everything the run needs arrives over
@@ -97,40 +760,177 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       },
     });
 
-    await container.start();
-    await this.prisma.modelTrainingRun.update({
-      where: { id: runId },
-      data: {
-        status: 'RUNNING',
-        containerId: container.id,
-        startedAt: new Date(),
-      },
-    });
+    // `mode === 'score'` writes ONLY scoringContainerId — status/containerId/
+    // startedAt belong to the TRAINING spawn and must not be clobbered by a
+    // scoring run against an already-terminal (SUCCEEDED) row.
+    //
+    // Ordering differs by mode, deliberately: `ScoreTokenGuard` admits a
+    // call ONLY when `scoringContainerId` is already set — there is no
+    // equivalent "not started yet" state it accepts the way RunTokenGuard
+    // accepts QUEUED for training. Writing it BEFORE `start()` (container
+    // ids are assigned by `createContainer`, not `start`) closes the race
+    // where a fast-booting container's own `/score-claim` could 401
+    // against a row the update hadn't reached yet. The training branch
+    // stays AFTER start() on purpose — marking a run RUNNING before it
+    // has actually started would be worse than the (harmless, guard-
+    // admitted) QUEUED window it currently has. Batch (MODEL-SERVE-003)
+    // follows the training branch's ordering: `PredictionJobTokenGuard`
+    // accepts QUEUED the same way RunTokenGuard does, so there is no
+    // equivalent race to close by writing early.
+    if (mode === 'score') {
+      await this.prisma.modelTrainingRun.update({
+        where: { id },
+        data: { scoringContainerId: container.id },
+      });
+      await container.start();
+    } else if (mode === 'batch') {
+      await container.start();
+      await this.prisma.predictionJob.update({
+        where: { id },
+        data: {
+          status: 'RUNNING',
+          containerId: container.id,
+          startedAt: new Date(),
+        },
+      });
+    } else if (mode === 'infer') {
+      // MODEL-SERVE-006. Follows batch's ordering — InferenceWindowToken
+      // Guard accepts PENDING the same way PredictionJobTokenGuard accepts
+      // QUEUED, so there is no equivalent pre-start race to close.
+      await container.start();
+      await this.prisma.inferenceWindow.update({
+        where: { id },
+        data: {
+          status: 'RUNNING',
+          containerId: container.id,
+          startedAt: new Date(),
+        },
+      });
+    } else {
+      await container.start();
+      await this.prisma.modelTrainingRun.update({
+        where: { id },
+        data: {
+          status: 'RUNNING',
+          containerId: container.id,
+          startedAt: new Date(),
+        },
+      });
+    }
 
-    void this.watch(runId, container);
+    void this.watch(id, container, mode);
   }
 
   /**
    * Observe the exit code.
    *
-   * The container reports its own outcome via /complete, but a process that
-   * is OOM-killed or segfaults never gets to. Without this, such a run stays
-   * RUNNING forever. `/complete` having already landed wins — this only
-   * fills a gap, it does not overrule a real report.
+   * The container reports its own outcome via /complete (train),
+   * /score-complete (score), or /batch-complete (batch), but a process that
+   * is OOM-killed or segfaults never gets to. Without this, such a run
+   * stays RUNNING (train, batch) or "scoring" (score) forever. A real
+   * report having already landed always wins — this only fills a gap, it
+   * does not overrule one.
    */
-  private async watch(runId: string, container: Docker.Container) {
+  private async watch(
+    id: string,
+    container: Docker.Container,
+    mode: 'train' | 'score' | 'batch' | 'infer' = 'train',
+  ) {
     try {
       const { StatusCode } = await container.wait();
+
+      if (mode === 'score') {
+        const run = await this.prisma.modelTrainingRun.findUnique({
+          where: { id },
+          select: { scoringContainerId: true },
+        });
+        // Already cleared by a real /score-complete (or a later re-trigger's
+        // own container) — this exit report is stale, do not clobber it.
+        if (!run || run.scoringContainerId !== container.id) return;
+
+        const tail = await this.tailLogs(container);
+        await this.prisma.modelTrainingRun.update({
+          where: { id },
+          data: { scoringContainerId: null },
+        });
+        await this.prisma.modelTrainingRunLog.create({
+          data: {
+            runId: id,
+            level: 'error',
+            message: (StatusCode === 0
+              ? `Scoring container exited 0 without reporting a result. Tail: ${tail}`
+              : `Scoring container exited ${StatusCode}. Tail: ${tail}`
+            ).slice(0, 4000),
+          },
+        });
+        return;
+      }
+
+      if (mode === 'batch') {
+        const job = await this.prisma.predictionJob.findUnique({
+          where: { id },
+          select: { status: true },
+        });
+        // Same "a real report already landed always wins" rule as train —
+        // a stale exit report for a job already terminal (via a real
+        // /batch-complete) must not clobber the recorded outcome.
+        if (job && (job.status === 'RUNNING' || job.status === 'QUEUED')) {
+          const tail = await this.tailLogs(container);
+          await this.prisma.predictionJob.update({
+            where: { id },
+            data: {
+              status: 'FAILED',
+              failureReason:
+                StatusCode === 0
+                  ? `Container exited 0 without reporting a result. Tail: ${tail}`
+                  : `Container exited ${StatusCode}. Tail: ${tail}`,
+              finishedAt: new Date(),
+            },
+          });
+        }
+        return;
+      }
+
+      if (mode === 'infer') {
+        const window = await this.prisma.inferenceWindow.findUnique({
+          where: { id },
+          select: { status: true },
+        });
+        // Same "a real report already landed always wins" rule as batch —
+        // a stale exit report for a window already terminal (via a real
+        // /infer-complete, or T02's own stuck-window reconcile) must not
+        // clobber the recorded outcome.
+        if (
+          window &&
+          (window.status === 'RUNNING' || window.status === 'PENDING')
+        ) {
+          const tail = await this.tailLogs(container);
+          await this.prisma.inferenceWindow.update({
+            where: { id },
+            data: {
+              status: 'FAILED',
+              failureReason:
+                StatusCode === 0
+                  ? `Container exited 0 without reporting a result. Tail: ${tail}`
+                  : `Container exited ${StatusCode}. Tail: ${tail}`,
+              finishedAt: new Date(),
+              tokenExpiresAt: new Date(0),
+            },
+          });
+        }
+        return;
+      }
+
       const run = await this.prisma.modelTrainingRun.findUnique({
-        where: { id: runId },
+        where: { id },
         select: { status: true },
       });
       if (run && (run.status === 'RUNNING' || run.status === 'QUEUED')) {
         const tail = await this.tailLogs(container);
         await this.prisma.modelTrainingRun.update({
-          where: { id: runId },
+          where: { id },
           data: {
-            status: StatusCode === 0 ? 'FAILED' : 'FAILED',
+            status: 'FAILED',
             failureReason:
               StatusCode === 0
                 ? `Container exited 0 without reporting a result. Tail: ${tail}`
@@ -140,9 +940,9 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
         });
       }
     } catch (err) {
-      this.log.error(`watch failed for run ${runId}`, err);
+      this.log.error(`watch failed for run ${id} (${mode})`, err);
     } finally {
-      await this.reap(container);
+      await this.reap(container, false);
     }
   }
 
@@ -159,7 +959,8 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
     }
   }
 
-  private async reap(container: Docker.Container) {
+  private async reap(container: Docker.Container, failed: boolean) {
+    if (failed && process.env.TRAINING_KEEP_FAILED === '1') return;
     try {
       await container.remove({ force: true });
     } catch {
@@ -172,6 +973,22 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       await this.docker.getContainer(containerId).kill();
     } catch (err) {
       this.log.warn(`kill ${containerId}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * MODEL-SERVE-006. Exposed for InferenceWindowSchedulerService's own
+   * timeout-based stuck-window reconcile — the same `container.inspect()`
+   * existence check `reconcileOrphanedRuns` already performs inline, made
+   * public rather than duplicated a second time with `getContainer` +
+   * `inspect` repeated in a different file.
+   */
+  async containerExists(containerId: string): Promise<boolean> {
+    try {
+      await this.docker.getContainer(containerId).inspect();
+      return true;
+    } catch {
+      return false;
     }
   }
 }

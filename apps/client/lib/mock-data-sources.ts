@@ -37,4 +37,9 @@ export interface SavedDataSource {
   /** ISO date YYYY-MM-DD */
   lastUsed: string
   createdBy: string
+  /** Workspace the source is shared with; null = private to the creator. */
+  workspaceId?: string | null
+  /** True only for the creator — teammates can query through a shared
+   *  source but cannot edit or delete it (and never see its username). */
+  canManage?: boolean
 }

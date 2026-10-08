@@ -2,12 +2,11 @@ import { auth } from '@/lib/auth'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-const AUTH_PATHS = [
-  '/login',
-  '/register',
-  '/reset-password',
-  '/change-password',
-]
+// Guest-only pages: a logged-in user is sent to /overview. `/change-password`
+// is deliberately NOT here — it asks for the current password and calls the
+// JWT-guarded /authorized/auth/change-password, so it is a logged-in page and
+// falls under the protected rule below (guests go to /login?callbackUrl=…).
+const AUTH_PATHS = ['/login', '/register', '/reset-password']
 
 const PUBLIC_PATHS = ['/', ...AUTH_PATHS]
 

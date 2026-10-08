@@ -1,8 +1,19 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
-import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
+import {
+  CreateTrainingRunDto,
+  ModelRunPredictionsQueryDto,
+} from './dto/model-run.authorized.dto';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';
 
 /**
@@ -62,6 +73,51 @@ export class ModelRunLaunchAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.runs.getRunService(modelId, runId, user.id, user.role);
+  }
+
+  @Get('/:modelId/runs/:runId/cv-gap')
+  @ApiOperation({
+    summary: "A retrain candidate's cross-validation series (MODEL-SERVE-026)",
+    description:
+      'Every expanding fold of a NEW_DATA_ONLY retrain that asked for ' +
+      "folds: the candidate configuration's fold-fit prediction and the " +
+      "current version's (null before its own cut). 404 naming why when " +
+      'no folds were requested, the run has not succeeded, or no series ' +
+      'was written.',
+  })
+  getRunCvGapController(
+    @Param('modelId') modelId: string,
+    @Param('runId') runId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.runs.getRunCvGapService(modelId, runId, user.id, user.role);
+  }
+
+  @Get('/:modelId/runs/:runId/predictions')
+  @ApiOperation({
+    summary:
+      "Parsed actual/predicted series for one Model-owned run's population",
+    description:
+      'MODEL-SERVE-020-T04 — the Retrain tab charts. Model-scoped twin of the ' +
+      'draft route: a retrain candidate is owned by the Model, so the draft ' +
+      "route's `modelDraftId` filter cannot find it. A runId belonging to " +
+      'another model is a 404. `population` selects `test` (default), ' +
+      '`holdout`, or `new_data_holdout`; a missing series is a 404 that names ' +
+      'which population and why.',
+  })
+  getRunPredictionsController(
+    @Param('modelId') modelId: string,
+    @Param('runId') runId: string,
+    @Query() query: ModelRunPredictionsQueryDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.runs.getRunPredictionsService(
+      modelId,
+      runId,
+      user.id,
+      user.role,
+      query.population,
+    );
   }
 
   @Post('/:modelId/runs/:runId/cancel')

@@ -10,6 +10,52 @@
  */
 import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
 
+/**
+ * MODEL-FLOW-020-T05. Advisory only — a statement of what a reasonable band
+ * looks like, NEVER a constraint on the input. The field keeps its single
+ * default and the control keeps accepting whatever `min`/`max` allow; this is
+ * the shape MODEL-FLOW-012-T05 chose for the Loss function control, which
+ * stayed a control and gained a note about what it does and does not do.
+ *
+ * `note` states what the parameter DOES, in terms a reader can check against
+ * the estimator's own documentation — "higher = stronger L2 shrinkage" is
+ * checkable, "try 0.1" is folklore. Deliberately short: it renders under a
+ * form field, not in a tooltip.
+ *
+ * THE BAND MUST CONTAIN EVERY VALUE `TUNING_GRID` ACTUALLY TRIES for the
+ * same algorithm and key (this feature's finding 5). A form suggesting
+ * 100-500 estimators beside a tuning phase that only tries 50-100 tells the
+ * user two different things about one parameter. That agreement is NOT
+ * maintained by hand: `__tests__/training-config-grid-agreement.test.ts`
+ * imports the backend's own `tuning-grid.ts` and fails if any grid value
+ * falls outside the band declared here (MODEL-FLOW-024 extended it from one
+ * table to every size tier) — the same guard-across-the-boundary precedent
+ * `run-params.test.ts` and `tuning-grid.spec.ts` already follow.
+ *
+ * The band also contains the field's own `defaultValue`, for the obvious
+ * reason that a form cannot ship a default it simultaneously calls out of
+ * range.
+ *
+ * THIS FIELD IS THE MEDIUM TIER — what a dataset of 8,760-26,279 rows (1-3
+ * years of hourly data), or an unknown size, is shown. It was NOT derived from dataset size
+ * when written: MODEL-FLOW-020-T03 measured capacity against real holdouts at
+ * 32 and 59 distinct labelled values, found no size-dependent ordering, and
+ * closed as a no-op. MODEL-FLOW-024 sizes the bands anyway, at the user's
+ * request: `lib/hyperparam-ranges.ts` overrides this range per size tier,
+ * keyed on ROW COUNT (the user's decision of 2026-09-21; it first keyed on
+ * distinct labelled values, since a forward-filled lab target makes 8,350
+ * rows hold 32 observations). Those overrides are declared
+ * priors, not measured optima, and the form says so. Read a field's band
+ * through `suggestedRangeFor`, not off this property, or it will show the
+ * medium band to a dataset it was not chosen for.
+ */
+export interface SuggestedRange {
+  min: number
+  max: number
+  /** What the parameter does — checkable against the estimator's docs. */
+  note: string
+}
+
 /** A single hyperparameter control, discriminated by `kind` (drives the rendered input). */
 export type HyperparamField =
   | {
@@ -20,6 +66,7 @@ export type HyperparamField =
       step?: number
       min?: number
       max?: number
+      suggestedRange?: SuggestedRange
     }
   | { kind: 'checkbox'; key: string; label: string; defaultValue: boolean }
   | {
@@ -28,6 +75,11 @@ export type HyperparamField =
       key: string
       label: string
       defaultValue: number | null
+      /** Describes the NUMERIC band only. `null` (unlimited) is a separate,
+       *  deliberate choice the toggle already explains, and the grid's own
+       *  `null` entry is excluded from the containment check for the same
+       *  reason — it is not a value on this scale. */
+      suggestedRange?: SuggestedRange
     }
   | {
       kind: 'select'
@@ -47,6 +99,129 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: true,
     },
   ],
+  ridge: [
+    {
+      kind: 'number',
+      key: 'alpha',
+      label: 'Alpha (regularization)',
+      defaultValue: 1.0,
+      step: 0.1,
+      min: 0,
+      suggestedRange: {
+        min: 0.01,
+        max: 100,
+        note: 'higher = stronger L2 shrinkage toward zero',
+      },
+    },
+    {
+      kind: 'checkbox',
+      key: 'fit_intercept',
+      label: 'Fit intercept',
+      defaultValue: true,
+    },
+    {
+      kind: 'select',
+      key: 'solver',
+      label: 'Solver',
+      defaultValue: 'auto',
+      // MODEL-FLOW-027. `lbfgs` deliberately excluded: sklearn raises unless
+      // `positive=True`, which this catalogue never sets, so every option
+      // here is one Ridge actually accepts. `sag`/`saga` are the two that
+      // consult the run's seed (models.py's ridge branch).
+      options: [
+        { value: 'auto', label: 'auto' },
+        { value: 'svd', label: 'svd' },
+        { value: 'cholesky', label: 'cholesky' },
+        { value: 'lsqr', label: 'lsqr' },
+        { value: 'sparse_cg', label: 'sparse_cg' },
+        { value: 'sag', label: 'sag' },
+        { value: 'saga', label: 'saga' },
+      ],
+    },
+  ],
+  // Key names match `xgboost`/`lightgbm` below on purpose, not `max_iter` /
+  // `max_leaf_nodes` (the estimator's real kwargs) — train.py's
+  // hist_gradient_boosting branch maps n_estimators→max_iter and
+  // num_leaves→max_leaf_nodes so the three boosting algorithms present one
+  // shared vocabulary to the user.
+  hist_gradient_boosting: [
+    {
+      kind: 'number',
+      key: 'learning_rate',
+      label: 'Learning rate',
+      defaultValue: 0.1,
+      step: 0.01,
+      min: 0,
+      suggestedRange: {
+        min: 0.01,
+        max: 0.3,
+        note: 'lower needs more estimators to reach the same fit',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'n_estimators',
+      label: 'N-estimators',
+      defaultValue: 200,
+      step: 10,
+      min: 1,
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'boosting rounds (max_iter); pairs with learning_rate',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'num_leaves',
+      label: 'Num leaves',
+      defaultValue: 31,
+      step: 1,
+      min: 2,
+      suggestedRange: {
+        min: 7,
+        max: 63,
+        note: 'max_leaf_nodes; higher fits finer structure, overfits sooner',
+      },
+    },
+    {
+      kind: 'nullable-number',
+      key: 'max_depth',
+      label: 'Max depth',
+      defaultValue: null,
+      suggestedRange: {
+        min: 3,
+        max: 12,
+        note: 'unlimited lets leaf-wise growth run past num_leaves alone',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_samples_leaf',
+      label: 'Min samples per leaf',
+      defaultValue: 20,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 5,
+        max: 50,
+        note: 'raise it to stop leaves that memorise a handful of rows',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'l2_regularization',
+      label: 'L2 regularization',
+      defaultValue: 0,
+      step: 0.1,
+      min: 0,
+      suggestedRange: {
+        min: 0,
+        max: 10,
+        note: 'shrinkage on leaf values; higher = more conservative splits',
+      },
+    },
+  ],
   svm: [
     {
       kind: 'number',
@@ -55,6 +230,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 1.0,
       step: 0.1,
       min: 0,
+      suggestedRange: {
+        min: 0.1,
+        max: 100,
+        note: 'higher = less regularisation, tighter fit to training points',
+      },
     },
     {
       kind: 'select',
@@ -75,6 +255,35 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.1,
       step: 0.01,
       min: 0,
+      suggestedRange: {
+        min: 0.01,
+        max: 0.1,
+        note: 'width of the no-penalty tube around the prediction',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'tol',
+      label: 'Tolerance',
+      defaultValue: 0.001,
+      step: 0.0001,
+      min: 0,
+      suggestedRange: {
+        min: 0.0001,
+        max: 0.01,
+        note: 'stopping criterion; smaller keeps optimising longer',
+      },
+    },
+    {
+      kind: 'nullable-number',
+      key: 'max_iter',
+      label: 'Max iterations',
+      defaultValue: null,
+      suggestedRange: {
+        min: 1000,
+        max: 100000,
+        note: 'solver iteration cap; unlimited runs until tol is met',
+      },
     },
   ],
   mlp: [
@@ -85,6 +294,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 100,
       step: 1,
       min: 1,
+      suggestedRange: {
+        min: 50,
+        max: 300,
+        note: 'width of the single hidden layer',
+      },
     },
     {
       kind: 'number',
@@ -93,6 +307,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.0001,
       step: 0.0001,
       min: 0,
+      suggestedRange: {
+        min: 0.00001,
+        max: 0.01,
+        note: 'L2 penalty on the weights',
+      },
     },
     {
       kind: 'number',
@@ -101,6 +320,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 200,
       step: 10,
       min: 1,
+      suggestedRange: {
+        min: 200,
+        max: 1000,
+        note: 'optimiser cap; raise it if convergence warnings appear',
+      },
     },
   ],
   grp: [
@@ -110,6 +334,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       label: 'Alpha (noise)',
       defaultValue: 1e-10,
       min: 0,
+      suggestedRange: {
+        min: 1e-10,
+        max: 0.001,
+        note: 'jitter on the kernel diagonal; raise it if the fit fails to converge',
+      },
     },
     {
       kind: 'number',
@@ -118,6 +347,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0,
       step: 1,
       min: 0,
+      suggestedRange: {
+        min: 0,
+        max: 10,
+        note: 'restarts of the kernel hyperparameter search; each costs a full fit',
+      },
     },
   ],
   pls: [
@@ -128,6 +362,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 2,
       step: 1,
       min: 1,
+      suggestedRange: {
+        min: 1,
+        max: 6,
+        note: 'latent components; cannot exceed the feature count',
+      },
     },
     {
       kind: 'number',
@@ -136,6 +375,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 500,
       step: 10,
       min: 1,
+      suggestedRange: {
+        min: 250,
+        max: 1000,
+        note: 'NIPALS iteration cap per component',
+      },
     },
   ],
   xgboost: [
@@ -146,6 +390,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 100,
       step: 10,
       min: 1,
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'boosting rounds; pairs with learning_rate',
+      },
     },
     {
       kind: 'number',
@@ -154,6 +403,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.1,
       step: 0.01,
       min: 0,
+      suggestedRange: {
+        min: 0.01,
+        max: 0.3,
+        note: 'lower needs more estimators to reach the same fit',
+      },
     },
     {
       kind: 'number',
@@ -162,6 +416,52 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 6,
       step: 1,
       min: 1,
+      suggestedRange: {
+        min: 3,
+        max: 10,
+        note: 'tree depth; the dominant overfitting control for this estimator',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'subsample',
+      label: 'Subsample',
+      defaultValue: 1.0,
+      step: 0.05,
+      min: 0.1,
+      max: 1,
+      suggestedRange: {
+        min: 0.5,
+        max: 1,
+        note: 'fraction of rows sampled per tree; below 1 adds randomness against overfitting',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'colsample_bytree',
+      label: 'Colsample by tree',
+      defaultValue: 1.0,
+      step: 0.05,
+      min: 0.1,
+      max: 1,
+      suggestedRange: {
+        min: 0.5,
+        max: 1,
+        note: 'fraction of columns sampled per tree',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_child_weight',
+      label: 'Min child weight',
+      defaultValue: 1,
+      step: 1,
+      min: 0,
+      suggestedRange: {
+        min: 1,
+        max: 10,
+        note: 'minimum summed Hessian a leaf needs to keep splitting',
+      },
     },
   ],
   random_forest: [
@@ -172,15 +472,75 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 100,
       step: 10,
       min: 1,
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'more trees only reduce variance — a forest does not overfit by count',
+      },
     },
     {
       kind: 'nullable-number',
       key: 'max_depth',
       label: 'Max depth',
       defaultValue: null,
+      suggestedRange: {
+        min: 5,
+        max: 20,
+        note: 'unlimited grows each tree until its leaves are pure',
+      },
+    },
+    {
+      kind: 'nullable-number',
+      key: 'max_leaf_nodes',
+      label: 'Max leaf nodes',
+      defaultValue: null,
+      suggestedRange: {
+        min: 16,
+        max: 256,
+        note: 'caps tree size by leaf count instead of depth — a shape-independent capacity limit',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_samples_leaf',
+      label: 'Min samples per leaf',
+      defaultValue: 1,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 1,
+        max: 20,
+        note: 'raise it to stop leaves that memorise a handful of rows',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_samples_split',
+      label: 'Min samples to split',
+      defaultValue: 2,
+      step: 1,
+      min: 2,
+      suggestedRange: {
+        min: 2,
+        max: 40,
+        note: 'the smallest node still allowed to branch; blunter than the leaf floor',
+      },
     },
   ],
   lightgbm: [
+    {
+      kind: 'number',
+      key: 'n_estimators',
+      label: 'N-estimators',
+      defaultValue: 100,
+      step: 10,
+      min: 1,
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'boosting rounds; pairs with learning_rate',
+      },
+    },
     {
       kind: 'number',
       key: 'learning_rate',
@@ -188,6 +548,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.1,
       step: 0.01,
       min: 0,
+      suggestedRange: {
+        min: 0.01,
+        max: 0.3,
+        note: 'lower needs more boosting rounds to reach the same fit',
+      },
     },
     {
       kind: 'number',
@@ -196,6 +561,35 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 31,
       step: 1,
       min: 2,
+      suggestedRange: {
+        min: 15,
+        max: 63,
+        note: 'leaf-wise growth: the main capacity control, not depth',
+      },
+    },
+    {
+      kind: 'nullable-number',
+      key: 'max_depth',
+      label: 'Max depth',
+      defaultValue: null,
+      suggestedRange: {
+        min: 3,
+        max: 12,
+        note: 'unlimited (-1) lets leaf-wise growth run past num_leaves alone',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_child_samples',
+      label: 'Min child samples',
+      defaultValue: 20,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 5,
+        max: 50,
+        note: 'minimum rows in a leaf; raise it to stop leaves that memorise a handful of rows',
+      },
     },
     {
       kind: 'select',
@@ -217,6 +611,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 50,
       step: 1,
       min: 1,
+      suggestedRange: {
+        min: 10,
+        max: 200,
+        note: 'full passes over the training windows',
+      },
     },
     {
       kind: 'number',
@@ -225,6 +624,7 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 32,
       step: 1,
       min: 1,
+      suggestedRange: { min: 16, max: 128, note: 'windows per gradient step' },
     },
     {
       kind: 'number',
@@ -233,6 +633,27 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 64,
       step: 1,
       min: 1,
+      suggestedRange: { min: 32, max: 256, note: 'recurrent state width' },
+    },
+    // MODEL-FLOW-009-T03. Default kept in sync with DEFAULT_SEQUENCE_LENGTH
+    // (images/trainer/app/windows.py) — both are 24, not measured against
+    // any real dataset since no lookback-window convention exists elsewhere
+    // in this codebase yet. CORRECTED — the "still disabled inline" claim
+    // is stale: `algorithm-selector.tsx` was deleted (commit e9fcdf6),
+    // replaced by `algorithm-stack.tsx`, whose `DEFERRED_REASON` is empty —
+    // lstm/gru are selectable and train live since MODEL-FLOW-009-T04.
+    {
+      kind: 'number',
+      key: 'sequence_length',
+      label: 'Sequence length',
+      defaultValue: 24,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 12,
+        max: 168,
+        note: 'lookback window in samples, not hours',
+      },
     },
   ],
   gru: [
@@ -243,6 +664,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 50,
       step: 1,
       min: 1,
+      suggestedRange: {
+        min: 10,
+        max: 200,
+        note: 'full passes over the training windows',
+      },
     },
     {
       kind: 'number',
@@ -251,6 +677,7 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 32,
       step: 1,
       min: 1,
+      suggestedRange: { min: 16, max: 128, note: 'windows per gradient step' },
     },
     {
       kind: 'number',
@@ -259,17 +686,100 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 64,
       step: 1,
       min: 1,
+      suggestedRange: { min: 32, max: 256, note: 'recurrent state width' },
+    },
+    // MODEL-FLOW-009-T03. See the matching lstm entry's comment above.
+    {
+      kind: 'number',
+      key: 'sequence_length',
+      label: 'Sequence length',
+      defaultValue: 24,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 12,
+        max: 168,
+        note: 'lookback window in samples, not hours',
+      },
     },
   ],
 }
 
-/** Available loss / evaluation functions. Wire value ↔ display label. */
+/**
+ * Available loss / evaluation functions. Wire value ↔ display label.
+ *
+ * Recorded on the saved Model's config (Model.data.config.lossFunction) —
+ * MODEL-FLOW-012's audit found this is NEVER sent to the trainer:
+ * images/trainer/train.py has no loss/objective/criterion read anywhere, and
+ * CreateTrainingRunSchema is `.strict()` so a client that tried would be
+ * rejected. `cross_entropy` was dropped here for the same reason it was
+ * already dead: build_model has no classifier branch — this pipeline is
+ * regression-only.
+ */
 export const LOSS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'mse', label: 'MSE' },
+  { value: 'r2', label: 'R2' },
   { value: 'rmse', label: 'RMSE' },
   { value: 'mae', label: 'MAE' },
-  { value: 'cross_entropy', label: 'Cross-Entropy' },
 ]
+
+/**
+ * MODEL-FLOW-019-T37. THE ONE DEFAULT — and it must be a value this list
+ * actually offers.
+ *
+ * It was not, before this task: `mpLossFunctionAtom` and `resetWizardAtom`
+ * both defaulted to `'mse'`, which is not in `LOSS_OPTIONS` and never has
+ * been. A Radix `Select` given a value matching no item renders an EMPTY
+ * trigger, so the control came up blank — observed rather than inferred, and
+ * reaching every one of the 19 saved models in the dev database (4 recorded
+ * `'mse'` outright; the other 15 recorded nothing and met a `?? 'mse'`
+ * fallback on the way in).
+ *
+ * `'rmse'` rather than another member, for reasons this codebase already
+ * settled: `use-model-pipeline-nav`'s own reset already used it, and
+ * `DEFAULT_RANK_METRIC` is `'rmse'` because MODEL-FLOW-005 chose it over R2
+ * after a real run scored r2 = -1,110,858 while its rmse stayed readable.
+ *
+ * `store/model-pipeline.ts` cannot import this — it would close the store →
+ * training-config cycle that file already documents avoiding for
+ * `defaultHyperparams`. It inlines the literal instead, and
+ * `lib/__tests__/training-config.test.ts` asserts the two agree AND that both
+ * are members of `LOSS_OPTIONS`. That test is what the inlining costs;
+ * without it the divergence this task exists to close is free to reopen.
+ */
+export const DEFAULT_LOSS_FUNCTION = 'rmse'
+
+/**
+ * Values that predate `LOSS_OPTIONS`' current membership, mapped to the
+ * member that means the same thing.
+ *
+ * `mse` -> `rmse` is a RENAME rather than a substitution: the two are
+ * monotonically related, so they induce an identical ordering over any set of
+ * models, and this field never reaches the trainer at all (see `LOSS_OPTIONS`'
+ * own doc comment above) — so nothing about a model changes when its recorded
+ * label moves from one to the other. Kept as an explicit MAP rather than
+ * folded into the fallback, so a RECOGNISED legacy value and an unrecognised
+ * one are not recorded as the same fact.
+ */
+const LEGACY_LOSS_ALIASES: Record<string, string> = {
+  mse: 'rmse',
+}
+
+/**
+ * The offered value to display for whatever a record happens to carry.
+ *
+ * Absent, legacy and unrecognised all resolve to something `LOSS_OPTIONS` can
+ * render, because the alternative — the behaviour this task was filed for —
+ * is a control showing nothing at all: indistinguishable from an empty
+ * string, and telling a reader neither what was recorded nor that anything is
+ * wrong.
+ */
+export function normaliseLossFunction(
+  value: string | null | undefined,
+): string {
+  if (!value) return DEFAULT_LOSS_FUNCTION
+  if (LOSS_OPTIONS.some(o => o.value === value)) return value
+  return LEGACY_LOSS_ALIASES[value] ?? DEFAULT_LOSS_FUNCTION
+}
 
 /** Build the clean default hyperparameter record for an algorithm (no leftover keys). */
 export function defaultHyperparams(

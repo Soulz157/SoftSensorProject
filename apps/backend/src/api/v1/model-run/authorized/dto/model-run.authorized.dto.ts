@@ -7,11 +7,25 @@ const JsonScalar = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
 const MetricsSchema = z.record(z.string(), JsonScalar);
 
+// MODEL-FLOW-009-T04. All 12 runnable algorithms: build_model
+// (images/trainer/train.py) has a branch for each, including lstm/gru now
+// that the windowing pipeline (build_windows/chronological_split_windows/
+// assert_no_window_leakage), the torch runtime, and SequenceRegressor
+// (sequence_model.py) all exist in the trainer image. The wizard's
+// AlgorithmSelector no longer disables either.
 export const TrainingAlgorithmEnum = z.enum([
   'ols',
   'ridge',
-  'hgb',
   'hist_gradient_boosting',
+  'svm',
+  'mlp',
+  'grp',
+  'pls',
+  'random_forest',
+  'lightgbm',
+  'xgboost',
+  'lstm',
+  'gru',
 ]);
 
 export const RunStatusEnum = z.enum([
@@ -30,7 +44,10 @@ export const HyperparametersSchema = z.record(
 export const CreateModelRunSchema = z.object({
   datasetId: z.string().uuid(),
   targetY: z.string().min(1),
-  algorithm: z.enum(['hgb', 'hist_gradient_boosting', 'ridge', 'ols']),
+  // Was a second inline copy of the same enum — the exact drift this task
+  // exists to fix. Point at the one definition instead of a second list
+  // someone has to remember to update in step.
+  algorithm: TrainingAlgorithmEnum,
   hyperparameters: z.record(z.string(), z.unknown()).default({}),
   // A FRACTION, not a percentage. `chronological_split` multiplies by
   // len(frame) directly — passing 80 would slice at 80x the row count and
@@ -53,8 +70,74 @@ export const CreateTrainingRunSchema = z
     trainTestSplit: z.coerce.number().min(0.5).max(0.95).optional(),
 
     seed: z.coerce.number().int().min(1).max(2147483646).optional(),
+
+    // MODEL-FLOW-014-T06. The tags the Split Distribution panel was
+    // showing at Start Training — sent so the frozen `splitStats` sidecar
+    // (ModelTrainingRun.splitStats) can match what the user actually saw,
+    // not an approximation. Optional: omitted, `launchDraftRun` freezes
+    // against `[targetY]` alone. `.strict()` above means this field MUST
+    // exist here before a caller can send it — added deliberately, not
+    // discovered by a 400 the day the client starts including it.
+    splitStatsTags: z.array(z.string()).max(20).optional(),
+
+    /**
+     * MODEL-FLOW-016-T03/T07. Present => this run is a CROSS-VALIDATION
+     * run: k expanding time-ordered folds plus a refit, instead of one
+     * chronological train/test cut. Bounds match
+     * `CvExpandingSplitSpecSchema.n_splits` exactly (2-10) — the two are
+     * the same number at opposite ends of the run's life (request here,
+     * container's own `/complete` report there), and a mismatch would let
+     * a run launch at a k its own completion callback then rejects.
+     *
+     * NOT persisted on ModelDraft (that model has no column for it and
+     * this feature's acceptance criteria forbid adding one) — CV config
+     * is client-only until Start Training commits it into the run's own
+     * `splitSpec`, which is the durable record.
+     */
+    nSplits: z.coerce.number().int().min(2).max(10).optional(),
+
+    /**
+     * MODEL-FLOW-019-T31. The explicit feature subset for one row of a
+     * feature-count sweep, in RANKING order — the container trains on exactly
+     * these columns and REFUSES if any is absent from the artifact rather
+     * than intersecting, so a row labelled n=7 was never fit on five.
+     *
+     * Omitted — every run this system has launched to date — the container
+     * derives the columns itself: every artifact column minus the timestamp,
+     * the target and the status columns. There is no way to express this
+     * through `featureSpecKey`, which is read off the ARTIFACT and is
+     * therefore identical across every row of one sweep.
+     *
+     * The cap has generous headroom over the ~21-column frames this system
+     * actually trains on; it exists so a malformed caller cannot send an
+     * unbounded array, not as a modelling limit.
+     */
+    featureColumns: z.array(z.string().min(1)).min(1).max(500).optional(),
+
+    /**
+     * MODEL-FLOW-019-T31. Groups the runs of one feature-count sweep so the
+     * table can read them back as one curve. Client-generated, because the
+     * sweep is sequenced client-side: a candidate job cannot carry these rows
+     * — it is CV only as a HYPERPARAMETER_SEARCH over ONE feature set
+     * (MODEL-FLOW-029), never a ladder of feature subsets, and its runs store
+     * no `splitStats`, so no row would have AC68's observations-per-feature.
+     */
+    sweepId: z.string().uuid().optional(),
+
+    /**
+     * MODEL-FLOW-019-T31 / AC66. The run whose recorded feature importance
+     * produced the ranking every row of this sweep shares — named on screen
+     * so the ordering is not presented as having come from nowhere.
+     */
+    sweepSeedRunId: z.string().uuid().optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => !(v.nSplits !== undefined && v.trainTestSplit !== undefined), {
+    message:
+      'trainTestSplit and nSplits are mutually exclusive — a cross-validation ' +
+      'run has k fold cuts, not one train/test ratio.',
+    path: ['nSplits'],
+  });
 
 export const ListRunsQuerySchema = z
   .object({
@@ -64,9 +147,149 @@ export const ListRunsQuerySchema = z
   })
   .strict();
 
+// MODEL-FLOW-017-T03. 24, not 20: CreateCandidateJobSchema
+// (dto/model-candidate-job.authorized.dto.ts) caps a submitted set at 20,
+// but SWEEP_THEN_TUNE appends a phase-2 group to the SAME candidates array
+// once phase 1 exhausts, bounded by TUNE_VARIANTS_PER_JOB=4
+// (lib/tuning-grid.ts) — 24 is the real ceiling a caller can present.
+export const MAX_PREDICTION_BATCH_RUN_IDS = 24;
+
+/**
+ * MODEL-FLOW-019-T20. WHICH population's series to read. Optional and
+ * defaulting to `test`, so every caller that predates the holdout series is
+ * unchanged and keeps getting exactly what it got before.
+ *
+ * A query PARAMETER rather than a second endpoint: the two differ only in
+ * which column supplies the object key (`predictionKeyFor`), and everything
+ * downstream — access check, batch cap, decimation, soft-fail-per-run — is
+ * identical. A parallel endpoint would have to restate all of it.
+ */
+export const PredictionPopulationEnum = z.enum(['test', 'holdout', 'cv-oof']);
+
+export const RunPredictionsQuerySchema = z
+  .object({ population: PredictionPopulationEnum.optional() })
+  .strict();
+
+/**
+ * MODEL-SERVE-020-T04. The Model-scoped predictions route's populations: the
+ * draft route's two, plus `new_data_holdout` — the rows a retrain set aside
+ * from the new dataset. Kept as its OWN enum rather than widening
+ * `PredictionPopulationEnum`, which `predictionKeyFor` and the draft/batch
+ * routes switch on: a third value there would silently reach code that has no
+ * key to resolve for it.
+ *
+ * MODEL-SERVE-021 ADDS `current_new_data_holdout` — the CURRENT PRODUCTION
+ * version's own series on that SAME window, scored inside the candidate's
+ * training container for a NEW_DATA_ONLY (replace) retrain, which carves no
+ * frozen slice any more. Read off THIS candidate run's own
+ * `incumbentNewDataHoldoutPredictionsKey` — never the incumbent's OWN run
+ * row, which this scoring never touches.
+ */
+export const ModelRunPredictionPopulationEnum = z.enum([
+  'test',
+  'holdout',
+  'new_data_holdout',
+  'current_new_data_holdout',
+]);
+
+export type ModelRunPredictionPopulation = z.infer<
+  typeof ModelRunPredictionPopulationEnum
+>;
+
+export const ModelRunPredictionsQuerySchema = z
+  .object({ population: ModelRunPredictionPopulationEnum.optional() })
+  .strict();
+
+export const RunPredictionsBatchQuerySchema = z
+  .object({
+    // Comma-separated, not a repeated query key — same "no `qs` parser
+    // registered" reasoning ListRowsSchema.tags already documents.
+    runIds: z
+      .string()
+      .min(1)
+      .transform((v) => v.split(',').filter(Boolean))
+      .pipe(
+        z.array(z.string().uuid()).min(1).max(MAX_PREDICTION_BATCH_RUN_IDS),
+      ),
+    population: PredictionPopulationEnum.optional(),
+  })
+  .strict();
+
 export const RunUploadFilenameEnum = z.enum(
   RUN_UPLOAD_FILENAMES as unknown as [string, ...string[]],
 );
+
+const ChronologicalSplitSpecSchema = z
+  .object({
+    method: z.literal('chronological'),
+    ratio: z.number(),
+    cut_timestamp: z.string(),
+    train_rows: z.number().int().nonnegative(),
+    test_rows: z.number().int().nonnegative(),
+    source_rows: z.number().int().nonnegative(),
+    labelled_rows: z.number().int().nonnegative(),
+    // MODEL-SERVE-027. Present only for an Existing + new retrain, whose
+    // test split is cut on the OLD rows only: where the new data starts and
+    // how many new rows reached training. Without these, .strict() 400'd a
+    // successful run's /complete (found live 2026-10-02, jobs b0f2cd23 and
+    // 8289d406) — the trainer's split_spec and this schema must change
+    // together.
+    new_data_from: z.string().optional(),
+    new_train_rows: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+// MODEL-FLOW-009-T04. lstm/gru's windowed split_spec — train.py's own
+// split_spec comment states train_rows/test_rows/labelled_rows here are
+// WINDOW counts, not row counts, unlike the tabular variant above.
+// sequence_length is the one field this variant adds; every other field
+// name matches so a caller reading .ratio/.cut_timestamp does not need to
+// discriminate first.
+const ChronologicalWindowedSplitSpecSchema = z
+  .object({
+    method: z.literal('chronological_windowed'),
+    ratio: z.number(),
+    cut_timestamp: z.string(),
+    sequence_length: z.number().int().positive(),
+    train_rows: z.number().int().nonnegative(),
+    test_rows: z.number().int().nonnegative(),
+    source_rows: z.number().int().nonnegative(),
+    labelled_rows: z.number().int().nonnegative(),
+  })
+  .strict();
+
+// MODEL-FLOW-016-T03 (finding 7). A CV run's own splitSpec — k cut points,
+// not one. Deliberately LIGHTWEIGHT: fold cut/row counts only, no
+// r2/rmse/mae — those live in cv_folds.json, a separate object-storage
+// artifact (T04), never duplicated into this DB-stored column. `.strict()`
+// like every sibling variant: MODEL-FLOW-009-T04's windowed variant was
+// found one review short of 400ing a successful run's own /complete call
+// for the exact reason this union exists — a caller sending a shape this
+// schema does not know about must be refused, not silently accepted.
+const CvExpandingFoldSchema = z
+  .object({
+    cut_timestamp: z.string(),
+    train_rows: z.number().int().nonnegative(),
+    test_rows: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const CvExpandingSplitSpecSchema = z
+  .object({
+    method: z.literal('cv_expanding'),
+    n_splits: z.number().int().min(2).max(10),
+    source_rows: z.number().int().nonnegative(),
+    labelled_rows: z.number().int().nonnegative(),
+    distinct_labelled_values: z.number().int().nonnegative(),
+    folds: z.array(CvExpandingFoldSchema),
+  })
+  .strict();
+
+export const SplitSpecSchema = z.discriminatedUnion('method', [
+  ChronologicalSplitSpecSchema,
+  ChronologicalWindowedSplitSpecSchema,
+  CvExpandingSplitSpecSchema,
+]);
 
 export const RunLogSchema = z
   .object({
@@ -103,17 +326,40 @@ export const RunCompleteSchema = z
 
     metrics: MetricsSchema.optional(),
 
-    splitSpec: z
-      .object({
-        method: z.literal('chronological'),
-        ratio: z.number(),
-        cut_timestamp: z.string(),
-        train_rows: z.number().int().nonnegative(),
-        test_rows: z.number().int().nonnegative(),
-        source_rows: z.number().int().nonnegative(),
-        labelled_rows: z.number().int().nonnegative(),
-      })
-      .optional(),
+    // DS-LAKE-018-T05. Same shape as `metrics`, scored on the replayed raw
+    // validation holdout instead of the chronological test split. A
+    // SEPARATE field, never merged into `metrics` — the report must keep a
+    // test score and a holdout score visibly distinct, not blend them into
+    // one number. Absent whenever the dataset has no holdout, or claim()'s
+    // own replay failed — both leave training itself unaffected.
+    holdoutMetrics: MetricsSchema.optional(),
+
+    // The candidate's score on the operator-defined NEW-DATA validation
+    // window, when an augmented retrain carved one out. A THIRD separate
+    // field, for the same reason `holdoutMetrics` is separate from
+    // `metrics`: `holdoutMetrics` is the frozen incumbent-test slice (all
+    // OLD rows) and is what underpins `rmseDelta`; this is all NEW rows,
+    // which the incumbent was never scored on. They must never be blended,
+    // and this one must never be differenced against the incumbent.
+    //
+    // Optional, and deliberately NOT required on SUCCEEDED: most runs have
+    // no such window, and a trainer image predating this feature will not
+    // send it at all.
+    newDataHoldoutMetrics: MetricsSchema.optional(),
+
+    // MODEL-SERVE-021. The CURRENT PRODUCTION model's score on that SAME
+    // window — a FOURTH separate field, never blended with any of the three
+    // above: `metrics`/`holdoutMetrics` describe the candidate on rows the
+    // current version was never scored on, `newDataHoldoutMetrics` is the
+    // candidate on this window, and this is the CURRENT VERSION on this
+    // window — the only figure that gives `buildComparison` a like-for-like
+    // basis for a New Data Only (replace) retrain, which carves no frozen
+    // slice at all. Present only when `claim()` resolved a scorable current
+    // version (skipped for lstm/gru, or a version with no recorded
+    // feature_columns) and the trainer's own scoring succeeded.
+    incumbentNewDataHoldoutMetrics: MetricsSchema.optional(),
+
+    splitSpec: SplitSpecSchema.optional(),
 
     uploaded: z.array(RunUploadFilenameEnum).optional(),
   })
@@ -131,12 +377,73 @@ export const RunCompleteSchema = z
   })
   .strict();
 
+/**
+ * MODEL-FLOW-016-T07. The scoring container's own `/score-complete` — a
+ * DELIBERATELY narrower sibling of `RunCompleteSchema`, not a reuse of it:
+ * scoring writes ONLY `predictionsKey` + `holdoutMetrics` (see
+ * `model-run-score.authorized.service.ts`'s doc comment) and must never
+ * carry `metrics`/`splitSpec`/`modelKey`-shaped fields that would let a
+ * scoring callback overwrite a training run's own recorded outcome.
+ */
+export const ScoreCompleteSchema = z
+  .object({
+    status: z.enum(['SUCCEEDED', 'FAILED']),
+    failureReason: z.string().max(2000).optional(),
+    holdoutMetrics: MetricsSchema.optional(),
+    // Deliberately a two-literal union, not the full RunUploadFilenameEnum
+    // a scoring container could otherwise claim to have uploaded —
+    // scoring ever writes exactly one file, and MODEL-FLOW-019-T20 is
+    // WHICH one depends on the run's own cvFoldsKey (predictions.parquet
+    // for a CV run, holdout_predictions.parquet otherwise — never both,
+    // never the other run kind's filename). The service's own upload-URL
+    // minting (scoreUploadUrlsService) enforces the same per-run allowlist
+    // independently, so a divergence here would only ever be caught here,
+    // not there.
+    uploaded: z
+      .array(z.enum(['predictions.parquet', 'holdout_predictions.parquet']))
+      .max(1)
+      .optional(),
+  })
+  .refine(
+    (v) =>
+      v.status !== 'SUCCEEDED' ||
+      (v.uploaded ?? []).some(
+        (f) =>
+          f === 'predictions.parquet' || f === 'holdout_predictions.parquet',
+      ),
+    {
+      message:
+        'A SUCCEEDED score must report predictions.parquet or ' +
+        'holdout_predictions.parquet among its uploads.',
+      path: ['uploaded'],
+    },
+  )
+  .refine((v) => v.status !== 'SUCCEEDED' || v.holdoutMetrics !== undefined, {
+    message: 'A SUCCEEDED score must report holdoutMetrics.',
+    path: ['holdoutMetrics'],
+  })
+  .refine((v) => v.status !== 'FAILED' || Boolean(v.failureReason), {
+    message: 'A FAILED score must carry a failureReason.',
+    path: ['failureReason'],
+  })
+  .strict();
+
 export class RunLogDto extends createZodDto(RunLogSchema) {}
 export class RunUploadUrlsDto extends createZodDto(RunUploadUrlsSchema) {}
 export class RunCompleteDto extends createZodDto(RunCompleteSchema) {}
+export class ScoreCompleteDto extends createZodDto(ScoreCompleteSchema) {}
 
 export class CreateTrainingRunDto extends createZodDto(
   CreateTrainingRunSchema,
 ) {}
 export class CreateModelRunDto extends createZodDto(CreateModelRunSchema) {}
 export class ListRunsQueryDto extends createZodDto(ListRunsQuerySchema) {}
+export class RunPredictionsBatchQueryDto extends createZodDto(
+  RunPredictionsBatchQuerySchema,
+) {}
+export class RunPredictionsQueryDto extends createZodDto(
+  RunPredictionsQuerySchema,
+) {}
+export class ModelRunPredictionsQueryDto extends createZodDto(
+  ModelRunPredictionsQuerySchema,
+) {}

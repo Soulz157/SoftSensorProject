@@ -1,4 +1,5 @@
 import type { PipelineConfig } from '@/lib/pipeline-config'
+import type { DatasetArtifactStage } from '@/services/dataset-draft'
 
 /**
  * A dataset assembled from one or more `DataSource` connections via the
@@ -31,15 +32,40 @@ export interface SavedDataset {
    */
   currentVersionId: string | null
   /**
-   * BRONZE artifact to hydrate rows from (DS-LAKE-004).
-   *
-   * Optional because a response cached from before the field existed will not
-   * carry it. Both pointers are read: legacy datasets only ever have
-   * `currentVersionId`, new ones only ever get `currentArtifactId`.
+   * Artifact the wizard hydrates rows from (DS-LAKE-004). Both pointers are
+   * read: legacy datasets only ever have `currentVersionId`, new ones only
+   * ever get `currentArtifactId`. No longer optional — the server always
+   * includes it (null when absent), so a stale cached response missing the
+   * key is not a case the client needs to model.
    */
-  currentArtifactId?: string | null
+  currentArtifactId: string | null
+  /**
+   * Pipeline stage of the artifact `currentArtifactId` points at — BRONZE
+   * (raw fetch, via `createRaw`) or FINAL (adopted at Save). Null exactly
+   * when `currentArtifactId` is null. The pointer is stage-polymorphic, so
+   * nothing that reads real rows through it may treat "has an artifact" and
+   * "has a RAW artifact" as the same fact — see `use-dataset-version-rows.ts`.
+   */
+  currentArtifactType: DatasetArtifactStage | null
+  /**
+   * DS-LAKE-017-T03: the lineage-root BRONZE, if Save has adopted one
+   * (T01/T02) AND its bytes have not been reclaimed. Separate from
+   * `currentArtifactId` on purpose — that pointer stays FINAL-only (ONE
+   * POINTER, NOT TWO, per T01) — so `useDatasetVersionRows` can prefer this
+   * for edit-mode hydration without double-applying Step 3's rules on top
+   * of an already-cleaned FINAL. Null covers three real cases this field
+   * cannot and does not need to distinguish: not yet backfilled, reclaimed,
+   * or a legacy dataset with no lineage — all three fall back to today's
+   * FINAL hydration.
+   */
+  adoptedBronzeArtifactId: string | null
   /** ISO 8601 */
   createdAt: string
   updatedAt: string
   createdBy: string
+  /** True only for the dataset's creator. Workspace members can view and
+   *  train on a teammate's dataset, but edit/rename/delete stay with the
+   *  creator server-side. Optional: a dataset object built client-side
+   *  (not from the API) is the caller's own. */
+  canManage?: boolean
 }

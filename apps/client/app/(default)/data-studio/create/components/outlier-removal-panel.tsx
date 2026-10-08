@@ -1,7 +1,16 @@
 'use client'
 
+import { useMemo } from 'react'
 import { nanoid } from 'nanoid'
-import { Filter, Plus, Sigma, Trash2 } from 'lucide-react'
+import {
+  Filter,
+  MoveHorizontal,
+  Plus,
+  Sigma,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -14,12 +23,17 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
+import { CalendarDateTimePicker } from '@/components/calendar-date-time-picker'
+import {
+  snapStampIndex,
+  stampFromTimestamp,
+  wallClockKey,
+} from '@/lib/date-stamp'
 import { cn } from '@/lib/utils'
 import type { CutoffOp } from '@/types/cutoff'
 import type { Dataset } from '@/lib/preprocessing'
 import {
-  nearestTimestampIndex,
+  clipImpact,
   statisticalMatchCount,
   type ConditionalRule,
   type CropRange,
@@ -27,8 +41,17 @@ import {
   type StatisticalMethod,
   type StatisticalRule,
 } from '@/lib/precleanse'
+import {
+  describeRangeCutoffSelection,
+  reconcileRangeUnit,
+} from '@/lib/range-cutoff'
+import type { PresetRangeCandidate } from '@/store/dataset-studio'
 
 const OPS: CutoffOp[] = ['>', '>=', '<', '<=', '==', '!=']
+/** DS-LAKE-032-D09. Ops allowed on either side of a range rule, so it always
+ * reads as an interval: `low <= TAG < high`. */
+const RANGE_OPS = ['<', '<='] as const
+type RangeOp = (typeof RANGE_OPS)[number]
 const METHODS: { value: StatisticalMethod; label: string }[] = [
   { value: 'zscore', label: 'Z-Score' },
   { value: 'stddev', label: 'Std Dev' },
@@ -54,6 +77,349 @@ interface Props {
    * tags stay in the underlying arrays untouched (persist across tag switches).
    */
   scopeTag?: string
+  /** DS-LAKE-020: proposed range cutoffs from the applied feature preset. */
+  presetRangeCandidates?: PresetRangeCandidate[]
+  /** True when the applied preset predates range-cutoff support. */
+  presetRangeStale?: boolean
+  /** Per-tag engineering unit, for the T03 unit-reconciliation gate. */
+  tagUnits?: Record<string, string | null>
+  /** Null until Step 4 — the T06 labelled-row guard cannot run without it. */
+  targetTag?: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Preset range cutoff (DS-LAKE-020-T05)
+// ---------------------------------------------------------------------------
+
+const PRESET_RANGE_PREFIX = 'preset-range'
+
+function presetRangeRuleId(tag: string, bound: 'min' | 'max'): string {
+  return `${PRESET_RANGE_PREFIX}:${tag}:${bound}`
+}
+
+function isPresetRangeRuleForTag(rule: ConditionalRule, tag: string): boolean {
+  return (
+    rule.source === 'preset-range' &&
+    rule.id.startsWith(`${PRESET_RANGE_PREFIX}:${tag}:`)
+  )
+}
+
+function UnitPair({
+  quotedUnit,
+  tagUnit,
+}: {
+  quotedUnit: string | null
+  tagUnit: string | null
+}) {
+  return (
+    <span className="font-mono text-[11px] text-muted-foreground">
+      preset: {quotedUnit ?? '(none)'} · tag: {tagUnit ?? '(none)'}
+    </span>
+  )
+}
+
+/**
+ * The ConditionalRule(s) a candidate's reconciled bound adds — strict `<`/`>`
+ * so a value exactly ON the bound (common with per-tag precision rounding)
+ * stays Good, matching the closed-range grammar `[min, max]`. Empty when the
+ * unit gate refuses (`applied === null`): never a rule with a guessed number.
+ * Rule ids are keyed by TAG ONLY, not by candidate — enabling one candidate
+ * for a tag structurally replaces any other candidate's rule for the same
+ * tag, which is what makes the intra-config duplicate-row case (T08) resolve
+ * to "engineer picks" for free, with no separate picker UI.
+ */
+function presetRangeRules(
+  candidate: PresetRangeCandidate,
+  applied: { min: number | null; max: number | null },
+  quotedUnit: string | null,
+): ConditionalRule[] {
+  const provenance = {
+    presetId: candidate.presetId,
+    configNo: candidate.configNo,
+    quoted: candidate.quotedRange,
+    unit: quotedUnit,
+  }
+  const rules: ConditionalRule[] = []
+  if (applied.min !== null) {
+    rules.push({
+      id: presetRangeRuleId(candidate.tag, 'min'),
+      tag: candidate.tag,
+      op: '<',
+      value: applied.min,
+      action: 'mark',
+      enabled: true,
+      source: 'preset-range',
+      presetRange: provenance,
+    })
+  }
+  if (applied.max !== null) {
+    rules.push({
+      id: presetRangeRuleId(candidate.tag, 'max'),
+      tag: candidate.tag,
+      op: '>',
+      value: applied.max,
+      action: 'mark',
+      enabled: true,
+      source: 'preset-range',
+      presetRange: provenance,
+    })
+  }
+  return rules
+}
+
+/**
+ * One tag's preset-range proposal row. Toggling reads/writes `conditionalRules`
+ * directly — there is no separate "applied" state to keep in sync, so a rule
+ * deleted by hand in the Conditional tab below correctly reads back here as
+ * toggled off.
+ */
+function PresetRangeRow({
+  candidate,
+  tagUnit,
+  previewDataset,
+  conditionalRules,
+  onConditionalChange,
+}: {
+  candidate: PresetRangeCandidate
+  tagUnit: string | null
+  previewDataset: Dataset
+  conditionalRules: ConditionalRule[]
+  onConditionalChange: (rules: ConditionalRule[]) => void
+}) {
+  const reconciliation = useMemo(
+    () => reconcileRangeUnit(candidate.parsed, tagUnit),
+    [candidate.parsed, tagUnit],
+  )
+  const activeRule = conditionalRules.find(r =>
+    isPresetRangeRuleForTag(r, candidate.tag),
+  )
+  const isActive = activeRule?.presetRange?.quoted === candidate.quotedRange
+
+  const impact = useMemo(() => {
+    if (!reconciliation.applied) return null
+    return clipImpact(
+      previewDataset,
+      candidate.tag,
+      reconciliation.applied.min ?? -Infinity,
+      reconciliation.applied.max ?? Infinity,
+    )
+  }, [previewDataset, candidate.tag, reconciliation.applied])
+
+  const toggle = (checked: boolean) => {
+    const withoutExisting = conditionalRules.filter(
+      r => !isPresetRangeRuleForTag(r, candidate.tag),
+    )
+    if (!checked || !reconciliation.applied) {
+      onConditionalChange(withoutExisting)
+      return
+    }
+    onConditionalChange([
+      ...withoutExisting,
+      ...presetRangeRules(
+        candidate,
+        reconciliation.applied,
+        reconciliation.quotedUnit,
+      ),
+    ])
+  }
+
+  const refused =
+    reconciliation.verdict === 'unknown-unit' ||
+    reconciliation.verdict === 'tag-unit-unknown'
+  const unitMismatch = refused || reconciliation.verdict === 'converted'
+  const openEnded =
+    candidate.parsed.kind === 'lower' || candidate.parsed.kind === 'upper'
+
+  return (
+    <div className="space-y-1 rounded-md bg-muted/40 px-2.5 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="w-36 truncate font-mono text-xs text-foreground">
+          {candidate.tag}
+        </span>
+        <span className="font-mono text-[11px] text-muted-foreground">
+          {candidate.quotedRange}
+        </span>
+        {reconciliation.verdict === 'converted' && reconciliation.applied && (
+          <span className="text-[11px] text-muted-foreground">
+            → applied {reconciliation.applied.min ?? '−∞'} to{' '}
+            {reconciliation.applied.max ?? '+∞'} {tagUnit}
+            {reconciliation.factor !== null && ` (×${reconciliation.factor})`}
+          </span>
+        )}
+        {unitMismatch && (
+          <UnitPair
+            quotedUnit={reconciliation.quotedUnit}
+            tagUnit={reconciliation.tagUnit}
+          />
+        )}
+        <span className="font-mono text-[10px] text-muted-foreground">
+          {candidate.presetId} · config {candidate.configNo} · {candidate.sheet}
+        </span>
+        {impact && (
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {impact.total} / {impact.points} pts
+          </span>
+        )}
+        <div className="ml-auto">
+          <Switch
+            checked={isActive}
+            onCheckedChange={toggle}
+            disabled={refused}
+            aria-label={`Toggle preset range cutoff for ${candidate.tag}`}
+          />
+        </div>
+      </div>
+      {refused && (
+        <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          {reconciliation.verdict === 'tag-unit-unknown'
+            ? `Preset quotes this range in "${reconciliation.quotedUnit}", but no unit is recorded for this tag — a kg/hr bound and a t/h bound are indistinguishable here, so the quoted number is not applied.`
+            : `No known conversion from preset unit "${reconciliation.quotedUnit}" to tag unit "${reconciliation.tagUnit}" — refusing to apply.`}
+        </p>
+      )}
+      {openEnded && (
+        <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          Operating window, not a sensor-validity range — marking values Bad
+          here can fabricate normal-flow data during a real shutdown or
+          turndown. Confirm before enabling.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function PresetRangeSection({
+  candidates,
+  tags,
+  scopeTag,
+  tagUnits,
+  previewDataset,
+  conditionalRules,
+  onConditionalChange,
+  targetTag,
+  presetRangeStale,
+}: {
+  candidates: PresetRangeCandidate[]
+  tags: string[]
+  scopeTag: string | undefined
+  tagUnits: Record<string, string | null>
+  previewDataset: Dataset
+  conditionalRules: ConditionalRule[]
+  onConditionalChange: (rules: ConditionalRule[]) => void
+  targetTag: string | null
+  presetRangeStale: boolean
+}) {
+  const relevant = useMemo(
+    () =>
+      candidates.filter(
+        c => tags.includes(c.tag) && (!scopeTag || c.tag === scopeTag),
+      ),
+    [candidates, tags, scopeTag],
+  )
+
+  // Cumulative impact: rows with >=1 ENABLED bound violated, not the sum of
+  // the per-tag numbers (an AND of several bounds sheds more than any one
+  // suggests). Recomputed only when the active set or the frame changes.
+  const activeBounds = useMemo(() => {
+    const bounds: { tag: string; min: number; max: number }[] = []
+    for (const rule of conditionalRules) {
+      if (!rule.enabled || rule.source !== 'preset-range') continue
+      const existing = bounds.find(b => b.tag === rule.tag)
+      const target = existing ?? {
+        tag: rule.tag,
+        min: -Infinity,
+        max: Infinity,
+      }
+      if (rule.op === '<' && rule.value !== '') target.min = rule.value
+      if (rule.op === '>' && rule.value !== '') target.max = rule.value
+      if (!existing) bounds.push(target)
+    }
+    return bounds
+  }, [conditionalRules])
+
+  // DS-LAKE-020-T06: remaining-row / remaining-labelled-row guards, fired
+  // while the toggles are being flipped — cheap to change here, unlike at
+  // Save or at training.
+  const guard = useMemo(
+    () =>
+      describeRangeCutoffSelection({
+        dataset: previewDataset,
+        activeBounds,
+        targetTag,
+      }),
+    [previewDataset, activeBounds, targetTag],
+  )
+  const cumulativeImpact = previewDataset.rows.length - guard.remainingRows
+
+  if (relevant.length === 0) {
+    // A stale (pre-range-cutoff) preset genuinely has no `range_parsed` on
+    // any feature, so `candidates` is empty for a reason the engineer has no
+    // other way to see — say so, rather than rendering nothing and looking
+    // identical to "this preset has no ranges to propose".
+    if (!presetRangeStale) return null
+    return (
+      <div className="space-y-1 rounded-md bg-muted/40 px-2.5 py-2.5">
+        <span className="text-xs font-medium text-foreground">
+          Preset range cutoff
+        </span>
+        <p className="text-[11px] text-muted-foreground">
+          This preset was imported before range-cutoff support existed, so it
+          carries no parsed ranges. Re-import the same Excel workbook from Step
+          1 to enable per-tag range proposals here.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2 rounded-md bg-muted/40 px-2.5 py-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-foreground">
+          Preset range cutoff
+        </span>
+        {activeBounds.length > 0 && (
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {cumulativeImpact} rows affected (cumulative)
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Proposed from the applied Excel preset&apos;s Range column. Off by
+        default — review before enabling.
+      </p>
+      <div className="space-y-1.5">
+        {relevant.map(candidate => (
+          <PresetRangeRow
+            key={`${candidate.presetId}:${candidate.rowLabel}`}
+            candidate={candidate}
+            tagUnit={tagUnits[candidate.tag] ?? null}
+            previewDataset={previewDataset}
+            conditionalRules={conditionalRules}
+            onConditionalChange={onConditionalChange}
+          />
+        ))}
+      </div>
+      {guard.refusals.map((text, i) => (
+        <p
+          key={`refusal-${i}`}
+          className="flex items-start gap-1 text-[11px] font-medium text-foreground"
+        >
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          {text}
+        </p>
+      ))}
+      {guard.warnings.map((text, i) => (
+        <p
+          key={`warning-${i}`}
+          className="flex items-start gap-1 text-[11px] text-muted-foreground"
+        >
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          {text}
+        </p>
+      ))}
+    </div>
+  )
 }
 
 /** mark cell Bad (fillable in 5.2) vs drop just this tag's matched cell. */
@@ -88,12 +454,15 @@ function ActionToggle({
 }
 
 /**
- * Keep-inside time crop, edited via two `DateTimePicker`s and bound to the
- * shared `cropRange` (same state the crop slider + chart inputs drive, so all
- * three stay in sync). A picked datetime is snapped onto the nearest *raw* row
- * timestamp so `precleanse`'s lexical `>=`/`<=` compare stays correct and the
- * window can be widened back to the full span. Selecting the full span clears
- * the crop (`null`), mirroring the slider.
+ * Keep-inside time crop — the ONE time crop in this step (DS-LAKE-032-D07;
+ * the duplicate under "Data Cut-Off & Cleansing" was removed). Bound to the
+ * shared `cropRange`, the same state the crop slider drives, so both stay in
+ * sync. Edited with `CalendarDateTimePicker`, the design-system picker for a
+ * date-time range over data. A picked stamp is snapped onto a real raw
+ * timestamp (`snapStampIndex`: a start keeps the first reading at or after
+ * it, an end the last at or before it) so `precleanse`'s lexical `>=`/`<=`
+ * compare stays correct. Selecting the full span clears the crop (`null`),
+ * mirroring the slider.
  */
 function TimeCropInputs({
   rawTimestamps,
@@ -110,17 +479,32 @@ function TimeCropInputs({
   const fromIso = cropRange?.from ?? minIso
   const toIso = cropRange?.to ?? maxIso
 
-  const toLocal = (iso?: string) => (iso ? toDateTimeLocal(new Date(iso)) : '')
+  const dataBounds = useMemo(
+    () =>
+      minIso && maxIso
+        ? { min: stampFromTimestamp(minIso), max: stampFromTimestamp(maxIso) }
+        : null,
+    [minIso, maxIso],
+  )
+  const fromStamp = fromIso ? stampFromTimestamp(fromIso) : ''
+  const toStamp = toIso ? stampFromTimestamp(toIso) : ''
 
-  const commit = (edge: 'from' | 'to', local: string) => {
-    if (!local || rawTimestamps.length === 0 || !minIso || !maxIso) return
-    const ms = new Date(local).getTime()
-    if (Number.isNaN(ms)) return
-    const snapped = rawTimestamps[nearestTimestampIndex(rawTimestamps, ms)]!
+  const commit = (edge: 'from' | 'to', stamp: string) => {
+    if (!stamp || rawTimestamps.length === 0 || !minIso || !maxIso) return
+    const index = snapStampIndex(
+      rawTimestamps,
+      stamp,
+      edge === 'from' ? 'start' : 'end',
+    )
+    const snapped = rawTimestamps[index]
+    if (!snapped) return
     const nextFrom = edge === 'from' ? snapped : (fromIso ?? minIso)
     const nextTo = edge === 'to' ? snapped : (toIso ?? maxIso)
-    // Backstop — the pickers' min/max should already block an inverted range.
-    if (new Date(nextFrom).getTime() > new Date(nextTo).getTime()) return
+    // Backstop — each picker's `allowed` should already block an inverted
+    // range. Compared as wall-clock keys, not list positions: the bound NOT
+    // being edited may be a crop restored from a saved config, written in a
+    // different form than the re-fetched rows, and would not be found.
+    if (wallClockKey(nextFrom) > wallClockKey(nextTo)) return
     // Full span → clear the crop, matching the slider's "no crop" state.
     if (nextFrom === minIso && nextTo === maxIso) {
       onCropChange(null)
@@ -150,22 +534,31 @@ function TimeCropInputs({
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <span className="text-[11px] text-muted-foreground">Start</span>
-          <DateTimePicker
-            value={toLocal(fromIso)}
+          <CalendarDateTimePicker
+            label="Time crop start"
+            value={fromStamp}
             onChange={v => commit('from', v)}
-            min={toLocal(minIso)}
-            max={toLocal(toIso)}
+            dataBounds={dataBounds}
+            allowed={{ min: dataBounds?.min, max: toStamp || dataBounds?.max }}
+            defaultTime="00:00"
             disabled={disabled}
+            className="w-full"
           />
         </div>
         <div className="space-y-1">
           <span className="text-[11px] text-muted-foreground">End</span>
-          <DateTimePicker
-            value={toLocal(toIso)}
+          <CalendarDateTimePicker
+            label="Time crop end"
+            value={toStamp}
             onChange={v => commit('to', v)}
-            min={toLocal(fromIso)}
-            max={toLocal(maxIso)}
+            dataBounds={dataBounds}
+            allowed={{
+              min: fromStamp || dataBounds?.min,
+              max: dataBounds?.max,
+            }}
+            defaultTime="23:59"
             disabled={disabled}
+            className="w-full"
           />
         </div>
       </div>
@@ -187,6 +580,10 @@ export function OutlierRemovalPanel({
   onConditionalChange,
   onStatisticalChange,
   scopeTag,
+  presetRangeCandidates = [],
+  presetRangeStale = false,
+  tagUnits = {},
+  targetTag = null,
 }: Props) {
   const firstTag = scopeTag ?? tags[0] ?? ''
 
@@ -213,6 +610,23 @@ export function OutlierRemovalPanel({
     onConditionalChange(
       conditionalRules.map(r => (r.id === id ? { ...r, ...patch } : r)),
     )
+  // DS-LAKE-032-D09. Turning range on adds an empty lower bound and pulls the
+  // right-hand op into `<`/`<=` so the rule reads as an interval; turning it
+  // off DELETES `lower` (not `undefined`) so the rule is exactly a legacy one.
+  const toggleRange = (rule: ConditionalRule) => {
+    if (rule.lower) {
+      const { lower: _lower, ...rest } = rule
+      void _lower
+      onConditionalChange(
+        conditionalRules.map(r => (r.id === rule.id ? rest : r)),
+      )
+      return
+    }
+    updateConditional(rule.id, {
+      lower: { value: '', op: '<=' },
+      op: (RANGE_OPS as readonly CutoffOp[]).includes(rule.op) ? rule.op : '<',
+    })
+  }
   const removeConditional = (id: string) =>
     onConditionalChange(conditionalRules.filter(r => r.id !== id))
 
@@ -250,6 +664,18 @@ export function OutlierRemovalPanel({
         onCropChange={onCropChange}
       />
 
+      <PresetRangeSection
+        candidates={presetRangeCandidates}
+        tags={tags}
+        scopeTag={scopeTag}
+        tagUnits={tagUnits}
+        previewDataset={previewDataset}
+        conditionalRules={conditionalRules}
+        onConditionalChange={onConditionalChange}
+        targetTag={targetTag}
+        presetRangeStale={presetRangeStale}
+      />
+
       <Tabs defaultValue="conditional" className="flex w-full flex-col">
         <TabsList className="mb-4 inline-flex w-fit">
           <TabsTrigger value="conditional" className="gap-2">
@@ -264,7 +690,9 @@ export function OutlierRemovalPanel({
           {shownConditional.length === 0 && (
             <p className="py-1 text-xs text-muted-foreground">
               No rules — add one to cut readings by a value condition (e.g.{' '}
-              <span className="font-mono">Value &gt; 1000</span>).
+              <span className="font-mono">Value &gt; 1000</span>), or turn on
+              Range for an interval (e.g.{' '}
+              <span className="font-mono">200 &lt;= Value &lt; 500</span>).
             </p>
           )}
           {shownConditional.map(rule => (
@@ -275,6 +703,55 @@ export function OutlierRemovalPanel({
                 !rule.enabled && 'opacity-60',
               )}
             >
+              {rule.lower && (
+                <>
+                  <Input
+                    type="number"
+                    step="any"
+                    placeholder="Low"
+                    aria-label="Range lower value"
+                    value={rule.lower.value}
+                    onChange={e =>
+                      updateConditional(rule.id, {
+                        lower: {
+                          op: rule.lower!.op,
+                          value:
+                            e.target.value === ''
+                              ? ''
+                              : parseFloat(e.target.value),
+                        },
+                      })
+                    }
+                    className="h-7 w-24 font-mono text-xs"
+                  />
+                  <Select
+                    value={rule.lower.op}
+                    onValueChange={v =>
+                      updateConditional(rule.id, {
+                        lower: { value: rule.lower!.value, op: v as RangeOp },
+                      })
+                    }
+                  >
+                    <SelectTrigger
+                      aria-label="Range lower operator"
+                      className="h-7 w-16 font-mono text-xs"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {RANGE_OPS.map(op => (
+                        <SelectItem
+                          key={op}
+                          value={op}
+                          className="font-mono text-xs"
+                        >
+                          {op}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </>
+              )}
               {scopeTag ? (
                 <span className="flex h-7 w-36 items-center rounded-md bg-muted px-2.5 font-mono text-xs text-foreground">
                   {rule.tag}
@@ -310,7 +787,7 @@ export function OutlierRemovalPanel({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {OPS.map(op => (
+                  {(rule.lower ? RANGE_OPS : OPS).map(op => (
                     <SelectItem
                       key={op}
                       value={op}
@@ -324,7 +801,7 @@ export function OutlierRemovalPanel({
               <Input
                 type="number"
                 step="any"
-                placeholder="Value"
+                placeholder={rule.lower ? 'High' : 'Value'}
                 value={rule.value}
                 onChange={e =>
                   updateConditional(rule.id, {
@@ -334,10 +811,58 @@ export function OutlierRemovalPanel({
                 }
                 className="h-7 w-24 font-mono text-xs"
               />
+              {/* DS-LAKE-032-D09: hand-authored rules only. A preset row's
+                  meaning is read back as a single op/value by `activeBounds`
+                  and by the SD&TA in-sync signature, so a lower bound there
+                  would change what the rule cuts without either noticing. */}
+              {!rule.source && (
+                <Button
+                  type="button"
+                  variant={rule.lower ? 'secondary' : 'ghost'}
+                  size="sm"
+                  aria-pressed={Boolean(rule.lower)}
+                  title={
+                    rule.lower
+                      ? 'Back to a single comparison'
+                      : 'Make this a range, e.g. 200 <= tag < 500'
+                  }
+                  onClick={() => toggleRange(rule)}
+                  className="h-7 gap-1 px-2 text-[11px]"
+                >
+                  <MoveHorizontal className="h-3.5 w-3.5" />
+                  Range
+                </Button>
+              )}
               <ActionToggle
                 value={rule.action}
                 onChange={a => updateConditional(rule.id, { action: a })}
               />
+              {/* Preset-authored, not hand-drawn — stays editable on purpose:
+                  `presetCutSignature` (feature-preset-apply.ts) derives the
+                  SD&TA card's in-sync flag from this same `source` field, so
+                  editing or deleting the rule here is what un-syncs the card
+                  and re-enables its Apply button. Locking the row would break
+                  that feedback loop. */}
+              {rule.source === 'sdta' && (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground"
+                >
+                  SD&amp;TA
+                </Badge>
+              )}
+              {/* Same editable-on-purpose reasoning as the SD&TA badge above:
+                  deleting or editing this row here is what makes the "Preset
+                  range" toggle above read back as off — there is no separate
+                  lock, the toggle IS this row's presence. */}
+              {rule.source === 'preset-range' && (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground"
+                >
+                  Preset range
+                </Badge>
+              )}
               <div className="ml-auto flex items-center gap-2">
                 <Switch
                   checked={rule.enabled}

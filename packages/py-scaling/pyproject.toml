@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "softsensor-scaling"
+version = "0.1.0"
+description = "Training-time feature scaling (toModelReady), extracted so training (apps/python) and serving (apps/serving) cannot disagree about it. See MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module."
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26", "pandas>=2.0"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]

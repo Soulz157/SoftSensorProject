@@ -10,6 +10,14 @@ import {
   DeleteWorkspaceRequestDto,
   UpdateWorkspaceRequestDto,
 } from './dto/workspace.admin.dto';
+import { normalizePermissions } from '@/lib/workspace-permission';
+import {
+  nodeSummariesByWorkspace,
+  summaryFromCounts,
+} from '@/lib/node-status-counts';
+
+/** How many alarming workspaces the dashboard queue lists. */
+const ATTENTION_QUEUE_LIMIT = 10;
 
 @Injectable()
 export class WorkspaceAdminService {
@@ -24,27 +32,115 @@ export class WorkspaceAdminService {
         : {}),
     };
 
-    const [items, total] = await this.prisma.$transaction([
+    const [rows, total] = await this.prisma.$transaction([
       this.prisma.workspace.findMany({
         where,
-        include: {
+        // Explicit select (not include): the response carries exactly what
+        // the DTO lists — no ownerId/description/thumbnail/deletedAt.
+        select: {
+          id: true,
+          name: true,
+          color: true,
+          icon: true,
+          createdAt: true,
+          updatedAt: true,
           owner: {
             select: { id: true, firstName: true, lastName: true, email: true },
           },
-          _count: { select: { models: true } },
+          _count: {
+            select: { models: true, plans: true, datasets: true },
+          },
         },
-        orderBy: { createdAt: 'desc' },
+        // Newest first, as before (the live /admin/workspaces table and the
+        // move-member picker depend on it). `id` breaks ties so pagination
+        // never repeats or skips a row.
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         skip: (page - 1) * limit,
         take: limit,
       }),
       this.prisma.workspace.count({ where }),
     ]);
 
+    // Equipment roll-up for this page only, counted in the database (one
+    // grouped query) — same rule as the user list's `deriveNodeSummary`,
+    // without loading every node's JSON. The admin dashboard therefore needs
+    // no per-workspace request, and the move-member picker (limit 100) stays
+    // cheap.
+    const summaries = await nodeSummariesByWorkspace(
+      this.prisma,
+      rows.map((r) => r.id),
+    );
+    const items = rows.map((ws) => ({
+      ...ws,
+      modelsCount: ws._count.models,
+      plantsCount: ws._count.plans,
+      datasetsCount: ws._count.datasets,
+      ...summaryFromCounts(summaries.get(ws.id)),
+    }));
+
     return {
       statusCode: 200,
       message: 'Workspaces fetched successfully',
       type: 'SUCCESS' as const,
       data: { items, total, page, limit },
+    };
+  }
+
+  /**
+   * Whole-platform summary for the admin dashboard header and attention
+   * queue — NOT paginated, so the totals never describe only one page.
+   * "Attention" is equipment in ALARM (the same binary rule as the user
+   * list's Abnormal); model-level status is not known to the admin API.
+   */
+  async getSummary() {
+    const rows = await this.prisma.workspace.findMany({
+      where: { deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        owner: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
+        _count: { select: { models: true } },
+      },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
+    // Counted in the database for the whole platform — never every node's
+    // JSON pulled into the process on each dashboard load.
+    const summaries = await nodeSummariesByWorkspace(this.prisma);
+
+    const workspaces = rows.map((ws) => ({
+      ...ws,
+      ...summaryFromCounts(summaries.get(ws.id)),
+    }));
+    const alarming = workspaces
+      .filter((w) => w.status === 'alarm')
+      // Worst first, so the capped queue shows the workspaces that need
+      // the most attention.
+      .sort(
+        (a, b) => b.alarmCount - a.alarmCount || a.name.localeCompare(b.name),
+      );
+    const attention = alarming.slice(0, ATTENTION_QUEUE_LIMIT).map((w) => ({
+      id: w.id,
+      name: w.name,
+      owner: w.owner,
+      status: 'alarm' as const,
+      alarmCount: w.alarmCount,
+      warningCount: w.warningCount,
+      offlineCount: w.offlineCount,
+    }));
+
+    return {
+      statusCode: 200,
+      message: 'Workspace summary fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        total: workspaces.length,
+        models: workspaces.reduce((sum, w) => sum + w._count.models, 0),
+        // The true number in alarm; `attention` lists only the worst few.
+        attentionTotal: alarming.length,
+        attention,
+      },
     };
   }
 
@@ -290,7 +386,12 @@ export class WorkspaceAdminService {
 
     const updated = await this.prisma.workspaceMember.update({
       where: { id: memberId },
-      data: { role: dto.role },
+      // Grants only mean something for a VIEWER: a role change away from
+      // VIEWER clears them; staying VIEWER keeps them.
+      data: {
+        role: dto.role,
+        permissions: normalizePermissions(dto.role, member.permissions),
+      },
       select: {
         id: true,
         userId: true,
@@ -414,7 +515,8 @@ export class WorkspaceAdminService {
 
     const moved = await this.prisma.workspaceMember.update({
       where: { id: memberId },
-      data: { workspaceId: targetWorkspaceId },
+      // Grants were given by the SOURCE workspace's owner; they do not travel.
+      data: { workspaceId: targetWorkspaceId, permissions: [] },
       select: {
         id: true,
         userId: true,

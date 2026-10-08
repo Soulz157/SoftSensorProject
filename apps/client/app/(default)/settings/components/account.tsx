@@ -289,8 +289,8 @@ export function AccountTab() {
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            To change your password, you will be redirected to the reset
-            password page.
+            Change your password on the next page. You&apos;ll need your current
+            password.
           </p>
           <Button
             variant="outline"

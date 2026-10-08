@@ -137,6 +137,19 @@ export function DateTimePicker({
   const minDate = minP ? toDate(minP) : null
   const maxDate = maxP ? toDate(maxP) : null
 
+  // Nothing committed yet — `current` is only the "now" placeholder above,
+  // not real state. Each Select below stays UNCONTROLLED (`value={undefined}`)
+  // in that case: a Radix Select that's already controlled with `value="14"`
+  // silently drops a click on the item ALSO valued "14" (its own
+  // `useControllableState` only fires `onValueChange` when the clicked value
+  // differs from the current controlled prop) — so if today's date happens to
+  // land on the one valid day (a dataset fetched "up to now" ends near today),
+  // clicking that exact day/month does nothing. Showing it as a `placeholder`
+  // instead keeps the same visual default without that dead-click trap; the
+  // Select becomes controlled for real the moment `commit` below fires the
+  // first `onChange`.
+  const hasValue = value !== ''
+
   // Emit a new value: fix day overflow, then clamp to [min, max].
   const commit = (next: Parts) => {
     const maxDay = daysInMonth(next.year, next.month)
@@ -187,12 +200,12 @@ export function DateTimePicker({
     <div className={cn('flex flex-wrap items-end gap-2', className)}>
       <Segment label="Day">
         <Select
-          value={String(current.day)}
+          value={hasValue ? String(current.day) : undefined}
           onValueChange={v => commit({ ...current, day: Number(v) })}
           disabled={disabled}
         >
           <SelectTrigger id={id} className={cn(triggerCls, 'w-16')}>
-            <SelectValue />
+            <SelectValue placeholder={pad(current.day)} />
           </SelectTrigger>
           <SelectContent>
             {days.map(d => (
@@ -211,12 +224,12 @@ export function DateTimePicker({
 
       <Segment label="Month">
         <Select
-          value={String(current.month)}
+          value={hasValue ? String(current.month) : undefined}
           onValueChange={v => commit({ ...current, month: Number(v) })}
           disabled={disabled}
         >
           <SelectTrigger className={cn(triggerCls, 'w-32')}>
-            <SelectValue />
+            <SelectValue placeholder={MONTHS[current.month - 1]} />
           </SelectTrigger>
           <SelectContent>
             {MONTHS.map((name, i) => (
@@ -235,12 +248,12 @@ export function DateTimePicker({
 
       <Segment label="Year">
         <Select
-          value={String(current.year)}
+          value={hasValue ? String(current.year) : undefined}
           onValueChange={v => commit({ ...current, year: Number(v) })}
           disabled={disabled}
         >
           <SelectTrigger className={cn(triggerCls, 'w-20')}>
-            <SelectValue />
+            <SelectValue placeholder={String(current.year)} />
           </SelectTrigger>
           <SelectContent>
             {years.map(y => (
@@ -255,12 +268,12 @@ export function DateTimePicker({
       <Segment label="Time">
         <div className="flex items-center gap-1">
           <Select
-            value={String(current.hour)}
+            value={hasValue ? String(current.hour) : undefined}
             onValueChange={v => commit({ ...current, hour: Number(v) })}
             disabled={disabled}
           >
             <SelectTrigger className={cn(triggerCls, 'w-16')}>
-              <SelectValue />
+              <SelectValue placeholder={pad(current.hour)} />
             </SelectTrigger>
             <SelectContent>
               {hours.map(h => (
@@ -279,12 +292,12 @@ export function DateTimePicker({
           <span className="text-xs font-mono text-muted-foreground">:</span>
 
           <Select
-            value={String(current.minute)}
+            value={hasValue ? String(current.minute) : undefined}
             onValueChange={v => commit({ ...current, minute: Number(v) })}
             disabled={disabled}
           >
             <SelectTrigger className={cn(triggerCls, 'w-16')}>
-              <SelectValue />
+              <SelectValue placeholder={pad(current.minute)} />
             </SelectTrigger>
             <SelectContent>
               {minutes.map(m => (

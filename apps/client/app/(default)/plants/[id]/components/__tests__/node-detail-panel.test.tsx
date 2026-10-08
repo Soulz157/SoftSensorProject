@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { fireEvent, render, within } from '@testing-library/react'
 import { NodeDetailPanel } from '../node-detail-panel'
 import type { CanvasNode } from '@/services/canvas'
 import type { WorkspacePlant } from '@/types'
@@ -96,7 +96,42 @@ describe('NodeDetailPanel', () => {
     expect(getAllByText(/alarm/i).length).toBeGreaterThan(0)
   })
 
-  it('shows "Open Node Canvas" CTA linking to workspace canvas with nodeId', () => {
+  // MODEL-SERVE-001-T22. DEPLOY_DOT/DEPLOY_LABEL were keyed `failed` while
+  // the wire sends `error`, so a failing model missed both lookups and took
+  // the green `?? 'bg-emerald-500'` / `?? 'text-emerald-500'` fallbacks —
+  // the word "error" rendered in the healthy colour. A silent fall-through,
+  // so the assertion has to be on the painted class, not the map.
+  it('paints a failing model red, never the green no-status fallback', () => {
+    const failingNode: CanvasNode = {
+      ...mockNode,
+      models: [
+        {
+          id: 'm1',
+          name: 'AnomalyDetect v2',
+          data: { deployStatus: 'error' },
+          nodesId: 'n1',
+        },
+      ],
+    } as unknown as CanvasNode
+
+    const { getByText, container } = render(
+      <NodeDetailPanel
+        viewMode="equipment"
+        node={failingNode}
+        plan={mockPlant}
+        workspaceId="ws1"
+        onClose={() => {}}
+      />,
+    )
+
+    const label = getByText('error')
+    expect(label.className).toContain('text-red-500')
+    expect(label.className).not.toContain('text-emerald-500')
+    expect(container.querySelector('.bg-red-500')).not.toBeNull()
+  })
+
+  // MODEL-SERVE-025. The canvas is gone; Edit and Delete live here instead.
+  it('links nowhere near the removed canvas', () => {
     const { container } = render(
       <NodeDetailPanel
         viewMode="equipment"
@@ -106,9 +141,33 @@ describe('NodeDetailPanel', () => {
         onClose={() => {}}
       />,
     )
-    const link = container.querySelector(
-      'a[href="/workspaces/ws1/canvas?nodeId=n1"]',
+    expect(container.querySelector('a[href*="/canvas"]')).toBeNull()
+  })
+
+  it('offers Edit, and Delete only after a confirm', () => {
+    const onEditClick = vi.fn()
+    const onDeleteClick = vi.fn()
+    const { getByRole } = render(
+      <NodeDetailPanel
+        viewMode="equipment"
+        node={mockNode}
+        plan={mockPlant}
+        workspaceId="ws1"
+        onEditClick={onEditClick}
+        onDeleteClick={onDeleteClick}
+        onClose={() => {}}
+      />,
     )
-    expect(link).not.toBeNull()
+    fireEvent.click(getByRole('button', { name: /edit/i }))
+    expect(onEditClick).toHaveBeenCalledWith(mockNode)
+
+    fireEvent.click(getByRole('button', { name: /^delete$/i }))
+    expect(onDeleteClick).not.toHaveBeenCalled()
+    fireEvent.click(
+      within(getByRole('alertdialog')).getByRole('button', {
+        name: /^delete$/i,
+      }),
+    )
+    expect(onDeleteClick).toHaveBeenCalledWith(mockNode)
   })
 })

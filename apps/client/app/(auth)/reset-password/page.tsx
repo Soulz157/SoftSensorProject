@@ -2,52 +2,65 @@
 export const dynamic = 'force-dynamic'
 
 import { useState } from 'react'
-import Link from 'next/link'
-import { ArrowLeft } from 'lucide-react'
-import { ResetPasswordHeader } from './components/reset-header'
-import { ResetPasswordForm } from './components/reset-form'
-import { ResetPasswordSuccess } from './components/reset-success'
+import { Button } from '@/components/ui/button'
+import { AuthShell } from '@/components/auth/auth-shell'
+import { TextLink } from '@/components/auth/text-link'
 import { useResetPassword } from '@/hooks/auth/use-reset-password'
+import { ResetPasswordForm } from './components/reset-form'
 
 export default function ResetPasswordPage() {
   const [email, setEmail] = useState('')
   const { forgotPassword, isLoading, isSubmitted, setIsSubmitted } =
     useResetPassword()
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    await forgotPassword(email)
+  if (isSubmitted) {
+    return (
+      <AuthShell
+        title="Check your email"
+        description={
+          <>
+            We sent a reset link to{' '}
+            <span className="font-medium text-foreground">{email}</span>. Open
+            it to set a new password. If it isn&apos;t there, check your spam
+            folder.
+          </>
+        }
+        footer={
+          <>
+            Back to <TextLink href="/login">Sign in</TextLink>
+          </>
+        }
+      >
+        <Button
+          type="button"
+          variant="outline"
+          className="h-9 w-full"
+          onClick={() => setIsSubmitted(false)}
+        >
+          Use a different email
+        </Button>
+      </AuthShell>
+    )
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-6">
-      <div className="w-full max-w-md space-y-8">
-        <ResetPasswordHeader isSubmitted={isSubmitted} />
-        <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          {!isSubmitted ? (
-            <ResetPasswordForm
-              email={email}
-              setEmail={setEmail}
-              isLoading={isLoading}
-              onSubmit={handleSubmit}
-            />
-          ) : (
-            <ResetPasswordSuccess
-              email={email}
-              onRetry={() => setIsSubmitted(false)}
-            />
-          )}
-        </div>{' '}
-        <div className="flex items-center justify-center">
-          <Link
-            href="/login"
-            className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to login
-          </Link>
-        </div>
-      </div>
-    </div>
+    <AuthShell
+      title="Reset your password"
+      description="Enter your account email. We'll send a link to set a new password."
+      footer={
+        <>
+          Remembered it? <TextLink href="/login">Sign in</TextLink>
+        </>
+      }
+    >
+      <ResetPasswordForm
+        defaultEmail={email}
+        isLoading={isLoading}
+        onSubmit={async value => {
+          setEmail(value)
+          await forgotPassword(value)
+        }}
+      />
+    </AuthShell>
   )
 }

@@ -2,7 +2,12 @@
   "name": "histogram_custom_bin_and_kde_counts",
   "engine": "histogram",
   "input": {
-    "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+    "tags": [
+      "TI-101",
+      "VI-202",
+      "FI-404",
+      "XX-999"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -848,7 +853,9 @@
   },
   "config": {
     "source_key": "fixture/chart-artifact.parquet",
-    "tags": ["TI-101"],
+    "tags": [
+      "TI-101"
+    ],
     "bin_count": 6,
     "kde_samples": 25
   },

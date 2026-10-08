@@ -66,6 +66,8 @@ export interface BronzeContext {
   customInterval: CustomInterval | null
   fetchConfig: HistoricalFetchConfig
   period: FetchPeriod
+  /** DS-LAKE-018-T03. Null means no holdout — behaves exactly as today. */
+  holdoutRange: CustomDateRange | null
 }
 
 /** Same single-PI-source scope as the wizard's live fetch (F8). */
@@ -116,6 +118,15 @@ export async function ensureBronzeArtifactId(
       startTime: toPiTime(ctx.customDateRange!.from),
       endTime: toPiTime(ctx.customDateRange!.to),
       summaryDuration,
+      // DS-LAKE-018-T03: same toPiTime conversion as startTime/endTime — the
+      // python side compares holdout timestamps directly against the
+      // materialized frame's own, so both must speak the same format.
+      ...(ctx.holdoutRange && {
+        holdout: {
+          from: toPiTime(ctx.holdoutRange.from),
+          to: toPiTime(ctx.holdoutRange.to),
+        },
+      }),
     })
     return res.data.id
   })

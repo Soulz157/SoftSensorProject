@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -12,16 +13,58 @@ import {
 } from 'recharts'
 import type { FitRow } from '@/lib/model-metrics'
 import { EvaluationTooltip } from './evaluation-tooltip'
+import type { LegendEntry } from '@/components/charts/chart-legend'
 
 /** Shared with the residual chart so the crosshair tracks across both. */
 export const EVAL_SYNC_ID = 'evaluation'
 export const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
+
+/** MODEL-FLOW-019-T17. The colours this chart actually draws with, named
+ *  once here rather than retyped into a legend swatch by whoever renders
+ *  it — a second copy of a colour drifts silently on the first theme or
+ *  density change, and is invisible to every test that asserts on text. */
+// MODEL-FLOW-019-V27. Exported so a test can assert the legend and the
+// mark it explains are the SAME binding, not two copies that happen to
+// agree today.
+export const ACTUAL_COLOR = 'var(--foreground)'
+export const PREDICT_COLOR = 'var(--chart-1)'
+export const SD_BAND_COLOR = 'var(--chart-2)'
+export const SD_BAND_OPACITY = 0.42
+
+/** Rendered by the consumer through `ChartLegend`; this component owns the
+ *  entries because it owns the marks they explain. The prediction line is
+ *  DASHED on screen, so its swatch is too. */
+export const AVP_LEGEND: LegendEntry[] = [
+  { shape: 'square', color: ACTUAL_COLOR, label: 'Actual' },
+  { shape: 'dashed', color: PREDICT_COLOR, label: 'Predicted' },
+  {
+    shape: 'square',
+    color: SD_BAND_COLOR,
+    opacity: SD_BAND_OPACITY,
+    label: '±1 SD band',
+  },
+]
 
 interface Props {
   rows: FitRow[]
   tickFormatter: (t: number) => string
   /** Name of the compared model — renders a second prediction line. */
   compareName?: string
+  /** Defaults to Step 5's full-width 320. MODEL-FLOW-017-T04 renders this
+   *  at small-multiple size (~120-160) inside Step 4's candidate cards. */
+  height?: number
+  /** Defaults to `EVAL_SYNC_ID`, sharing Step 5's crosshair with the
+   *  residual chart beside it. MODEL-FLOW-017-T06 gives EACH small-multiple
+   *  instance its OWN id (its own runId) — sharing the module default
+   *  across N mounted candidates would sync every card's crosshair
+   *  together, since `syncId` was a module CONSTANT before this prop
+   *  existed, not something the caller could vary per instance. */
+  syncId?: string
+  /** MODEL-FLOW-030. X positions (`FitRow.t`) of a CV run's fold boundaries,
+   *  drawn as thin vertical lines so an out-of-fold series reads as k test
+   *  windows, not one continuous test split. Omitted — every other caller —
+   *  and nothing is drawn. */
+  foldCuts?: number[]
 }
 
 /**
@@ -33,12 +76,15 @@ export function ActualVsPredictedChart({
   rows,
   tickFormatter,
   compareName,
+  height = 320,
+  syncId = EVAL_SYNC_ID,
+  foldCuts,
 }: Props) {
   return (
-    <ResponsiveContainer width="100%" height={320}>
+    <ResponsiveContainer width="100%" height={height}>
       <ComposedChart
         data={rows}
-        syncId={EVAL_SYNC_ID}
+        syncId={syncId}
         margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
       >
         <CartesianGrid
@@ -65,21 +111,32 @@ export function ActualVsPredictedChart({
         />
         <Tooltip
           content={
-            <EvaluationTooltip
-              variant="fit"
-              compareName={compareName}
-              formatLabel={tickFormatter}
-            />
+            <EvaluationTooltip variant="fit" compareName={compareName} />
           }
         />
+
+        {foldCuts?.map((x, i) => (
+          <ReferenceLine
+            key={x}
+            x={x}
+            stroke="var(--border)"
+            strokeDasharray="2 3"
+            label={{
+              value: `F${i + 1}`,
+              position: 'insideTopLeft',
+              fill: 'var(--muted-foreground)',
+              fontSize: 10,
+            }}
+          />
+        ))}
 
         {/* ±1 SD band wrapping the ACTUAL line — [actual − SD, actual + SD]. */}
         <Area
           connectNulls
           dataKey="sd1"
           stroke="none"
-          fill="var(--chart-2)"
-          fillOpacity={0.42}
+          fill={SD_BAND_COLOR}
+          fillOpacity={SD_BAND_OPACITY}
           isAnimationActive={false}
           activeDot={false}
         />
@@ -88,7 +145,7 @@ export function ActualVsPredictedChart({
           connectNulls
           type="monotone"
           dataKey="predict"
-          stroke="var(--chart-1)"
+          stroke={PREDICT_COLOR}
           strokeWidth={2}
           strokeDasharray="5 5"
           dot={false}
@@ -112,13 +169,13 @@ export function ActualVsPredictedChart({
           connectNulls
           type="monotone"
           dataKey="actual"
-          stroke="var(--foreground)"
+          stroke={ACTUAL_COLOR}
           strokeWidth={2}
           dot={false}
           activeDot={{
             r: 4,
-            fill: 'var(--foreground)',
-            stroke: 'var(--chart-1)',
+            fill: ACTUAL_COLOR,
+            stroke: PREDICT_COLOR,
             strokeWidth: 2,
           }}
           isAnimationActive={false}

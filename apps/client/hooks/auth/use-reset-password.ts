@@ -13,11 +13,12 @@ export const useResetPassword = () => {
       await authService.forgotPassword(email)
       setIsSubmitted(true)
     } catch (error) {
-      if (error instanceof Error) {
-        toast.error(error.message)
-      } else {
-        toast.error('เกิดข้อผิดพลาดในการเชื่อมต่อ')
-      }
+      toast.error("Couldn't send the reset link", {
+        description:
+          error instanceof Error
+            ? error.message
+            : 'Check your connection and try again.',
+      })
     } finally {
       setIsLoading(false)
     }

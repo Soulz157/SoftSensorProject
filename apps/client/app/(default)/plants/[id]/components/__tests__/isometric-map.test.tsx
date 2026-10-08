@@ -47,8 +47,8 @@ const mockNodes: CanvasNode[] = [
     workspaceId: 'ws2',
     planId: 'plan2',
     data: {
-      name: 'CTRL-01',
-      type: 'controller',
+      name: 'RX-01',
+      type: 'reactor',
       status: 'normal',
       x: 100,
       y: 100,
@@ -74,6 +74,10 @@ describe('IsometricMap', () => {
     expect(container.querySelector('svg')).not.toBeNull()
   })
 
+  // The two label layers are MUTUALLY EXCLUSIVE by view mode: zone names
+  // render in `plants`, per-node HUD tags in `equipment`. A render with no
+  // `viewMode` draws neither, so each case below passes the mode whose
+  // labels it is about.
   it('renders a zone label for each workspace', () => {
     const { getByText } = render(
       <IsometricMap
@@ -83,6 +87,7 @@ describe('IsometricMap', () => {
         selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={vi.fn()}
+        viewMode="plants"
       />,
     )
     expect(getByText('ZONE A')).not.toBeNull()
@@ -98,11 +103,12 @@ describe('IsometricMap', () => {
         selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={vi.fn()}
+        viewMode="equipment"
       />,
     )
     expect(getByText('CNC-001')).not.toBeNull()
     expect(getByText('SENSOR-01')).not.toBeNull()
-    expect(getByText('CTRL-01')).not.toBeNull()
+    expect(getByText('RX-01')).not.toBeNull()
   })
 
   it('calls onNodeClick with nodeId when node is clicked', async () => {
@@ -115,6 +121,7 @@ describe('IsometricMap', () => {
         selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={onNodeClick}
+        viewMode="equipment"
       />,
     )
     getByText('CNC-001')

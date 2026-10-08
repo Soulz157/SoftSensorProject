@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   LineChart as LineChartIcon,
+  Loader2,
   RotateCcw,
   ZoomIn,
   ZoomOut,
@@ -22,11 +23,12 @@ import {
   chartColorVar,
   type TimeRange,
 } from '@/lib/mock-readings'
+import { formatDayMonth } from '@/lib/chart-format'
 import type { SensorChartRow } from '@/hooks/use-sensor-readings'
 import { RangeDisplay } from './range-display'
 import { TagsSelector } from './tags-selector'
 import { Button } from '@/components/ui/button'
-import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
+import { SegmentedToggle } from '@/components/segmented-toggle'
 
 interface Props {
   rows: SensorChartRow[]
@@ -37,6 +39,20 @@ interface Props {
   focusedTag?: string[]
   /** Master override: when true, every line renders at full opacity. */
   isViewAll?: boolean
+  /**
+   * X-axis ticks as `12 Sep` (date + month, no time) instead of the
+   * range-derived clock format. Opt-in — this component is also used by the
+   * EDA line chart (`data-analysis-card.tsx`), which keeps `rangeConfig`'s
+   * default formatting.
+   */
+  dateOnlyTicks?: boolean
+  /**
+   * Covers the plot with a spinner while the caller prepares a different
+   * `rows`/`tags` set. Nothing here is async — this marks a render the caller
+   * has deferred (see `CutOffSection`'s Before/After transition), so the chart
+   * says it is working instead of freezing on the previous data.
+   */
+  loading?: boolean
 }
 
 const X_ZOOM_STEP = 1.6
@@ -95,6 +111,8 @@ export function RawTrendChart({
   hideTagSelector = false,
   focusedTag,
   isViewAll = false,
+  dateOnlyTicks = false,
+  loading = false,
 }: Props) {
   const reducedMotion = usePrefersReducedMotion()
   const { tickFormat } = rangeConfig(range)
@@ -104,6 +122,20 @@ export function RawTrendChart({
     setHidden(
       next === null ? new Set() : new Set(tags.filter(t => !next.includes(t))),
     )
+
+  // Visibility has two owners: the caller's tag set (`tags`, already pruned
+  // upstream) and this chart's own selector. "View all" only clears the
+  // caller's half, so without this a tag hidden through the selector stayed
+  // hidden after clicking it — a control that visibly did nothing.
+  //
+  // Adjusted during render rather than in an effect: this is state derived
+  // from a prop CHANGE, so React re-runs this component before committing and
+  // the user never sees the stale frame an effect would paint first.
+  const [viewAllSeen, setViewAllSeen] = useState(isViewAll)
+  if (viewAllSeen !== isViewAll) {
+    setViewAllSeen(isViewAll)
+    if (isViewAll) setHidden(new Set())
+  }
 
   const [zoomWindow, setZoomWindow] = useState<[number, number] | null>(null)
   useEffect(() => {
@@ -316,71 +348,89 @@ export function RawTrendChart({
         />
       </div>
 
-      {/* ── Main chart ── */}
-      <ChartContainer config={config} className="h-100 w-full">
-        <LineChart
-          accessibilityLayer
-          data={visibleRows}
-          margin={{ left: 12, right: 12 }}
-        >
-          <CartesianGrid vertical={false} />
-          <XAxis
-            dataKey="timestamp"
-            tickLine={false}
-            axisLine={false}
-            tickMargin={8}
-            minTickGap={32}
-            tickFormatter={value => tickFormat(String(value))}
-          />
-          <YAxis
-            tickLine={false}
-            axisLine={false}
-            width={56}
-            tickMargin={8}
-            domain={autoscaleY || !lockedYDomain ? undefined : lockedYDomain}
-            tickFormatter={v =>
-              isNum(v)
-                ? v.toLocaleString(undefined, { maximumFractionDigits: 2 })
-                : ''
-            }
-          />
-          <ChartTooltip
-            content={
-              <ChartTooltipContent
-                labelFormatter={value =>
-                  new Date(String(value)).toLocaleString()
-                }
-              />
-            }
-          />
-          {visibleTags.map(piTag => {
-            const opacity = getLineOpacity(piTag, focusedTag, isViewAll)
-            const isFocused = !isViewAll && !!focusedTag?.includes(piTag)
-            const heavy = visibleRows.length > 200
+      {/* ── Main chart ──
+          The chart stays MOUNTED under the overlay rather than being swapped
+          for a spinner: unmounting would discard `zoomWindow`, `hidden` and
+          `autoscaleY`, so every Before/After flip would silently reset the
+          user's zoom. */}
+      <div className="relative">
+        {loading && (
+          <div
+            className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/60"
+            role="status"
+            aria-label="Loading chart data"
+          >
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
+        <ChartContainer config={config} className="h-100 w-full">
+          <LineChart
+            accessibilityLayer
+            data={visibleRows}
+            margin={{ left: 12, right: 12 }}
+          >
+            <CartesianGrid vertical={false} />
+            <XAxis
+              dataKey="timestamp"
+              tickLine={false}
+              axisLine={false}
+              tickMargin={8}
+              minTickGap={dateOnlyTicks ? 56 : 32}
+              tickFormatter={value =>
+                dateOnlyTicks
+                  ? formatDayMonth(String(value))
+                  : tickFormat(String(value))
+              }
+            />
+            <YAxis
+              tickLine={false}
+              axisLine={false}
+              width={56}
+              tickMargin={8}
+              domain={autoscaleY || !lockedYDomain ? undefined : lockedYDomain}
+              tickFormatter={v =>
+                isNum(v)
+                  ? v.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                  : ''
+              }
+            />
+            <ChartTooltip
+              content={
+                <ChartTooltipContent
+                  labelFormatter={value =>
+                    new Date(String(value)).toLocaleString()
+                  }
+                />
+              }
+            />
+            {visibleTags.map(piTag => {
+              const opacity = getLineOpacity(piTag, focusedTag, isViewAll)
+              const isFocused = !isViewAll && !!focusedTag?.includes(piTag)
+              const heavy = visibleRows.length > 200
 
-            return (
-              <Line
-                key={piTag}
-                dataKey={(row: SensorChartRow) => row[piTag]}
-                name={piTag}
-                type={visibleRows.length > 200 ? 'linear' : 'natural'}
-                stroke={colorByTag[piTag]}
-                strokeOpacity={opacity}
-                strokeWidth={isFocused ? 3 : 2}
-                fill={colorByTag[piTag]}
-                fillOpacity={opacity < 1 ? 0 : 0.12}
-                dot={
-                  visibleRows.length > MAX_POINTS_FOR_DOTS
-                    ? false
-                    : { r: 3, fill: colorByTag[piTag] }
-                }
-                activeDot={{ r: 6 }}
-                connectNulls
-                isAnimationActive={!reducedMotion && !heavy}
-              />
-            )
-          })}
-          {/* {rows.length > 2 && (
+              return (
+                <Line
+                  key={piTag}
+                  dataKey={(row: SensorChartRow) => row[piTag]}
+                  name={piTag}
+                  type={visibleRows.length > 200 ? 'linear' : 'natural'}
+                  stroke={colorByTag[piTag]}
+                  strokeOpacity={opacity}
+                  strokeWidth={isFocused ? 3 : 2}
+                  fill={colorByTag[piTag]}
+                  fillOpacity={opacity < 1 ? 0 : 0.12}
+                  dot={
+                    visibleRows.length > MAX_POINTS_FOR_DOTS
+                      ? false
+                      : { r: 3, fill: colorByTag[piTag] }
+                  }
+                  activeDot={{ r: 6 }}
+                  connectNulls
+                  isAnimationActive={!reducedMotion && !heavy}
+                />
+              )
+            })}
+            {/* {rows.length > 2 && (
             <Brush
               dataKey="timestamp"
               height={28}
@@ -409,8 +459,9 @@ export function RawTrendChart({
               }}
             />
           )} */}
-        </LineChart>
-      </ChartContainer>
+          </LineChart>
+        </ChartContainer>
+      </div>
     </div>
   )
 }

@@ -1,6 +1,7 @@
 'use client'
 
 import type { FitRow } from '@/lib/model-metrics'
+import { formatWallClockFull } from '@/lib/monitoring'
 
 interface PayloadItem {
   /** Full source row recharts attaches to every payload item. */
@@ -14,7 +15,6 @@ interface Props {
   variant: 'fit' | 'residual'
   /** Name of the compared model, when a comparison is active. */
   compareName?: string
-  formatLabel: (t: number) => string
 }
 
 function scalar(payload: PayloadItem[], key: keyof FitRow): number | undefined {
@@ -49,9 +49,11 @@ function Row({
 
 /**
  * Crosshair tooltip for the two Phase-3 evaluation charts. `variant` selects
- * which measures to show (fit = Actual/Predicted/±1 SD, residual = error); the
- * timestamp is formatted with the active adaptive formatter so it matches the
- * axis ticks.
+ * which measures to show (fit = Actual/Predicted/±1 SD, residual = error).
+ *
+ * The header is the point's FULL date and time ("Feb 8, 2026 17:30"), not the
+ * axis' adaptive form: past a two-day span the axis drops the time of day, and
+ * a tooltip exists to name the exact point.
  */
 export function EvaluationTooltip({
   active,
@@ -59,7 +61,6 @@ export function EvaluationTooltip({
   label,
   variant,
   compareName,
-  formatLabel,
 }: Props) {
   if (!active || !payload || payload.length === 0 || label === undefined) {
     return null
@@ -73,7 +74,7 @@ export function EvaluationTooltip({
   return (
     <div className="min-w-48 rounded-lg border border-border bg-popover p-3 text-xs shadow-xl">
       <p className="mb-2 border-b border-border pb-2 font-mono text-muted-foreground">
-        {formatLabel(label)}
+        {formatWallClockFull(label)}
       </p>
       <div className="space-y-1.5">
         {variant === 'fit' ? (

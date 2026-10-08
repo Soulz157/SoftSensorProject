@@ -22,18 +22,18 @@ describe('MachineNode SVG picker', () => {
     expect(paths.length).toBeGreaterThan(0)
   })
 
-  it('controller type → renders ControllerSvg (polyline graph present)', () => {
+  it('reactor type → renders ReactorSvg (domed vessel arc present)', () => {
     const { container } = render(
       <svg>
         <MachineNode
           {...base}
-          type="controller"
+          type="reactor"
           icon={undefined}
           status="normal"
         />
       </svg>,
     )
-    expect(container.querySelector('polyline')).not.toBeNull()
+    expect(container.querySelector('path[d*="A18 13"]')).not.toBeNull()
   })
 
   it('machine type + icon=arm → renders RobotArmSvg (lines for gripper present)', () => {
@@ -55,13 +55,31 @@ describe('MachineNode SVG picker', () => {
     expect(container.querySelector('polygon')).not.toBeNull()
   })
 
-  it('renders label text', () => {
+  // The label lives in the HUD tag, which renders only in VIEW MODE — the
+  // editable canvas draws the node bare. Asserting it without the prop that
+  // governs it was asserting a state the component no longer has.
+  it('renders label text in view mode', () => {
     const { getByText } = render(
+      <svg>
+        <MachineNode
+          {...base}
+          isViewMode
+          type="sensor"
+          icon={undefined}
+          status="normal"
+        />
+      </svg>,
+    )
+    expect(getByText('TEST-01')).not.toBeNull()
+  })
+
+  it('draws no HUD label outside view mode', () => {
+    const { queryByText } = render(
       <svg>
         <MachineNode {...base} type="sensor" icon={undefined} status="normal" />
       </svg>,
     )
-    expect(getByText('TEST-01')).not.toBeNull()
+    expect(queryByText('TEST-01')).toBeNull()
   })
 
   it('selected node renders with larger font weight on label', () => {

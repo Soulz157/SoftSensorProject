@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 import { workspaceIcons } from '@/store/workspace'
 import { useModels } from '@/hooks/workspace/use-models'
 import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
-import { failedDeploys } from '@/lib/model-status'
+import { failedDeploys, isModelAbnormal } from '@/lib/model-status'
 import { OverviewAssetTree } from './overview-asset-tree'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
@@ -24,7 +24,6 @@ interface OverviewDetailPanelProps {
   nodes: CanvasNode[]
   onClose: () => void
   onViewWorkspace: (id: string) => void
-  onOpenPipeEditor: (id: string) => void
   onViewAlerts: () => void
   onOpenSettings: (id: string) => void
 }
@@ -58,7 +57,6 @@ function PanelContent({
   nodes,
   onClose,
   onViewWorkspace,
-  onOpenPipeEditor,
   onViewAlerts,
   onOpenSettings,
 }: OverviewDetailPanelProps & { workspace: Workspace }) {
@@ -72,23 +70,18 @@ function PanelContent({
 
   const nodeCount = nodes.length
   const alarmCount = nodes.filter(n => n.data.status === 'alarm').length
-  const warningCount = nodes.filter(n => n.data.status === 'warning').length
-  const offlineCount = nodes.filter(n => n.data.status === 'offline').length
   const failedCount = failedDeploys(models).length
 
-  const worstStatus: 'alarm' | 'warning' | 'offline' | 'normal' =
-    alarmCount > 0
-      ? 'alarm'
-      : offlineCount > 0
-        ? 'offline'
-        : warningCount > 0 || failedCount > 0
-          ? 'warning'
-          : 'normal'
+  // MODEL-SERVE-024-D02. Abnormal = equipment ALERT + abnormal models
+  // (failed deploy or monitoring ALERT). Warning/offline equipment and
+  // monitoring warnings are not Abnormal; they stay on the Alerts page.
+  const abnormalModelCount = models.filter(isModelAbnormal).length
+  const abnormalCount = alarmCount + abnormalModelCount
 
   const IconComponent =
     workspaceIcons.find(i => i.id === workspace.icon)?.icon ?? Building2
 
-  const isAbnormal = worstStatus !== 'normal'
+  const isAbnormal = abnormalCount > 0
   const statusBadgeClass = isAbnormal
     ? 'border-destructive/40 bg-destructive/10 text-destructive'
     : 'border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400'
@@ -170,9 +163,9 @@ function PanelContent({
               />
               <StatCell
                 label="Abnormal"
-                value={alarmCount + warningCount + offlineCount + failedCount}
+                value={abnormalCount}
                 valueClass={
-                  alarmCount + warningCount + offlineCount + failedCount > 0
+                  abnormalCount > 0
                     ? 'text-destructive'
                     : 'text-green-700 dark:text-green-400'
                 }
@@ -209,15 +202,6 @@ function PanelContent({
           onClick={() => onViewWorkspace(workspace.id)}
         >
           View Plant
-          <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full gap-2"
-          onClick={() => onOpenPipeEditor(workspace.id)}
-        >
-          Open Pipeline Editor
           <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
         </Button>
         <Button

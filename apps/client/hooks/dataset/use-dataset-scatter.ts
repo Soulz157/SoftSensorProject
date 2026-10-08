@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { datasetDraftService } from '@/services/dataset-draft'
 import type { DraftScatterResult } from '@/services/dataset-draft'
 import type { CleaningOperationInput } from '@/services/dataset-version'
+import { windowKey, windowParams, type TimeWindow } from '@/lib/time-window'
 import { useDebouncedAbortableRequest } from './internal/use-debounced-abortable-request'
 
 export interface DatasetScatterState {
@@ -33,6 +34,8 @@ export function useDatasetScatter(
   /** Forwarded as-is. No caller sets this yet — `undefined` lets the
    * server apply its own default (`DEFAULT_SCATTER_MAX_POINTS = 2000`). */
   maxPoints?: number,
+  /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
+  timeWindow?: TimeWindow | null,
 ): DatasetScatterState {
   const [scatter, setScatter] = useState<DraftScatterResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -42,7 +45,7 @@ export function useDatasetScatter(
 
   const enabled = !!draftId && !!artifactId && !!xTag && !!yTag
   const cacheKey = enabled
-    ? `scatter|${draftId}|${artifactId}|${xTag}|${yTag}|${opsKey}|${maxPoints ?? ''}`
+    ? `scatter|${draftId}|${artifactId}|${xTag}|${yTag}|${opsKey}|${maxPoints ?? ''}|${windowKey(timeWindow)}`
     : null
 
   useDebouncedAbortableRequest<DraftScatterResult>({
@@ -58,6 +61,7 @@ export function useDatasetScatter(
             xTag: xTag!,
             yTag: yTag!,
             ...(maxPoints !== undefined && { maxPoints }),
+            ...windowParams(timeWindow),
           },
           signal,
         )

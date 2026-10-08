@@ -1,0 +1,159 @@
+"""What a run writes to /scratch, and under what name.
+
+An `ArtifactSet` rather than a bare dict because the original built
+`{filename: (path, content_type)}` by hand while separately calling
+`.write_text(json.dumps(...))` on the same paths — two steps that must agree, in
+two places, with the content type restated as a literal each time. Adding a file
+to the dict but forgetting to write it produces a KeyError at upload; writing it
+but forgetting the dict entry produces a run that succeeds with a missing
+artifact and no error at all.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Iterator, Mapping
+
+import pandas as pd
+
+JSON_CONTENT_TYPE = "application/json"
+PARQUET_CONTENT_TYPE = "application/vnd.apache.parquet"
+BINARY_CONTENT_TYPE = "application/octet-stream"
+
+MODEL_FILENAME = "model.joblib"
+METRICS_FILENAME = "metrics.json"
+MANIFEST_FILENAME = "run_manifest.json"
+PREDICTIONS_FILENAME = "predictions.parquet"
+LOSS_HISTORY_FILENAME = "loss_history.json"
+# MODEL-FLOW-016-T04. Mirrored in apps/python's object_store.py
+# (CV_FOLDS_FILENAME) and artifact-keys.ts — change all three, per
+# MODEL-FLOW-013-T05's own note on what happens when one is missed. See
+# MIRRORS.md.
+CV_FOLDS_FILENAME = "cv_folds.json"
+# MODEL-FLOW-019-T09. Per-feature importance — present only for the
+# algorithms importance.extract_feature_importance can read a real quantity
+# from; absent, not empty, for one that cannot (see that module's own doc).
+# Mirrored in apps/python's object_store.py (FEATURE_IMPORTANCE_FILENAME) and
+# artifact-keys.ts — change all three. See MIRRORS.md entry 7.
+FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
+# MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series
+# ({timestamp,y_true,y_pred}). Deliberately a DIFFERENT filename from
+# PREDICTIONS_FILENAME: for a CV run predictions.parquet is unused until
+# scoring (no test split ever existed), but for a non-CV run
+# predictions.parquet already holds the TEST split the moment training
+# finishes — nothing may overwrite it.
+#
+# MODEL-FLOW-019-T26. TWO writers now, not one. Originally score-mode only;
+# a non-CV run also writes it INLINE at training time (pipelines/__init__.py's
+# _publish), because _score_holdout_if_present already computes the frame.
+# Score-mode remains the only writer for a CV run — and the BACKFILL path for
+# runs trained before this landed. Mirrored in apps/python's object_store.py
+# (HOLDOUT_PREDICTIONS_FILENAME, also gates _ALLOWED_RUN_UPLOADS) and
+# artifact-keys.ts — change all three. See MIRRORS.md entry 8.
+HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"
+# MODEL-SERVE-020-T06. The per-row series ({timestamp,y_true,y_pred}) a retrain
+# candidate produced on the operator's NEW-DATA window. Until this constant the
+# window was scored and the frame DISCARDED — only the aggregate reached
+# `newDataHoldoutMetrics` — because nothing rendered a second holdout series.
+# The Retrain tab's charts now do. Its OWN filename: a third population, never
+# predictions.parquet (the test split) or holdout_predictions.parquet (the
+# current version's frozen test slice). Mirrored in apps/python's
+# object_store.py (NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME, also gates
+# _ALLOWED_RUN_UPLOADS and _READABLE_PREDICTION_FILENAMES) and artifact-keys.ts
+# — change all three. See MIRRORS.md entry 9.
+NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = "new_data_holdout_predictions.parquet"
+# MODEL-SERVE-021-T03. The current version's OWN predictions on that same
+# new-data window, scored inside this container against the model the claim
+# presigned (`incumbentModelUrl`/`incumbentModelChecksum`/
+# `incumbentFeatureColumns`). "New data only" replaces the training set, so
+# there is no frozen slice to compare against — this file plus
+# `new_data_holdout_predictions.parquet` are the only two series the Retrain
+# tab has to compare the two versions. Its OWN filename: never
+# new_data_holdout_predictions.parquet (the candidate's series on the same
+# rows) or holdout_predictions.parquet (a frozen-slice comparison that does
+# not exist for this strategy). Mirrored in apps/python's object_store.py
+# (INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME, also gates
+# _ALLOWED_RUN_UPLOADS and _READABLE_PREDICTION_FILENAMES) and
+# artifact-keys.ts — change all three. See MIRRORS.md entry 10.
+INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = (
+    "incumbent_new_data_holdout_predictions.parquet"
+)
+# MODEL-SERVE-026-T05. The CV-gap series (pipelines/cv_gap.py): every
+# expanding fold's test rows, with the candidate configuration's fold-fit
+# prediction AND the current version's prediction (NaN before its own cut).
+# {fold, timestamp, y_true, y_pred, y_pred_current} — a fifth population, its
+# OWN filename. Written only for a NEW_DATA_ONLY retrain whose spec carries
+# `cvGap`. Mirrored in apps/python's object_store.py
+# (CV_GAP_PREDICTIONS_FILENAME, gating _ALLOWED_RUN_UPLOADS and
+# _READABLE_PREDICTION_FILENAMES) and artifact-keys.ts — change all three.
+# See MIRRORS.md entry 11.
+CV_GAP_PREDICTIONS_FILENAME = "cv_gap_predictions.parquet"
+# MODEL-FLOW-028-T01. A CV run's OUT-OF-FOLD series ({timestamp,y_true,y_pred}):
+# every expanding fold's test rows, predicted by that fold's own model, which
+# never trained on them. The same three columns as predictions.parquet, but a
+# different population — it describes the CONFIGURATION's k fold fits, not the
+# refit that ships — so it has its OWN filename and is never served as the test
+# split or the holdout. Fold membership is derived from cv_folds.json's
+# cut_timestamps, never stored as a column (the shared prediction reader
+# accepts exactly three). Written only by pipelines/cv_expanding.py. Mirrored
+# in apps/python's object_store.py (CV_OOF_PREDICTIONS_FILENAME, gating
+# _ALLOWED_RUN_UPLOADS) and artifact_service.py (_READABLE_PREDICTION_FILENAMES)
+# and artifact-keys.ts — change all four. See MIRRORS.md entry 12.
+CV_OOF_PREDICTIONS_FILENAME = "cv_oof_predictions.parquet"
+# MODEL-FLOW-023-T03/T10. A SECOND artifact, never a widened
+# feature_importance.json — importance.py's own finding 6 is explicit that
+# the two methods cannot share one file (a signed permutation drop and an
+# always-non-negative impurity/coefficient value answer different questions).
+# Present only when `TrainingResult.permutation_population` was supplied AND
+# extract_permutation_importance did not refuse (too few windows, or the
+# lstm/gru cost gate). Mirrored in apps/python's object_store.py
+# (PERMUTATION_IMPORTANCE_FILENAME) and artifact-keys.ts — change all three,
+# and add the MIRRORS.md entry.
+PERMUTATION_IMPORTANCE_FILENAME = "permutation_importance.json"
+
+
+class ArtifactSet:
+    """Write-and-register, as one call per artifact.
+
+    Iteration order is insertion order, which is the order the upload loop PUTs
+    them in — model.joblib first, deliberately, so the artifact a deployment
+    depends on lands before the reporting extras.
+    """
+
+    def __init__(self, scratch: Path):
+        self.scratch = scratch
+        self._outputs: dict[str, tuple[Path, str]] = {}
+
+    def add_existing(
+        self, filename: str, path: Path, content_type: str = BINARY_CONTENT_TYPE
+    ) -> Path:
+        """Register a file some other component already wrote (model.joblib,
+        which joblib.dump produces, is the only such case today)."""
+        self._outputs[filename] = (path, content_type)
+        return path
+
+    def add_json(self, filename: str, payload: Any) -> Path:
+        path = self.scratch / filename
+        path.write_text(json.dumps(
+            payload, indent=2, sort_keys=True, default=str))
+        self._outputs[filename] = (path, JSON_CONTENT_TYPE)
+        return path
+
+    def add_parquet(self, filename: str, frame: pd.DataFrame) -> Path:
+        path = self.scratch / filename
+        frame.to_parquet(path, index=False)
+        self._outputs[filename] = (path, PARQUET_CONTENT_TYPE)
+        return path
+
+    def as_outputs(self) -> Mapping[str, tuple[Path, str]]:
+        return dict(self._outputs)
+
+    def __contains__(self, filename: object) -> bool:
+        return filename in self._outputs
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._outputs)
+
+    def __len__(self) -> int:
+        return len(self._outputs)

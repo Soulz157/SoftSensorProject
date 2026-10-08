@@ -6,8 +6,10 @@ import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { getModelById } from '@/services/model'
 import { datasetService } from '@/services/dataset'
+import { useModelDraftResume } from '@/hooks/model/use-model-draft-resume'
 import { readModelConfig, configTargets } from '@/lib/model-config'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
+import { normaliseLossFunction } from '@/lib/training-config'
 import type { AIModel } from '@/types'
 import {
   resetWizardAtom,
@@ -35,7 +37,6 @@ import {
   mpRetrainWarnSdAtom,
   mpRetrainCriticalSdAtom,
   mpDriftMonitorAtom,
-  mpDriftThresholdPctAtom,
   MP_TOTAL_STEPS,
   type WizardMode,
 } from '@/store/model-pipeline'
@@ -52,6 +53,15 @@ export interface UseModelWizardModeResult {
  * metadata + Phase 2–4 config + a rebuilt raw dataset so charts/metrics render);
  * create dispatches a full reset so no state leaks from a prior session. Runs
  * exactly once per mount.
+ *
+ * A third entry, `?draftId=…` (MODEL-FLOW-010-T08), resumes an unfinished
+ * server-side `ModelDraft` — the way back after leaving the wizard to edit a
+ * dataset. It is a CREATE-mode continuation, not a mode of its own: no `Model`
+ * row exists yet, so nothing about the commit path changes. Restore is
+ * deliberately PARTIAL, because the row is: `ModelDraft` has no description,
+ * no `algorithms[]`, no loss function, no selected metrics and no deploy
+ * config, so those come back at their defaults and the toast says so rather
+ * than implying parity.
  */
 export function useModelWizardMode(): UseModelWizardModeResult {
   const params = useSearchParams()
@@ -82,7 +92,8 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setWarnSd = useSetAtom(mpRetrainWarnSdAtom)
   const setCriticalSd = useSetAtom(mpRetrainCriticalSdAtom)
   const setDriftMonitor = useSetAtom(mpDriftMonitorAtom)
-  const setDriftThresholdPct = useSetAtom(mpDriftThresholdPctAtom)
+
+  const { resume } = useModelDraftResume()
 
   const [mode, setModeState] = useState<WizardMode>('create')
   const [modelName, setModelName] = useState('')
@@ -96,10 +107,24 @@ export function useModelWizardMode(): UseModelWizardModeResult {
     const urlMode = params.get('mode')
     const modelId = params.get('modelId')
     const workspaceId = params.get('workspaceId')
+    const draftId = params.get('draftId')
 
     if (urlMode !== 'edit' || !modelId || !workspaceId) {
-      reset()
       setModeState('create')
+      if (draftId) {
+        // `resume` resets the wizard itself before hydrating, so the plain
+        // create branch below is the only one that needs its own reset.
+        // Unlike the in-wizard Resume button, a bad id in the URL leaves the
+        // user on an empty wizard they did not ask for — send them back.
+        setLoading(true)
+        void resume(draftId)
+          .then(ok => {
+            if (!ok) router.push('/models/views')
+          })
+          .finally(() => setLoading(false))
+      } else {
+        reset()
+      }
       return
     }
 
@@ -120,19 +145,22 @@ export function useModelWizardMode(): UseModelWizardModeResult {
         setFindBestParams(config.findBestParams ?? false)
         setTargetVariable(configTargets(config))
         setHyperparams(config.hyperparameters)
-        setLossFunction(config.lossFunction ?? 'mse')
+        // MODEL-FLOW-019-T37. Was `?? 'mse'` — see `use-model-preset`'s twin
+        // of this line. Opening an existing model for EDIT hit the same blank
+        // control, which is the worse of the two cases: a reader is looking at
+        // a model saved with a recorded preference and sees no value at all.
+        setLossFunction(normaliseLossFunction(config.lossFunction))
         setTrainTestSplit(config.trainTestSplit ?? 80)
         setSelectedMetrics(
           config.selectedMetrics ?? ([...METRIC_KEYS] as MetricKey[]),
         )
 
-        // Deploy step (Step 4) — fall back to defaults for legacy configs.
+        // Deploy step (Step 6) — fall back to defaults for legacy configs.
         const deploy = config.deployment
         setAutoRetrain(deploy?.autoRetrain ?? false)
         setWarnSd(deploy?.warnSd ?? 1.5)
         setCriticalSd(deploy?.criticalSd ?? 3.0)
         setDriftMonitor(deploy?.driftMonitor ?? false)
-        setDriftThresholdPct(deploy?.driftThresholdPct ?? 10)
 
         const datasetId = config.datasetId || model.datasetId
         if (datasetId) {

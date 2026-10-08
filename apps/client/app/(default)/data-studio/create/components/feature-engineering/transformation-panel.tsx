@@ -9,6 +9,7 @@ import {
   ArrowLeftRight,
   Shield,
   Info,
+  Ban,
 } from 'lucide-react'
 import {
   Dialog,
@@ -55,6 +56,18 @@ const SCALER_OPTIONS = [
     description:
       'Uses median and IQR. Robust to datasets with extreme outliers.',
     icon: Shield,
+  },
+  // DS-LAKE-028-T04. `none` was always a real method server-side
+  // (softsensor_scaling/scaling.py:87-88 returns the values untransformed and
+  // records no fitted params, and the coverage guard exempts it) — it was just
+  // unreachable from here, so the user could not DECLINE scaling, only pick
+  // which one. Listed last because it is the opt-out, not a peer of the three.
+  {
+    value: 'none',
+    label: 'No Scaling',
+    description:
+      'Keeps the column in its original engineering units. Choose this when a model needs the raw magnitude, or when the values are already comparable.',
+    icon: Ban,
   },
 ] as const
 
@@ -232,6 +245,24 @@ export function FeatureTransformDialog({
                 <h3 className="text-sm font-semibold text-foreground">
                   Select Scaling Method
                 </h3>
+                {/*
+                  DS-LAKE-028-T04. `dwScalerConfigsAtom` starts {} and the
+                  pipeline's DEFAULT_SCALER is min-max, so never opening this
+                  dialog min-max scales EVERY numeric column — and the saved
+                  dataset's stored values are that scaled frame. Naming it here
+                  is the difference between a default and a silent one. Stated
+                  in plain copy at the point of choice, never through a
+                  reserved status colour (DS-LAKE-019-T04's precedent).
+                */}
+                <p className="rounded-lg border border-border/50 bg-muted/30 p-3 text-xs text-muted-foreground">
+                  Columns you don&apos;t configure here are{' '}
+                  <span className="font-medium text-foreground">
+                    min-max scaled to a 0–1 range
+                  </span>{' '}
+                  by default, and the dataset stores those scaled values. Pick{' '}
+                  <span className="font-medium text-foreground">No Scaling</span>{' '}
+                  to keep a column in its original units.
+                </p>
                 <RadioGroup
                   value={activeMethod}
                   onValueChange={value =>

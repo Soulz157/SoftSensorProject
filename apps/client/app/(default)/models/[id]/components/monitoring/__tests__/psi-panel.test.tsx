@@ -1,0 +1,355 @@
+import { describe, it, expect } from 'vitest'
+import { render, screen, fireEvent, within } from '@testing-library/react'
+import { PsiPanel } from '../psi/psi-panel'
+import type {
+  ColumnBins,
+  PsiColumn,
+  PsiReport,
+} from '@/services/model-monitoring'
+
+/**
+ * MODEL-SERVE-001-T13/T16. `PsiPanel` owns its own loading/empty/
+ * unavailable rungs — the original merged component gated a PSI report
+ * behind the z-score's rungs. Since MODEL-SERVE-028 it is the only drift
+ * card (the z-score `DriftPanel` was removed), so these tests are the whole
+ * of the drift card's state coverage.
+ */
+
+function makeBins(overrides: Partial<ColumnBins> = {}): ColumnBins {
+  return {
+    binMode: 'continuous',
+    binCount: 10,
+    edges: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+    refCounts: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
+    liveCounts: [22, 18, 5, 2, 1, 1, 3, 8, 20, 20],
+    below: 0,
+    above: 0,
+    liveInRangeTotal: 100,
+    minSamples: 200,
+    ...overrides,
+  }
+}
+
+function makeColumn(overrides: Partial<PsiColumn> = {}): PsiColumn {
+  return {
+    column: 'TI-101',
+    liveTotal: 100,
+    psi: 0.9469,
+    outOfRangePct: 0,
+    status: 'CRITICAL',
+    bins: makeBins(),
+    ...overrides,
+  }
+}
+
+function makeReport(
+  columns: PsiColumn[],
+  basisOverrides: Partial<PsiReport['basis']> = {},
+): PsiReport {
+  return {
+    status: columns.some(c => c.status === 'CRITICAL') ? 'CRITICAL' : 'OK',
+    columns,
+    basis: {
+      plane: 'predict',
+      modelVersionId: 'v1',
+      version: 1,
+      goldArtifactId: 'a1',
+      goldObjectKey: 'k1',
+      sampleRequests: 100,
+      histogramRequests: 100,
+      from: '2026-01-01T00:00:00.000Z',
+      to: '2026-01-01T01:00:00.000Z',
+      thresholds: { warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
+      epsilon: 0.0001,
+      ...basisOverrides,
+    },
+  }
+}
+
+describe('PsiPanel', () => {
+  it('renders its own summary table with the columns T13 chose', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn()])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    expect(screen.getByRole('columnheader', { name: 'Tag' })).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: 'PSI' })).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: 'Status' })).toBeVisible()
+    expect(
+      screen.getByRole('columnheader', { name: 'Bins used' }),
+    ).toBeVisible()
+    expect(
+      screen.getByRole('columnheader', { name: 'Computed over' }),
+    ).toBeVisible()
+  })
+
+  // Every monitoring badge (card, Input Data table, retrain dialog) shares
+  // one vocabulary from `lib/drift-status-style.ts`, where the wire `OK`
+  // displays as "Good". This pins the card's use of it, so a revert to the
+  // old pass-through label would not ship silently.
+  it('renders the wire status OK as "Good" on the card', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn({ status: 'OK', psi: 0.01 })])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    // Header badge and the one column row: both read Good, neither reads OK.
+    expect(screen.getAllByText('Good')).toHaveLength(2)
+    expect(screen.queryByText('OK')).toBeNull()
+  })
+
+  it('renders its own loading rung, independent of any drift state', () => {
+    render(<PsiPanel report={null} loading={true} unavailableReason={null} />)
+    expect(screen.getByText(/loading psi report/i)).toBeVisible()
+  })
+
+  it('renders its own unavailable rung, independent of any drift state', () => {
+    render(
+      <PsiPanel
+        report={null}
+        loading={false}
+        unavailableReason="This model has no PRODUCTION version."
+      />,
+    )
+    expect(
+      screen.getByText('This model has no PRODUCTION version.'),
+    ).toBeVisible()
+  })
+
+  it('renders its own empty rung, naming why, when drift would have data but PSI has none', () => {
+    render(
+      <PsiPanel
+        report={makeReport([])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+    expect(screen.getByText(/no psi-eligible \/predict traffic/i)).toBeVisible()
+  })
+
+  it('renders INSUFFICIENT_DATA as a first-class state: rows-vs-floor, no numeric PSI, row inert', () => {
+    const col = makeColumn({
+      status: 'INSUFFICIENT_DATA',
+      psi: null,
+      liveTotal: 42,
+      bins: makeBins({ liveInRangeTotal: 42, minSamples: 200 }),
+    })
+    render(
+      <PsiPanel
+        report={makeReport([col])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    const row = screen.getByText('TI-101').closest('tr')
+    expect(row).not.toBeNull()
+    const scoped = within(row as HTMLElement)
+
+    expect(scoped.getByText(/insufficient data/i)).toBeVisible()
+    expect(scoped.getByText(/42 of 200 rows/i)).toBeVisible()
+    // No numeric PSI — an em-dash, never a value computed from too few
+    // samples.
+    expect(scoped.getByText('—')).toBeVisible()
+
+    // Row is INERT: no chevron, and clicking it opens nothing.
+    fireEvent.click(row as HTMLElement)
+    expect(screen.queryByRole('columnheader', { name: 'Bin' })).toBeNull()
+  })
+
+  it('shows a REDUCED bin count for a degenerate tag, never a default of 10', () => {
+    const col = makeColumn({
+      status: 'OK',
+      psi: 0.01,
+      bins: makeBins({
+        binCount: 3,
+        edges: [0, 1, 2, 3],
+        refCounts: [34, 33, 33],
+        liveCounts: [11, 11, 12],
+        liveInRangeTotal: 34,
+        minSamples: 60,
+      }),
+    })
+    render(
+      <PsiPanel
+        report={makeReport([col])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    expect(screen.getByText('3 (quantile)')).toBeVisible()
+  })
+
+  it('click opens the chart and the edge table with REAL engineering-unit ranges, not bare B1..B10', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn()])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('TI-101'))
+
+    // The edge table appears (its own column headers, distinct from the
+    // summary table above).
+    expect(screen.getByRole('columnheader', { name: 'Bin' })).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: 'Range' })).toBeVisible()
+    // The bare chart-axis label "B1" exists, but the RANGE COLUMN must
+    // carry the real engineering-unit bracket — not the bare label itself.
+    expect(screen.getByText('[0, 10)')).toBeVisible()
+    // The last bin is closed on the right, per psi.py's own convention.
+    expect(screen.getByText('[90, 100]')).toBeVisible()
+  })
+
+  // The status badge became a real <button> when the explanation tooltip
+  // was added, and `onToggle` lives on the <tr> — so without
+  // stopPropagation, reaching for the badge would silently open the bin
+  // drill-down. Hovering to read a verdict is not a row action.
+  it('clicking the status badge does not toggle the drill-down', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn()])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    // Scoped to the ROW's badge — the card header carries an identically
+    // worded one, and only the row's sits inside the clickable <tr>.
+    const row = screen.getByText('TI-101').closest('tr')
+    expect(row).not.toBeNull()
+    fireEvent.click(within(row!).getByText('CRITICAL'))
+
+    expect(
+      screen.queryByRole('columnheader', { name: 'Bin' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('second click closes the drill-down', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn()])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    const tagCell = screen.getByText('TI-101')
+    fireEvent.click(tagCell)
+    expect(screen.getByRole('columnheader', { name: 'Bin' })).toBeVisible()
+
+    fireEvent.click(tagCell)
+    expect(screen.queryByRole('columnheader', { name: 'Bin' })).toBeNull()
+  })
+
+  it('categorical tag: real <lo/>hi overflow rows, a MEASURED (non-flat) reference, and the last bin label matches edges.length === binCount', () => {
+    const col = makeColumn({
+      status: 'WARN',
+      psi: 0.12,
+      bins: makeBins({
+        binMode: 'categorical',
+        binCount: 2,
+        edges: [0, 1],
+        refCounts: [90, 10],
+        liveCounts: [70, 30],
+        below: 0,
+        above: 4,
+        liveInRangeTotal: 100,
+      }),
+      liveTotal: 104,
+    })
+    render(
+      <PsiPanel
+        report={makeReport([col])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('TI-101'))
+
+    // MODEL-SERVE-029: a categorical tag has real overflow now — an unseen
+    // state past either end is counted below/above, not as its nearest
+    // trained state (psi.py), so the table shows both overflow rows.
+    expect(screen.getByText('<lo')).toBeVisible()
+    expect(screen.getByText('>hi')).toBeVisible()
+    expect(screen.getByText('above trained range')).toBeVisible()
+
+    // Reference is a REAL measured 90/10 split, never an assumed flat 50/50
+    // — `psi.py`'s own module docstring: a categorical split is not
+    // equal-frequency the way a quantile split is.
+    expect(screen.getByText('90.0%')).toBeVisible()
+    expect(screen.getByText('10.0%')).toBeVisible()
+    expect(screen.queryByText('50.0%')).toBeNull()
+
+    // Last bin (edges.length === binCount here, never binCount + 1): the
+    // second and final trained value, "1" — an off-by-one that assumed
+    // continuous semantics would read past the array or mislabel this.
+    expect(screen.getByText('B2')).toBeVisible()
+    expect(screen.getByText('1')).toBeVisible()
+  })
+
+  it('footnote numbers come from basis.thresholds/epsilon, not a hardcoded literal', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn()], {
+          thresholds: {
+            warn: 0.15,
+            critical: 0.4,
+            minSamplesPerBin: 30,
+            outOfRangeWarnPct: 7,
+            outOfRangeCriticalPct: 30,
+          },
+          epsilon: 0.0002,
+        })}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    expect(screen.getByText(/0\.15 warn/)).toBeVisible()
+    expect(screen.getByText(/0\.4 critical/)).toBeVisible()
+    expect(screen.getByText(/0\.0002/)).toBeVisible()
+    // MODEL-SERVE-029: the out-of-range cutoffs come from basis too.
+    expect(screen.getByText(/7% warn/)).toBeVisible()
+    expect(screen.getByText(/30% critical/)).toBeVisible()
+    // The old hardcoded literal must NOT also appear.
+    expect(screen.queryByText(/0\.1 warn \/ 0\.25 critical/)).toBeNull()
+  })
+
+  /**
+   * MODEL-SERVE-001-T13's own worked example, kept because it is the case
+   * the whole feature was confirmed against: 10 frozen quantile bins,
+   * reference flat at 10% each, current 22/18/5/2/1/1/3/8/20/20 — a
+   * bimodal pile-up at both ends with the middle emptied. The ACTUAL psi.py
+   * math for this shape is verified against real `computePsi` in
+   * `prediction-psi.spec.ts` (backend); this test proves the CARD renders
+   * that verdict correctly once computed — CRITICAL, not folded into an
+   * "OK"-looking table row.
+   */
+  it('worked example: the 22/18/5/2/1/1/3/8/20/20 pile-up renders CRITICAL', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn()])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    const row = screen.getByText('TI-101').closest('tr')
+    expect(within(row as HTMLElement).getByText('0.947')).toBeVisible()
+    // Raw enum text — only INSUFFICIENT_DATA gets humanized prose (see the
+    // dedicated test above); OK/WARN/CRITICAL/UNKNOWN match the existing
+    // z-score table's own convention of printing the status as-is.
+    expect(within(row as HTMLElement).getByText('CRITICAL')).toBeVisible()
+  })
+})

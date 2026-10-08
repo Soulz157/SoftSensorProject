@@ -19,6 +19,10 @@ Design system reference for the SoftSensor client app (`apps/client`).
 9. [Dark Mode](#9-dark-mode)
 10. [Custom Utilities](#10-custom-utilities)
 11. [Rules & Constraints](#11-rules--constraints)
+12. [Laws of UX Conventions](#12-laws-of-ux-conventions)
+13. [Brand & Public Surfaces](#13-brand--public-surfaces)
+14. [All Workspaces list](#14-all-workspaces-list)
+15. [Admin dashboard](#15-admin-dashboard)
 
 ---
 
@@ -346,13 +350,19 @@ Active tabs use the primary blue pattern:
 
 ### Toast (Sonner)
 
-Import from `@/components/ui/sonner`. Use `toast.success()`, `toast.error()`, `toast.loading()`. Sonner is registered once in `app/layout.tsx`.
+Import from `@/components/ui/sonner`. Use `toast.success()`, `toast.error()`, `toast.loading()`. Sonner is registered once in `components/providers/session-provider.tsx` (not `app/layout.tsx`).
+
+Width is decided by CONTENT, not by toast type (`app/globals.css`): the toaster is capped at `min(560px, calc(100vw - 2rem))` and each toast is `fit-content` between a `--width` floor (380px, set in `sonner.tsx`) and that cap. Do not add per-type width rules — an error is not wide because it is an error, it is wide because its text is long. A multi-line message may be passed as the title; `[data-title]` is `white-space: pre-line`.
 
 ```tsx
 import { toast } from 'sonner'
 toast.success('Workspace created')
 toast.error('Something went wrong')
 ```
+
+**New-notification toasts** (`hooks/notifications/use-notifications.ts`, pure rules in `lib/notification-toast.ts`): when the bell's poll sees a new **WARNING** (`toast.warning`) or **CRITICAL** (`toast.error`) event, it pops a toast titled `{model} · {event}` with the same detail line as the bell and an **Open** action to the model tab that explains it. INFO events (started, stopped, promoted, recovered) are bell-only. At most 3 per poll, then one "N more new notifications" summary. Events that existed when the page loaded never toast. A section that already shows its own error inline does not also toast (see §15).
+
+**Bell history** (`navbar-notification.tsx`): each row is the link plus two icon items — **X** removes that one event, **⋯** holds "Mute this model". "Clear all" in the header empties the list up to the newest event shown. Removing and clearing are per user (other members and Teams/e-mail history keep the event) and **silent** — no toast unless they fail. Mute is a real setting change, so it stays behind ⋯ and keeps its toast.
 
 ---
 
@@ -440,6 +450,34 @@ toast.error('Something went wrong')
   </Button>
 </div>
 ```
+
+### Date-time range over data
+
+Any start/end window picked **inside a dataset's real time span** (validation holdouts, retrain validation windows) uses `CalendarDateTimePicker` (`components/calendar-date-time-picker.tsx`): an outline trigger showing `yyyy-MM-dd HH:mm`, opening a popover with the shadcn `Calendar` (month/year dropdowns), a `Time` input and a **Done** button.
+
+```tsx
+<CalendarDateTimePicker
+  id="holdout-from" // pairs with a visible <Label htmlFor>
+  label="Validation holdout start" // accessible name
+  value={from} // 'yyyy-MM-ddTHH:mm' or ''
+  onChange={setFrom}
+  dataBounds={{ min: dataStart, max: dataEnd }} // how far the calendar pages
+  allowed={{ min: floor, max: to || dataEnd }} // what can be picked
+  defaultTime="00:00" // '23:59' for an end
+  invalid={error !== null}
+/>
+```
+
+Rules:
+
+- **Never a native `<input type="date">` / `datetime-local` for these.** The native picker hides every month outside `min`/`max`, so a range clamped to part of the data looks like a picker that won't scroll. The calendar pages across the whole of `dataBounds` and greys out only the days outside `allowed`.
+- **Always carry the time.** Servers check a window against the data's real first/last reading, so a whole-day window (00:00–23:59:59) is refused when the data starts or ends mid-day. Picking a day applies `defaultTime` (`00:00` start, `23:59` end) then clamps it into `allowed`, so two picked days are already a valid window.
+- **Narrow each end by the other**: start's `allowed.max` is the chosen end, end's `allowed.min` is the chosen start.
+- **Values are naive `yyyy-MM-ddTHH:mm` stamps**, compared as strings and never round-tripped through `Date` (helpers in `lib/date-stamp.ts`). Convert to ISO only at the API edge.
+- **State both ranges when they differ**: `Data covers A to B.` plus `Pickable: C to D.` in `text-[11px] text-muted-foreground`; an impossible range (`min > max`) gets one `text-destructive` sentence saying why and what to do, and the triggers disable.
+- The picker's `min`/`max` are guidance, not validation — the caller's own check (and the server) remain the guard, shown inline in `text-[11px] text-destructive`.
+
+The older five-select `DateTimePicker` (`components/date-time-picker.tsx`) remains for free-form fetch ranges that are not bounded by an existing dataset.
 
 ---
 
@@ -540,14 +578,138 @@ Badge count = sum of `alarmCount` per workspace from `useAlertCount()` hook. Mus
 
 ## 11. Rules & Constraints
 
-| Rule                            | Detail                                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| No hardcoded colors             | Use CSS variable tokens only. `bg-[#hex]` is forbidden.                                                                        |
-| No `any` or `@ts-ignore`        | Zero tolerance in TypeScript.                                                                                                  |
-| No editing `components/ui/`     | Add via `npx shadcn@latest add`.                                                                                               |
-| Tailwind v4 display conflict    | Never combine `lg:flex` + `lg:hidden` on one element — `lg:flex` wins. Use conditional rendering instead.                      |
-| `cn()` for conditionals         | Import from `@/lib/utils`. Don't use template literals for conditional classes.                                                |
-| Inline style for dynamic colors | When color value is runtime-dynamic, set a CSS variable via `style` and read it in a CSS class.                                |
-| Array lookup with `.find()`     | When querying `workspaceColors` or `workspaceIcons` by `id`, always use `.find(c => c.id === value)` — never bracket indexing. |
-| Status color consistency        | Use the established status color table in §5. Don't create new status color mappings.                                          |
-| Server Components by default    | Only add `"use client"` when hooks or event listeners are required. Never on layouts.                                          |
+| Rule                                      | Detail                                                                                                                                                                                         |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No hardcoded colors                       | Use CSS variable tokens only. `bg-[#hex]` is forbidden.                                                                                                                                        |
+| No `any` or `@ts-ignore`                  | Zero tolerance in TypeScript.                                                                                                                                                                  |
+| No editing `components/ui/`               | Add via `npx shadcn@latest add`.                                                                                                                                                               |
+| Tailwind v4 display conflict              | Never combine `lg:flex` + `lg:hidden` on one element — `lg:flex` wins. Use conditional rendering instead.                                                                                      |
+| `cn()` for conditionals                   | Import from `@/lib/utils`. Don't use template literals for conditional classes.                                                                                                                |
+| Inline style for dynamic colors           | When color value is runtime-dynamic, set a CSS variable via `style` and read it in a CSS class.                                                                                                |
+| Array lookup with `.find()`               | When querying `workspaceColors` or `workspaceIcons` by `id`, always use `.find(c => c.id === value)` — never bracket indexing.                                                                 |
+| Status color consistency                  | Use the established status color table in §5. Don't create new status color mappings.                                                                                                          |
+| Server Components by default              | Only add `"use client"` when hooks or event listeners are required. Never on layouts.                                                                                                          |
+| No real plant identifiers on public pages | Signed-out pages (landing, auth) show illustrative data only — mock tag names (`TEMP-01`, `FLOW-02` …), never real PI tags or model names. See §13.4.                                          |
+| Theme-dependent UI after mount            | Anything that reads the theme (`useTheme`) renders its selected state only after mount (`useSyncExternalStore` guard) — the server cannot know the theme, and a mismatch is a hydration error. |
+
+---
+
+## 13. Brand & Public Surfaces
+
+Added 2026-10-07 with the auth and landing redesign. Covers the logo and the pages a signed-out visitor sees. Everything here uses the tokens in §2 — no new colours.
+
+### 13.1 Logo — `BrandMark`
+
+`components/brand/brand-mark.tsx`. A calm predicted curve with a lab sample (diamond) on it — what the product does, drawn once. The curve follows `currentColor`; the diamond is `--primary`, cut out of the line by a thin ring in the surface colour so the two never merge.
+
+| Prop       | Use                                                                                                                                            |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `variant`  | `line` (default, used everywhere), `framed`, `tile` (on `--primary`)                                                                           |
+| `wordmark` | `true` adds "SoftSensor" (600, tracking-tight). Sidebars pass `false` and render their own label so collapse works.                            |
+| `surface`  | Colour behind the mark, for the diamond's ring: `var(--card)` default, `var(--sidebar)` in sidebars, `var(--background)` on the landing header |
+| `size`     | px, default 28                                                                                                                                 |
+
+Used in: auth shell, landing header, app sidebar and admin sidebar. Don't recolour it, don't put it on a coloured tile outside the `tile` variant, and don't replace it with a Lucide icon.
+
+### 13.2 Signal trace — `SignalTrace`
+
+`components/auth/signal-trace.tsx` + pure maths in `lib/signal-trace.ts` (deterministic, tested). The one moving element on public pages: a soft-sensor prediction drifting left, with lab samples as diamonds (the same mark as the Actual vs Predict chart).
+
+| Variant | Where                       | Behaviour                                                                                                                              |
+| ------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `chart` | Auth trend panel            | Gridlines; hover scrubs a crosshair and reads `value · time` in mono                                                                   |
+| `line`  | Landing, auth `card` layout | No grid; bends gently toward the pointer. `readout` + `model` add a fit panel; `labHover` shows lab vs predicted vs error on a diamond |
+
+- Colours: line `--primary`, diamonds `--foreground`, grid `--border`. Never status colours.
+- Landing-only options (`line`): `leadIn` (px) draws a wire from the model chip's right edge that bends into the live line; `hourly` draws the prediction dashed (`6 4`, dashes travel with the data) with a dot per "hour" — `LAB_EVERY / 6` samples apart, so every lab diamond falls on every 6th dot (lab every 6 h).
+- `actual` (auth pages, both variants): a solid Actual line (`--foreground` at 75%) that passes through every lab diamond (`actualValue` in `lib/signal-trace.ts`; illustrative between samples), with the prediction dashed. The `chart` variant adds an "— Actual · - - Predicted" legend top-right on md+.
+- Draws by mutating SVG attributes in a `requestAnimationFrame` loop — no React re-render per frame.
+- `prefers-reduced-motion`: drawn once, no drift, no pull. Hover readouts still work (they answer the user).
+
+### 13.3 Auth shell and form parts
+
+`components/auth/auth-shell.tsx` wraps every auth page (login, register, reset request, set new password, change password).
+
+- `AUTH_LAYOUT` (one constant) picks the layout for every page: `split` (current — trend panel left, form right, strip on phones) or `card` (centred card, line through its top border).
+- The logo links home; the theme switcher sits top-right (§13.6).
+- Title is Display (`clamp(1.5rem, 2.5vw, 2rem)`, 600, −0.02em), once per page.
+
+| Part               | File                                    | Rule                                                                                                                                                                                         |
+| ------------------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FormField`        | `components/auth/form-field.tsx`        | Label (`htmlFor`) + control + one-sentence error (`text-xs text-destructive`, `id={id}-error`)                                                                                               |
+| `PasswordField`    | `components/auth/password-field.tsx`    | Show/hide toggle with `aria-pressed` and an accessible name                                                                                                                                  |
+| `PasswordStrength` | `components/auth/password-strength.tsx` | One segment per rule, `bg-muted` → `bg-primary` + text checklist. **No amber or green** — those are plant status. Rules live in `lib/password-rules.ts` and are shared with the zod schemas. |
+| `TextLink`         | `components/auth/text-link.tsx`         | Inline footer link, visible focus ring                                                                                                                                                       |
+
+Copy: English, sentence case, buttons name the action ("Sign in", "Send reset link", "Update password"). Errors say what's wrong and how to fix it ("Use at least 8 characters."), never apologise.
+
+### 13.4 Landing page (`/`, signed out)
+
+- **Full screen:** `AppLayout` renders only `children` when `pathname === '/'` and the session is `unauthenticated` — no sidebar, search or system-health badge for guests. Signed-in users are unchanged.
+- `components/landing/landing-hero.tsx`, `layout="tags"` (current): copy left; input tags → model → prediction line right (`components/landing/tag-feed.tsx`). `layout="line"` is the alternative (line across the lower third).
+- **Story:** "Lab values, every hour." — the soft sensor predicts hourly; the lab samples every 6 hours. Keep the hero, KPI section and `lib/landing-demo.ts` constants (`DEMO_PREDICTIONS_PER_DAY`, `DEMO_LAB_MINUTES`) telling the same numbers.
+- **Model chip** (`components/landing/model-node.tsx`, chosen 2026-10-08): a microchip whose four left pins are the four tags (each connector lands on its own pin; hovering a tag lights its pin and the chip border `--primary`), name badge `XGBoost v4` underneath, output via `SignalTrace leadIn` + `hourly`.
+- **Sensor-vs-lab section** (`LandingHero kpis`, `components/landing/kpi-section.tsx`, chosen 2026-10-08): below the full-screen hero, reached by scrolling or the static "See how it works ⌄" cue at the hero's foot (`#landing-kpis`). A "Last 24 hours" chart (`day-timeline.tsx`: Actual solid `--foreground`/75, Prediction dashed `--primary` with a dot per hour, lab diamonds every 6 h sitting on Actual, error tick to Prediction, pulsing "now" dot) above four tiles in `grid-cols-2 md:grid-cols-4`: Predictions a day (with a live "Now" value + sparkline), Fit (R²), Typical error (RMSE), Input drift. Value weight 600, mono, no status colours. The Actual curve between lab samples is illustrative (`actualOnDay`).
+- The aura lives inside the hero's `min-h-svh` box, so its rest point doesn't drift down the taller page.
+- **Hero type exception:** the landing headline may use `clamp(2.25rem, 4.5vw, 3.5rem)` at weight 600 (still never 700). DESIGN.md's 2rem Display cap applies inside the app; this page is outside it.
+- **Demo data rule:** every number and name on the landing comes from `lib/landing-demo.ts` and is illustrative — mock tags `TEMP-01`, `FLOW-02`, `PRESS-03`, `RATIO-04`, target `RVP-DEMO`. Never a real PI tag or model name; `components/landing/__tests__/landing-hero.test.tsx` fails on a `XX000.PV`-style tag.
+- **Drift on the landing** reuses the in-app Drift badge exactly (`MONITORING_STATUS_CLASS` / `MONITORING_STATUS_LABEL` from `lib/drift-status-style.ts`) with the backend's PSI cutoffs (WARN ≥ 0.10, CRITICAL ≥ 0.25). This is the existing monitoring-drift carve-out from the status-colour reservation, not a new use of status colour.
+
+### 13.5 Aura — `CursorAura` (documented exception)
+
+`components/landing/cursor-aura.tsx`. A soft light behind the landing that trails the pointer and rests beside the model diagram. **This is a deliberate, user-requested exception to DESIGN.md's no-glow rule**, and it is only allowed under these limits:
+
+- `--primary` only, mixed into transparency (`color-mix(in oklch, var(--primary) 16%, transparent)`); `opacity-70` light / `opacity-100` dark.
+- A plain `radial-gradient` — never `filter: blur` or `backdrop-filter`.
+- Signed-out pages only (currently the landing). Never inside the app shell.
+- Reduced motion: holds still at its rest point. Touch input: ignored (rests).
+- Switchable: `LandingHero aura={false}`.
+
+### 13.6 Theme switcher — `ThemeSwitcher`
+
+`components/landing/theme-switcher.tsx`. Light / Dark / Match system — the same three choices, icons (Sun / Moon / Monitor) and order as Settings → Appearance. A `radiogroup` of icon buttons with accessible names.
+
+- On the landing header and top-right of every auth page. Inside the app, theme stays in Settings → Appearance.
+- Shows no selection until mounted (rule in §11) — keeps hydration clean.
+
+### 13.7 Motion on public pages
+
+- One continuous motion per page (the signal trace; the aura only follows the user). No entrance animations, no hover lift.
+- **Documented exception (user-chosen 2026-10-08):** the landing's sensor-vs-lab section below the fold also ticks once a second (`hooks/landing/use-demo-tick.ts`) — the timeline's "now" clock, the first tile's live value and sparkline — and its "now" dot pulses (`motion-safe:animate-ping`). It is out of view while the hero's trace is on screen, so only one motion reads at a time. Still no entrance animations or count-ups.
+- Every animation has a `prefers-reduced-motion` path, and loops stop when there's nothing to move.
+
+---
+
+## 14. All Workspaces list
+
+Added 2026-10-07. `/workspaces` (`app/(default)/workspaces/`). The instrument-list direction was chosen over cards.
+
+- **Header:** `WorkspacesHeader` — Display title (sentence case, 600), a one-line summary in mono (`5 workspaces · 2 need attention · 46 models`) instead of KPI cards, and "Create workspace".
+- **Toolbar:** search (name + description) and a status filter, a real radio group (one Tab stop, arrow keys select). Option names include the count ("Needs attention, 2").
+- **List:** one dense row per workspace (`WorkspaceRow`) — icon on its workspace colour (§6), status pill, models (with "N models need attention"), plants, datasets, updated, Settings, Models. The row links to `/plants/{id}` through a stretched link; actions sit above it (`z-10`) and are named after the workspace.
+- **Order:** always by name — the server sends no order — with workspaces needing attention first (Serial Position). A workspace with an alerting node leads from the first paint; one that is Abnormal only through a model moves up once the models load. Nothing else moves.
+- **Pagination:** 15 per page (`WORKSPACES_PAGE_SIZE`), Previous / Next and "16–30 of 50". Hidden for one page. A new search or filter returns to page 1; the stored page is clamped when the list shrinks; a page change scrolls the list back into view. The ends are `aria-disabled` (not `disabled`) so keyboard focus is never dropped.
+- **Unknown is not zero:** an absent count renders "—" (screen readers hear "plants unknown"). The abnormal-model count is `null` until `useAllModels` has loaded. While it is `null` a workspace without an alerting node reads a neutral **Checking** pill (no status colour — never a green Normal that may flip), belongs to neither the Needs attention nor the Normal filter, and the summary and filter counts show "—". If the model list fails to load, an inline note offers "Try again".
+- **Empty results** say why, by cause (`noMatchMessage`): a search that matches nothing blames the search; an empty "Needs attention" says "No workspace needs attention." Announced with `role="status"`.
+- **Attention text** uses `BINARY_STATUS_META.abnormal.text` (`text-red-700 dark:text-red-400`), not `text-destructive`, which is too dim on the dark surface.
+- **Models button** opens `/models/views?workspace={id}`. That page keeps its workspace filter in step with the URL (`hooks/workspace/use-workspace-url-filter.ts`): it follows the param when it changes on a mounted page, writes it back when the user picks a workspace, and falls back to All for an id the user does not have (`resolveWorkspaceFilter`).
+- **Entry from Overview:** the Overview map header has a "View all workspaces" button (outline, solid surface so it reads on both map themes) linking here.
+- **Pure logic** lives in `lib/workspace-list.ts` (status rule, payload mapping, search/filter, ordering, summary, empty-state wording, `paginate`, `resolveWorkspaceFilter`) and is unit-tested.
+
+---
+
+## 15. Admin dashboard
+
+Added 2026-10-07. `/admin/dashboard` (`app/admin/dashboard/`); `/admin` redirects here. The two-column layout (B) was chosen over a single column (A, still available as `layout="console"` on `AdminDashboardView`).
+
+- **Header:** `AdminSummaryHeader` — Display title, a mono summary line (`12 workspaces · 2 need attention · 46 models · 38 users`) and "Create workspace". No KPI cards, no health claim. Every segment is "—" until it has loaded; the attention segment is the only one coloured (`ATTENTION_TEXT`).
+- **Layout (ops):** table left, a 22rem column right (attention queue above recent activity). The DOM order is the reading and Tab order at every width — attention, table, activity — and the columns are placed with grid placement from `lg`, never CSS `order`, so what is seen and what is announced never differ.
+- **Attention queue:** workspaces whose **equipment** is in alarm, worst first, capped at 10 by the API with "and N more workspaces in alarm" under it. Only the "N in alarm" text is red; warnings and offline equipment are listed in muted text. Empty reads "No workspace needs attention." in neutral text — not a green all-clear. A failed load is an error with "Try again", never an empty queue.
+- **Workspace table:** one dense row per workspace — icon, name, owner, **Equipment status**, models, plants, datasets, updated. Server-side search (debounced 300 ms) and pagination, 15 per page (`ADMIN_PAGE_SIZE`); a new search returns to page 1. A workspace with no equipment reads "No equipment", not Normal. An out-of-range page says "This page is empty" with a way back — it never claims the platform has no workspaces.
+- **Status is equipment-only.** The admin API does not know model-level health (failed deploys, monitoring ALERT), so the column and queue are labelled "Equipment status" and nothing claims more. The binary rule is the same as everywhere (`isAbnormal`): only alarm is Abnormal; warning and offline are not alarms.
+- **Recent activity:** the latest 8 sign-ins and sign-outs (admin activity is authentication), mono timestamps, "View all activity".
+- **Data:** one summary request (`GET /admin/workspace/summary`, whole platform, unpaginated) plus the paginated list, which now carries real counts, `updatedAt` and the equipment roll-up. No per-workspace requests. The roll-up is counted in SQL (`nodeSummariesByWorkspace`, backend `lib/node-status-counts.ts`) — node JSON is never loaded — and is pinned to `deriveNodeSummary` by tests. Each section maps its own hook to a load state with the **error winning** — a failed or failed-refetch section is never shown as empty or healthy.
+- **Refresh after create:** the summary and list reload only when a create **succeeded** — from this page's dialog or the sidebar's — via `workspacesRevisionAtom` (bumped by `useCreateWorkspace`). Cancelling reloads nothing; a failed create keeps the dialog open with what was typed.
+- **One failure, one message:** a section that shows its error inline with "Try again" (table, activity) does not also toast (`notifyOnError: false`). Sections without an inline error (user stats) keep the toast. `usePaginatedFetch` drops any response that is not the latest request, so a slow old page or a superseded retry cannot overwrite newer rows or raise a stale error.
+- **Reuse:** `StatusPill`, `CountValue`, `WorkspaceIconTile`, `ATTENTION_TEXT` and the pager live in `components/workspace/` and are shared with the user-facing All Workspaces list (§14).
+- **Pure logic** lives in `lib/admin-dashboard.ts` and is unit-tested.

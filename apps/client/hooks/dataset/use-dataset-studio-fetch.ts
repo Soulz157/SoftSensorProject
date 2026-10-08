@@ -4,6 +4,7 @@ import { dataSourceService } from '@/services/data-sources'
 import {
   applyConstantOverlay,
   chunkTags,
+  FETCH_CONCURRENCY,
   mergeDataset,
   piFetchInputError,
   piResponseToDataset,
@@ -139,6 +140,15 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
       const runStartedAt = Date.now()
       let batchesDoneThisRun = 0
 
+      // Publish the run clock so the UI can render an elapsed timer off the
+      // exact same `runStartedAt` that `etaMs` below is derived from. Stamped
+      // here (not in `start`) so a `retryFailed` re-run resets it too.
+      setProgress(prev => ({
+        ...prev,
+        startedAt: runStartedAt,
+        finishedAt: null,
+      }))
+
       setFetchState({
         status: 'fetching',
         progress: Math.round((completedBatches / seed.totalBatches) * 100),
@@ -148,7 +158,7 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
 
       await runPool(
         batches,
-        4,
+        FETCH_CONCURRENCY,
         async batch => {
           if (controller.signal.aborted) return
 
@@ -249,7 +259,14 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
         return
       }
 
-      setProgress(prev => ({ ...prev, currentBatchTags: [], etaMs: null }))
+      // Freezes the elapsed total for the "Fetched in …" line. Set before the
+      // error/done split so a partial run records its duration too.
+      setProgress(prev => ({
+        ...prev,
+        currentBatchTags: [],
+        etaMs: null,
+        finishedAt: Date.now(),
+      }))
 
       if (failedThisRun.length > 0) {
         setFetchState({

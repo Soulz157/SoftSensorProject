@@ -2,6 +2,8 @@
 
 import {
   ArrowRight,
+  Ban,
+  Crop,
   Info,
   Plus,
   Trash2,
@@ -33,16 +35,19 @@ import {
 } from '@/components/ui/alert-dialog'
 
 import { tagSeverity, type TagQuality } from '@/lib/data-quality'
-import { resolveTagMeta, type TimeRange } from '@/lib/mock-readings'
-import type {
-  CleaningCategory,
-  CleaningMethod,
-  CleaningStep,
-  TagFillPreviewRow,
+import { resolveTagMeta } from '@/lib/mock-readings'
+import {
+  patchCleaningStep,
+  type CleaningCategory,
+  type CleaningMethod,
+  type CleaningStep,
+  type TagFillPreviewRow,
 } from '@/lib/preprocessing'
 import { BadDataBreakdown } from '../../bad-data-breakdown'
 import { ImputationTrendChart } from './imputation-trend-chart'
 import { ImputationComparisonHistogram } from './imputation-comparison-histogram'
+import { StepTimeWindow } from './step-time-window'
+import type { StampBounds } from '@/lib/date-stamp'
 
 interface Props {
   pipeline: CleaningStep[]
@@ -51,11 +56,12 @@ interface Props {
   onPreviewIndexChange: (index: number) => void
   /** Before/After rows for `isolatedTag`, truncated to `previewIndex` steps. */
   previewRows: TagFillPreviewRow[]
-  range: TimeRange
   cleaningTags: string[]
   isolatedTag: string
   onIsolate: (tag: string) => void
   quality?: TagQuality
+  /** DS-LAKE-032. First/last loaded reading, for the step window pickers. */
+  dataBounds: StampBounds | null
 }
 
 interface ToolkitItem {
@@ -68,6 +74,8 @@ interface ToolkitItem {
   paramLowLabel?: string
   defaultParam?: number
   defaultParamLow?: number
+  /** DS-LAKE-032-D02. Takes an optional Start/End time window. */
+  windowed?: true
 }
 
 const CATEGORY_ICONS: Record<CleaningCategory, React.ElementType> = {
@@ -111,7 +119,28 @@ const TOOLKIT: Record<CleaningCategory, ToolkitItem[]> = {
       // adding the step never silently flattens the series to zero.
       method: 'clip',
       label: 'Clip Bounds',
+      windowed: true,
       icon: Scissors,
+      paramLowLabel: 'Min',
+      paramLabel: 'Max',
+    },
+    {
+      // Same Min/Max params as Clip Bounds, and the same no-default rule for
+      // the same reason: an unbounded crop would drop every row. The trio
+      // mirrors the cropping chart's drag modes — clip clamps to the band,
+      // crop keeps it, exclude removes it.
+      method: 'crop',
+      label: 'Crop to Range',
+      windowed: true,
+      icon: Crop,
+      paramLowLabel: 'Min',
+      paramLabel: 'Max',
+    },
+    {
+      method: 'exclude',
+      label: 'Exclude Range',
+      windowed: true,
+      icon: Ban,
       paramLowLabel: 'Min',
       paramLabel: 'Max',
     },
@@ -153,15 +182,17 @@ export function ImputationDetailPanel({
   previewIndex,
   onPreviewIndexChange,
   previewRows,
-  range,
   cleaningTags,
   isolatedTag,
   onIsolate,
   quality,
+  dataBounds,
 }: Props) {
   const label = resolveTagMeta(isolatedTag)?.label || 'Sensor Data'
   const severity = quality ? tagSeverity(quality) : 'clean'
-  const missingRows = quality ? quality.missing + quality.suspect : 0
+  const missingRows = quality
+    ? quality.missing + quality.suspect + quality.frozen
+    : 0
 
   // Toolkit clicks stage a step here and open a confirm dialog; the step is only
   // committed to the pipeline once the user confirms.
@@ -191,6 +222,19 @@ export function ImputationDetailPanel({
   const setParam = (uid: string, key: 'param' | 'paramLow', val: number) => {
     onPipelineChange(
       pipeline.map(step => (step.uid === uid ? { ...step, [key]: val } : step)),
+    )
+  }
+
+  // DS-LAKE-032. Scope and window patches — see `patchCleaningStep` for why a
+  // cleared value is deleted rather than stored.
+  const patchStep = (
+    uid: string,
+    patch: Parameters<typeof patchCleaningStep>[1],
+  ) => {
+    onPipelineChange(
+      pipeline.map(step =>
+        step.uid === uid ? patchCleaningStep(step, patch) : step,
+      ),
     )
   }
 
@@ -224,7 +268,7 @@ export function ImputationDetailPanel({
           </p>
         </div>
 
-        {quality && severity !== 'clean' && (
+        {quality && (severity !== 'clean' || quality.frozen > 0) && (
           <div className="flex items-center gap-1 rounded-full bg-purple-500/15 px-2.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400">
             <span>Bad Data: {missingRows} rows</span>
             <Popover>
@@ -247,6 +291,7 @@ export function ImputationDetailPanel({
                   detail={{
                     bad: quality.missing,
                     questionable: quality.suspect,
+                    frozen: quality.frozen,
                   }}
                 />
               </PopoverContent>
@@ -389,6 +434,19 @@ export function ImputationDetailPanel({
                           )}
                         </div>
                       )}
+
+                      <div className="flex flex-col gap-2 pl-9">
+                        {item?.windowed && (
+                          <StepTimeWindow
+                            startTime={step.startTime}
+                            endTime={step.endTime}
+                            dataBounds={dataBounds}
+                            onChange={({ startTime, endTime }) =>
+                              patchStep(step.uid, { startTime, endTime })
+                            }
+                          />
+                        )}
+                      </div>
                     </div>
                   )
                 })
@@ -446,11 +504,10 @@ export function ImputationDetailPanel({
               tags={cleaningTags}
               isolatedTag={isolatedTag}
               onIsolate={onIsolate}
-              range={range}
             />
           </div>
 
-          <div className="h-62.5 rounded-xl border border-border bg-card p-4">
+          <div className="rounded-xl border border-border bg-card p-4">
             <h3 className="mb-4 text-sm font-semibold text-foreground">
               Distribution Comparison
             </h3>
@@ -478,6 +535,8 @@ export function ImputationDetailPanel({
               This step joins the shared cleaning pipeline and applies to all{' '}
               {cleaningTags.length} {cleaningTags.length === 1 ? 'tag' : 'tags'}{' '}
               selected.
+              {pending?.item.windowed &&
+                ' You can limit it to a time window once it is added.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

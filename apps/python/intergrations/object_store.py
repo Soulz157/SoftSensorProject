@@ -6,13 +6,23 @@ spelled package would be worse than one consistent typo.
 
 Artifact layout
 ---------------
-    datasets/{datasetId}/artifacts/{artifactId}/data.parquet       committed, IMMUTABLE
-    datasets/{datasetId}/artifacts/{artifactId}/manifest.json      sidecar
-    datasets/{datasetId}/artifacts/{artifactId}/feature_spec.json  GOLD only
-    datasets/{datasetId}/artifacts/{artifactId}/validation_report.json  FINAL only
-    datasets/{datasetId}/tmp/{jobId}/{n}.parquet                   per-op intermediates
+MODEL-SERVE-007-T03: written as `bucket / key`. `datasets` below is the BUCKET
+NAME (`settings.S3_BUCKET`), NOT a key prefix — dataset keys begin with a bare
+`{datasetId}` UUID and have no named root at all. An earlier rendering of this
+block without the separator read as a prefixed key and caused exactly that
+misreading; `class_for_key` depends on the difference, because a resolver
+dispatching on the first path segment finds a UUID there.
 
-    datasets/{datasetId}/{versionId}.parquet                       LEGACY, still read
+    datasets / {datasetId}/artifacts/{artifactId}/data.parquet       committed, IMMUTABLE
+    datasets / {datasetId}/artifacts/{artifactId}/manifest.json      sidecar
+    datasets / {datasetId}/artifacts/{artifactId}/feature_spec.json  GOLD only
+    datasets / {datasetId}/artifacts/{artifactId}/validation_report.json  FINAL only
+    datasets / {datasetId}/tmp/{jobId}/{n}.parquet                   per-op intermediates
+
+    datasets / {datasetId}/{versionId}.parquet                       LEGACY, still read
+
+The only NAMED roots in this bucket are `models/`, `drafts/`, `feature-presets/`,
+`predictions/`, `serving-logs/` and `inference/`.
 
 `version_key` builds the legacy layout and is kept because artifacts written
 before DS-LAKE-003 live there and are immutable — they cannot be moved. Nothing
@@ -38,9 +48,10 @@ import logging
 import os
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import IO, Any
 
 import duckdb
 import pandas as pd
@@ -48,23 +59,30 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from minio import Minio
-from minio.commonconfig import ENABLED, Filter, Tag
+from minio.commonconfig import ENABLED, CopySource, Filter, Tag
 from minio.datatypes import Tags
 from minio.error import S3Error
 from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
 
 from config import settings
+from softsensor_scaling import (
+    STATUS_BAD,
+    STATUS_GOOD,
+    STATUS_QUESTIONABLE,
+    STATUS_SUFFIX,
+    TIMESTAMP_COLUMN,
+    status_column,
+    tag_columns,
+)
+from softsensor_scaling.constants import _tags_from_columns
 
-# Suffix reserved for the status sidecar column. A real tag named `FOO__status`
-# would collide with `FOO`'s status column and silently corrupt it, so writes
-# reject it rather than trusting that PI never produces such a name.
-STATUS_SUFFIX = "__status"
-
-TIMESTAMP_COLUMN = "timestamp"
-
-STATUS_GOOD = 0
-STATUS_BAD = 1
-STATUS_QUESTIONABLE = 2
+# MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+# STATUS_SUFFIX/TIMESTAMP_COLUMN/STATUS_GOOD/STATUS_BAD/STATUS_QUESTIONABLE
+# and tag_columns()/status_column() moved to softsensor_scaling (imported
+# above) so apps/serving can use the same status-column conventions without
+# pulling in this module's `config.settings` import (which requires
+# SYS_USER/SYS_PASS/PI_NAME at import time). Re-imported here under their
+# original names so every existing caller in this codebase is unchanged.
 
 #: Bumped when the physical frame layout changes in a way a reader must know
 #: about. Recorded on every artifact so an old object stays interpretable.
@@ -79,6 +97,27 @@ VALIDATION_REPORT_FILENAME = "validation_report.json"
 #: and `/tags` do, rather than needing a separately-stored location.
 COLUMN_STATS_FILENAME = "column_stats.json"
 DATA_FILENAME = "data.parquet"
+#: DS-LAKE-018-T03. The raw validation-holdout sidecar, written beside a
+#: BRONZE's own data key via `sidecar_key()` — works for both the legacy
+#: `data.parquet` and DS-LAKE-016's stage-suffixed `data_bronze.parquet`,
+#: same as every other sidecar. Mirrored in artifact-keys.ts as
+#: `VALIDATE_DATA_FILENAME` — change both.
+VALIDATE_DATA_FILENAME = "validate_data.parquet"
+
+#: The SECOND validation holdout an augmented retrain may carve out, cut
+#: from the NEW dataset over an operator-chosen date range and held out of
+#: training. Deliberately a separate filename: `VALIDATE_DATA_FILENAME`
+#: beside a combined GOLD carries the FROZEN incumbent-test slice, which is
+#: what keeps `rmseDelta` comparable against the incumbent, and overwriting
+#: it would silently destroy that comparison. Mirrored in artifact-keys.ts
+#: as `VALIDATE_NEW_DATA_FILENAME` — change both.
+VALIDATE_NEW_DATA_FILENAME = "validate_new_data.parquet"
+
+#: DS-LAKE-021-T01. The CSV export sidecar, written beside a committed
+#: artifact's data key via `sidecar_key()` — same mechanism as
+#: VALIDATE_DATA_FILENAME above. Mirrored in artifact-keys.ts as
+#: `EXPORT_CSV_FILENAME` — change both.
+EXPORT_CSV_FILENAME = "export.csv"
 
 #: Root prefix for imported soft-sensor feature presets. A prefix inside the
 #: existing bucket rather than a bucket of its own: `ensure_bucket()` has no
@@ -106,9 +145,93 @@ TMP_LIFECYCLE_RULE_ID = "ds-lake-009b-tmp-expiry"
 #: correctness never depends on it firing promptly.
 TMP_LIFECYCLE_EXPIRY_DAYS = 7
 
+# ── retention classes (MODEL-SERVE-007) ──────────────────────────────────
+#
+# T01 DECISION — ONE BUCKET, RETENTION-CLASS OBJECT TAG (Option B).
+#
+# Rejected Option C (tag everything AND give `inference/` its own bucket):
+# its whole advantage was that `inference/` had no objects yet, so the bucket
+# would be free. It is not — MODEL-SERVE-006-T06 shipped first (007 carried a
+# `must_land_before` on it that was missed) and 31 inference objects already
+# exist in this bucket. C therefore costs a copy migration plus a bucket-aware
+# read path, for the one class that is never swept anyway.
+#
+# Rejected Option A (datasets / models / inference as three buckets): moves
+# every dataset read behind a per-bucket factory, and reverses PRESET_ROOT's
+# recorded reasoning above ("a prefix inside the existing bucket ... a second
+# bucket would need new bootstrap while a prefix needs none") without the
+# evidence that would justify reversing it.
+#
+# What the tag buys: `ensure_tmp_lifecycle_rule` already proves a bucket-wide
+# rule can be targeted by tag where a Prefix filter cannot reach. The same
+# mechanism generalised makes "may this be reclaimed?" answerable by storage
+# tooling instead of only by reading this package.
+RETENTION_TAG_KEY = "retention"
+
+#: Reclaimable: dataset artifacts and drafts, tmp intermediates, imported
+#: presets, batch prediction outputs. EXPRESSIBLE as a tag-filtered lifecycle
+#: rule — the tmp rule is one such rule, narrowed further by its own tag.
+RETENTION_SWEEPABLE = "sweepable"
+
+#: Retained for as long as something references it — model run outputs.
+#:
+#: NOT ENFORCEABLE BY ANY LIFECYCLE RULE. "Still referenced" is a reference
+#: check, and `ensure_tmp_lifecycle_rule`'s own docstring already states that a
+#: bucket lifecycle rule cannot do one — only application-level cleanup
+#: (ArtifactCleanupService, plus MODEL-FLOW-011-T05's run-level guard) is
+#: authoritative here. This tag is a label for humans and audits. Do not write
+#: a lifecycle rule against it and believe the objects are protected: a rule
+#: that matches this tag DELETES on schedule, reference or no reference.
+RETENTION_REFERENCED = "referenced"
+
+#: Never reclaimed: the operational inference record and serving logs. Grows
+#: without bound by design. Expressible as the ABSENCE of any rule matching it.
+RETENTION_PERMANENT = "permanent"
+
+
+def _with_retention_tag(key: str, tags: Tags | None) -> Tags:
+    """Return `tags` with this key's retention class added.
+
+    MODEL-SERVE-007-T02. MERGES rather than replaces: `put_frame` already
+    passes a `Tags` carrying `lifecycle=tmp`, and dropping that would leave
+    the tmp lifecycle rule with nothing to match. `class_for_key` is defined
+    at the bottom of this module beside the other key predicates; it is a
+    pure function of the key, so calling it on every write costs nothing.
+    """
+    merged = tags if tags is not None else Tags.new_object_tags()
+    merged[RETENTION_TAG_KEY] = class_for_key(key)
+    return merged
+
 
 class ObjectStoreError(RuntimeError):
     """Storage failure with a message safe to surface to the caller."""
+
+
+class ObjectNotFoundError(ObjectStoreError):
+    """The object is not there — as distinct from storage refusing the read.
+
+    A subclass, not a sibling, so every existing `except ObjectStoreError`
+    keeps catching it exactly as before; only a caller that WANTS to tell
+    the two apart has to change. That distinction matters because the two
+    have different remedies: a missing object is gone for good (the bucket
+    is not versioned) and the caller's only recovery is to re-materialize
+    from the upstream source, while any other storage fault is transient or
+    a misconfiguration, where re-fetching would be the wrong response.
+    """
+
+
+def _read_failure(key: str, err: S3Error) -> ObjectStoreError:
+    """Pick the failure type for a GET that raised — see `ObjectNotFoundError`.
+
+    One helper rather than the same `if err.code == ...` inline at each of
+    the read paths below, which is exactly how those six sites would drift.
+    The message text is byte-for-byte what each site raised before this
+    split, so nothing matching on it needs updating.
+    """
+    message = f"Could not read '{key}': {err.code}"
+    if err.code == "NoSuchKey":
+        return ObjectNotFoundError(message)
+    return ObjectStoreError(message)
 
 
 @dataclass(frozen=True)
@@ -131,30 +254,6 @@ class ArtifactStats:
     #: immutability checkable rather than merely promised: the write refusal
     #: stops an overwrite, and this proves the bytes never changed anyway.
     checksum: str
-
-
-def _tags_from_columns(columns: list[str]) -> list[str]:
-    """Shared by `tag_columns` (has a DataFrame) and `get_frame_metadata`
-    (has only Parquet schema names, no decoded columns) so the two never
-    diverge on what counts as a tag.
-    """
-    return [
-        c for c in columns if c != TIMESTAMP_COLUMN and not c.endswith(STATUS_SUFFIX)
-    ]
-
-
-def tag_columns(df: pd.DataFrame) -> list[str]:
-    """Logical tags only — excludes `timestamp` and every status sidecar.
-
-    `columnCount` on the artifact row and the preview's "feature count" must both
-    use this definition or they disagree on screen: the frame carries 2N+1
-    physical columns for N logical tags.
-    """
-    return _tags_from_columns(list(df.columns))
-
-
-def status_column(tag: str) -> str:
-    return f"{tag}{STATUS_SUFFIX}"
 
 
 def assert_tags_are_storable(tags: list[str]) -> None:
@@ -298,6 +397,38 @@ class ObjectStore:
         except S3Error:
             return False
 
+    def tag_retention(self, key: str) -> bool:
+        """Apply `key`'s retention class to an object already in the store.
+
+        MODEL-SERVE-007-T02, THE PRESIGNED-UPLOAD HALF. The write path tags
+        what this service writes, which is not everything: trainer run
+        outputs, batch prediction outputs and an inference window's
+        predictions.parquet are uploaded DIRECTLY to MinIO by the container
+        holding a presigned PUT URL (see `presigned_put` and
+        artifact_service's presign_* functions). The server never performs
+        those writes and so cannot tag them at write time; this is how they
+        get their class, called from the first server-side touch after the
+        upload.
+
+        Returns whether the tag was applied. NEVER RAISES: a missing label is
+        a bookkeeping loss, and the object is valid with or without it — a
+        caller in the middle of returning a presigned read URL must not fail
+        because tagging did. Replaces the object's whole tag set, which is
+        correct for these roots (nothing else tags them) but would clobber
+        `lifecycle=tmp` if ever pointed at a tmp key, hence the guard.
+        """
+        if "/tmp/" in key:
+            return False
+        try:
+            tags = Tags.new_object_tags()
+            tags[RETENTION_TAG_KEY] = class_for_key(key)
+            self._client.set_object_tags(self.bucket, key, tags)
+            return True
+        except S3Error as err:
+            logger.warning(
+                "retention tag not applied to '%s': %s", key, err.code)
+            return False
+
     # ── write ────────────────────────────────────────────────────────────
 
     def put_frame(
@@ -323,23 +454,23 @@ class ObjectStore:
         # DS-LAKE-009B-T04: tag tmp writes so ensure_tmp_lifecycle_rule's
         # bucket-wide rule can find them — see TMP_LIFECYCLE_TAG_KEY's doc
         # comment for why a tag is used instead of a Prefix filter.
+        #
+        # MODEL-SERVE-007-T02: the retention tag is added by
+        # `put_object_stream` below, for EVERY write rather than only this
+        # one. Kept separate from the lifecycle tag rather than folded into
+        # it: the tmp rule filters on `lifecycle=tmp` specifically, and a tmp
+        # object is a narrower thing than the SWEEPABLE class it belongs to.
         object_tags = None
         if "/tmp/" in key:
             object_tags = Tags.new_object_tags()
             object_tags[TMP_LIFECYCLE_TAG_KEY] = TMP_LIFECYCLE_TAG_VALUE
 
-        try:
-            self._client.put_object(
-                self.bucket,
-                key,
-                io.BytesIO(payload),
-                length=len(payload),
-                content_type="application/vnd.apache.parquet",
-                tags=object_tags,
-            )
-        except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not write '{key}': {err.code}") from err
+        self.put_object_bytes(
+            key,
+            payload,
+            content_type="application/vnd.apache.parquet",
+            tags=object_tags,
+        )
 
         return ArtifactStats(
             object_key=key,
@@ -349,6 +480,67 @@ class ObjectStore:
             missing_pct=missing_pct(df),
             checksum=sha256_hex(payload),
         )
+
+    def put_object_bytes(
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+        tags: Tags | None = None,
+    ) -> None:
+        """Raw bytes write — the low-level primitive `put_frame` writes atop.
+
+        DS-LAKE-021-T01: factored out of `put_frame`'s own MinIO-call body
+        so `put_frame` and this method share one PUT path instead of two
+        near-identical ones (`put_json` still calls `self._client.put_object`
+        directly — out of scope here, not folded in). No immutability check
+        here — that is `put_frame`'s own concern (committed Parquet
+        artifacts refuse an overwrite); a sidecar like `export.csv` is
+        written via this method directly and is always free to be rewritten,
+        same convention `put_json` already follows for its sidecars.
+
+        Delegates to `put_object_stream` below — a caller with bytes
+        already in hand wraps them in `io.BytesIO` rather than this method
+        growing a second, near-identical MinIO-call body.
+        """
+        self.put_object_stream(
+            key, io.BytesIO(data), len(data), content_type=content_type, tags=tags
+        )
+
+    def put_object_stream(
+        self,
+        key: str,
+        stream: IO[bytes],
+        length: int,
+        *,
+        content_type: str = "application/octet-stream",
+        tags: Tags | None = None,
+    ) -> None:
+        """Streaming write — `put_object_bytes` above is the bytes-in-hand
+        convenience wrapper atop this.
+
+        DS-LAKE-021-T01 final-review fix: `export_artifact_csv` builds its
+        CSV output into a `SpooledTemporaryFile` rather than an in-memory
+        `bytes` value, so it needs a PUT that accepts a file-like object
+        directly — wrapping the whole file back into `bytes` just to call
+        `put_object_bytes` would defeat the point. `self._client.put_object`
+        already accepts any file-like object with `.read()`, so this is a
+        thin, direct pass-through, same `S3Error` → `ObjectStoreError`
+        wrapping as `put_object_bytes` always had.
+        """
+        try:
+            self._client.put_object(
+                self.bucket,
+                key,
+                stream,
+                length=length,
+                content_type=content_type,
+                tags=_with_retention_tag(key, tags),
+            )
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not write '{key}': {err.code}") from err
 
     def put_json(self, key: str, document: Any, *, overwrite: bool = True) -> int:
         """Write a JSON sidecar (manifest, feature spec, validation report).
@@ -364,12 +556,19 @@ class ObjectStore:
         payload = json.dumps(document, indent=2,
                              sort_keys=True, default=str).encode()
         try:
+            # MODEL-SERVE-007-T02: this method still calls `put_object`
+            # directly (see `put_object_bytes`'s note on why it was never
+            # folded in), so the retention tag has to be applied HERE too.
+            # Tagged only in `put_object_stream` it would miss every JSON
+            # sidecar — run_manifest.json, metrics.json, feature_spec.json —
+            # while every Parquet-based test still passed.
             self._client.put_object(
                 self.bucket,
                 key,
                 io.BytesIO(payload),
                 length=len(payload),
                 content_type="application/json",
+                tags=_with_retention_tag(key, None),
             )
         except S3Error as err:
             raise ObjectStoreError(
@@ -379,7 +578,6 @@ class ObjectStore:
     # ── read ─────────────────────────────────────────────────────────────
 
     def get_frame(self, key: str, columns: list[str] | None = None) -> pd.DataFrame:
-        response = None
         # DS-LAKE-005B-C-T07 (large-dataset observability, server-side
         # slice): `get_frame` is the one real read choke point most other
         # reads funnel through (`get_frame_slice` calls this directly) — the
@@ -389,21 +587,71 @@ class ObjectStore:
         # (routers/preprocess.py) — that measures the WHOLE request
         # including pandas/pyarrow decode; this isolates the storage GET.
         started = time.perf_counter()
+        raw = self.get_object_bytes(key)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.info(
+            "object_store_read key=%s bytes_read=%d elapsed_ms=%.1f",
+            key,
+            len(raw),
+            elapsed_ms,
+        )
+        table = pq.read_table(io.BytesIO(raw), columns=columns)
+        return table.to_pandas()
+
+    def get_object_bytes(self, key: str) -> bytes:
+        """Raw bytes read — the low-level primitive `get_frame` decodes atop.
+
+        DS-LAKE-021-T01: factored out of `get_frame`'s own MinIO-call body
+        so `get_frame` and this method share one GET path instead of two
+        near-identical ones (`get_json`, `get_frame_metadata`, `checksum_of`
+        and `get_frame_slice_duckdb` still call `self._client.get_object`
+        directly — out of scope here, not folded in). Exists for callers
+        that want the whole object as one `bytes` value; `export_service.
+        export_artifact_csv` used to be one such caller but now streams via
+        `download_to_fileobj` below instead — see that method's own doc
+        comment for why.
+        """
+        response = None
         try:
             response = self._client.get_object(self.bucket, key)
-            raw = response.read()
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            logger.info(
-                "object_store_read key=%s bytes_read=%d elapsed_ms=%.1f",
-                key,
-                len(raw),
-                elapsed_ms,
-            )
-            table = pq.read_table(io.BytesIO(raw), columns=columns)
-            return table.to_pandas()
+            return response.read()
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+
+    def download_to_fileobj(
+        self, key: str, fileobj: IO[bytes], *, chunk_bytes: int = 8 * 1024 * 1024
+    ) -> int:
+        """Chunked GET into a caller-supplied file-like object — the
+        streaming counterpart to `get_object_bytes` above.
+
+        DS-LAKE-021-T01 final-review fix: `export_artifact_csv` originally
+        called `get_object_bytes`, which materialises the ENTIRE source
+        object as one `bytes` value before the caller can do anything with
+        it — for a wide numeric artifact this alone made peak memory scale
+        with artifact size despite the export loop itself using
+        `pq.ParquetFile.iter_batches`. This method never holds more than
+        `chunk_bytes` of the response in memory at once; the caller decides
+        where the chunks land (a `SpooledTemporaryFile`, typically), which
+        is what actually lets peak memory stay flat as row count grows.
+        Same `S3Error` → `ObjectStoreError` wrapping and same
+        `close()`/`release_conn()` `finally` block as `get_object_bytes` —
+        a missing key still raises from `get_object` itself, before any
+        chunk is read.
+        """
+        response = None
+        written = 0
+        try:
+            response = self._client.get_object(self.bucket, key)
+            for chunk in response.stream(chunk_bytes):
+                fileobj.write(chunk)
+                written += len(chunk)
+            return written
+        except S3Error as err:
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -431,8 +679,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             payload = response.read()
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -476,8 +723,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             return json.loads(response.read())
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -495,8 +741,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             return sha256_hex(response.read())
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -560,8 +805,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             payload = response.read()
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -589,6 +833,26 @@ class ObjectStore:
 
     # ── delete ───────────────────────────────────────────────────────────
 
+    def list_object_keys(self, prefix: str) -> list[str]:
+        """MODEL-SERVE-005. Every object key under `prefix`, listing order —
+        the public counterpart of `delete_prefix`'s internal listing loop,
+        needed by `prediction_log_service.series` to enumerate an hour
+        partition's individual request objects before reading them. Returns
+        `[]` for an empty/nonexistent prefix rather than raising: an absent
+        window is a normal "no requests logged this hour", not an error.
+        """
+        try:
+            return [
+                obj.object_name
+                for obj in self._client.list_objects(
+                    self.bucket, prefix=prefix, recursive=True
+                )
+            ]
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not list prefix '{prefix}': {err.code}"
+            ) from err
+
     def delete_prefix(self, prefix: str) -> int:
         """Drop every object under a prefix — used to clear tmp/{jobId}/."""
         removed = 0
@@ -603,6 +867,72 @@ class ObjectStore:
                 f"Could not clear prefix '{prefix}': {err.code}"
             ) from err
         return removed
+
+    # ── copy ─────────────────────────────────────────────────────────────
+
+    def copy_prefix(self, src_prefix: str, dst_prefix: str) -> list[str]:
+        """Copy every object under `src_prefix` to the same name under
+        `dst_prefix`. Returns the destination keys, in listing order.
+
+        DS-LAKE-025: the mechanism behind `artifact_service.adopt_artifact`.
+        Save Dataset uses it to bring a draft's committed artifact objects
+        into the dataset's OWN namespace, so a persisted dataset never
+        depends on a `drafts/` object it does not own — the failure this
+        exists to close (a saved dataset whose FINAL 404s from MinIO while
+        its Postgres row still reads live) was found in production data,
+        not hypothesised.
+
+        Server-side (`copy_object`): the bytes never travel through this
+        process, so a wide artifact costs the same here as a small one.
+        Single-part server-side copy tops out at 5 GiB per object; nothing
+        this service writes is near that, and a source past it would
+        surface as a loud `S3Error` rather than a silent truncation.
+
+        An object whose destination already exists is counted and skipped,
+        not re-copied. That is what makes a retried Save converge instead
+        of failing the second time — the same idempotency `delete_prefix`
+        above provides by returning 0 for an absent prefix.
+        """
+        if not src_prefix.endswith("/") or not dst_prefix.endswith("/"):
+            raise ValueError(
+                "copy_prefix needs directory-style prefixes ending in '/' — "
+                f"got src='{src_prefix}', dst='{dst_prefix}'. Without the "
+                "trailing slash the relative-name split below would cut a "
+                "filename fragment, the same defect DS-LAKE-016-T02 fixed "
+                "in reclaim_artifact."
+            )
+
+        copied: list[str] = []
+        try:
+            for obj in self._client.list_objects(
+                self.bucket, prefix=src_prefix, recursive=True
+            ):
+                src_key = obj.object_name
+                dst_key = f"{dst_prefix}{src_key[len(src_prefix):]}"
+                if not self.exists(dst_key):
+                    self._client.copy_object(
+                        self.bucket, dst_key, CopySource(
+                            self.bucket, src_key)
+                    )
+                    # MODEL-SERVE-007-T02. This is the THIRD write path, and
+                    # the one neither half of that task reached: a copy mints
+                    # a NEW object without going through `put_object_stream`,
+                    # and `copy_object` carries the SOURCE's tags — so a
+                    # legacy untagged source produces an untagged object
+                    # written after this feature shipped. Tagged from the
+                    # DESTINATION key, never inherited, because that is the
+                    # key whose class the new object actually has: this
+                    # method's whole purpose (DS-LAKE-025) is moving bytes
+                    # from a `drafts/` prefix into a dataset's own namespace,
+                    # which is a root change and therefore potentially a
+                    # class change.
+                    self.tag_retention(dst_key)
+                copied.append(dst_key)
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not copy '{src_prefix}' to '{dst_prefix}': {err.code}"
+            ) from err
+        return copied
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -759,13 +1089,49 @@ class ObjectStore:
 # places, so a layout change had four independent chances to be missed. Change
 # both files together.
 
+#: DS-LAKE-016: stage-suffixed data filenames, for diagnosability — telling a
+#: BRONZE from a GOLD while browsing a MinIO console today requires a
+#: Postgres round trip. FINAL has NO entry here on purpose: it never gets a
+#: file of its own — `promoteDraftArtifactToFinalService` copies `objectKey`
+#: from its source verbatim (DS-LAKE-012-V03 proved live that GOLD and FINAL
+#: share one checksum, "promotion by pointer, not byte-copy"), and
+#: `global_definition_of_done` forbids copying bytes at promotion outright.
+DATA_FILENAME_BY_TYPE: dict[str, str] = {
+    "BRONZE": "data_bronze.parquet",
+    "SILVER": "data_silver.parquet",
+    "GOLD": "data_gold.parquet",
+    # DS-LAKE-021-T04: EXPORT gets its own entry (unlike FINAL) -- a real,
+    # independently-reclaimable object, not a promoted pointer.
+    "EXPORT": EXPORT_CSV_FILENAME,
+}
+#: Every accepted data filename, legacy `data.parquet` included — the FULL
+#: set `split_data_key` recognises. A committed object is immutable
+#: (`put_frame` refuses an overwrite) and pre-existing objects can never be
+#: renamed, so this only ever WIDENS: old spellings must keep resolving
+#: forever, not be replaced.
+ALL_DATA_FILENAMES: tuple[str, ...] = (
+    DATA_FILENAME,
+    *DATA_FILENAME_BY_TYPE.values(),
+)
+
 
 def artifact_prefix(dataset_id: str, artifact_id: str) -> str:
     return f"{dataset_id}/artifacts/{artifact_id}/"
 
 
-def artifact_key(dataset_id: str, artifact_id: str) -> str:
-    return f"{artifact_prefix(dataset_id, artifact_id)}{DATA_FILENAME}"
+def artifact_key(
+    dataset_id: str, artifact_id: str, artifact_type: str | None = None
+) -> str:
+    """`artifact_type` is OPTIONAL and trailing (DS-LAKE-016-T01) so every
+    existing caller keeps compiling and keeps producing the legacy
+    `data.parquet` name until explicitly updated to pass one. Unknown/FINAL
+    types fall back to the legacy name too, rather than raising — this
+    function has no live Python caller today (NestJS's mirrored `artifactKey`
+    is what actually decides `target_key` for a write), so failing loud here
+    would only make CONTRACT PARITY brittle, not catch a real bug.
+    """
+    filename = DATA_FILENAME_BY_TYPE.get(artifact_type or "", DATA_FILENAME)
+    return f"{artifact_prefix(dataset_id, artifact_id)}{filename}"
 
 
 def manifest_key(dataset_id: str, artifact_id: str) -> str:
@@ -780,6 +1146,27 @@ def validation_key(dataset_id: str, artifact_id: str) -> str:
     return f"{artifact_prefix(dataset_id, artifact_id)}{VALIDATION_REPORT_FILENAME}"
 
 
+def split_data_key(key: str) -> tuple[str, str] | None:
+    """DS-LAKE-016-T01: the ONE function that knows the full set of accepted
+    data filenames (`ALL_DATA_FILENAMES`), so `sidecar_key`,
+    `is_committed_artifact_key` and `reclaim_artifact` cannot drift on which
+    names count — the exact drift this key contract exists to prevent, now
+    with three more names to get wrong.
+
+    Returns `(prefix, data_filename)` — `prefix` is everything up to and
+    including the trailing `/` — if `key` ends in any accepted data
+    filename, else `None`. Checked longest-suffix-safe by construction: every
+    accepted filename is distinct and none is a suffix of another
+    (`data.parquet` vs `data_bronze.parquet` etc. differ before the `.`), so
+    at most one entry can ever match.
+    """
+    for filename in ALL_DATA_FILENAMES:
+        suffix = f"/{filename}"
+        if key.endswith(suffix):
+            return key[: -len(filename)], filename
+    return None
+
+
 def sidecar_key(data_key: str, filename: str) -> str:
     """Sidecar beside an arbitrary data key.
 
@@ -788,8 +1175,10 @@ def sidecar_key(data_key: str, filename: str) -> str:
     when the key is not in the artifact layout, so a legacy or tmp key still
     gets a manifest instead of silently getting none.
     """
-    if data_key.endswith(f"/{DATA_FILENAME}"):
-        return data_key[: -len(DATA_FILENAME)] + filename
+    split = split_data_key(data_key)
+    if split is not None:
+        prefix, _ = split
+        return f"{prefix}{filename}"
     return f"{data_key}.{filename}"
 
 
@@ -866,10 +1255,102 @@ def build_manifest(
 
 
 MODEL_ROOT = "models/"
+# A run started from the wizard has no model_id yet — Save Model has not
+# happened (MODEL-FLOW-003-T08). Its outputs write here instead, under the
+# ModelDraft that owns it; Save Model later adopts them by pointer rather
+# than copying bytes. Mirrored in TypeScript at artifact-keys.ts.
+DRAFT_ROOT = "drafts/"
 MODEL_FILENAME = "model.joblib"
 METRICS_FILENAME = "metrics.json"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 PREDICTIONS_FILENAME = "predictions.parquet"
+# MODEL-FLOW-013-T05. Only present for the algorithms train.py can extract a
+# real loss trajectory from — absent, not empty, for a closed-form fit.
+LOSS_HISTORY_FILENAME = "loss_history.json"
+# MODEL-FLOW-016-T04. Per-fold CV metrics — present only for a CV run (a
+# non-CV run never writes this). Mirrored in images/trainer/train.py
+# (CV_FOLDS_FILENAME) and artifact-keys.ts — change all three.
+CV_FOLDS_FILENAME = "cv_folds.json"
+# MODEL-FLOW-019-T09. Per-feature importance — present only for the
+# algorithms images/trainer/app/importance.py can read a real quantity from;
+# absent, not empty, for one that cannot. Mirrored in that same file
+# (FEATURE_IMPORTANCE_FILENAME) and artifact-keys.ts — change all three. See
+# images/trainer/app/MIRRORS.md entry 7.
+FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
+# MODEL-FLOW-023-T10. A SECOND, independent artifact — never a widened
+# feature_importance.json, since a signed population-scored drop and an
+# always-non-negative fit-internal value answer different questions
+# (images/trainer/app/importance.py's own finding). Present only for the one
+# strategy that scores a permutation population today (windowed.run, i.e.
+# lstm/gru). Mirrored in that same file (PERMUTATION_IMPORTANCE_FILENAME) and
+# artifact-keys.ts — change all three. See
+# images/trainer/app/MIRRORS.md entry 7's sibling.
+PERMUTATION_IMPORTANCE_FILENAME = "permutation_importance.json"
+# MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series
+# ({timestamp,y_true,y_pred}), written by score-mode ONLY — a DIFFERENT
+# filename from PREDICTIONS_FILENAME because a non-CV run's predictions.parquet
+# already holds its TEST split the moment training finishes; scoring must
+# never overwrite that. Mirrored in images/trainer/app/artifacts.py (same
+# name) and artifact-keys.ts — change all three, and also add to
+# _ALLOWED_RUN_UPLOADS below. See images/trainer/app/MIRRORS.md entry 8.
+HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"
+# MODEL-SERVE-020-T06. The per-row series a retrain candidate produced on the
+# operator's NEW-DATA window ({timestamp,y_true,y_pred}) — the aggregate always
+# reached `newDataHoldoutMetrics`, the frame used to be discarded. Its OWN
+# filename: it describes a different population from BOTH predictions.parquet
+# (the test split) and holdout_predictions.parquet (the current version's
+# frozen test slice), and neither may be overwritten or read as the other.
+# Mirrored in images/trainer/app/artifacts.py (same name) and artifact-keys.ts
+# — change all three, and also add to _ALLOWED_RUN_UPLOADS and
+# _READABLE_PREDICTION_FILENAMES in services/artifact_service.py. See
+# images/trainer/app/MIRRORS.md entry 9.
+NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = "new_data_holdout_predictions.parquet"
+# MODEL-SERVE-021. The CURRENT PRODUCTION model's score on that SAME window —
+# scored by the candidate's own training container (New Data Only replace
+# mode carves no frozen slice any more, so this is the only comparison basis
+# left) and uploaded under its own filename so it can never be confused with
+# or overwrite the candidate's own series above. Mirrored in
+# images/trainer/app/artifacts.py (same name) and artifact-keys.ts — change
+# all three, and also add to _ALLOWED_RUN_UPLOADS and
+# _READABLE_PREDICTION_FILENAMES in services/artifact_service.py. See
+# images/trainer/app/MIRRORS.md entry 10.
+INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = (
+    "incumbent_new_data_holdout_predictions.parquet"
+)
+# MODEL-SERVE-026-T05. The CV-gap series — {fold, timestamp, y_true, y_pred,
+# y_pred_current}, FIVE columns, so it is in _ALLOWED_RUN_UPLOADS but NOT in
+# _READABLE_PREDICTION_FILENAMES (that reader refuses anything but the
+# three-column shape); it has its own reader, `run_cv_gap`. Mirrored in
+# images/trainer/app/artifacts.py and artifact-keys.ts — change all three.
+# See images/trainer/app/MIRRORS.md entry 11.
+CV_GAP_PREDICTIONS_FILENAME = "cv_gap_predictions.parquet"
+# MODEL-FLOW-028-T01. A CV run's OUT-OF-FOLD series ({timestamp,y_true,y_pred})
+# — every expanding fold's test rows as predicted by that fold's own model. The
+# same three columns as predictions.parquet but a different population (the
+# CONFIGURATION's fold fits, not the shipped refit), so its OWN filename: it is
+# never the test split and never the holdout. Mirrored in
+# images/trainer/app/artifacts.py (same name) and artifact-keys.ts — change all
+# three, and also add to _ALLOWED_RUN_UPLOADS and
+# _READABLE_PREDICTION_FILENAMES in services/artifact_service.py. See
+# images/trainer/app/MIRRORS.md entry 12.
+CV_OOF_PREDICTIONS_FILENAME = "cv_oof_predictions.parquet"
+# MODEL-FLOW-016-T08. The model-ready validation holdout `tryReplayHoldout`
+# (model-run.authorized.service.ts) writes under a run's own prefix, via
+# `prepare_holdout_for_run`/`replay_holdout_for_run` — NOT one of train.py's
+# own uploads, so deliberately absent from _ALLOWED_RUN_UPLOADS (that set
+# gates what the CONTAINER may upload; this file is written server-side,
+# before the container is ever claimed). Exists purely so `presign_run_object`
+# below can name-check it, the same way every other run-scoped reader here
+# checks its own filename. Mirrored in TypeScript at artifact-keys.ts.
+VALIDATE_READY_FILENAME = "validate_ready.parquet"
+
+# The run-scoped, model-ready copy of an augmented retrain's NEW-DATA
+# validation window, written server-side beside VALIDATE_READY_FILENAME so
+# one run can carry BOTH holdouts: the frozen incumbent-test slice it is
+# compared against, and the new-data window it is reported on. Same
+# server-side-write discipline as its sibling above, so likewise absent from
+# _ALLOWED_RUN_UPLOADS. Mirrored in TypeScript at artifact-keys.ts.
+VALIDATE_NEW_READY_FILENAME = "validate_new_ready.parquet"
 
 
 def model_run_prefix(model_id: str, run_id: str) -> str:
@@ -880,6 +1361,27 @@ def model_run_key(model_id: str, run_id: str, filename: str) -> str:
     return f"{model_run_prefix(model_id, run_id)}{filename}"
 
 
+def draft_run_prefix(draft_id: str, run_id: str) -> str:
+    return f"{DRAFT_ROOT}{draft_id}/runs/{run_id}/"
+
+
+def draft_run_key(draft_id: str, run_id: str, filename: str) -> str:
+    return f"{draft_run_prefix(draft_id, run_id)}{filename}"
+
+
+def draft_runs_prefix(draft_id: str) -> str:
+    """Every run a ModelDraft owns — MODEL-FLOW-011-T02's reclaim unit.
+
+    One level up from `draft_run_prefix`: no `run_id`, so this names the
+    WHOLE `runs/` subtree under one draft rather than one run inside it.
+    Reclaiming this deletes every run object the draft owns, never anything
+    outside `drafts/{draft_id}/runs/` — in particular never
+    `drafts/{draft_id}/artifacts/...`, the unrelated DatasetDraft shape that
+    happens to share the same `drafts/` root (see `is_draft_run_prefix`).
+    """
+    return f"{DRAFT_ROOT}{draft_id}/runs/"
+
+
 def is_committed_artifact_key(key: str) -> bool:
     """Whether `key` is a committed artifact's data object.
 
@@ -887,9 +1389,273 @@ def is_committed_artifact_key(key: str) -> bool:
     guard cannot drift from it. Deliberately NOT a check that the object
     exists — that is a separate question, and conflating the two would make
     "malformed key" and "missing artifact" indistinguishable to the caller.
+
+    DS-LAKE-016: routed through `split_data_key` so a stage-suffixed key
+    (e.g. `.../data_gold.parquet`) is recognised too — before this it was
+    legacy-`data.parquet`-only, which would have refused presigning or
+    reclaiming a real, freshly-written stage-suffixed artifact outright.
     """
-    return "/artifacts/" in key and key.endswith(f"/{DATA_FILENAME}")
+    return "/artifacts/" in key and split_data_key(key) is not None
 
 
 def is_model_run_key(key: str) -> bool:
-    return key.startswith(MODEL_ROOT) and "/runs/" in key
+    """Whether `key` is a well-formed training-run output object.
+
+    Structural, not substring: requires exactly
+    `models/{model_id}/runs/{run_id}/{filename}` — four non-empty path
+    segments after the root, none of them `.` or `..`. A substring test
+    (`startswith("models/") and "/runs/" in key`) would accept a traversal
+    like `models/../../x/runs/y/z`, which the old implementation did. This
+    is the one thing standing between a malformed id and a presigned write
+    outside `models/` (see `presign_model_run_upload`'s own comment).
+    """
+    if not key.startswith(MODEL_ROOT):
+        return False
+    parts = key[len(MODEL_ROOT):].split("/")
+    if len(parts) != 4 or parts[1] != "runs":
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+def is_draft_run_key(key: str) -> bool:
+    """Whether `key` is a well-formed draft-scoped training-run output object.
+
+    Same structural shape as `is_model_run_key`, rooted at `drafts/` instead
+    of `models/` — a run started from the wizard has no model_id yet
+    (MODEL-FLOW-003-T08). Kept as a separate predicate rather than widening
+    `is_model_run_key` to accept either root: the two roots are never
+    interchangeable at a call site (a caller must already know which scope
+    it is minting a URL for), so merging them would let a bug pick the wrong
+    root silently instead of failing a type/branch check.
+    """
+    if not key.startswith(DRAFT_ROOT):
+        return False
+    parts = key[len(DRAFT_ROOT):].split("/")
+    if len(parts) != 4 or parts[1] != "runs":
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+#: MODEL-SERVE-003. Where a PredictionJob's output lands. Deliberately NOT
+#: under models/{modelId}/runs/... — that root names TRAINING-run outputs
+#: (model.joblib, metrics.json, ...), and a batch score is a different
+#: lifecycle keyed to its own PredictionJob, not a ModelTrainingRun.
+#: Deliberately NOT under inference/ either — the ledger has already
+#: reserved that root for MODEL-SERVE-006's hourly-window layout
+#: (docs/feature_list_model.json), and picking a colliding root now would
+#: turn a free choice into a migration later. Mirrored in TypeScript at
+#: artifact-keys.ts — change all three, per MODEL-FLOW-013-T05's own note
+#: on what happens when one is missed.
+PREDICTION_ROOT = "predictions/"
+OUTPUT_FILENAME = "output.parquet"
+BATCH_MANIFEST_FILENAME = "batch_manifest.json"
+
+
+def prediction_job_prefix(model_id: str, job_id: str) -> str:
+    return f"{PREDICTION_ROOT}{model_id}/{job_id}/"
+
+
+def prediction_job_key(model_id: str, job_id: str, filename: str) -> str:
+    return f"{prediction_job_prefix(model_id, job_id)}{filename}"
+
+
+def is_prediction_job_key(key: str) -> bool:
+    """Whether `key` is a well-formed PredictionJob output object.
+
+    Same structural-not-substring discipline as `is_model_run_key`/
+    `is_draft_run_key`: requires exactly `predictions/{model_id}/{job_id}/
+    {filename}` — 3 non-empty path segments after the root, none `.`/`..`.
+    Three, not four, since this root has no equivalent of the
+    models/drafts layout's fixed `runs` middle segment.
+    """
+    if not key.startswith(PREDICTION_ROOT):
+        return False
+    parts = key[len(PREDICTION_ROOT):].split("/")
+    if len(parts) != 3:
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+#: MODEL-SERVE-005. One object per SAMPLED synchronous /predict request —
+#: deliberately NOT under predictions/ (that root is PredictionJob's BATCH
+#: output, a different lifecycle) and NOT under inference/ (reserved for
+#: MODEL-SERVE-006's hourly-window record, a different cadence and a
+#: different owner: a window is one row per (modelVersionId, windowStart),
+#: this is one row per REQUEST). Hive-style dt=/hour= partitioning, the
+#: same layout MODEL-SERVE-006-T06 specifies for its own root, so a date
+#: range reads without listing everything. Mirrored in TypeScript at
+#: artifact-keys.ts — change both.
+SERVING_LOG_ROOT = "serving-logs/"
+
+
+def serving_log_prefix(
+    model_id: str, model_version_id: str, dt: str, hour: str
+) -> str:
+    """`dt` is `YYYY-MM-DD`, `hour` is `HH` (zero-padded, 00-23) — both
+    caller-supplied strings, never derived here, so the write and the read
+    side compute the same partition from the same UTC timestamp exactly
+    once each, not twice with a chance to disagree."""
+    return f"{SERVING_LOG_ROOT}{model_id}/{model_version_id}/dt={dt}/hour={hour}/"
+
+
+def serving_log_key(model_id: str, model_version_id: str, dt: str, hour: str) -> str:
+    """One request, one object — the filename is a fresh uuid4, never a
+    caller-supplied id: a serving-token caller has no per-request identity
+    to key off, unlike a ModelTrainingRun or PredictionJob row."""
+    return f"{serving_log_prefix(model_id, model_version_id, dt, hour)}{uuid.uuid4()}.parquet"
+
+
+def is_serving_log_key(key: str) -> bool:
+    """Whether `key` is a well-formed serving-log object.
+
+    Same structural-not-substring discipline as `is_prediction_job_key`:
+    `{modelId}/{modelVersionId}/dt={date}/hour={hour}/{filename}` — exactly
+    5 non-empty segments after the root, the 3rd and 4th literally prefixed
+    `dt=`/`hour=`.
+    """
+    if not key.startswith(SERVING_LOG_ROOT):
+        return False
+    parts = key[len(SERVING_LOG_ROOT):].split("/")
+    if len(parts) != 5:
+        return False
+    if not parts[2].startswith("dt=") or not parts[3].startswith("hour="):
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+#: MODEL-SERVE-006-T06. The hourly-window record — the root PREDICTION_ROOT
+#: and SERVING_LOG_ROOT's own doc comments both name and reserve. Hive-style
+#: dt=/hour= partitioning, same layout as SERVING_LOG_ROOT, so a date range
+#: reads without listing everything and a reader is never coupled to
+#: one-file-per-hour. A different owner and cadence from both siblings: one
+#: row per (modelVersionId, windowStart), not per request (serving-logs) and
+#: not per ad-hoc batch job (predictions/). Mirrored in TypeScript at
+#: artifact-keys.ts as a bare constant with no builder — this module is the
+#: only writer and the only key-builder for this root, same arrangement
+#: SERVING_LOG_ROOT already has there.
+INFERENCE_ROOT = "inference/"
+#: The pre-scale scoring input this module's own materialize step writes.
+#: A different filename from PREDICTIONS_FILENAME/METRICS_FILENAME (both
+#: reused as-is here — same names, same meaning, one root over) since an
+#: input object and the window's two OUTPUTS must never collide under one
+#: hour's prefix.
+INFERENCE_INPUT_FILENAME = "input.parquet"
+#: MODEL-SERVE-005-T03. The late-arriving ground-truth join for this window:
+#: the (timestamp, predicted, actual, residual) pairs, written long AFTER
+#: predictions.parquet (a lab measurement arrives on its own, much longer
+#: lag). A fourth filename under the SAME hour prefix rather than a root of
+#: its own — it is the same window's record, found by the same range query,
+#: and it must be reclaimed by whatever retention class eventually reclaims
+#: that window. Rewritten in place on a re-join, because truth is
+#: incremental: a window joined at 24h holding one lab sample may hold three
+#: at 72h, and the row's sufficient statistics must move with the object.
+INFERENCE_TRUTH_FILENAME = "truth.parquet"
+
+
+def inference_window_prefix(
+    model_id: str, model_version_id: str, dt: str, hour: str
+) -> str:
+    """`dt` is `YYYY-MM-DD`, `hour` is `HH` (zero-padded, 00-23) — both
+    caller-supplied strings, never derived here, same discipline
+    `serving_log_prefix` states on itself: the write and the read side
+    compute the same partition from the same UTC `windowStart` exactly once
+    each, not twice with a chance to disagree."""
+    return f"{INFERENCE_ROOT}{model_id}/{model_version_id}/dt={dt}/hour={hour}/"
+
+
+def inference_window_key(
+    model_id: str, model_version_id: str, dt: str, hour: str, filename: str
+) -> str:
+    """Filename-keyed, NOT a minted uuid — unlike `serving_log_key`, a
+    window has a stable identity (the row's own modelVersionId+windowStart,
+    which this dt/hour pair already encodes at hour granularity) and a
+    fixed, small set of output files (input.parquet, predictions.parquet,
+    metrics.json), so a caller-known filename is the right key rather than
+    a fresh name every write."""
+    return f"{inference_window_prefix(model_id, model_version_id, dt, hour)}{filename}"
+
+
+def is_inference_window_key(key: str) -> bool:
+    """Whether `key` is a well-formed inference-window object.
+
+    Same structural-not-substring discipline as `is_serving_log_key`:
+    `{modelId}/{modelVersionId}/dt={date}/hour={hour}/{filename}` — exactly
+    5 non-empty segments after the root, the 3rd and 4th literally prefixed
+    `dt=`/`hour=`.
+    """
+    if not key.startswith(INFERENCE_ROOT):
+        return False
+    parts = key[len(INFERENCE_ROOT):].split("/")
+    if len(parts) != 5:
+        return False
+    if not parts[2].startswith("dt=") or not parts[3].startswith("hour="):
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+def is_draft_run_prefix(prefix: str) -> bool:
+    """Whether `prefix` is `drafts/{draft_id}/runs/` or `.../runs/{run_id}/`.
+
+    MODEL-FLOW-011-T02's structural guard for `delete_prefix` — the
+    directory-terminated counterpart of `is_draft_run_key`. That predicate
+    cannot be reused here: it requires exactly 4 non-empty, filename-
+    terminated segments, so a bare `drafts/{d}/runs/{r}/` fails its own
+    empty-trailing-segment rule. This one requires a TRAILING SLASH (a
+    prefix, never a key) and exactly 2 or 3 non-empty segments after the
+    root, with the second always `runs` — never a bare `drafts/{draft_id}/`,
+    which is what keeps a sweep built on this predicate structurally unable
+    to reach `drafts/{draft_id}/artifacts/...`, the unrelated DatasetDraft
+    shape sharing the same `drafts/` root.
+    """
+    if not prefix.startswith(DRAFT_ROOT) or not prefix.endswith("/"):
+        return False
+    parts = prefix[len(DRAFT_ROOT):-1].split("/")
+    if len(parts) not in (2, 3) or parts[1] != "runs":
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+def class_for_key(key: str) -> str:
+    """The retention class of `key` — see RETENTION_TAG_KEY above.
+
+    MODEL-SERVE-007-T03. The single place a key is mapped to a class, so the
+    write path, the tagging of a presigned upload and any future sweep all
+    agree about one key. Mirrored in TypeScript as `classForKey` in
+    artifact-keys.ts — change both.
+
+    DISPATCHES ON THE NAMED ROOTS, NEVER ON THE FIRST PATH SEGMENT. A dataset
+    key begins with a bare `{datasetId}` UUID (see `version_key` and
+    `artifact_prefix`) and has no root to dispatch on at all, so a
+    first-segment resolver would class every dataset object by whatever its
+    UUID happened to be.
+
+    `drafts/` is SHARED by two entities and is the one root where the class
+    depends on more than the root: `drafts/{id}/runs/{id}/...` is a model run
+    output (REFERENCED) and `drafts/{id}/artifacts/{id}/...` is a dataset
+    draft artifact (SWEEPABLE). The discriminator is `is_draft_run_key`,
+    CALLED rather than re-derived — a second copy of that 4-segment test
+    would be free to disagree with the original about one key, and only the
+    original is under test.
+    """
+    if key.startswith(INFERENCE_ROOT) or key.startswith(SERVING_LOG_ROOT):
+        return RETENTION_PERMANENT
+    if key.startswith(MODEL_ROOT):
+        return RETENTION_REFERENCED
+    if key.startswith(DRAFT_ROOT):
+        return (
+            RETENTION_REFERENCED
+            if is_draft_run_key(key)
+            else RETENTION_SWEEPABLE
+        )
+    # PREDICTION_ROOT and PRESET_ROOT both fall through to the default below,
+    # which is already their class — listed here only so a reader does not
+    # think they were forgotten. A batch score is reproducible from its job,
+    # and an imported preset from its source file.
+    #
+    # The rootless default is NOT a fallback. It is the historically correct
+    # answer for every dataset object ever written: both the committed
+    # `{datasetId}/artifacts/...` layout and the legacy
+    # `{datasetId}/{versionId}.parquet` one are bucket-less and root-less by
+    # construction, and every one of them is dataset-scoped and reclaimable
+    # with its dataset.
+    return RETENTION_SWEEPABLE

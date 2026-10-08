@@ -4,7 +4,8 @@ export type { NodeStatus }
 
 export const STATUS_META: Record<NodeStatus, { label: string; color: string }> =
   {
-    alarm: { label: 'Alarm', color: '#ef4444' },
+    // MODEL-SERVE-024-D01: the stored value stays 'alarm'; it reads "Alert".
+    alarm: { label: 'Alert', color: '#ef4444' },
     warning: { label: 'Warning', color: '#f59e0b' },
     offline: { label: 'Offline', color: '#71717a' },
     normal: { label: 'Normal', color: '#22c55e' },
@@ -19,15 +20,28 @@ export function deriveStatus(nodes: CanvasNode[]): NodeStatus {
 
 /**
  * Binary status layer for physical/organizational entities (Workspace, Plant,
- * Equipment/Node). Display-only collapse of the 4-state `NodeStatus`: anything
- * that is not `normal` (warning/alarm/offline) reads as a single `abnormal`
- * (red) state. Models are NOT covered by this — they keep their own status
- * system (`lib/model-status.ts`).
+ * Equipment/Node) — THE one Normal/Abnormal rule (MODEL-SERVE-024-D02).
+ *
+ * ABNORMAL only for `alarm` (read "Alert"). Warning and offline read Normal:
+ * they still list on the Alerts page, but they do not turn a plant or
+ * workspace red. A model's own fault folds in by mapping to `alarm` first
+ * (`normalizeModelStatus` in lib/overview-tree.ts: a failed deploy or a
+ * monitoring ALERT), so this one function decides for nodes and models alike.
+ * Every caller asks this function rather than testing `!== 'normal'` itself.
  */
 export type BinaryStatus = 'normal' | 'abnormal'
 
-export function toBinaryStatus(status: NodeStatus): BinaryStatus {
-  return status === 'normal' ? 'normal' : 'abnormal'
+export function toBinaryStatus(
+  status: NodeStatus | string | null | undefined,
+): BinaryStatus {
+  return status === 'alarm' ? 'abnormal' : 'normal'
+}
+
+/** `toBinaryStatus(status) === 'abnormal'`, for conditions. */
+export function isAbnormal(
+  status: NodeStatus | string | null | undefined,
+): boolean {
+  return toBinaryStatus(status) === 'abnormal'
 }
 
 /**
@@ -53,14 +67,36 @@ export const BINARY_STATUS_META: Record<
   },
 }
 
-export function deriveBinaryStatus(nodes: CanvasNode[]): BinaryStatus {
-  return toBinaryStatus(deriveStatus(nodes))
+/**
+ * Whether one piece of equipment is Abnormal: its own status is an alert, OR a
+ * model placed on it is abnormal (failed deploy / monitoring ALERT —
+ * `abnormalModelCountByNodeId` in lib/model-status.ts builds that set).
+ */
+export function isNodeAbnormal(
+  node: CanvasNode,
+  abnormalModelNodeIds?: ReadonlySet<string>,
+): boolean {
+  return (
+    isAbnormal(node.data.status) || Boolean(abnormalModelNodeIds?.has(node.id))
+  )
 }
 
-export function countBinary(nodes: CanvasNode[]): Record<BinaryStatus, number> {
+export function deriveBinaryStatus(
+  nodes: CanvasNode[],
+  abnormalModelNodeIds?: ReadonlySet<string>,
+): BinaryStatus {
+  return nodes.some(n => isNodeAbnormal(n, abnormalModelNodeIds))
+    ? 'abnormal'
+    : 'normal'
+}
+
+export function countBinary(
+  nodes: CanvasNode[],
+  abnormalModelNodeIds?: ReadonlySet<string>,
+): Record<BinaryStatus, number> {
   let abnormal = 0
   for (const n of nodes) {
-    if ((n.data.status as NodeStatus) !== 'normal') abnormal++
+    if (isNodeAbnormal(n, abnormalModelNodeIds)) abnormal++
   }
   return { normal: nodes.length - abnormal, abnormal }
 }

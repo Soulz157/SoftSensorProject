@@ -9,6 +9,7 @@ interface UseActivityLogOptions {
   limit: number
   action?: AuthAction
   userId?: string
+  notifyOnError?: boolean
 }
 
 export function useActivityLog({
@@ -16,11 +17,13 @@ export function useActivityLog({
   limit,
   action,
   userId,
+  notifyOnError,
 }: UseActivityLogOptions) {
   return usePaginatedFetch<ActivityLog>(
     () => activityService.getActivityLog({ page, limit, action, userId }),
     [page, limit, action, userId],
     'Failed to load activity log',
+    { notifyOnError },
   )
 }
 

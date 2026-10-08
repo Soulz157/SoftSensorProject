@@ -1,7 +1,12 @@
 {
   "generatedBy": "apps/client/lib/__tests__/parity-fixtures.test.ts",
   "rowCount": 40,
-  "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+  "tags": [
+    "TI-101",
+    "VI-202",
+    "FI-404",
+    "XX-999"
+  ],
   "precision": {
     "TI-101": 1,
     "VI-202": 2,
@@ -59,6 +64,46 @@
     },
     {
       "name": "clip_high_only",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "crop_both_bounds",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "crop_low_only",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "crop_no_bounds_is_noop",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "exclude_both_bounds",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "exclude_high_only",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "exclude_no_bounds_is_noop",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "clip_windowed",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "crop_windowed",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "exclude_windowed",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "clip_tag_scoped",
       "engine": "preprocessPipelines"
     },
     {

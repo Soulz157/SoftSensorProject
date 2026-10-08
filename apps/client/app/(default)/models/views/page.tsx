@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Activity,
@@ -40,6 +40,7 @@ import {
   CommandList,
 } from '@/components/ui/command'
 import { workspacesAtom } from '@/store/workspace'
+import { useWorkspaceUrlFilter } from '@/hooks/workspace/use-workspace-url-filter'
 import {
   useAllModels,
   useRefreshModels,
@@ -47,8 +48,9 @@ import {
 } from '@/hooks/use-all-models'
 import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
 import { AIModel } from '@/types'
-import { deleteModel, updateModel } from '@/services/model'
-import { effectiveProdStatus } from '@/lib/model-status'
+import { deleteModel } from '@/services/model'
+import { inferenceWindowService } from '@/services/inference-window'
+import { monitoringStatus } from '@/lib/model-status'
 import { ModelTable } from './components/model-table'
 import { WorkTreePanel, type TreeScope } from './components/work-tree-panel'
 import { ModelUpsertDialog } from './components/model-upsert-dialog'
@@ -65,18 +67,40 @@ function inScope(m: ModelWithWorkspace, scope: TreeScope | null): boolean {
   return m.id === scope.id
 }
 
+// `useSearchParams` (inside useWorkspaceUrlFilter) needs a Suspense boundary
+// or the production build fails. A boundary inside the page is not covered by
+// loading.tsx, so it renders the same skeleton itself.
 export default function ModelsPage() {
+  return (
+    <Suspense fallback={<LoadingModelsViewPage />}>
+      <ModelsPageContent />
+    </Suspense>
+  )
+}
+
+function ModelsPageContent() {
   const router = useRouter()
   const workspaces = useAtomValue(workspacesAtom)
 
-  // '' = All Workspaces
-  const [workspaceId, setWorkspaceId] = useState<string>('')
+  // '' = All Workspaces. Follows and writes `?workspace=` (the All
+  // Workspaces page's Models button links here with it).
+  const { workspaceId, selectWorkspace } = useWorkspaceUrlFilter(workspaces)
   const [plantFilter, setPlantFilter] = useState<string[]>([])
+  // Plants belong to one workspace: whenever the workspace changes — from the
+  // select or from the URL — drop the plant filter.
+  const [plantsFor, setPlantsFor] = useState(workspaceId)
+  if (plantsFor !== workspaceId) {
+    setPlantsFor(workspaceId)
+    setPlantFilter([])
+  }
   const [scope, setScope] = useState<TreeScope | null>(null)
 
   const { models: allModels, loading, isFetching, refetch } = useAllModels()
   const refreshModels = useRefreshModels()
-  const { plants } = useWorkspacePlants(workspaceId || null)
+  // Don't fetch plants for a URL id that can't be checked yet.
+  const { plants } = useWorkspacePlants(
+    workspaces.length > 0 && workspaceId ? workspaceId : null,
+  )
 
   const [search, setSearch] = useState('')
   const [deployFilter, setDeployFilter] = useState<string | null>(null)
@@ -102,12 +126,12 @@ export default function ModelsPage() {
   // Table rows: all active filters applied.
   const filtered: ModelWithWorkspace[] = preStatus
     .filter(m => !deployFilter || m.data?.deployStatus === deployFilter)
-    .filter(m => !prodFilter || effectiveProdStatus(m) === prodFilter)
+    .filter(m => !prodFilter || monitoringStatus(m) === prodFilter)
 
   // Deploy badge counts: respect prodFilter but NOT deployFilter so that
   // selecting one deploy status doesn't zero out the others.
   const deployBase = preStatus.filter(
-    m => !prodFilter || effectiveProdStatus(m) === prodFilter,
+    m => !prodFilter || monitoringStatus(m) === prodFilter,
   )
   const deployCounts = {
     running: deployBase.filter(m => m.data?.deployStatus === 'running').length,
@@ -125,11 +149,11 @@ export default function ModelsPage() {
     m => !deployFilter || m.data?.deployStatus === deployFilter,
   )
   const prodCounts = {
-    normal: prodBase.filter(m => effectiveProdStatus(m) === 'normal').length,
-    warning: prodBase.filter(m => effectiveProdStatus(m) === 'warning').length,
-    alert: prodBase.filter(m => effectiveProdStatus(m) === 'alert').length,
-    offline: prodBase.filter(m => effectiveProdStatus(m) === 'offline').length,
-    frozen: prodBase.filter(m => effectiveProdStatus(m) === 'frozen').length,
+    normal: prodBase.filter(m => monitoringStatus(m) === 'normal').length,
+    warning: prodBase.filter(m => monitoringStatus(m) === 'warning').length,
+    alert: prodBase.filter(m => monitoringStatus(m) === 'alert').length,
+    offline: prodBase.filter(m => monitoringStatus(m) === 'offline').length,
+    frozen: prodBase.filter(m => monitoringStatus(m) === 'frozen').length,
   }
 
   async function handleDelete(model: AIModel) {
@@ -142,19 +166,38 @@ export default function ModelsPage() {
     }
   }
 
+  /** MODEL-SERVE-006-T12. Same rewiring as models/[id]/page.tsx's own
+   *  handler — this toggles the schedule, deployStatus itself is derived. */
   async function handleToggleDeploy(
     model: AIModel,
     next: 'running' | 'stopped',
   ) {
     try {
-      await updateModel(model.id, { deployStatus: next })
+      await inferenceWindowService.putSchedule(model.id, {
+        enabled: next === 'running',
+      })
       toast.success(
         next === 'running' ? `${model.name} starting` : `${model.name} stopped`,
       )
       refreshModels()
       await refetch()
-    } catch {
-      toast.error('Failed to update deploy status')
+    } catch (err) {
+      // The server's own reason — putScheduleService refuses for eight
+      // different causes and this printed one of them for all eight. Same
+      // change as models/[id]/page.tsx's handler, for the same reason.
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : next === 'running'
+            ? 'Failed to start.'
+            : 'Failed to update deploy status',
+      )
+      // Refetch on failure too: the row must show what the server holds (a
+      // refused Start leaves it stopped, a failing schedule reads Failed),
+      // not the press. This handler never rethrows, so the table cannot do
+      // this itself.
+      refreshModels()
+      await refetch()
     }
   }
 
@@ -221,10 +264,9 @@ export default function ModelsPage() {
               {/* Workspace selector */}
               <Select
                 value={workspaceId || '__all__'}
-                onValueChange={val => {
-                  setWorkspaceId(val === '__all__' ? '' : val)
-                  setPlantFilter([])
-                }}
+                onValueChange={val =>
+                  selectWorkspace(val === '__all__' ? '' : val)
+                }
               >
                 <SelectTrigger className="h-9 w-48">
                   <SelectValue placeholder="All Workspaces" />
@@ -347,7 +389,7 @@ export default function ModelsPage() {
                       },
                       {
                         key: 'stopped',
-                        label: 'Stopped',
+                        label: 'Offline',
                         icon: StopCircle,
                         cls: 'bg-zinc-500/10 text-zinc-400',
                         count: deployCounts.stopped,

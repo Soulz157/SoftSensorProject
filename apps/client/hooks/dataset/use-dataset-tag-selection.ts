@@ -1,12 +1,33 @@
 'use client'
 
-import { useCallback, useMemo } from 'react'
-import { useAtom } from 'jotai'
+import { useCallback, useMemo, useState } from 'react'
+import { useAtom, useAtomValue } from 'jotai'
 import { badDataByTag, badDataDetailByTag } from '@/lib/data-quality'
 import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
 import type { Dataset } from '@/lib/preprocessing'
 import type { BadDataDetail } from '@/app/(default)/data-studio/create/components/bad-data-breakdown'
-import { dwFocusedTagAtom, dwHiddenTagsAtom } from '@/store/dataset-studio'
+import {
+  dwFocusedTagAtom,
+  dwHiddenTagsAtom,
+  dwTagConstantsAtom,
+} from '@/store/dataset-studio'
+
+export interface UseDatasetTagSelectionOptions {
+  /**
+   * Keep the selection in component state instead of the `dw*` atoms.
+   *
+   * The atoms are wizard-scoped view state that nothing resets on leaving Data
+   * Studio, so a caller OUTSIDE that wizard inherits whatever the tag sidebar
+   * last hid. When that leftover covers every tag the caller has, `activeTags`
+   * is empty and `RawTrendChart` early-returns its "Select one or more PI tags
+   * to plot" placeholder — with no sidebar present to un-hide anything. That
+   * is the model wizard's Dataset Review step, live.
+   *
+   * Isolated callers get the same API over local state: nothing leaks in, and
+   * nothing they do leaks back out into a Data Studio draft.
+   */
+  isolated?: boolean
+}
 
 export interface UseDatasetTagSelectionResult {
   /** Every tag in the dataset (full membership — never mutated here). */
@@ -17,9 +38,9 @@ export interface UseDatasetTagSelectionResult {
   hidden: Set<string>
   /** The emphasized tag (falls back to the first active/available tag). */
   focusedTag: string[]
-  /** Per-tag unified Bad Data (Bad + Questionable) row count. */
+  /** Per-tag unified Bad Data (Bad + Questionable + Frozen) row count. */
   badByTag: Record<string, number>
-  /** Per-tag Bad/Questionable breakdown for the detail popover. */
+  /** Per-tag Bad/Questionable/Frozen breakdown for the detail popover. */
   badDetailByTag: Record<string, BadDataDetail>
   /** Stable chart color for a tag. */
   colorForTag: (tag: string) => string
@@ -39,13 +60,28 @@ export interface UseDatasetTagSelectionResult {
  * persistent Tag Sidebar and the Step-3.1 Data Analysis card. Backed by
  * `dwHiddenTagsAtom` (visibility) + `dwFocusedTagAtom` (emphasis) — NOT the
  * dataset-membership atom, so toggling here never resets the fetch.
+ *
+ * Callers outside the Data Studio wizard must pass `{ isolated: true }` — see
+ * `UseDatasetTagSelectionOptions.isolated` for what sharing those atoms costs.
  */
 export function useDatasetTagSelection(
   dataset: Dataset,
+  options: UseDatasetTagSelectionOptions = {},
 ): UseDatasetTagSelectionResult {
+  const isolated = options.isolated ?? false
   const tags = dataset.tags
-  const [hiddenList, setHiddenList] = useAtom(dwHiddenTagsAtom)
-  const [rawFocused, setRawFocused] = useAtom(dwFocusedTagAtom)
+
+  // Both stores are subscribed unconditionally — hook order must not vary with
+  // the mode — and only one of the two pairs is ever handed back.
+  const [atomHidden, setAtomHidden] = useAtom(dwHiddenTagsAtom)
+  const [atomFocused, setAtomFocused] = useAtom(dwFocusedTagAtom)
+  const [localHidden, setLocalHidden] = useState<string[]>([])
+  const [localFocused, setLocalFocused] = useState<string>('')
+
+  const hiddenList = isolated ? localHidden : atomHidden
+  const setHiddenList = isolated ? setLocalHidden : setAtomHidden
+  const rawFocused = isolated ? localFocused : atomFocused
+  const setRawFocused = isolated ? setLocalFocused : setAtomFocused
 
   const hidden = useMemo(
     () => new Set(hiddenList.filter(t => tags.includes(t))),
@@ -65,8 +101,24 @@ export function useDatasetTagSelection(
         ? [tags[0]]
         : []
 
-  const badByTag = useMemo(() => badDataByTag(dataset), [dataset])
-  const badDetailByTag = useMemo(() => badDataDetailByTag(dataset), [dataset])
+  // Constants overlaid via applyConstantOverlay are flat by construction —
+  // exempt them from freeze detection so they don't show a 100%-frozen pill.
+  // Not read in isolated mode: those callers are outside the Data Studio
+  // wizard and must not inherit its dw* atoms (see the class doc above).
+  const tagConstants = useAtomValue(dwTagConstantsAtom)
+  const ignoreTags = useMemo(
+    () => (isolated ? [] : Object.keys(tagConstants)),
+    [isolated, tagConstants],
+  )
+
+  const badByTag = useMemo(
+    () => badDataByTag(dataset, { ignoreTags }),
+    [dataset, ignoreTags],
+  )
+  const badDetailByTag = useMemo(
+    () => badDataDetailByTag(dataset, { ignoreTags }),
+    [dataset, ignoreTags],
+  )
 
   const colorForTag = useCallback(
     (tag: string) => chartColorVar(resolveTagMeta(tag).chartIndex),

@@ -2,7 +2,12 @@
   "name": "feature_datetime_hour",
   "engine": "applyFeatures",
   "input": {
-    "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+    "tags": [
+      "TI-101",
+      "VI-202",
+      "FI-404",
+      "XX-999"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -862,7 +867,13 @@
     ]
   },
   "expected": {
-    "tags": ["TI-101", "VI-202", "FI-404", "XX-999", "__dt_hour"],
+    "tags": [
+      "TI-101",
+      "VI-202",
+      "FI-404",
+      "XX-999",
+      "__dt_hour"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",

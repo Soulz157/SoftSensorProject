@@ -62,7 +62,8 @@ def test_round_to_diverges_from_python_round_at_a_real_half_tie() -> None:
 
 def test_scale_column_none_uses_round_to_not_python_round() -> None:
     v = 0.0045
-    out = _scale_column(np.array([v]), "none")
+    out, params = _scale_column(np.array([v]), "none")
+    assert params == {}, "'none' has no fit state — DS-LAKE-018-T02"
     assert out[0] == _round_to(v, 3)
     assert out[0] != round(v, 3), "the scaler must not use Python's round()"
 
@@ -80,13 +81,52 @@ def test_standard_scaling_uses_population_std_not_sample() -> None:
         "premise: population and sample std must differ for this input"
     )
 
-    out = _scale_column(np.array(values), "standard")
+    out, params = _scale_column(np.array(values), "standard")
     # The scaled value for the first element, hand-computed both ways.
     expected_population = _round_to((values[0] - mean) / population_std, 3)
     expected_sample = _round_to((values[0] - mean) / sample_std, 3)
     assert expected_population != expected_sample
     assert out[0] == expected_population
+    # DS-LAKE-018-T02: the fitted params returned alongside must be the
+    # POPULATION statistics — the same convention the scaled values use, not
+    # a second, disagreeing set.
+    assert params == {"mean": mean, "std": population_std}
     assert out[0] != expected_sample
+
+
+# ── DS-LAKE-018-T02: recorded scaler params are load-bearing ──────────────
+
+
+def test_to_model_ready_scaled_with_recorded_params_differs_from_self_fit() -> None:
+    """T02's own required proof, not merely that the field gets written: a
+    'holdout' (different values from train) scaled with the TRAIN rows'
+    recorded params must differ from the SAME holdout re-fit on its own
+    statistics. If the two agreed, `scalingParams` could be dropped or
+    ignored and nothing downstream would notice — same unfalsifiability
+    class as DS-LAKE-005B-D-T04's leverage-point correction."""
+    train = frame(["TI-101"], [{"TI-101": v} for v in [10.0, 20.0, 30.0, 40.0]])
+    train_ready, fitted = to_model_ready(train, ["TI-101"], {"TI-101": "standard"})
+    assert fitted["TI-101"] != {}, "premise: standard scaling must record fit state"
+
+    # A different distribution entirely — mean and std both far from train's.
+    holdout = frame(["TI-101"], [{"TI-101": v} for v in [100.0, 200.0, 300.0]])
+
+    replayed, _ = to_model_ready(
+        holdout, ["TI-101"], {"TI-101": "standard"}, fitted_params=fitted
+    )
+    self_fit, _ = to_model_ready(holdout, ["TI-101"], {"TI-101": "standard"})
+
+    assert not replayed["TI-101"].equals(self_fit["TI-101"]), (
+        "recorded train params must scale the holdout DIFFERENTLY than "
+        "re-fitting on its own statistics — if they match, the mechanism "
+        "this task exists to prove is not actually load-bearing"
+    )
+
+    # The replayed values are not just "different" — they are EXACTLY the
+    # train-fitted transform applied to the holdout's own numbers.
+    mean, std = fitted["TI-101"]["mean"], fitted["TI-101"]["std"]
+    expected = [_round_to((v - mean) / std, 3) for v in [100.0, 200.0, 300.0]]
+    assert replayed["TI-101"].tolist() == expected
 
 
 def test_welford_matches_naive_population_std() -> None:
@@ -141,17 +181,21 @@ def test_robust_iqr_uses_tukey_hinges_not_numpy_percentile() -> None:
         "must differ for this odd-count input"
     )
 
-    out = _scale_column(np_arr, "robust")
+    out, params = _scale_column(np_arr, "robust")
     expected = _round_to((values[0] - tukey_med) / tukey_iqr, 3)
     assert out[0] == expected
+    # DS-LAKE-018-T02: fitted params must echo the SAME Tukey hinges the
+    # scaled values were computed from, not numpy's interpolated quartiles.
+    assert params == {"median": tukey_med, "iqr": tukey_iqr}
 
 
 def test_robust_skips_a_tag_with_zero_finite_values_entirely() -> None:
     """Unlike minmax/standard, which force (0, Good); robust leaves the
     column byte-identical when nothing finite exists to compute a median from."""
     values = np.array([np.nan, np.inf, -np.inf])
-    out = _scale_column(values, "robust")
+    out, params = _scale_column(values, "robust")
     assert np.array_equal(out, values, equal_nan=True)
+    assert params == {}, "nothing was fit — DS-LAKE-018-T02"
 
 
 # ── quirk: derived-feature column order follows config order, not sorted ──
@@ -262,7 +306,7 @@ def test_gate_bites_on_a_sabotaged_real_fixture() -> None:
 
     fixture = _load_fixture("scaler_minmax")
     src = wide_to_frame(fixture["input"])
-    result = to_model_ready(src, tag_columns(src), fixture["config"]["scalers"])
+    result, _ = to_model_ready(src, tag_columns(src), fixture["config"]["scalers"])
     actual = frame_to_wide(result, fixture["expected"]["tags"])
 
     # The real comparison passes.

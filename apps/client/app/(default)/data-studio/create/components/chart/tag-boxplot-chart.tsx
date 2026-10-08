@@ -25,7 +25,13 @@ import type { DraftBoxplotResult } from '@/services/dataset-draft'
 interface Props {
   data: DraftBoxplotResult | null
   tags: string[]
-  status: 'no-tags' | 'pending' | 'loading' | 'ready'
+  status: 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
+  /** DS-LAKE-026. Optional per-tag colour override for the compare modal's
+   * two-sided (train vs. validation) tab — the wizard's own callers pass
+   * nothing and get today's `chartColorVar` colouring unchanged. No dash
+   * flag here: the two sides are expressed as separate X categories
+   * (`TAG · train`, `TAG · validation`), not overlaid strokes. */
+  seriesStyle?: (tag: string) => { color: string }
 }
 
 const CHART_HEIGHT = 500
@@ -239,7 +245,7 @@ function BoxWhiskerShape(props: BoxShapeProps) {
   )
 }
 
-export function TagBoxplotChart({ data, tags, status }: Props) {
+export function TagBoxplotChart({ data, tags, status, seriesStyle }: Props) {
   const insufficientTags = data?.insufficient_tags ?? []
 
   const rows = useMemo<BoxRow[]>(() => {
@@ -252,7 +258,9 @@ export function TagBoxplotChart({ data, tags, status }: Props) {
       return [
         {
           tag,
-          color: chartColorVar(resolveTagMeta(tag).chartIndex),
+          color:
+            seriesStyle?.(tag).color ??
+            chartColorVar(resolveTagMeta(tag).chartIndex),
           min: t.min,
           q1: t.q1,
           median: t.median,
@@ -268,7 +276,7 @@ export function TagBoxplotChart({ data, tags, status }: Props) {
         },
       ]
     })
-  }, [data, tags])
+  }, [data, tags, seriesStyle])
 
   if (status === 'no-tags') {
     return (
@@ -287,6 +295,19 @@ export function TagBoxplotChart({ data, tags, status }: Props) {
         <BoxSelect className="h-8 w-8 text-muted-foreground/40" />
         <p className="text-sm text-muted-foreground">
           Save cleaned tags to build a box plot.
+        </p>
+      </div>
+    )
+  }
+
+  if (status === 'unavailable') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 px-6 text-center">
+        <BoxSelect className="h-8 w-8 animate-pulse text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">
+          This dataset&apos;s raw artifact is no longer stored, so this chart
+          has nothing to read. Apply a cleaning rule to create a new artifact
+          from the loaded rows.
         </p>
       </div>
     )

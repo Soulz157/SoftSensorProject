@@ -1,6 +1,7 @@
 'use client'
 
 import React, { use, memo, useEffect, useRef } from 'react'
+import { isNodeAbnormal } from '@/lib/overview-status'
 import {
   ChevronLeft,
   ChevronRight,
@@ -10,51 +11,38 @@ import {
   Map,
   Cpu,
   AlertTriangle,
-  Workflow,
-  ExternalLink,
 } from 'lucide-react'
 import { IsometricMap } from './components/isometric-map'
 import { NodeDetailPanel } from './components/node-detail-panel'
-import type { NodeStatus } from '../../../../store/status-colors'
 import type { CanvasNode } from '@/services/canvas'
 import { Button } from '@/components/ui/button'
 import { AddPlanDialog } from './components/plant-dialog'
 import { AddEquipmentDialog } from './components/add-equipment-dialog'
 import { cn } from '@/lib/utils'
-import Link from 'next/link'
 import { usePlantsController } from '@/hooks/plants/use-plant-controller'
 
-// Binary equipment status: green Normal / red Abnormal (any non-normal state).
-const STATUS_DOT: Record<NodeStatus, string> = {
-  normal: 'bg-green-500',
-  warning: 'bg-red-500',
-  alarm: 'bg-red-500',
-  offline: 'bg-red-500',
-}
-
-const STATUS_TEXT: Record<NodeStatus, string> = {
+// Binary equipment status through THE one rule (MODEL-SERVE-024-D02): red
+// Abnormal only for an alerting node or one carrying an abnormal model;
+// warning/offline read green Normal.
+const BINARY_DOT = { normal: 'bg-green-500', abnormal: 'bg-red-500' } as const
+const BINARY_TEXT = {
   normal: 'text-green-700 dark:text-green-400',
-  warning: 'text-red-700 dark:text-red-400',
-  alarm: 'text-red-700 dark:text-red-400',
-  offline: 'text-red-700 dark:text-red-400',
-}
-
-function formatStatus(status: NodeStatus) {
-  return status === 'normal' ? 'Normal' : 'Abnormal'
-}
+  abnormal: 'text-red-700 dark:text-red-400',
+} as const
 
 const EquipmentGridView = memo(function EquipmentGridView({
   nodes,
   selectedNodeId,
   onNodeClick,
-  workspaceId,
   failedNodeIds,
+  abnormalModelNodeIds,
 }: {
   nodes: CanvasNode[]
   selectedNodeId: string | null
   onNodeClick: (nodeId: string) => void
-  workspaceId: string | null
   failedNodeIds: Set<string>
+  /** MODEL-SERVE-024-D02. Equipment carrying an abnormal model. */
+  abnormalModelNodeIds: ReadonlySet<string>
 }) {
   if (nodes.length === 0) {
     return (
@@ -76,7 +64,9 @@ const EquipmentGridView = memo(function EquipmentGridView({
     <div className="h-full overflow-auto bg-background p-4">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {nodes.map(node => {
-          const status = node.data.status as NodeStatus
+          const binary = isNodeAbnormal(node, abnormalModelNodeIds)
+            ? 'abnormal'
+            : 'normal'
           const hasFailedModel = failedNodeIds.has(node.id)
           const selected = selectedNodeId === node.id
           return (
@@ -101,8 +91,8 @@ const EquipmentGridView = memo(function EquipmentGridView({
                   <span
                     className={cn(
                       'mt-1 h-2.5 w-2.5 shrink-0 rounded-full shadow-sm',
-                      STATUS_DOT[status],
-                      status !== 'normal' &&
+                      BINARY_DOT[binary],
+                      binary === 'abnormal' &&
                         'animate-pulse ring-2 ring-red-500/30',
                     )}
                   />
@@ -110,8 +100,8 @@ const EquipmentGridView = memo(function EquipmentGridView({
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="rounded-md bg-muted/50 p-2.5">
                     <p className="text-muted-foreground mb-1">Status</p>
-                    <p className={cn('font-semibold', STATUS_TEXT[status])}>
-                      {formatStatus(status)}
+                    <p className={cn('font-semibold', BINARY_TEXT[binary])}>
+                      {binary === 'abnormal' ? 'Abnormal' : 'Normal'}
                     </p>
                   </div>
                   <div className="rounded-md bg-muted/50 p-2.5">
@@ -127,27 +117,6 @@ const EquipmentGridView = memo(function EquipmentGridView({
                     </div>
                   )}
                 </div>
-              </div>
-
-              <div className="mt-4 flex items-center gap-2 border-t border-border/50 pt-4 justify-end ">
-                <Link
-                  href={cn(
-                    `/workspaces/${workspaceId}/canvas?nodeId=${node.id}`,
-                    selected ? '' : 'hover:bg-accent/50',
-                  )}
-                >
-                  <Button
-                    size="sm"
-                    className="cursor-pointer gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white"
-                    onClick={e => {
-                      e.stopPropagation()
-                      console.log('Open Pipeline for:', node.id)
-                    }}
-                  >
-                    <Workflow className="h-3.5 w-3.5" />
-                    Process Pipeline
-                  </Button>
-                </Link>
               </div>
             </div>
           )
@@ -254,13 +223,6 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
                   <span className="max-w-36 truncate font-semibold text-foreground">
                     {data.selectedNode.data.name}
                   </span>
-                  <Link
-                    href={`/workspaces/${state.activeWorkspaceId}/canvas?nodeId=${data.selectedNode.id}`}
-                    className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-500 hover:bg-blue-500/20 transition-colors"
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    Pipeline Editor
-                  </Link>
                 </span>
               </>
             )}
@@ -341,14 +303,15 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
               onZoneDoubleClick={handlers.handleDrillDown}
               onNodeClick={handlers.handleNodeClick}
               viewMode={state.viewMode}
+              abnormalModelNodeIds={data.abnormalModelNodeIds}
             />
           ) : (
             <EquipmentGridView
               nodes={data.visibleGridNodes}
               selectedNodeId={state.selectedNodeId}
               onNodeClick={handlers.handleNodeClick}
-              workspaceId={state.activeWorkspaceId}
               failedNodeIds={data.failedNodeIds}
+              abnormalModelNodeIds={data.abnormalModelNodeIds}
             />
           )}
         </main>
@@ -381,6 +344,8 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
                 )}
                 workspaceId={state.activeWorkspaceId}
                 onDrillDown={handlers.handleDrillDown}
+                onEditClick={node => handlers.handleOpenEditEquipment(node.id)}
+                onDeleteClick={node => handlers.handleDeleteEquipment(node.id)}
                 onClose={handlers.handleClosePanel}
               />
             </div>
@@ -399,7 +364,19 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
         open={state.isAddEquipmentOpen}
         plantName={data.selectedPlan?.name ?? ''}
         onClose={handlers.handleCloseAddEquipment}
-        onAdd={handlers.handleAddEquipment}
+        onSubmit={handlers.handleAddEquipment}
+      />
+
+      {/* MODEL-SERVE-025-D02. The same form in edit mode (name, type,
+          status) — the canvas page it used to live on is gone. */}
+      <AddEquipmentDialog
+        open={state.editingNodeId !== null}
+        plantName={data.breadcrumbPlant?.name ?? ''}
+        node={
+          data.workspaceNodes.find(n => n.id === state.editingNodeId) ?? null
+        }
+        onClose={handlers.handleCloseEditEquipment}
+        onSubmit={handlers.handleEditEquipment}
       />
     </div>
   )

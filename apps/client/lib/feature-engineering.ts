@@ -316,3 +316,43 @@ export function selectColumns(ds: Dataset, kept: string[] | null): Dataset {
   }))
   return { tags, rows }
 }
+
+/**
+ * DS-LAKE-023 (edit-mode re-split pass). A stable signature of the full
+ * Step 4 recipe — `{features, selectedColumns, scalers, targetY, holdout}`
+ * — used to detect whether the artifact `useDatasetGoldWarm` last committed
+ * still matches what the user currently has configured.
+ * `useDatasetCleaningScaleCommit` compares this against
+ * `dwFeatureArtifactStampAtom` before Step 5 commits, which is what closes
+ * the gap `goTo`'s own lack of a `canAdvance` check leaves open (AC3): a
+ * holdout Applied and then navigated away from before its warm landed must
+ * not let Step 5 clean a stale artifact.
+ *
+ * Plain `JSON.stringify` is not enough on its own — `scalers` is a
+ * `Record<string, ScalerMethod>` whose key insertion order can differ
+ * between two objects with identical CONTENT (e.g. one rebuilt by removing
+ * and re-adding a key), which would make two equal recipes stamp
+ * differently. The replacer below sorts every plain object's keys
+ * (recursively — `JSON.stringify` re-invokes it for each nested value)
+ * before serializing; arrays are left in place because feature ORDER is
+ * part of the recipe.
+ */
+export function featureRecipeStamp(recipe: {
+  features: FeatureConfig[]
+  selectedColumns: string[] | null
+  scalers: Record<string, string>
+  targetY?: string | null
+  holdout?: { from: string; to: string } | null
+}): string {
+  return JSON.stringify(recipe, (_key, value: unknown) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.keys(value as Record<string, unknown>)
+        .sort()
+        .reduce<Record<string, unknown>>((sorted, k) => {
+          sorted[k] = (value as Record<string, unknown>)[k]
+          return sorted
+        }, {})
+    }
+    return value
+  })
+}

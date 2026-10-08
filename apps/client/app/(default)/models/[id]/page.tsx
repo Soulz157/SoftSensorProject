@@ -1,7 +1,9 @@
 'use client'
 
-import { use, useEffect, useMemo, useState } from 'react'
+import { use, useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { useSession } from 'next-auth/react'
 import { useAtomValue } from 'jotai'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -15,7 +17,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Table,
@@ -28,36 +29,61 @@ import {
 import {
   Activity,
   ArrowLeft,
+  ArrowUpCircle,
+  BarChart3,
   Box,
   CheckCircle2,
   Cpu,
   Database,
   Gauge,
+  GitBranch,
+  History,
+  Loader2,
   Pencil,
   Play,
   RefreshCw,
-  Settings,
   SlidersHorizontal,
   Snowflake,
-  Sparkles,
   StopCircle,
   Terminal,
   User,
   WifiOff,
   XCircle,
+  Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { workspacesAtom } from '@/store/workspace'
-import { getModels, updateModel } from '@/services/model'
+import { getModels } from '@/services/model'
+import { inferenceWindowService } from '@/services/inference-window'
 import { useRefreshModels } from '@/hooks/use-all-models'
-import { effectiveProdStatus } from '@/lib/model-status'
+import { monitoringStatusFromHealth } from '@/lib/model-status'
+// MODEL-SERVE-012. The SHARED label map, not a local copy. This page used to
+// keep its own duplicate of it; a copied map is free to drift from its
+// original the moment either side adds a code — which is exactly what
+// happened when the residual-SD codes were added to one and not the other.
+// One map, three readers (this page, the Alerts page, and anything that
+// renders a reason next).
+import { HEALTH_REASON_LABEL } from '@/lib/health-status-style'
+import { ALGORITHM_LABELS } from '@/store/model-pipeline'
+import { formatMetricValue } from '@/lib/model-evaluation'
 import type { AIModel } from '@/types'
 import { ModelEvaluation } from '../evaluation/components/model-evaluation'
 import { ModelUpsertDialog } from '../views/components/model-upsert-dialog'
 import { ModelRetrainDialog } from './components/model-retrain-dialog'
-import { RetrainProgress } from './components/retrain-progress'
+import { RetrainTab } from './components/retrain-tab'
+import { InputDataTab } from './components/input-data-tab'
+import { ModelMonitoringTab } from './components/monitoring/model-monitoring-tab'
+import { WindowLogsTab } from './components/window-logs-tab'
+import { VersionsTab } from './components/versions-tab'
 import { useModelRetrain } from '@/hooks/model/use-model-retrain'
+import { useModelPromote } from '@/hooks/model/use-model-promote'
+import { useModelInputSchema } from '@/hooks/model/use-model-input-schema'
+import { useInferenceStatus } from '@/hooks/model/use-inference-status'
+import { useRunPredict } from '@/hooks/model/use-run-predict'
+import { useWorkspaceMembers } from '@/hooks/workspace/use-workspace-members'
+import { isMonitoringDenied } from '@/lib/workspace-access'
+import { MonitoringAccessNotice } from './components/monitoring-access-notice'
 import LoadingModelPage from './loading'
 import ErrorModelPage from './error'
 
@@ -70,7 +96,7 @@ const DEPLOY_CONFIG = {
   stopped: {
     icon: StopCircle,
     cls: 'bg-muted text-muted-foreground border-border',
-    label: 'Stopped',
+    label: 'Offline',
   },
   error: {
     icon: XCircle,
@@ -84,6 +110,12 @@ const DEPLOY_CONFIG = {
   },
 } as const
 
+/**
+ * MODEL-SERVE-012. Now the MONITORING badge's palette, not a manual
+ * production-status one: `monitoringStatus` derives these five words from
+ * the measured health axis. The colours are unchanged — the vocabulary and
+ * its meanings are the same five states, only their source moved.
+ */
 const PROD_CONFIG = {
   normal: {
     icon: Activity,
@@ -112,95 +144,6 @@ const PROD_CONFIG = {
   },
 } as const
 
-const LOG_CLS = {
-  info: 'text-blue-400',
-  warn: 'text-amber-400',
-  error: 'text-red-400',
-} as const
-
-function seedRand(seed: number) {
-  let s = seed
-  return () => {
-    s = (s * 1664525 + 1013904223) & 0xffffffff
-    return (s >>> 0) / 0xffffffff
-  }
-}
-
-const SIGNALS = [
-  { name: 'Temp_01', unit: '°C', base: 45, range: 20 },
-  { name: 'Pressure_A', unit: 'bar', base: 3.2, range: 1.5 },
-  { name: 'Vibration_X', unit: 'mm/s', base: 0.8, range: 0.6 },
-  { name: 'Flow_In', unit: 'L/min', base: 120, range: 30 },
-  { name: 'Torque_1', unit: 'Nm', base: 55, range: 15 },
-  { name: 'Speed_RPM', unit: 'rpm', base: 1450, range: 200 },
-  { name: 'Current_A', unit: 'A', base: 8.5, range: 3 },
-  { name: 'Temp_02', unit: '°C', base: 52, range: 18 },
-]
-
-type Quality = 'Good' | 'Suspect' | 'Bad'
-type CleanMethod = 'Clipped' | 'Interpolated' | '—'
-type AnomalyFlag = 'OutOfRange' | 'Spike' | 'Missing' | null
-
-interface MockReading {
-  ts: string
-  signal: string
-  rawValue: number
-  unit: string
-  quality: Quality
-  flag: AnomalyFlag
-  cleanedValue: number
-  method: CleanMethod
-  anomaly: boolean
-}
-
-function generateReadings(modelId: string, baseTime: string): MockReading[] {
-  const seed = modelId.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
-  const rand = seedRand(seed)
-  const base = new Date(baseTime).getTime()
-
-  return SIGNALS.map((sig, i) => {
-    const r1 = rand()
-    const r2 = rand()
-    const r3 = rand()
-    const r4 = rand()
-    const ts = new Date(base - i * 80_000).toISOString()
-    const rawValue = parseFloat(
-      (sig.base + (r1 - 0.5) * sig.range * 2).toFixed(2),
-    )
-
-    const isAnomaly = r2 < 0.28
-    const flagOptions: AnomalyFlag[] = ['OutOfRange', 'Spike', 'Missing']
-    const flag: AnomalyFlag = isAnomaly
-      ? (flagOptions[Math.floor(r3 * 3)] ?? 'OutOfRange')
-      : null
-    const quality: Quality = isAnomaly
-      ? r2 < 0.12
-        ? 'Bad'
-        : 'Suspect'
-      : 'Good'
-    const cleanedValue = isAnomaly
-      ? parseFloat((sig.base + (r4 - 0.5) * sig.range * 0.4).toFixed(2))
-      : rawValue
-    const method: CleanMethod = isAnomaly
-      ? flag === 'Missing'
-        ? 'Interpolated'
-        : 'Clipped'
-      : '—'
-
-    return {
-      ts,
-      signal: sig.name,
-      rawValue,
-      unit: sig.unit,
-      quality,
-      flag,
-      cleanedValue,
-      method,
-      anomaly: isAnomaly,
-    }
-  })
-}
-
 export default function ModelDetailPage({
   params,
 }: {
@@ -216,27 +159,194 @@ export default function ModelDetailPage({
   >(null)
   const [editOpen, setEditOpen] = useState(false)
   const [retrainOpen, setRetrainOpen] = useState(false)
+  // MODEL-SERVE-020. Controlled so the Data Studio return handoff can land on
+  // the Retrain tab: the dialog it reopens belongs to that tab now, and an
+  // operator returning mid-retrain must not find it open over another one.
+  //
+  // MODEL-SERVE-022-T08. Also seeded from `?tab=` on first render — the
+  // navbar bell links to `models/[id]?tab=<tab>` so a clicked event opens on
+  // the tab that explains it. Validated against the known tab ids so a
+  // stale or hand-edited param falls back to the existing default rather
+  // than handing Tabs a value with no matching trigger.
+  const KNOWN_TABS = [
+    'input',
+    'monitoring',
+    'evaluation',
+    'versions',
+    'retrain',
+    'logs',
+    'history',
+  ] as const
+  const searchParams = useSearchParams()
+  const requestedTab = searchParams.get('tab')
+  const [activeTab, setActiveTab] = useState(
+    requestedTab && (KNOWN_TABS as readonly string[]).includes(requestedTab)
+      ? requestedTab
+      : 'input',
+  )
+  // MODEL-SERVE-017. Set when the Data Studio wizard sends the operator back
+  // after building a dataset for this retrain — the params name what to
+  // reopen with, so the dialog resumes instead of starting from scratch.
+  const returnedStrategy = searchParams.get('retrainStrategy')
+  const returnedDatasetId = searchParams.get('retrainDatasetId')
+  const returnedVersionId = searchParams.get('retrainVersionId')
+  // Narrowed to the two strategies that can carry a dataset. Anything else
+  // in the URL — a typo, an older build's value — is ignored rather than
+  // forwarded, so a hand-edited param cannot put the dialog in a state the
+  // server would reject.
+  const resumedStrategy: 'AUGMENT_DATA' | 'NEW_DATA_ONLY' | null =
+    returnedStrategy === 'AUGMENT_DATA' || returnedStrategy === 'NEW_DATA_ONLY'
+      ? returnedStrategy
+      : null
+  const resumedRetrain = resumedStrategy
+    ? {
+        strategy: resumedStrategy,
+        datasetId: returnedDatasetId,
+        versionId: returnedVersionId,
+      }
+    : null
+  useEffect(() => {
+    if (
+      returnedStrategy === 'AUGMENT_DATA' ||
+      returnedStrategy === 'NEW_DATA_ONLY'
+    ) {
+      setActiveTab('retrain')
+      setRetrainOpen(true)
+    }
+  }, [returnedStrategy, returnedDatasetId, returnedVersionId])
   const [version, setVersion] = useState(0)
-  const refresh = () => setVersion(v => v + 1)
+  const [monitoringKey, setMonitoringKey] = useState(0)
+  // Memoized because it is handed to hooks and children as a callback prop.
+  // A bare arrow here is a new identity every render, which is what stopped
+  // the retrain poll from ever firing (see `use-model-retrain.ts`). That
+  // hook now reads it through a ref and no longer depends on this, but a
+  // stable identity is the right shape for every other consumer too.
+  // `setVersion` is a setState function, so it is already stable.
+  const refresh = useCallback(() => setVersion(v => v + 1), [])
   const retrain = useModelRetrain({ model, onUpdated: refresh })
   const refreshModels = useRefreshModels()
+  const [overrideReason, setOverrideReason] = useState('')
 
+  // Workspace feature grants: a VIEWER sees the monitoring tabs only once an
+  // OWNER granted MONITORING_VIEW. Locks only when that is KNOWN — see
+  // `isMonitoringDenied`; the backend enforces it either way.
+  const { data: session } = useSession()
+  const { currentMember, loading: membersLoading } = useWorkspaceMembers(
+    model?.workspaceId ?? '',
+    session?.user?.id,
+  )
+  const monitoringDenied = isMonitoringDenied({
+    member: currentMember,
+    membersLoading: !model || membersLoading,
+    isWorkspaceCreator:
+      !!session?.user?.id &&
+      workspaces.find(w => w.id === model?.workspaceId)?.ownerId ===
+        session.user.id,
+    isAdmin: session?.user?.role === 'ADMIN',
+  })
+
+  /**
+   * MODEL-SERVE-001-T04/T06. Promotion is the step between a saved model and
+   * a deployable one, and until now the ONLY place in the client that could
+   * take it was the create wizard's final screen — so a model whose deploy
+   * failed there (or that was saved without deploying) had no way forward at
+   * all. `input-schema` already resolves PRODUCTION first and falls back to
+   * the newest version, so the stage it reports is exactly what decides
+   * whether there is anything to promote.
+   */
+  const { schema: versionSchema } = useModelInputSchema(model?.id ?? null)
+  const promote = useModelPromote(() => {
+    setOverrideReason('')
+    refresh()
+    refreshModels()
+    // MODEL-SERVE-014. The retrain result card reads the job's own
+    // comparison, where the promoted version is still STAGING until re-read
+    // — without this it would keep offering "Apply to Production" for a
+    // version that is already live.
+    retrain.refresh()
+  })
+  const canPromote = !!versionSchema && versionSchema.stage !== 'PRODUCTION'
+
+  /**
+   * MODEL-SERVE-001-T09. The word AND its reason, from one payload — never
+   * a second state machine. `status` is null only until the first read
+   * resolves (or the model has no id yet); `model.data?.deployStatus`
+   * below is the fallback for that window alone, same classifier, an
+   * older fetch.
+   */
+  const {
+    status: inferenceStatus,
+    error: inferenceStatusError,
+    refetch: refetchInferenceStatus,
+  } = useInferenceStatus(model?.id ?? null)
+  const deployStatusReady = inferenceStatus !== null
+
+  /**
+   * MODEL-SERVE-011-T06. The SAME refresh trio `handleToggleDeploy` runs —
+   * the new window has to reach the Monitoring and Logs tabs, the header
+   * badges, and the sidebar/Alerts counts that read `useAllModels`. A
+   * queued run is not visible anywhere until these land.
+   */
+  const runPredict = useRunPredict(() => {
+    refreshModels()
+    refresh()
+    refetchInferenceStatus()
+    // MODEL-SERVE-011-T08. The live point lives in the Monitoring tab's own
+    // series, which is cached by model id and range alone — without this it
+    // would not reappear until the user changed the range.
+    setMonitoringKey(k => k + 1)
+  })
+
+  /**
+   * MODEL-SERVE-006-T12/MODEL-SERVE-001-T09. deployStatus is DERIVED now —
+   * this toggle changes what actually drives it (the model's
+   * InferenceSchedule), not the status label itself. "Stop" disables the
+   * schedule; "Start" enables it, which requires a PRODUCTION version to
+   * exist (the backend refuses otherwise, surfaced here as the existing
+   * generic failure toast).
+   *
+   * NO optimistic `deployStatus` write here anymore — it used to assert
+   * `running` right where the classifier would actually say
+   * `initializing` (a freshly enabled schedule has no windows yet BY
+   * CONSTRUCTION), a second source of truth disagreeing with the first.
+   * ONE refetch after the mutation resolves proves it landed; it does not
+   * and cannot prove the source works, which the card's own wording says
+   * instead of a guess. `refreshModels()` stays — the sidebar dot, Alerts
+   * badge, and models/views list all read the same `useAllModels` atoms.
+   */
   async function handleToggleDeploy(next: 'running' | 'stopped') {
     if (!model) return
     setIsToggling(true)
     try {
-      await updateModel(model.id, { deployStatus: next })
+      await inferenceWindowService.putSchedule(model.id, {
+        enabled: next === 'running',
+      })
       refreshModels()
-      setModel(prev =>
-        prev?.data
-          ? { ...prev, data: { ...prev.data, deployStatus: next } }
-          : prev,
-      )
+      refresh()
+      refetchInferenceStatus()
       toast.success(
         next === 'running' ? `${model.name} starting` : `${model.name} stopped`,
       )
-    } catch {
-      toast.error('Failed to update deploy status')
+    } catch (err) {
+      // The server's OWN reason, not a guess. putScheduleService refuses for
+      // eight distinct causes (no PRODUCTION version, a feature derived from
+      // the target, a scaled target, no feature columns, a missing dataset,
+      // an ambiguous or foreign sourceId, no recorded fetch config) and
+      // `fetchClient` already carries each message verbatim. Printing one of
+      // them for all eight sent people looking for a version problem they
+      // did not have.
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : next === 'running'
+            ? 'Failed to start.'
+            : 'Failed to update deploy status',
+      )
+      // The same refresh trio as success: the header badge and Start/Stop
+      // must show the server's state after a refusal, not the last read.
+      refreshModels()
+      refresh()
+      refetchInferenceStatus()
     } finally {
       setIsToggling(false)
     }
@@ -254,7 +364,6 @@ export default function ModelDetailPage({
         const results = await Promise.all(
           workspaces.map(ws => getModels(ws.id)),
         )
-
         if (!ignore) {
           const found = results.flat().find(m => m.id === id) ?? null
           setModel(found)
@@ -275,12 +384,11 @@ export default function ModelDetailPage({
     }
   }, [id, workspaces, version])
 
-  const readings = useMemo(
-    () => (model ? generateReadings(model.id, model.updatedAt) : []),
-    [model],
-  )
-
-  if (loading) {
+  // The loading shell only for the FIRST load. A background refetch (the
+  // `version` bump after a retrain/promote, or any write to workspacesAtom)
+  // used to swap the whole page for it, unmounting the open retrain dialog
+  // and silently discarding the operator's strategy, dataset and version.
+  if (loading && !model) {
     return <LoadingModelPage />
   }
 
@@ -288,26 +396,95 @@ export default function ModelDetailPage({
     return <ErrorModelPage />
   }
 
-  const deployKey = (model.data?.deployStatus ??
+  // MODEL-SERVE-001-T09. `inferenceStatus.deployStatus` when it has
+  // resolved — the SAME classifyDeployStatus every read of this model
+  // shares — falling back to the model's own last-fetched value only for
+  // the brief window before the first status read lands.
+  const deployKey = (inferenceStatus?.deployStatus ??
+    model.data?.deployStatus ??
     'stopped') as keyof typeof DEPLOY_CONFIG
-  const prodKey = effectiveProdStatus(model)
+  // MODEL-SERVE-001-T19. Start/Stop must branch on the SETTING the
+  // operator owns, not the derived word above — `deployKey` reads 'error'
+  // for an enabled-but-failing schedule, and branching on it left that
+  // model with a Start button and no way to Stop (see this task's audit).
+  // `inferenceStatus.enabled` already exists on this same payload
+  // (getStatusService's own response); no new endpoint or field needed.
+  const isEnabled = inferenceStatus?.enabled ?? model.data?.enabled ?? false
+  // MODEL-SERVE-012. ONE monitoring verdict, derived from the MEASURED
+  // health axis rather than the hand-set `prodStatus` column — see
+  // `monitoringStatusFromHealth`'s own comment for why the two badges merged.
+  //
+  // FROM `inferenceStatus`, NOT from `model.data.monitoring`. The list
+  // payload carries LIVENESS ONLY (`deriveDeployStatuses` passes
+  // driftMonitor: false and residualSdStatus: 'UNKNOWN'), so it can never
+  // report OK or WARN — reading it here would badge a healthy running model
+  // "Offline", and a warning one "Offline · residual 1–2SD". This is also
+  // the same source the reason code below comes from, so the two halves of
+  // the pill can never disagree.
   const monitoringDisabled = deployKey === 'stopped' || deployKey === 'error'
+  const prodKey = monitoringStatusFromHealth(
+    inferenceStatus?.health.status,
+    deployKey,
+  )
   const deploy = DEPLOY_CONFIG[deployKey] ?? DEPLOY_CONFIG.stopped
   const prod = PROD_CONFIG[prodKey]
   const DeployIcon = deploy.icon
   const ProdIcon = prod.icon
+  // MODEL-SERVE-012. The reason code survived the badge merge: it is what
+  // distinguishes faults with OPPOSITE fixes, so it renders beside the
+  // status word rather than being inferred from it. Null for every state
+  // that carries no fault, so a healthy badge shows nothing extra.
+  //
+  // Read from `inferenceStatus` (the detail-page status call), which is also
+  // where the residual-SD verdict arrives — the list payload carries the
+  // same codes under `data.monitoring.reason` for the Alerts page.
+  const healthReason = inferenceStatus?.health.reason
+    ? HEALTH_REASON_LABEL[inferenceStatus.health.reason]
+    : null
+  const lastFailure = inferenceStatus?.lastFailure ?? null
+  const lastSkipped = inferenceStatus?.lastSkipped ?? null
+
+  /**
+   * MODEL-SERVE-011-T23. The algorithm this model was configured with, in
+   * the words the wizard uses — `ALGORITHM_LABELS` is the SAME map Step 3
+   * and the deploy summary render from, so "Random Forest" cannot come to
+   * mean two different things in two screens.
+   *
+   * SOURCE IS `data.config`, the saved wizard configuration. The version
+   * actually serving traffic carries its own `sourceRun.algorithm`, which is
+   * the stronger answer but is exposed by no client endpoint today; the two
+   * agree on every model in this database, and they can only diverge if a
+   * retrain lands a different algorithm than the one configured. Rendered as
+   * "configured" rather than "running" for that reason.
+   */
+  const algorithmLabel = model.data?.config?.algorithm
+    ? (ALGORITHM_LABELS[model.data.config.algorithm] ??
+      model.data.config.algorithm)
+    : null
+  // A candidate sweep keeps every algorithm it was allowed to try; the extra
+  // count says the primary was CHOSEN rather than the only option.
+  const algorithmAlternatives = (model.data?.config?.algorithms ?? []).filter(
+    a => a !== model.data?.config?.algorithm,
+  ).length
 
   const nodeName = model.nodes
     ? ((model.nodes.data as { name?: string }).name ?? '—')
     : '—'
   const plantName = model.nodes?.plan?.name ?? '—'
 
-  const logs = [...(model.data?.logs ?? [])].reverse()
-  const anomalyCount = readings.filter(r => r.anomaly).length
+  const editHistory = [...(model.data?.editHistory ?? [])].reverse()
 
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
-      <div className="mx-auto max-w-5xl space-y-6">
+      {/* DESIGN_SYSTEM.md's own content width (`max-w-7xl mx-auto`, and the
+          canonical wrapper `mx-auto w-full max-w-7xl space-y-6`). This page
+          had been pinned to `max-w-5xl`, narrower than the system it belongs
+          to, which is why the Monitoring charts scrolled sideways on a wide
+          screen instead of using it. `max-w-7xl` is 80rem, so on anything
+          below that the page is already full-bleed and nothing changes for
+          smaller screens — the extra room only appears where there is room
+          to give. */}
+      <div className="mx-auto w-full max-w-7xl space-y-6">
         {/* Back */}
         <Link
           href="/models/views"
@@ -337,6 +514,11 @@ export default function ModelDetailPage({
                   <DeployIcon className="h-3 w-3" />
                   {deploy.label}
                 </span>
+                {/* MODEL-SERVE-012. THE monitoring badge — the Health pill
+                    that used to sit beside this one is gone, and this one is
+                    now derived from that same measured axis. Labelled
+                    "Monitoring:" so a reader knows WHICH axis it speaks for;
+                    the deploy pill to its left keeps its own word. */}
                 <span
                   className={cn(
                     'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium',
@@ -345,22 +527,120 @@ export default function ModelDetailPage({
                   )}
                 >
                   <ProdIcon className="h-3 w-3" />
+                  {/* The status word alone. The axis is already named by the
+                      "Monitoring" KPI below and by the list column, so a
+                      "Monitoring:" prefix here only repeats it inside a pill
+                      that has to stay narrow. */}
                   {prod.label}
+                  {/* The reason is ON SCREEN, never left to be inferred from
+                      the status word — Alert collapses faults with opposite
+                      fixes (the connector, one instrument, the model itself).
+                      Same rule the Health pill carried, kept through the
+                      merge. */}
+                  {healthReason && ` · ${healthReason}`}
                 </span>
               </div>
               <p className="mt-0.5 text-sm text-muted-foreground">
                 {plantName} · {nodeName}
               </p>
+              {algorithmLabel && (
+                <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Cpu className="h-3 w-3 shrink-0" />
+                  <span className="font-medium text-foreground/80">
+                    {algorithmLabel}
+                  </span>
+                  {algorithmAlternatives > 0 && (
+                    <span>
+                      · chosen from {algorithmAlternatives + 1} candidates
+                    </span>
+                  )}
+                </p>
+              )}
+              {/* The SERVING version's own recorded numbers, stated beside
+                  the algorithm — "what is live, and how good is it" answered
+                  in one place. RMSE leads because it is the metric the whole
+                  system selects on (a real run here once scored
+                  r2 = -1,110,858 while RMSE stayed sane, MODEL-FLOW-004);
+                  R² sits beside it and never ranks anything. A figure the
+                  version never recorded reads "not recorded", never 0. */}
+              {versionSchema && (
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1">
+                    <Activity className="h-3 w-3 shrink-0" />
+                    <span>v{versionSchema.version}</span>
+                  </span>
+                  <span>
+                    RMSE{' '}
+                    <span className="font-medium tabular-nums text-foreground/80">
+                      {formatMetricValue(versionSchema.metrics.rmse)}
+                    </span>
+                  </span>
+                  <span>
+                    R²{' '}
+                    <span className="font-medium tabular-nums text-foreground/80">
+                      {formatMetricValue(versionSchema.metrics.r2)}
+                    </span>
+                  </span>
+                </p>
+              )}
+              {model.data?.lastEditedBy && (
+                <p className="mt-0.5 text-xs text-muted-foreground/70">
+                  Last edited by {model.data.lastEditedBy}
+                  {model.data.lastEditedAt &&
+                    ` · ${new Date(model.data.lastEditedAt).toLocaleString(
+                      undefined,
+                      {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      },
+                    )}`}
+                  {model.data.lastEditedFields?.length
+                    ? ` · ${model.data.lastEditedFields.join(', ')}`
+                    : ''}
+                </p>
+              )}
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            {deployKey === 'running' || deployKey === 'initializing' ? (
+            {/* Shown only while a promotable version exists. A model with no
+                versions at all 404s on input-schema, leaving `schema` null —
+                no button, and Start's own message says what to do instead.
+                Deliberately NOT folded into Start: promotion changes what is
+                in production, which is not a side effect anyone should get
+                from a button labelled "Start". */}
+            {canPromote && (
               <Button
                 variant="outline"
                 size="sm"
                 className="gap-1.5"
-                disabled={isToggling || deployKey === 'initializing'}
+                disabled={promote.busy}
+                onClick={() =>
+                  void promote.promote(model.id, versionSchema.version)
+                }
+              >
+                <ArrowUpCircle className="h-4 w-4" />
+                Promote v{versionSchema.version}
+              </Button>
+            )}
+            {isEnabled ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                // MODEL-SERVE-001-T09. `!deployStatusReady` too — before the
+                // first status read resolves, `isEnabled` is only the
+                // model's stale last-fetched value, and flipping this
+                // button's disabled state out from under the cursor the
+                // instant the real read lands is worse than a brief
+                // disable.
+                disabled={
+                  isToggling ||
+                  !deployStatusReady ||
+                  deployKey === 'initializing'
+                }
                 onClick={() => setConfirmDeploy('stopped')}
               >
                 <StopCircle className="h-4 w-4" />
@@ -370,13 +650,47 @@ export default function ModelDetailPage({
               <Button
                 size="sm"
                 className="gap-1.5"
-                disabled={isToggling}
+                disabled={isToggling || !deployStatusReady}
                 onClick={() => setConfirmDeploy('running')}
               >
                 <Play className="h-4 w-4" />
                 Start
               </Button>
             )}
+            {/* MODEL-SERVE-011-T06. Skips the wait for the scheduler's next
+                tick, nothing more: it runs the SAME window the tick would
+                have run, through the same dispatch path. Gated on
+                `isEnabled` because a stopped model is the Start button's
+                decision — the server refuses one with a 409 regardless, and
+                a button that always fails is worse than one that is plainly
+                unavailable. `!deployStatusReady` for the same reason Stop
+                carries it: before the first status read, `isEnabled` is only
+                the model's stale last-fetched value. */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              disabled={
+                runPredict.busy ||
+                isToggling ||
+                !deployStatusReady ||
+                !isEnabled
+              }
+              onClick={() => void runPredict.runPredict(model.id)}
+            >
+              {/* The wait is REAL and worth showing: this awaits a warm
+                  /predict round trip (fetch the last few minutes, score it)
+                  before it answers, so a button that only greyed out read as
+                  a press that did nothing. Same Loader2 spinner
+                  settings/account.tsx already uses for an in-flight
+                  mutation. */}
+              {runPredict.busy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Zap className="h-4 w-4" />
+              )}
+              {runPredict.busy ? 'Predicting…' : 'Run Predict'}
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -396,15 +710,6 @@ export default function ModelDetailPage({
                 </Link>
               </Button>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5"
-              onClick={() => setRetrainOpen(true)}
-            >
-              <RefreshCw className="h-4 w-4" />
-              Retrain
-            </Button>
           </div>
         </div>
 
@@ -418,9 +723,6 @@ export default function ModelDetailPage({
             </span>
           </div>
         )}
-
-        {/* Retrain progress (stage boxes + eval metrics) */}
-        <RetrainProgress phase={retrain.phase} metrics={retrain.metrics} />
 
         {/* Stat cards */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -438,13 +740,69 @@ export default function ModelDetailPage({
                 <DeployIcon className="h-3.5 w-3.5" />
                 {deploy.label}
               </div>
+              {/* MODEL-SERVE-001-T19. `error` is a TRANSPORT failure on the
+                  status fetch itself (see useInferenceStatus's own doc) —
+                  distinct from `deployKey === 'error'` above, which is a
+                  real deploy state the fetch SUCCEEDED in reading. Render
+                  it only while the fetch has never resolved: it explains
+                  why Start/Stop are disabled with no visible cause,
+                  otherwise indistinguishable from a press that did nothing. */}
+              {!deployStatusReady && inferenceStatusError && (
+                <p
+                  className="mt-2 line-clamp-2 text-xs text-red-500"
+                  title={inferenceStatusError}
+                >
+                  Status unavailable — {inferenceStatusError}
+                </p>
+              )}
+              {/* MODEL-SERVE-001-T09. The word alone cost a real debugging
+                  session hours — `error`/`initializing` are both unreadable
+                  without a reason beside them. Never a second verdict: this
+                  only DESCRIBES the word `deployKey` already carries. */}
+              {deployKey === 'error' && lastFailure && (
+                <p
+                  className="mt-2 line-clamp-2 text-xs text-muted-foreground"
+                  title={lastFailure.reason ?? undefined}
+                >
+                  {lastFailure.reason ?? 'Failed'} ·{' '}
+                  {new Date(lastFailure.windowStart).toLocaleString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </p>
+              )}
+              {deployKey === 'initializing' && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  No windows yet — first run within{' '}
+                  {inferenceStatus?.cadenceMinutes ?? 60} min
+                </p>
+              )}
+              {/* A SKIPPED window is a threshold message, NOT a fault — kept
+                  visually distinct (muted, no error styling) so it is never
+                  mistaken for one. */}
+              {(deployKey === 'running' || deployKey === 'stopped') &&
+                lastSkipped && (
+                  <p
+                    className="mt-2 line-clamp-2 text-xs text-muted-foreground/70"
+                    title={lastSkipped.reason ?? undefined}
+                  >
+                    Last skipped: {lastSkipped.reason ?? '—'}
+                  </p>
+                )}
             </CardContent>
           </Card>
 
           <Card className="border-border bg-card">
             <CardContent className="pt-5">
+              {/* MODEL-SERVE-012. "Monitoring", not "Production": this KPI
+                  stopped reading the hand-set `prodStatus` column when the
+                  badges merged — it is the same measured verdict the header
+                  pill and the list column show, so it carries the same
+                  name. */}
               <p className="text-xs font-medium text-muted-foreground">
-                Production
+                Monitoring
               </p>
               <div
                 className={cn(
@@ -503,22 +861,13 @@ export default function ModelDetailPage({
         </div>
 
         {/* Tabs */}
-        <Tabs defaultValue="logs" className="flex w-full flex-col">
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          className="flex w-full flex-col"
+        >
           <div className="mb-4 flex w-full items-center overflow-x-auto pb-1">
             <TabsList className="inline-flex h-10 w-max items-center justify-start p-1">
-              <TabsTrigger
-                value="logs"
-                className="flex items-center gap-2 px-4"
-              >
-                <Terminal className="h-4 w-4 shrink-0" />
-                <span>Logs</span>
-                {logs.length > 0 && (
-                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
-                    {logs.length}
-                  </span>
-                )}
-              </TabsTrigger>
-
               <TabsTrigger
                 value="input"
                 className="flex items-center gap-2 px-4"
@@ -528,16 +877,11 @@ export default function ModelDetailPage({
               </TabsTrigger>
 
               <TabsTrigger
-                value="cleansing"
+                value="monitoring"
                 className="flex items-center gap-2 px-4"
               >
-                <Sparkles className="h-4 w-4 shrink-0" />
-                <span>Data Cleansing</span>
-                {anomalyCount > 0 && (
-                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-amber-500/15 px-2 text-[10px] font-semibold tabular-nums text-amber-500">
-                    {anomalyCount}
-                  </span>
-                )}
+                <BarChart3 className="h-4 w-4 shrink-0" />
+                <span>Monitoring</span>
               </TabsTrigger>
 
               <TabsTrigger
@@ -547,179 +891,186 @@ export default function ModelDetailPage({
                 <Gauge className="h-4 w-4 shrink-0" />
                 <span>Evaluation</span>
               </TabsTrigger>
+
+              {/* MODEL-SERVE-016-T02. Between Evaluation and Logs on
+                  purpose: it answers the same question Evaluation does
+                  (how good is this model) for a DIFFERENT moment in time,
+                  so the two sit together rather than being separated by
+                  the operational tabs. */}
+              <TabsTrigger
+                value="versions"
+                className="flex items-center gap-2 px-4"
+              >
+                <GitBranch className="h-4 w-4 shrink-0" />
+                <span>Versions</span>
+              </TabsTrigger>
+
+              {/* MODEL-SERVE-020. Retrain lives beside Versions because a
+                  retrain's result IS a new version to compare and promote. */}
+              <TabsTrigger
+                value="retrain"
+                className="flex items-center gap-2 px-4"
+              >
+                <RefreshCw className="h-4 w-4 shrink-0" />
+                <span>Retrain</span>
+              </TabsTrigger>
+
+              <TabsTrigger
+                value="logs"
+                className="flex items-center gap-2 px-4"
+              >
+                <Terminal className="h-4 w-4 shrink-0" />
+                <span>Logs</span>
+                {/* MODEL-SERVE-001-T10. The old count badge read
+                    `model.data.logs.length`, which is 0 for every model, so
+                    it never rendered. A real count would mean fetching every
+                    window's lines just to label a tab — the unbounded read
+                    this task exists to avoid. */}
+              </TabsTrigger>
+              <TabsTrigger
+                value="history"
+                className="flex items-center gap-2 px-4"
+              >
+                <History className="h-4 w-4 shrink-0" />
+                <span>Edit History</span>
+                {editHistory.length > 0 && (
+                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
+                    {editHistory.length}
+                  </span>
+                )}
+              </TabsTrigger>
             </TabsList>
           </div>
 
-          {/* ── Logs ── */}
-          <TabsContent value="logs" className="mt-0">
-            <Card className="border-border bg-card">
-              <ScrollArea className="h-96 rounded-lg">
-                {logs.length === 0 ? (
-                  <div className="flex h-96 items-center justify-center text-sm text-muted-foreground">
-                    No log entries yet
-                  </div>
-                ) : (
-                  <div className="divide-y divide-border/40">
-                    {logs.map((entry, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          'flex items-start gap-3 px-4 py-2.5 hover:bg-muted/30',
-                          entry.level === 'error' &&
-                            'border-l-2 border-red-500/50 pl-3',
-                        )}
-                      >
-                        <span className="mt-0.5 min-w-24 shrink-0 font-mono text-[11px] text-muted-foreground/60">
-                          {new Date(entry.timestamp).toLocaleTimeString()}
-                        </span>
-                        <span
-                          className={cn(
-                            'w-12 shrink-0 font-mono text-[11px] font-semibold uppercase',
-                            LOG_CLS[entry.level],
-                          )}
-                        >
-                          {entry.level}
-                        </span>
-                        <span className="break-all font-mono text-[11px] text-foreground/80">
-                          {entry.message}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </Card>
+          {/* ── Input Data ── */}
+          <TabsContent value="input" className="mt-0">
+            {monitoringDenied ? (
+              <div className="mt-4">
+                <MonitoringAccessNotice />
+              </div>
+            ) : (
+              <InputDataTab
+                model={model}
+                frozenColumns={inferenceStatus?.health.frozenColumns ?? []}
+                frozenSince={inferenceStatus?.health.frozenSince ?? []}
+              />
+            )}
           </TabsContent>
 
-          {/* ── Input Data ── */}
-          <TabsContent value="input" className="mt-4">
+          {/* ── Edit History ── */}
+          <TabsContent value="history" className="mt-4">
             <Card className="overflow-hidden border-border bg-card">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Timestamp</TableHead>
-                    <TableHead>Signal</TableHead>
-                    <TableHead className="text-right">Raw Value</TableHead>
-                    <TableHead>Unit</TableHead>
-                    <TableHead>Quality</TableHead>
+                    <TableHead>Edited By</TableHead>
+                    <TableHead>Fields Changed</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody className="divide-y divide-border">
-                  {readings.map((row, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-                        {new Date(row.ts).toLocaleTimeString()}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs font-medium text-foreground">
-                        {row.signal}
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-xs tabular-nums text-foreground">
-                        {row.rawValue}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {row.unit}
-                      </TableCell>
-                      <TableCell>
-                        <span
-                          className={cn(
-                            'inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium',
-                            row.quality === 'Good' &&
-                              'bg-emerald-500/10 text-emerald-500',
-                            row.quality === 'Suspect' &&
-                              'bg-amber-500/10 text-amber-500',
-                            row.quality === 'Bad' &&
-                              'bg-red-500/10 text-red-500',
-                          )}
-                        >
-                          {row.quality}
-                        </span>
+                  {editHistory.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={3}
+                        className="h-24 text-center text-sm text-muted-foreground"
+                      >
+                        No edits recorded yet
                       </TableCell>
                     </TableRow>
-                  ))}
+                  ) : (
+                    editHistory.map((entry, i) => (
+                      <TableRow key={i}>
+                        <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                          {new Date(entry.at).toLocaleString(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </TableCell>
+                        <TableCell className="text-xs font-medium text-foreground">
+                          {entry.by}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {entry.fields.join(', ')}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </Card>
           </TabsContent>
 
-          {/* ── Data Cleansing ── */}
-          <TabsContent value="cleansing" className="mt-4 space-y-3">
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3">
-              <Sparkles className="h-4 w-4 text-amber-500" />
-              <p className="text-sm text-foreground">
-                <span className="font-semibold text-amber-500">
-                  {anomalyCount}
-                </span>{' '}
-                of <span className="font-semibold">{readings.length}</span>{' '}
-                signals cleaned this cycle
-              </p>
-            </div>
-
-            <Card className="overflow-hidden border-border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-6" />
-                    <TableHead>Signal</TableHead>
-                    <TableHead className="text-right">Raw</TableHead>
-                    <TableHead>Flag</TableHead>
-                    <TableHead className="text-right">Cleaned</TableHead>
-                    <TableHead>Method</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {readings.map((row, i) => (
-                    <TableRow
-                      key={i}
-                      className={row.anomaly ? 'bg-amber-500/0.03' : undefined}
-                    >
-                      <TableCell>
-                        <span
-                          className={cn(
-                            'block h-2 w-2 rounded-full',
-                            row.anomaly ? 'bg-amber-500' : 'bg-emerald-500',
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell className="font-mono text-xs font-medium text-foreground">
-                        {row.signal}
-                      </TableCell>
-                      <TableCell
-                        className={cn(
-                          'text-right font-mono text-xs tabular-nums',
-                          row.anomaly
-                            ? 'text-amber-500 line-through opacity-70'
-                            : 'text-foreground',
-                        )}
-                      >
-                        {row.rawValue} {row.unit}
-                      </TableCell>
-                      <TableCell>
-                        {row.flag ? (
-                          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/10 text-amber-500">
-                            {row.flag}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground/40">
-                            —
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-xs tabular-nums text-foreground">
-                        {row.cleanedValue} {row.unit}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {row.method}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Card>
+          {/* ── Monitoring ── */}
+          <TabsContent value="monitoring" className="mt-4">
+            {monitoringDenied ? (
+              <MonitoringAccessNotice />
+            ) : (
+              <ModelMonitoringTab model={model} refreshKey={monitoringKey} />
+            )}
           </TabsContent>
 
           {/* ── Evaluation ── */}
           <TabsContent value="evaluation" className="mt-4">
             <ModelEvaluation model={model} />
+          </TabsContent>
+
+          {/* ── Versions ── */}
+          <TabsContent value="versions" className="mt-4">
+            {monitoringDenied ? (
+              <MonitoringAccessNotice />
+            ) : (
+              <VersionsTab modelId={model.id} />
+            )}
+          </TabsContent>
+
+          {/* ── Retrain ── MODEL-SERVE-020 */}
+          <TabsContent value="retrain" className="mt-4">
+            {monitoringDenied ? (
+              <MonitoringAccessNotice />
+            ) : (
+              <RetrainTab
+                modelId={model.id}
+                currentSettings={
+                  retrain.incumbent
+                    ? {
+                        algorithm: retrain.incumbent.algorithm,
+                        hyperparameters: retrain.incumbent.hyperparameters,
+                      }
+                    : null
+                }
+                // Not the per-viewer `dismissed` pair the old panel used: that was
+                // a way to close a panel sitting above the whole page. Here the
+                // finished result IS the tab's content — hiding it would leave an
+                // empty tab with no way to bring it back.
+                job={retrain.job}
+                phase={retrain.phase}
+                logs={retrain.logs}
+                isRetraining={retrain.isRetraining}
+                onStartRetrain={() => setRetrainOpen(true)}
+                applying={promote.busy}
+                onApplyToProduction={version => {
+                  // The SAME promote flow the header's own Promote button uses
+                  // — including its 422 override dialog, already mounted below.
+                  void promote.promote(model.id, version)
+                }}
+              />
+            )}
+          </TabsContent>
+
+          {/* ── Logs ── */}
+          {/* MODEL-SERVE-001-T10. Was `model.data.logs`, a JSON array that
+              is initialized [] and whose only writer has no client caller —
+              permanently empty on every model. Now the container's own
+              stdout, per inference window. */}
+          <TabsContent value="logs" className="mt-4">
+            {monitoringDenied ? (
+              <MonitoringAccessNotice />
+            ) : (
+              <WindowLogsTab modelId={model.id} />
+            )}
           </TabsContent>
         </Tabs>
       </div>
@@ -735,15 +1086,13 @@ export default function ModelDetailPage({
         open={retrainOpen}
         onClose={() => setRetrainOpen(false)}
         model={model}
+        incumbent={retrain.incumbent}
+        loading={retrain.loading}
         isRetraining={retrain.isRetraining}
-        mode={retrain.mode}
-        onAuto={() => {
-          retrain.autoFinetune()
-          setRetrainOpen(false)
-        }}
-        onCustom={config => {
-          retrain.customFinetune(config)
-          setRetrainOpen(false)
+        error={retrain.error}
+        resumed={resumedRetrain}
+        onStart={(candidates, options) => {
+          void retrain.start(candidates, options)
         }}
       />
       <AlertDialog
@@ -772,6 +1121,57 @@ export default function ModelDetailPage({
               }}
             >
               {confirmDeploy === 'running' ? 'Start' : 'Stop'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* MODEL-SERVE-001-T06. Opened only by a 422 from the promote
+          endpoint, and it quotes that refusal VERBATIM rather than
+          paraphrasing it — the same 422 also covers a missing artifact and a
+          changed checksum, which no reason can override, and only the
+          server's own wording tells those apart. */}
+      <AlertDialog
+        open={promote.overridePrompt !== null}
+        onOpenChange={open => {
+          if (!open) {
+            promote.dismissOverride()
+            setOverrideReason('')
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Promote anyway?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p className="rounded-md border border-border bg-muted/50 px-3 py-2 text-sm text-foreground">
+                  {promote.overridePrompt}
+                </p>
+                <p>
+                  Promoting past this check is recorded against your name with
+                  the reason you give below.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <textarea
+            value={overrideReason}
+            onChange={e => setOverrideReason(e.target.value)}
+            rows={3}
+            placeholder="Why should this version go to production anyway?"
+            className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!overrideReason.trim() || promote.busy}
+              onClick={e => {
+                e.preventDefault()
+                void promote.confirmOverride(overrideReason)
+              }}
+            >
+              Promote
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

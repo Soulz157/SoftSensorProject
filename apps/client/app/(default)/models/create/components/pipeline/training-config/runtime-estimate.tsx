@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Timer } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import {
   breakdownRuntime,
+  cvFitCount,
   estimateRuntimeSeconds,
   formatDuration,
   SUPERLINEAR,
@@ -43,11 +44,11 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
   }, [status])
 
   const est = estimateRuntimeSeconds(input)
+  const cvFits = cvFitCount(input)
   const low = est * 0.6
   const high = est * 2
   const heavy = est > 900 // 15 min
 
-  // ETA only becomes meaningful once there is real progress to extrapolate from
   const eta =
     status === 'training' && progress > 5
       ? (elapsed * (100 - progress)) / progress
@@ -80,6 +81,18 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
           }}
         />
       </div>
+
+      {/* MODEL-FLOW-029. The fit count, stated before Start — under CV every
+          candidate is k fold fits plus a refit. */}
+      {!live && cvFits && (
+        <p className="text-[11px] text-muted-foreground">
+          Cross-validation:{' '}
+          <span className="font-medium tabular-nums text-foreground">
+            {cvFits.candidates} candidate{cvFits.candidates === 1 ? '' : 's'} ×{' '}
+            {cvFits.fitsEach} fits = {cvFits.total} model fits
+          </span>
+        </p>
+      )}
 
       {!live && shares.length > 0 && (
         <div className="space-y-2 pt-3 border-t border-border/50">
@@ -142,7 +155,7 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
                     ? `${top.label} accounts for ${top.pct.toFixed(0)}% of the estimate — dropping it saves roughly ${formatDuration(top.seconds)}.`
                     : stacked
                       ? `${shares.length} algorithms run sequentially, so runtime is the sum, not the max. Trim the list to shorten the run.`
-                      : `Find Best Parameters multiplies runtime by roughly 10× — turn it off for a first pass.`}
+                      : `Find Best Parameters adds up to ${Math.max(0, ...input.algorithms.map(a => input.tuningVariants?.[a] ?? 4))} extra fits on top of this run — turn it off for a first pass.`}
               </span>
             </p>
           )}

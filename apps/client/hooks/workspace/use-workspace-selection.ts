@@ -5,8 +5,20 @@ import { CanvasNode } from '@/services/canvas'
 export function useWorkspaceSelection(
   workspaces: Workspace[],
   nodesByWorkspace: Record<string, CanvasNode[]>,
+  initialSelectedId?: string | null,
 ) {
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialSelectedId ?? null,
+  )
+
+  const lastInitial = useRef(initialSelectedId)
+  useEffect(() => {
+    if (initialSelectedId !== lastInitial.current) {
+      lastInitial.current = initialSelectedId
+      setSelectedId(initialSelectedId ?? null)
+    }
+  }, [initialSelectedId])
+
   const panelRef = useRef<HTMLDivElement>(null)
 
   const handleDismiss = useCallback(() => setSelectedId(null), [])

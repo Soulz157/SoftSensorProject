@@ -1,9 +1,15 @@
 'use client'
 import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { List } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { usePlantsData } from '@/hooks/plants/use-plants-data'
 import { useAllModels } from '@/hooks/use-all-models'
-import { failedDeploys, failedCountByNodeId } from '@/lib/model-status'
+import {
+  abnormalModelCountByNodeId,
+  abnormalModelCountByWorkspace,
+} from '@/lib/model-status'
 
 import { useWorkspaceFilter } from '@/hooks/workspace/use-workspace-filter'
 import { useWorkspaceSelection } from '@/hooks/workspace/use-workspace-selection'
@@ -13,24 +19,69 @@ import { OverviewSearch } from './components/overview-search'
 import { OverviewDetailPanel } from './components/overview-detail-panel'
 import { OverviewSkeleton } from './components/overview-skeleton'
 import { CreateWorkspaceForm } from '@/components/auth/create-workspace-form'
+import { useSearchParams } from 'next/navigation'
+import { useAlerts } from '@/hooks/alerts/use-alerts'
 
 export default function PlantsPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const wsFromUrl = searchParams.get('ws')
   const { workspaces, nodesByWorkspace, loading, error } = usePlantsData()
   const { models } = useAllModels()
+  const { alerts, loading: alertsLoading } = useAlerts()
 
-  const failedDeploysByWorkspace = useMemo(() => {
-    if (!models) return {}
-    const map: Record<string, number> = {}
-    for (const m of failedDeploys(models)) {
-      map[m.workspaceId] = (map[m.workspaceId] ?? 0) + 1
-    }
-    return map
-  }, [models])
-
-  const failedByNodeId = useMemo(
-    () => (models ? failedCountByNodeId(models) : {}),
+  // MODEL-SERVE-024-D02. Models that make their workspace / equipment
+  // Abnormal: a failed deploy or a monitoring ALERT (`isModelAbnormal`). A
+  // monitoring WARN/FROZEN still raises a Warning row on the Alerts page but
+  // turns nothing red here. (Prop names kept for the map's existing API.)
+  const failedDeploysByWorkspace = useMemo(
+    () => (models ? abnormalModelCountByWorkspace(models) : {}),
     [models],
+  )
+  const failedByNodeId = useMemo(
+    () => (models ? abnormalModelCountByNodeId(models) : {}),
+    [models],
+  )
+
+  const abnormalNodeIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const a of alerts) {
+      // Only an equipment ALERT is Abnormal — a warning or offline node is
+      // listed on the Alerts page but stays Normal here (MODEL-SERVE-024-D02).
+      if (a.kind === 'node' && a.status === 'alert') ids.add(a.id)
+    }
+    for (const nodeId of Object.keys(failedByNodeId)) {
+      ids.add(nodeId)
+    }
+    return ids
+  }, [alerts, failedByNodeId])
+
+  // roll up จาก nodes ที่ reconcile แล้ว — dot ใหญ่ + StatusIcon บน tower
+  // อ่านจาก workspace.status ไม่ใช่จาก nodeStatuses จึงต้องคำนวณใหม่ด้วย
+  //
+  // Reads raw `nodesByWorkspace` directly (not a reconciled copy) — the map
+  // and detail panel already read `node.data.status` themselves
+  // (overview-map.tsx, overview-detail-panel.tsx), so a per-node
+  // `{...n, status}` copy was dead weight nothing consumed, and its
+  // mismatched shape is what produced the CanvasNode type errors.
+  const workspacesReconciled = useMemo(
+    () =>
+      workspaces.map(ws => {
+        const nodes = nodesByWorkspace[ws.id] ?? []
+        const hasAlarm = nodes.some(
+          n => n.data.status === 'alarm' || abnormalNodeIds.has(n.id),
+        )
+        const allOffline =
+          nodes.length > 0 && nodes.every(n => n.data.status === 'offline')
+        const status: 'alarm' | 'offline' | 'normal' | 'warning' = hasAlarm
+          ? 'alarm'
+          : allOffline
+            ? 'offline'
+            : 'normal'
+
+        return { ...ws, status }
+      }),
+    [workspaces, nodesByWorkspace, abnormalNodeIds],
   )
 
   const {
@@ -40,7 +91,7 @@ export default function PlantsPage() {
     handleStatusToggle,
     handleClearAllStatuses,
     highlightedIds,
-  } = useWorkspaceFilter(workspaces)
+  } = useWorkspaceFilter(workspacesReconciled)
 
   const {
     selectedId,
@@ -49,9 +100,17 @@ export default function PlantsPage() {
     selectedNodes,
     panelRef,
     handleDismiss,
-  } = useWorkspaceSelection(workspaces, nodesByWorkspace)
+  } = useWorkspaceSelection(workspacesReconciled, nodesByWorkspace, wsFromUrl)
 
-  if (loading) return <OverviewSkeleton />
+  const selectWorkspace = (id: string | null) => {
+    setSelectedId(id)
+  }
+
+  const dismiss = () => {
+    handleDismiss()
+  }
+
+  if (loading || alertsLoading) return <OverviewSkeleton />
   if (error) throw new Error(error)
 
   if (workspaces.length === 0)
@@ -64,13 +123,29 @@ export default function PlantsPage() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       <div className="relative flex-1 overflow-hidden">
-        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b from-black/70 to-black/55 px-4 pb-6 pt-3">
-          <h1 className="text-sm font-semibold tracking-wide text-muted-foreground dark:text-white drop-shadow">
-            Workspaces Overview
-          </h1>
-          <p className="text-xs text-muted-foreground  dark:text-white/70 drop-shadow">
-            {workspaces.length} workspaces monitored
-          </p>
+        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 flex items-center gap-3 bg-linear-to-b px-4 pb-6 pt-3">
+          <div>
+            <h1 className="text-sm font-semibold tracking-wide text-muted-foreground dark:text-white drop-shadow">
+              Workspaces Overview
+            </h1>
+            <p className="text-xs text-muted-foreground  dark:text-white/70 drop-shadow">
+              {workspaces.length} workspaces monitored
+            </p>
+          </div>
+          {/* The map shows where workspaces are; the list is where you
+              compare and act on them. Solid surface so it reads on both map
+              themes. */}
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className="pointer-events-auto bg-background/90"
+          >
+            <Link href="/workspaces">
+              <List />
+              View all workspaces
+            </Link>
+          </Button>
         </div>
 
         <div className="pointer-events-auto absolute left-1/2 top-14 z-20 w-full max-w-md -translate-x-1/2 px-4">
@@ -84,14 +159,17 @@ export default function PlantsPage() {
         </div>
 
         <PlantsMap
-          workspaces={workspaces}
+          workspaces={workspacesReconciled}
           nodesByWorkspace={nodesByWorkspace}
           selectedWorkspaceId={selectedId}
-          onWorkspaceClick={id => setSelectedId(id === selectedId ? null : id)}
+          onWorkspaceClick={id =>
+            selectWorkspace(id === selectedId ? null : id)
+          }
           onWorkspaceDoubleClick={id => router.push(`/plants/${id}`)}
           highlightedIds={highlightedIds}
           failedDeploysByWorkspace={failedDeploysByWorkspace}
           failedByNodeId={failedByNodeId}
+          abnormalNodeIds={abnormalNodeIds}
         />
       </div>
 
@@ -99,7 +177,7 @@ export default function PlantsPage() {
         <>
           <div
             className="fixed inset-0 z-10 bg-black/30 sm:hidden"
-            onClick={handleDismiss}
+            onClick={dismiss}
             aria-hidden="true"
           />
           <div
@@ -113,9 +191,8 @@ export default function PlantsPage() {
             <OverviewDetailPanel
               workspace={selectedWorkspace}
               nodes={selectedNodes}
-              onClose={handleDismiss}
+              onClose={dismiss}
               onViewWorkspace={id => router.push(`/plants/${id}`)}
-              onOpenPipeEditor={id => router.push(`/workspaces/${id}/canvas`)}
               onViewAlerts={() => router.push('/alerts')}
               onOpenSettings={id => router.push(`/workspaces/${id}/settings`)}
             />

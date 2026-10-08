@@ -1,6 +1,10 @@
 'use client'
 
 import Link from 'next/link'
+import {
+  ALERT_STATUS_LABEL,
+  type AlertStatus as SharedAlertStatus,
+} from '@/lib/alerts'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -24,7 +28,7 @@ import {
   CheckCircle2,
   Activity,
   Cpu,
-  Gauge,
+  FlaskConical,
   Thermometer,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -33,7 +37,7 @@ import AlertsWorkspaceLoading from '../loading'
 import { useWorkspaceNodes } from '@/hooks/workspace/use-workspace-nodes'
 import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 
-type NodeType = 'machine' | 'sensor' | 'controller'
+type NodeType = 'reactor' | 'machine' | 'sensor'
 type AlertStatus = 'warning' | 'alarm' | 'offline'
 
 interface AlertRow {
@@ -49,18 +53,26 @@ function getNodeTypeIcon(type: NodeType) {
       return Cpu
     case 'sensor':
       return Thermometer
-    case 'controller':
-      return Gauge
+    case 'reactor':
+      return FlaskConical
     default:
       return Activity
   }
 }
 
-// Binary equipment alerts: all non-normal node states render red "Abnormal".
+// MODEL-SERVE-024-D01/D02. The shared status vocabulary: a stored 'alarm'
+// node reads "Alert" (red, Abnormal); warning (amber) and offline (grey) are
+// listed but do NOT make the workspace Abnormal — the same labels and colours
+// as the global Alerts page.
+const NODE_TO_ALERT_STATUS: Record<AlertStatus, SharedAlertStatus> = {
+  alarm: 'alert',
+  warning: 'warning',
+  offline: 'offline',
+}
 const STATUS_CLASS: Record<AlertStatus, string> = {
   alarm: 'bg-red-500/10 text-red-500',
-  offline: 'bg-red-500/10 text-red-500',
-  warning: 'bg-red-500/10 text-red-500',
+  offline: 'bg-zinc-500/10 text-zinc-500',
+  warning: 'bg-amber-500/10 text-amber-500',
 }
 
 interface WorkspaceAlertsContentProps {
@@ -138,7 +150,7 @@ export function WorkspaceAlertsContent({
           </h1>
           {alarmCount > 0 && (
             <Badge variant="secondary" className="bg-red-500/10 text-red-500">
-              {alarmCount} alarm{alarmCount > 1 ? 's' : ''}
+              {alarmCount} alert{alarmCount > 1 ? 's' : ''}
             </Badge>
           )}
           {warningCount > 0 && (
@@ -150,7 +162,7 @@ export function WorkspaceAlertsContent({
             </Badge>
           )}
           {offlineCount > 0 && (
-            <Badge variant="secondary" className="bg-red-500/10 text-red-500">
+            <Badge variant="secondary" className="bg-zinc-500/10 text-zinc-500">
               {offlineCount} offline
             </Badge>
           )}
@@ -195,7 +207,11 @@ export function WorkspaceAlertsContent({
                               'bg-zinc-500/10 text-zinc-500',
                           )}
                         >
-                          Abnormal
+                          {
+                            ALERT_STATUS_LABEL[
+                              NODE_TO_ALERT_STATUS[alert.status]
+                            ]
+                          }
                         </span>
                       </TableCell>
 

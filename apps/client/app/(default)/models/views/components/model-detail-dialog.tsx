@@ -7,6 +7,7 @@ import {
   ArrowRight,
   Power,
   RefreshCw,
+  Snowflake,
   StopCircle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -20,6 +21,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { monitoringStatus } from '@/lib/model-status'
 
 const DEPLOY_MAP = {
   running: {
@@ -28,11 +30,19 @@ const DEPLOY_MAP = {
     cls: 'bg-emerald-500/15 text-emerald-500',
   },
   stopped: {
-    label: 'Stopped',
+    label: 'Offline',
     icon: StopCircle,
     cls: 'bg-zinc-500/15 text-zinc-400',
   },
-  failed: {
+  // MODEL-SERVE-001-T22. KEY IS `error`, NOT `failed` — 'error' is the wire
+  // value (types/index.ts's own deployStatus union) and what every other
+  // deploy-status map in this client already keys on (model-table.tsx,
+  // model-preview-sheet.tsx, models/[id]/page.tsx's DEPLOY_CONFIG). Keyed
+  // `failed`, the lookup below missed and silently fell through to
+  // DEPLOY_MAP.stopped, so this dialog printed "Stopped" directly above its
+  // own `hasError` banner saying the model was in an error state. The LABEL
+  // stays "Failed" — that is what those other maps display for this key.
+  error: {
     label: 'Failed',
     icon: AlertCircle,
     cls: 'bg-red-500/15 text-red-500',
@@ -65,6 +75,16 @@ const PROD_MAP = {
     icon: Power,
     cls: 'bg-zinc-500/15 text-zinc-400',
   },
+  // MODEL-SERVE-001-T22. `frozen` is the fifth prodStatus value
+  // (types/index.ts) and was missing here, so a frozen model fell through
+  // to PROD_MAP.normal and read green "Normal" — the same fall-through
+  // defect as DEPLOY_MAP's above, one map over. Purple Snowflake matches
+  // models/[id]/page.tsx's own PROD_CONFIG treatment for this status.
+  frozen: {
+    label: 'Data Frozen',
+    icon: Snowflake,
+    cls: 'bg-purple-500/15 text-purple-600 dark:text-purple-400',
+  },
 } as const
 
 type DS = keyof typeof DEPLOY_MAP
@@ -91,7 +111,12 @@ export function ModelDetailDialog({ model, open, onClose }: Props) {
     DEPLOY_MAP[(model.data?.deployStatus ?? 'stopped') as DS] ??
     DEPLOY_MAP.stopped
   const ps =
-    PROD_MAP[(model.data?.prodStatus ?? 'normal') as PS] ?? PROD_MAP.normal
+    // MODEL-SERVE-012. The MEASURED monitoring verdict, not the hand-set
+    // `prodStatus` column. This surface was still reading the old field, so
+    // it could show "Normal" for a model the table row behind it badged
+    // Alert — and renaming the label to "Monitoring" while it read the
+    // manual column would have made the label lie.
+    PROD_MAP[monitoringStatus(model) as PS] ?? PROD_MAP.normal
   const DIcon = ds.icon
   const PIcon = ps.icon
 
@@ -101,7 +126,7 @@ export function ModelDetailDialog({ model, open, onClose }: Props) {
     : '—'
   const plantName = model.nodes?.plan?.name ?? '—'
   const hasError =
-    model.data?.deployStatus === 'error' || model.data?.prodStatus === 'alert'
+    model.data?.deployStatus === 'error' || monitoringStatus(model) === 'alert'
 
   return (
     <Dialog open={open} onOpenChange={o => !o && onClose()}>
@@ -149,7 +174,7 @@ export function ModelDetailDialog({ model, open, onClose }: Props) {
               </div>
               <div className="rounded-lg border border-border p-3">
                 <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Production
+                  Monitoring
                 </p>
                 <span
                   className={cn(

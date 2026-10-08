@@ -1,0 +1,85 @@
+# ---------------------------------------------------------------------------
+# Trainer image — build + scan.
+#
+# WHY THIS EXISTS, AND IT IS NOT A NICETY. Until this file, NOTHING in CI
+# built images/trainer/Dockerfile — the one image this product's whole model
+# pipeline runs inside. serving-image.yml's own header already names the
+# consequence in the past tense ("the way images/trainer/Dockerfile did
+# before it"), and it has since cost real bugs twice:
+#
+#   - 1.0.6 shipped without importance.py for six days across 245 runs
+#     (MODEL-FLOW-019-T09), because a bump is a MANUAL rebuild and the bump
+#     was forgotten.
+#   - Every trainer-side feature is a SILENT no-op until someone remembers to
+#     rebuild and re-tag: the backend pins TRAINING_IMAGE at BOOT
+#     (resolveDigest, MODEL-FLOW-016-T07), an additive artifact just arrives
+#     as a null key, and the UI states an honest absence — indistinguishable
+#     on screen from the legacy path.
+#
+# This does not fix the bump discipline. It fixes the half that CI can:
+# "the source is correct" and "the image builds from that source" can no
+# longer drift apart unnoticed.
+#
+# push:false, DELIBERATELY, mirroring serving-image.yml. Two reasons, and the
+# second is the load-bearing one:
+#   1. Pushing belongs to a repaired release pipeline, not to a per-image
+#      workflow — serving-image.yml's own stated rule, followed here rather
+#      than decided twice.
+#   2. _build-image.yml's default namespace is `ghcr.io/soft-sensor-project`,
+#      and that account DOES NOT EXIST on GitHub (checked 2026-09-10: 404 as
+#      both org and user). Any push:true job through that workflow fails on
+#      authorization, which is exactly the `insufficient_scope` this repo has
+#      been reading as a credentials problem. Repairing that default is
+#      release.yml's business — that pipeline is already documented as broken
+#      for unrelated reasons (see serving-image.yml's header) — but do not
+#      flip this workflow to push:true expecting it to work.
+#
+# The path filters are the Dockerfile's REAL inputs, not just its own
+# directory: it COPYs packages/py-scaling (line 25) before it copies any of
+# images/trainer, so a py-scaling change can break this build while touching
+# nothing under images/.
+#
+# INDENTATION IS 4-SPACE, matching every sibling workflow. All six of them
+# fail `prettier --check`; that is the convention here, not an oversight, so
+# do not "fix" this file with prettier — it would make it the odd one out.
+# ---------------------------------------------------------------------------
+name: Trainer image
+
+on:
+    pull_request:
+        branches: [main, develop]
+        paths:
+            - "images/trainer/**"
+            - "packages/py-scaling/**"
+            - ".github/workflows/trainer-image.yml"
+            - ".github/workflows/_build-image.yml"
+    push:
+        branches: [main]
+        paths:
+            - "images/trainer/**"
+            - "packages/py-scaling/**"
+            - ".github/workflows/trainer-image.yml"
+            - ".github/workflows/_build-image.yml"
+    workflow_dispatch: {}
+
+permissions:
+    contents: read
+
+concurrency:
+    group: trainer-image-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+    build:
+        name: Build + scan
+        uses: ./.github/workflows/_build-image.yml
+        with:
+            image: soft-sensor-trainer
+            # The build CONTEXT is the repo root, not images/trainer — the
+            # Dockerfile COPYs packages/py-scaling, so `docker build
+            # images/trainer` fails outright with "/images/trainer/app: not
+            # found". Same shape as every other image here.
+            dockerfile: images/trainer/Dockerfile
+            context: .
+            push: false
+        secrets: inherit

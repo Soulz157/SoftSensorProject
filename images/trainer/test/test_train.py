@@ -1,0 +1,679 @@
+"""DS-LAKE-023-T03/D4: `labelled_mask` — the non-Good-target mask shared
+between the train/test split (steps 6-7) and holdout scoring — plus the other
+pure functions this image can exercise without a live run.
+
+No existing test infrastructure covers this image (it is a standalone Docker
+training container, never imported outside itself) — this is coverage for the
+pure functions only, not an attempt to test the whole training flow (which
+needs a live PI container, S3 credentials, and a real training run to exercise
+end to end).
+
+Imports are per-module and no longer routed through `train.py`: the module
+split moved every function below out of the entrypoint, which now holds only
+the mode dispatch. The names and behaviour are unchanged — only where they
+live is.
+
+The environment placeholders the single-file version needed are gone with it.
+RUN_ID/RUN_TOKEN/API_BASE are read by `RunContext.from_env()`, called
+explicitly by the entrypoint, so importing any function here no longer touches
+the environment at all (see config.py's module docstring for why that was the
+point of moving it). `sys.path` is set up by the image-root `conftest.py`,
+which puts `app/` on it exactly as the container's own `sys.path[0]` does — so
+these are the same import names the running image resolves.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from config import STATUS_GOOD
+from guards import assert_no_nan_features, assert_no_window_leakage
+from labels import labelled_mask, status_column
+from metrics import MAX_LOSS_HISTORY_POINTS, extract_loss_history
+from splits import chronological_split_windows, expanding_fold_plan
+from windows import build_windows
+
+
+def _frame(target_values: list[float | None], statuses: list[int] | None = None) -> pd.DataFrame:
+    data: dict[str, object] = {
+        "timestamp": pd.date_range("2026-01-01", periods=len(target_values), freq="D"),
+        "TI-101": target_values,
+    }
+    if statuses is not None:
+        data[status_column("TI-101")] = statuses
+    return pd.DataFrame(data)
+
+
+def test_labelled_mask_uses_status_good_when_sidecar_present():
+    # Good/Bad/Good, with the middle row's Bad status overriding its
+    # non-null value — proves this reads the SIDECAR, not just notna().
+    frame = _frame([1.0, 2.0, 3.0], statuses=[STATUS_GOOD, 99, STATUS_GOOD])
+    mask = labelled_mask(frame, "TI-101")
+    assert mask.tolist() == [True, False, True]
+
+
+def test_labelled_mask_falls_back_to_notna_when_no_status_sidecar():
+    frame = _frame([1.0, None, 3.0])
+    warnings = []
+    mask = labelled_mask(
+        frame, "TI-101", log_fn=lambda msg, level="info": warnings.append((msg, level))
+    )
+    assert mask.tolist() == [True, False, True]
+    assert warnings and warnings[0][1] == "warn"
+
+
+def test_labelled_mask_combines_status_and_notna():
+    # Good status but a null value (a real gap in the sidecar's own
+    # bookkeeping) must still be excluded — `& frame[target_y].notna()`.
+    frame = _frame([1.0, None, 3.0], statuses=[STATUS_GOOD, STATUS_GOOD, STATUS_GOOD])
+    mask = labelled_mask(frame, "TI-101")
+    assert mask.tolist() == [True, False, True]
+
+
+def test_labelled_mask_all_good_keeps_every_row():
+    frame = _frame([1.0, 2.0, 3.0], statuses=[STATUS_GOOD, STATUS_GOOD, STATUS_GOOD])
+    mask = labelled_mask(frame, "TI-101")
+    assert mask.tolist() == [True, True, True]
+
+
+class _FakeModel:
+    """Stand-in for a fitted estimator — only the post-fit attributes/methods
+    `extract_loss_history` reads, no real sklearn/lightgbm/xgboost fit
+    needed (MODEL-FLOW-013-T05, same no-live-estimator precedent this file
+    already sets for `labelled_mask` above)."""
+
+    def __init__(self, **attrs):
+        for key, value in attrs.items():
+            setattr(self, key, value)
+
+    def evals_result(self):
+        return self._evals_result
+
+
+def test_extract_loss_history_mlp_is_train_only_with_loss_metric():
+    model = _FakeModel(loss_curve_=[0.9, 0.5, 0.3])
+    history = extract_loss_history("mlp", model)
+    assert history == {
+        "algorithm": "mlp",
+        "metric": "loss",
+        "series": {"train": [0.9, 0.5, 0.3]},
+    }
+
+
+def test_extract_loss_history_hgb_returns_none_when_early_stopping_did_not_run():
+    # LIVE-VERIFIED regression guard (scikit-learn 1.5.2, the pinned
+    # version): train_score_/validation_score_ ALWAYS exist as attributes
+    # on a fitted HistGradientBoostingRegressor, but are EMPTY arrays — not
+    # absent — whenever early_stopping resolved to False, which is the
+    # unconfigured default ('auto') for any dataset at or under 10,000 rows,
+    # the common case in this trainer's domain. A version that checked
+    # hasattr()/is None instead of len()==0 would have produced a
+    # technically-present but empty series here — misleading, not honest.
+    model = _FakeModel(train_score_=[], validation_score_=[])
+    assert extract_loss_history("hist_gradient_boosting", model) is None
+
+
+def test_extract_loss_history_hgb_includes_validation_only_when_populated():
+    without_validation = _FakeModel(train_score_=[0.9, 0.6])
+    history = extract_loss_history("hist_gradient_boosting", without_validation)
+    assert history is not None
+    assert "validation" not in history["series"]
+
+    with_validation = _FakeModel(train_score_=[0.9, 0.6], validation_score_=[0.95, 0.7])
+    history = extract_loss_history("hist_gradient_boosting", with_validation)
+    assert history["series"]["validation"] == [0.95, 0.7]
+
+
+def test_extract_loss_history_lightgbm_reads_evals_result_rmse():
+    model = _FakeModel(
+        evals_result_={"train": {"rmse": [1.0, 0.5]}, "validation": {"rmse": [1.1, 0.6]}}
+    )
+    history = extract_loss_history("lightgbm", model)
+    assert history == {
+        "algorithm": "lightgbm",
+        "metric": "rmse",
+        "series": {"train": [1.0, 0.5], "validation": [1.1, 0.6]},
+    }
+
+
+def test_extract_loss_history_xgboost_maps_validation_0_1_to_train_validation():
+    model = _FakeModel()
+    model._evals_result = {
+        "validation_0": {"rmse": [1.0, 0.4]},
+        "validation_1": {"rmse": [1.2, 0.5]},
+    }
+    history = extract_loss_history("xgboost", model)
+    assert history["series"] == {"train": [1.0, 0.4], "validation": [1.2, 0.5]}
+
+
+def test_extract_loss_history_closed_form_algorithm_writes_nothing():
+    # No artifact and no placeholder — a curve cannot be produced for a
+    # closed-form fit, not "has not been produced yet."
+    for algorithm in ("ols", "ridge", "pls", "grp", "svm", "random_forest"):
+        assert extract_loss_history(algorithm, _FakeModel()) is None
+
+
+def test_extract_loss_history_bounds_by_name_not_by_truncation():
+    too_long = [0.5] * (MAX_LOSS_HISTORY_POINTS + 1)
+    model = _FakeModel(loss_curve_=too_long)
+    assert extract_loss_history("mlp", model) is None
+
+
+def test_extract_loss_history_swallows_a_missing_attribute_rather_than_raising():
+    # An estimator that raises mid-extraction (e.g. an unexpected API
+    # shape) must not fail an otherwise-successful training run.
+    assert extract_loss_history("lightgbm", _FakeModel()) is None
+
+
+def _grid_frame(n: int, labelled_rows: set[int], feature_col: str = "F1") -> tuple[pd.DataFrame, pd.Series]:
+    """MODEL-FLOW-009-T01. `n` rows on a regular 1-minute grid; `feature_col`
+    holds each row's own position (0..n-1) so a window's exact contents can
+    be asserted by original row index. `labelled_rows` marks which
+    positions have a Good target — the rest are Bad, simulating a target
+    sampled far sparser than the feature grid (the exact shape
+    `build_windows`'s full-frame-not-labelled-only design exists for)."""
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=n, freq="min"),
+            feature_col: [float(i) for i in range(n)],
+            "TI-101": [float(i) for i in range(n)],
+            status_column("TI-101"): [
+                STATUS_GOOD if i in labelled_rows else 99 for i in range(n)
+            ],
+        }
+    )
+    mask = labelled_mask(frame, "TI-101")
+    return frame, mask
+
+
+def test_build_windows_spans_true_grid_spacing_not_labelled_only_spacing():
+    # Rows 0-4 and 10-14 are labelled; rows 5-9 are not (a gap, same shape
+    # as a lab target sampled far sparser than the feature grid). A window
+    # over the FULL frame at target row 10, length 3, must be original
+    # rows [8, 9, 10] — three CONSECUTIVE MINUTES. Windowing over the
+    # `labelled`-only reduced frame instead would (wrongly) pull reduced
+    # rows [3, 4, 5] = original rows [3, 4, 10], splicing rows from six
+    # minutes earlier into what would look like a 3-minute window.
+    frame, mask = _grid_frame(20, labelled_rows=set(range(0, 5)) | set(range(10, 15)))
+    X, y, target_ts = build_windows(
+        frame, "TI-101", ["F1"], sequence_length=3, label_mask=mask)
+
+    target_row_10 = list(target_ts).index(frame.loc[10, "timestamp"])
+    assert X[target_row_10, :, 0].tolist() == [8.0, 9.0, 10.0]
+    assert y[target_row_10] == 10.0
+
+
+def test_build_windows_drops_targets_without_enough_history():
+    # Labelled rows 0 and 1 sit before enough history exists for
+    # sequence_length=3 (a window needs 3 rows ending at the target) — no
+    # padding, no partial window: they simply produce no window, same as
+    # an unlabelled row.
+    frame, mask = _grid_frame(5, labelled_rows={0, 1, 4})
+    X, y, target_ts = build_windows(
+        frame, "TI-101", ["F1"], sequence_length=3, label_mask=mask)
+    assert len(y) == 1
+    assert y[0] == 4.0
+    assert X[0, :, 0].tolist() == [2.0, 3.0, 4.0]
+
+
+def test_build_windows_excludes_unlabelled_target_rows_even_with_full_history():
+    frame, mask = _grid_frame(10, labelled_rows={5})
+    X, y, target_ts = build_windows(
+        frame, "TI-101", ["F1"], sequence_length=4, label_mask=mask)
+    assert len(y) == 1
+    assert y[0] == 5.0
+
+
+def test_build_windows_requires_sorted_frame():
+    frame, mask = _grid_frame(5, labelled_rows={4})
+    shuffled = frame.iloc[::-1].reset_index(drop=True)
+    shuffled_mask = mask.iloc[::-1].reset_index(drop=True)
+    with pytest.raises(RuntimeError, match="sorted"):
+        build_windows(shuffled, "TI-101", ["F1"],
+                       sequence_length=3, label_mask=shuffled_mask)
+
+
+def test_build_windows_returns_empty_arrays_when_nothing_qualifies():
+    frame, mask = _grid_frame(5, labelled_rows=set())
+    X, y, target_ts = build_windows(
+        frame, "TI-101", ["F1"], sequence_length=3, label_mask=mask)
+    assert X.shape == (0, 3, 1)
+    assert len(y) == 0
+    assert len(target_ts) == 0
+
+
+def test_chronological_split_windows_matches_flat_split_cut_rule():
+    # Windows are already target-timestamp ordered (build_windows walks
+    # the frame ascending) — same ratio*n cut rule chronological_split
+    # applies to a flat frame, applied here to window count instead of
+    # row count.
+    timestamps = pd.Series(pd.date_range("2026-01-01", periods=10, freq="D"))
+    train_idx, test_idx, cut_ts = chronological_split_windows(
+        timestamps, ratio=0.7)
+    assert list(train_idx) == list(range(7))
+    assert list(test_idx) == list(range(7, 10))
+    assert cut_ts == str(timestamps.iloc[7])
+
+
+def test_chronological_split_windows_rejects_empty_or_unsorted():
+    with pytest.raises(RuntimeError):
+        chronological_split_windows(
+            pd.Series([], dtype="datetime64[ns]"), ratio=0.7)
+    unsorted = pd.Series(pd.date_range(
+        "2026-01-01", periods=5, freq="D"))[::-1].reset_index(drop=True)
+    with pytest.raises(RuntimeError):
+        chronological_split_windows(unsorted, ratio=0.5)
+
+
+def test_assert_no_window_leakage_passes_for_correctly_target_keyed_windows():
+    timestamps = pd.Series(pd.date_range("2026-01-01", periods=10, freq="D"))
+    train_idx, _, cut_ts = chronological_split_windows(timestamps, ratio=0.7)
+    assert_no_window_leakage(timestamps, train_idx, cut_ts)  # must not raise
+
+
+def test_assert_no_window_leakage_catches_start_indexed_assignment_bug():
+    # The real failure mode T02 guards against: assigning windows to
+    # train/test by their START position instead of their TARGET
+    # timestamp. Simulate it directly — a "train" set that includes a
+    # window whose target sits at/after the cut.
+    timestamps = pd.Series(pd.date_range("2026-01-01", periods=10, freq="D"))
+    _, _, cut_ts = chronological_split_windows(timestamps, ratio=0.7)
+    buggy_train_idx = np.arange(0, 8)  # includes index 7, target >= cut
+    with pytest.raises(RuntimeError, match="start index"):
+        assert_no_window_leakage(timestamps, buggy_train_idx, cut_ts)
+
+
+def test_assert_no_nan_features_passes_on_clean_windows():
+    X = np.zeros((3, 4, 2))
+    assert_no_nan_features(X, "training")  # must not raise
+
+
+def test_assert_no_nan_features_catches_nan_on_a_non_target_row():
+    # A window's INCLUSION is gated on its TARGET row's label
+    # (build_windows), never on its non-target rows' quality — a NaN
+    # feature on one of those in-window rows (row 0 here, not the target
+    # row at index -1) must still be caught, not silently trained on.
+    X = np.zeros((2, 3, 2))
+    X[1, 0, 1] = np.nan
+    with pytest.raises(RuntimeError, match="NaN feature"):
+        assert_no_nan_features(X, "training")
+
+
+def test_assert_no_nan_features_empty_array_does_not_raise():
+    X = np.empty((0, 3, 2))
+    assert_no_nan_features(X, "training")  # must not raise
+
+
+# ── MODEL-FLOW-016-T03: expanding_fold_plan ─────────────────────────────
+#
+# This mirrors _expanding_fold_plan in apps/python's split_stats_service.py
+# — no cross-import is possible (separate container images), so the
+# guarantee both copies agree is: (a) both were independently checked
+# index-for-index against a REAL sklearn.model_selection.TimeSeriesSplit
+# (see split_stats_service.py's own MIN_LABELS_PER_FOLD comment for the
+# n/k values checked), and (b) both are pinned here against the SAME
+# formula, the same way test_split_stats_service.py pins its own copy.
+# The exact-value cross-system pin (this function's output against a real
+# /split-stats response for the same real artifact) happens once the
+# trainer image is built and a live run executes — see this feature's own
+# V01.
+
+
+def _cv_frame(n_rows: int, label_every: int) -> pd.DataFrame:
+    """A 1-minute grid, `n_rows` long, with `TI-101` Good only every
+    `label_every` rows — the sparse-target shape needed to prove a
+    labelled-frame cut differs from a naive row-count cut (V01's own claim,
+    restated for CV). STATUS_GOOD is 0 in this file, so the "bad" fallback
+    below must be a distinct nonzero value — not another 0, which would
+    silently mark every row Good and defeat the sparse-target fixture."""
+    ts = pd.date_range("2026-01-01", periods=n_rows, freq="min")
+    statuses = [
+        STATUS_GOOD if i % label_every == 0 else STATUS_GOOD + 1
+        for i in range(n_rows)
+    ]
+    return pd.DataFrame(
+        {
+            "timestamp": ts,
+            "TI-101": list(range(n_rows)),
+            status_column("TI-101"): pd.array(statuses, dtype="int8"),
+        }
+    )
+
+
+def test_expanding_fold_plan_is_expanding_and_strictly_chronological():
+    frame = _cv_frame(n_rows=12_000, label_every=37)
+    labelled = frame.loc[
+        frame[status_column("TI-101")] == STATUS_GOOD
+    ].sort_values("timestamp").reset_index(drop=True)
+
+    folds = expanding_fold_plan(labelled, "TI-101", k=5)
+
+    assert len(folds) == 5
+    train_rows = [f["train_rows"] for f in folds]
+    assert train_rows == sorted(train_rows)
+    assert len(set(train_rows)) == len(train_rows)  # strictly increasing
+    cuts = [f["cut_timestamp"] for f in folds]
+    assert cuts == sorted(cuts)
+    assert len(set(cuts)) == len(cuts)
+    # No gap, no overlap: fold 0's train plus every fold's test accounts
+    # for the entire labelled frame.
+    assert train_rows[0] + sum(f["test_rows"] for f in folds) == len(labelled)
+
+
+def test_expanding_fold_plan_cuts_on_labelled_rows_not_row_count():
+    # V01, restated for CV: label_every=37 does not divide evenly into any
+    # fold boundary, so the correct (labelled-frame) cut and a naive
+    # (row-count) cut land on different rows — a dense target would pass
+    # either rule and prove nothing.
+    frame = _cv_frame(n_rows=12_000, label_every=37)
+    labelled = frame.loc[
+        frame[status_column("TI-101")] == STATUS_GOOD
+    ].sort_values("timestamp").reset_index(drop=True)
+    k = 5
+    n_labelled = len(labelled)
+    test_size = n_labelled // (k + 1)
+
+    folds = expanding_fold_plan(labelled, "TI-101", k)
+
+    for i, fold in enumerate(folds):
+        correct_test_start = n_labelled - (k - i) * test_size
+        correct_cut = str(labelled.loc[correct_test_start, "timestamp"])
+        assert fold["cut_timestamp"] == correct_cut
+
+        naive_test_start = len(frame) - (k - i) * (len(frame) // (k + 1))
+        if 0 <= naive_test_start < len(frame):
+            naive_cut = str(frame.loc[naive_test_start, "timestamp"])
+            assert fold["cut_timestamp"] != naive_cut
+
+
+def test_expanding_fold_plan_remainder_lands_in_fold_zero_train():
+    # A remainder that does not divide evenly into (k+1) must land in fold
+    # 0's train window, never in any fold's test window — the SAME
+    # accounting real TimeSeriesSplit uses (verified live against it; see
+    # split_stats_service.py's own comment).
+    n = 103  # 103 // 6 = 17, remainder 1 -> fold 0's train absorbs it
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=n, freq="min"),
+            "TI-101": list(range(n)),
+        }
+    )
+    folds = expanding_fold_plan(frame, "TI-101", k=5)
+    test_size = n // 6
+    assert all(f["test_rows"] == test_size for f in folds)
+    assert folds[0]["train_rows"] == n - 5 * test_size  # absorbs the remainder
+
+
+def test_resolve_feature_columns_defaults_to_every_offered_column():
+    """MODEL-FLOW-019-T31. No subset requested is every run to date."""
+    from pipelines.context import resolve_feature_columns
+
+    cols, missing = resolve_feature_columns(["a", "b", "c"], None)
+    assert cols == ["a", "b", "c"]
+    assert missing == []
+    assert resolve_feature_columns(["a", "b"], [])[0] == ["a", "b"]
+
+
+def test_resolve_feature_columns_keeps_the_callers_order():
+    """The sweep sends a ranking PREFIX; the manifest must record it back in
+    the order the ranking put it in, not the artifact's column order."""
+    from pipelines.context import resolve_feature_columns
+
+    cols, missing = resolve_feature_columns(["a", "b", "c"], ["c", "a"])
+    assert cols == ["c", "a"]
+    assert missing == []
+
+
+def test_resolve_feature_columns_reports_missing_rather_than_intersecting():
+    """A row labelled n=3 must never be fit on 2. The caller raises on this."""
+    from pipelines.context import resolve_feature_columns
+
+    cols, missing = resolve_feature_columns(["a", "b"], ["a", "b", "ghost"])
+    assert missing == ["ghost"]
+    # It does NOT silently return the intersection.
+    assert cols == ["a", "b", "ghost"]
+
+
+def test_feature_std_is_population_std_not_the_pandas_sample_default():
+    """MODEL-FLOW-019-T32. ddof=0, matching `_welford_population_std` in
+    packages/py-scaling — the convention the `standard` scaler itself fits
+    with. pandas defaults to ddof=1, and the two differ by sqrt(n/(n-1)):
+    invisible in a ranking, but it would make a standardized coefficient
+    disagree with the figure a refit on scaled inputs reports, which is the
+    identity the whole method claims.
+    """
+    from pipelines.context import feature_std
+
+    frame = pd.DataFrame({"a": [0.0, 2.0], "b": [1.0, 1.0]})
+    out = feature_std(frame, ["a", "b"])
+    assert out["a"] == pytest.approx(1.0)  # ddof=1 would give sqrt(2)
+    assert out["b"] == pytest.approx(0.0)  # a constant column has no width
+
+
+def test_feature_std_omits_rather_than_defaults_what_it_cannot_measure():
+    """An omission becomes a stated absence downstream; a default would become
+    a rank built on an invented number."""
+    from pipelines.context import feature_std
+
+    frame = pd.DataFrame({"a": [0.0, 2.0], "b": [1.0, float("nan")]})
+    out = feature_std(frame, ["a", "b", "missing_column"])
+    assert "a" in out
+    assert "b" not in out  # std of a column holding NaN is not finite
+    assert "missing_column" not in out
+
+
+def test_feature_std_measures_only_the_rows_it_is_given():
+    """The point of the field: chronological passes its TRAIN rows, CV passes
+    the refit frame. A width taken over rows the estimator never saw would
+    describe a different population than the coefficients it rescales."""
+    from pipelines.context import feature_std
+
+    frame = pd.DataFrame({"a": [0.0, 2.0, 100.0, 200.0]})
+    train_only = feature_std(frame.iloc[:2], ["a"])
+    whole = feature_std(frame, ["a"])
+    assert train_only["a"] == pytest.approx(1.0)
+    assert whole["a"] != pytest.approx(train_only["a"])
+
+
+class _DoublingModel:
+    """The smallest thing `score_holdout` will accept — it only ever calls
+    `.predict`. A real estimator would make these tests about sklearn."""
+
+    def predict(self, X):
+        return np.asarray(X["f1"], dtype=float) * 2.0
+
+
+def _holdout_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=5, freq="D"),
+            "f1": [1.0, 2.0, 3.0, 4.0, 5.0],
+            # Row 2 is unlabelled — a lab target sampled sparser than the PI
+            # grid, which is the ordinary case, not an edge one.
+            "TI-101": [2.0, None, 6.0, 8.0, 10.0],
+        }
+    )
+
+
+def test_score_holdout_returns_a_per_row_frame_beside_the_aggregate():
+    """MODEL-FLOW-019-T26. The frame train-mode used to discard.
+
+    `pipelines/__init__.py` bound `holdout_metrics, _ = score_holdout(...)`,
+    which is the single reason 0 of 252 SUCCEEDED runs carried a holdout
+    SERIES while 188 carried a holdout AGGREGATE — and therefore why a user
+    had to click "Score against holdout" before a Validate chart could draw.
+    This pins that the second element is real, so a future edit cannot go
+    back to discarding it and still pass.
+    """
+    from holdout import score_holdout
+
+    metrics, predictions = score_holdout(
+        _DoublingModel(), _holdout_frame(), "TI-101", ["f1"]
+    )
+
+    # The EXACT schema predictions.parquet already uses — what lets the
+    # Evaluation charts render this series unmodified, reading a key without
+    # knowing which population produced it.
+    assert list(predictions.columns) == ["timestamp", "y_true", "y_pred"]
+    # One row per LABELLED row, not per source row: the unlabelled row is
+    # excluded from both the frame and the aggregate, so the two describe the
+    # same population.
+    assert len(predictions) == metrics["row_count"] == 4
+    assert metrics["dropped_unlabelled"] == 1
+    assert predictions["y_pred"].tolist() == [2.0, 6.0, 8.0, 10.0]
+
+
+def test_score_holdout_frame_for_a_sequence_model_counts_windows_not_rows():
+    """MODEL-FLOW-019-T26. lstm/gru reach this path too (windowed.py sets
+    holdout_eligible=True with a holdout_sequence_length), so they now write
+    this artifact as well — and its rows are WINDOWS, not source rows.
+
+    Worth a test rather than a comment because the two counts differ silently:
+    the schema is identical either way, so a reader comparing a sequence run's
+    holdout row count against its source row count would find a gap with
+    nothing on screen explaining it. The gap is build_windows' own rule — a
+    target row with less than sequence_length rows of history behind it
+    produces no window at all, dropped rather than padded.
+    """
+    from holdout import score_holdout
+
+    class _WindowModel:
+        # X is (n_windows, timesteps, features) here, not a 2-D frame.
+        def predict(self, X):
+            return np.zeros(len(X), dtype=float)
+
+        # Standing in for a fitted sequence estimator; only .predict is used.
+
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=6, freq="D"),
+            "f1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "TI-101": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }
+    )
+    metrics, predictions = score_holdout(
+        _WindowModel(), frame, "TI-101", ["f1"], sequence_length=3
+    )
+
+    # 6 labelled rows, but the first two have too little history to close a
+    # 3-step window — 4 windows, not 6.
+    assert len(predictions) == metrics["row_count"] == 4
+    assert len(predictions) < len(frame)
+    # The schema does NOT change with the population's unit, which is why no
+    # reader downstream needs to know this ran on windows.
+    assert list(predictions.columns) == ["timestamp", "y_true", "y_pred"]
+    # `dropped_unlabelled` is the BROADER count here (rows reaching no window
+    # at all, not merely unlabelled ones) — holdout.py documents that the key
+    # is deliberately shared between the two branches.
+    assert metrics["dropped_unlabelled"] == 2
+
+
+def test_score_holdout_frame_is_writable_as_the_artifact_publish_uploads():
+    """A frame that cannot be serialised would fail INSIDE `_publish`'s
+    best-effort-free upload path, after training already succeeded — so the
+    round-trip is worth pinning here rather than discovering it live."""
+    import tempfile
+    from pathlib import Path
+
+    from artifacts import HOLDOUT_PREDICTIONS_FILENAME, ArtifactSet
+    from holdout import score_holdout
+
+    _, predictions = score_holdout(
+        _DoublingModel(), _holdout_frame(), "TI-101", ["f1"]
+    )
+
+    with tempfile.TemporaryDirectory() as scratch:
+        artifacts = ArtifactSet(Path(scratch))
+        artifacts.add_parquet(HOLDOUT_PREDICTIONS_FILENAME, predictions)
+        # Registered under its OWN name — never PREDICTIONS_FILENAME, which a
+        # non-CV run's TEST split already occupies by this point.
+        assert HOLDOUT_PREDICTIONS_FILENAME in artifacts
+        written = pd.read_parquet(Path(scratch) / HOLDOUT_PREDICTIONS_FILENAME)
+
+    assert list(written.columns) == ["timestamp", "y_true", "y_pred"]
+    assert len(written) == 4
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ── DS-LAKE-028-T03: the SVR scaling warning ───────────────────────────────
+
+
+def _svr_warnings(feature_spec) -> list[str]:
+    """Build an SVR and return only the warnings build_model emitted."""
+    from models import build_model
+
+    seen: list[str] = []
+
+    def log_fn(message, level=None, *args, **kwargs):
+        if level == "warn":
+            seen.append(message)
+
+    build_model(
+        algorithm="svm",
+        hyperparameters={},
+        seed=0,
+        n_train_rows=10,
+        feature_spec=feature_spec,
+        log_fn=log_fn,
+    )
+    return seen
+
+
+def test_svr_does_not_warn_on_a_legacy_spec_that_is_actually_scaled():
+    """DS-LAKE-028-V02. The shape of EVERY spec on this system as of
+    2026-09-16: `scaling: []` (pre-T02 that field held the user's EXPLICIT
+    config, and the common path configures nothing) alongside a populated
+    `scalingParams` proving to_model_ready min-max scaled every tag.
+
+    A fixture built AFTER the version bump cannot distinguish a fixed gate
+    from a gate that now merely receives the field it always wanted — and
+    legacy specs are 22 of 22 — so this asserts against the legacy shape
+    specifically.
+    """
+    legacy = {
+        "featureVersion": 2,
+        "scaling": [],
+        "scalingParams": {
+            "AI001A2.PV": {"min": 0.6311102144303611, "max": 0.6520555110485484},
+            "AI001B2.PV": {"min": 0.6112866190396659, "max": 0.6511525162012048},
+        },
+    }
+    assert _svr_warnings(legacy) == []
+
+
+def test_svr_tolerates_a_spec_with_no_scaling_params_key_at_all():
+    """One live artifact (featureVersion 1) has no `scalingParams` KEY, not
+    an empty one. Reading it by index would raise inside the estimator
+    factory; nothing is recorded either way, so the warning is CORRECT here —
+    what must not happen is a crash."""
+    v1 = {"featureVersion": 1, "scaling": []}
+    assert len(_svr_warnings(v1)) == 1
+
+
+def test_svr_warns_on_an_all_none_recipe_which_really_is_unscaled():
+    """DS-LAKE-028-T04 makes `none` reachable from the UI. That produces an
+    empty `scalingParams` and a `scaling` naming every tag as "none" — a
+    genuinely unscaled frame, where the warning is true and must still fire.
+    This is the case that separates "resolve the effective method" from
+    "assume anything recorded means scaled"."""
+    declined = {
+        "featureVersion": 4,
+        "scaling": [{"tag": "TI-101", "method": "none"},
+                    {"tag": "VI-202", "method": "none"}],
+        "scalingParams": {},
+    }
+    assert len(_svr_warnings(declined)) == 1
+
+
+def test_svr_does_not_warn_on_a_new_format_spec_carrying_only_scaling():
+    """A post-T02 spec whose fitted params were not passed through still
+    states the effective method, and that is enough."""
+    new_format = {
+        "featureVersion": 4,
+        "scaling": [{"tag": "TI-101", "method": "minmax"}],
+        "scalingParams": {},
+    }
+    assert _svr_warnings(new_format) == []

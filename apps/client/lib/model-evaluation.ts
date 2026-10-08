@@ -44,12 +44,38 @@ export interface EvalAnalysis {
   suggestions: string[]
 }
 
+// MODEL-FLOW-019-T15. `EvaluationPopulation` and its label forms moved to
+// `lib/metric-source.ts`, where they are DERIVED from `MetricSource`
+// (`Extract<MetricSource, 'test-split' | 'holdout'>`) rather than declared
+// as a second union carrying its own spelling of the same values — that
+// file owns the source, so it owns every name for it.
+
 function round(v: number, digits = 2): number {
   const f = Math.pow(10, digits)
   return Math.round(v * f) / f
 }
 
 /** Compute RMSE / MAE / R² / bias from aligned prediction/lab pairs. */
+/**
+ * One metric value, as every surface that prints RMSE/R²/MAE should print
+ * it: four decimals, and an explicit "not recorded" for a figure the source
+ * genuinely never carried.
+ *
+ * FIXED DECIMALS, not `formatAxisValue`'s significant digits — that one
+ * formats a Y-axis tick whose magnitude is unknown (a process value can be
+ * 0.48 or 1204). These are error metrics read side by side, where a
+ * consistent decimal column is what makes two versions comparable at a
+ * glance.
+ *
+ * `null` is never rendered as 0: a version that recorded no r2 and a
+ * version that scored exactly 0 are different facts.
+ */
+export function formatMetricValue(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(4)
+    : 'not recorded'
+}
+
 export function computeMetrics(points: EvalPoint[]): EvalMetrics {
   const n = points.length
   if (n === 0) return { rmse: 0, mae: 0, r2: 0, bias: 0, n: 0 }

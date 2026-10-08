@@ -16,6 +16,15 @@ import {
   topCorrelations,
   type TagPair,
 } from '@/lib/data-quality'
+import type { DraftCorrelationResult } from '@/services/dataset-draft'
+import type {
+  ArtifactScalingParams,
+  ArtifactTagColumnStats,
+} from '@/services/dataset-version'
+import {
+  inverseScalePosition,
+  inverseScaleSpread,
+} from '@/lib/inverse-scale-stats'
 
 export interface DatasetKpis {
   /** Mean of each numeric tag's mean, averaged across tags. */
@@ -62,22 +71,142 @@ export function topCorrelatedPairs(ds: Dataset, limit = 10): TagPair[] {
   return topCorrelations(pearsonMatrix(ds), 0).slice(0, limit)
 }
 
-const MINUTE = 60_000
-const HOUR = 60 * MINUTE
-const DAY = 24 * HOUR
+const DAY = 86_400_000
 
 /**
- * Human-readable span between the first and last row timestamps — the wall-clock
- * window the dataset covers. Returns '—' when there are fewer than 2 rows.
- * `buildRawDataset` emits rows sorted ascending, so first/last bound the range.
+ * Human-readable span between an artifact's `startTime`/`endTime`, as
+ * returned by `GET .../artifacts/:artifactId/metadata` — the FOOTER bounds
+ * of the real committed artifact, not a client-held row sample. Replaces
+ * the earlier `datasetTimeSpanLabel(ds)`, which read the first/last
+ * timestamp of a client `Dataset` and was quietly wrong the moment that
+ * frame was a bounded preview rather than the whole artifact (DS-LAKE-013).
+ * Shared by the detail sheet and the grid card so both report the same
+ * number for the same dataset.
  */
-export function datasetTimeSpanLabel(ds: Dataset): string {
-  const { rows } = ds
-  if (rows.length < 2) return '—'
-  const first = Date.parse(rows[0]!.timestamp)
-  const last = Date.parse(rows[rows.length - 1]!.timestamp)
-  const ms = Math.abs(last - first)
-  if (ms >= DAY) return `${Math.round(ms / DAY)}d`
-  if (ms >= HOUR) return `${Math.round(ms / HOUR)}h`
-  return `${Math.round(ms / MINUTE)}m`
+export function artifactTimeSpanLabel(
+  start: string | null | undefined,
+  end: string | null | undefined,
+): string {
+  if (!start || !end) return '—'
+  const a = new Date(start)
+  const b = new Date(end)
+  if (Number.isNaN(+a) || Number.isNaN(+b)) return '—'
+  const days = Math.max(1, Math.round((+b - +a) / DAY))
+  return days >= 365
+    ? `${(days / 365).toFixed(1)} yr`
+    : days >= 30
+      ? `${Math.round(days / 30)} mo`
+      : `${days} d`
+}
+
+/**
+ * Orders an artifact's `column_stats.json` sidecar entries by the DATASET's
+ * own tag list, not the sidecar's key order (JSON insertion order is an
+ * accident of the writer). Tags absent from the sidecar are dropped rather
+ * than rendered as an all-dash row — a legacy sidecar can legitimately
+ * predate a tag. Shared by `DatasetDetailSheet` and the Model wizard's Step 2
+ * Dataset Review (MODEL-FLOW-010) so both agree on row order for the same
+ * artifact.
+ */
+export function perTagStatsOrdered(
+  tags: string[],
+  stats: Record<string, ArtifactTagColumnStats> | null | undefined,
+  scalingParams?: Record<string, ArtifactScalingParams> | null,
+): ArtifactTagColumnStats[] {
+  if (!stats) return []
+  const ordered = tags
+    .map(tag => stats[tag])
+    .filter((s): s is ArtifactTagColumnStats => Boolean(s))
+  if (!scalingParams) return ordered
+  return ordered.map(s => inverseScaleTagStats(s, scalingParams[s.tag]))
+}
+
+/**
+ * One sidecar row converted back to engineering units — DS-LAKE-028-T06.
+ *
+ * WHY THIS IS NEEDED AT ALL: `build_column_stats` runs on the frame
+ * `to_model_ready` RETURNED, not the one it was given (artifact_service.py
+ * :896 -> :936 in `features()`, :1025 -> :1041 in `scale()`), so every number
+ * in this sidecar is in [0,1] for a saved dataset. DS-LAKE-025-T06 enumerated
+ * the surfaces that read it and did not establish this; T01 did.
+ *
+ * POSITIONS AND SPREADS ARE NOT THE SAME CONVERSION, and getting it wrong
+ * yields a plausible number rather than an obvious error. `min`/`max`/`mean`/
+ * `median`/percentiles are POSITIONS on the axis — full affine map, offset
+ * included. `std` is a SPREAD, a difference of two positions, and the offset
+ * cancels out of a difference, so it takes the slope ALONE.
+ *
+ * DELIBERATELY NOT CONVERTED:
+ *  - `drift`, which `build_column_stats` computes as the scaled-vs-unscaled
+ *    delta against `parent_frame` — it is already a statement ABOUT the
+ *    scaling, not a value expressed in its units.
+ *  - `coverage`, `null_pct`, `outlier_count`, `cleaned` — counts, ratios and
+ *    flags carry no units and are invariant under a positive affine map.
+ *
+ * A tag with no recorded params is returned UNCHANGED: "the fit was never
+ * recorded" is not "nothing was scaled", and inventing an identity transform
+ * for it would assert the second.
+ */
+function inverseScaleTagStats(
+  s: ArtifactTagColumnStats,
+  params: ArtifactScalingParams | undefined,
+): ArtifactTagColumnStats {
+  if (!params) return s
+  const position = (v: number | null | undefined) =>
+    v === null || v === undefined ? v : inverseScalePosition(v, params)
+  return {
+    ...s,
+    min: position(s.min),
+    max: position(s.max),
+    mean: position(s.mean),
+    median: position(s.median),
+    std:
+      s.std === null || s.std === undefined
+        ? s.std
+        : inverseScaleSpread(s.std, params),
+    percentiles: s.percentiles
+      ? Object.fromEntries(
+          Object.entries(s.percentiles).map(([k, v]) => [
+            k,
+            inverseScalePosition(v, params) ?? v,
+          ]),
+        )
+      : s.percentiles,
+  }
+}
+
+export interface CorrelatedArtifactPair {
+  a: string
+  b: string
+  r: number
+}
+
+/**
+ * Ranks a server-resolved correlation matrix (`POST .../correlation`) into
+ * pairs by |r|, strongest first — the endpoint returns a resolved tag list +
+ * a full matrix (DS-LAKE-005B-D-T05b), NOT a ranked pair list, so the
+ * ranking happens client-side. Cheap by construction: the server already
+ * hard-caps the matrix at `topK` columns, so this is at most topK²/2
+ * iterations over data already in memory, not a client-side Pearson pass
+ * over a frame. Shared by `DatasetDetailSheet` and the Model wizard's Step 2
+ * Dataset Review (MODEL-FLOW-010).
+ */
+export function topCorrelatedArtifactPairs(
+  correlation: DraftCorrelationResult | null,
+  limit = 5,
+): CorrelatedArtifactPair[] {
+  if (!correlation) return []
+  const { tags: resolved, matrix } = correlation
+  const pairs: CorrelatedArtifactPair[] = []
+  for (let i = 0; i < resolved.length; i++) {
+    for (let j = i + 1; j < resolved.length; j++) {
+      const r = matrix[i]?.[j]
+      if (typeof r === 'number' && Number.isFinite(r)) {
+        pairs.push({ a: resolved[i]!, b: resolved[j]!, r })
+      }
+    }
+  }
+  // A strong negative relationship is exactly as interesting as a strong
+  // positive one to whoever opens this panel.
+  return pairs.sort((x, y) => Math.abs(y.r) - Math.abs(x.r)).slice(0, limit)
 }

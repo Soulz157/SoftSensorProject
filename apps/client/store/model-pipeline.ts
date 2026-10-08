@@ -32,6 +32,8 @@ import type {
   DiscoveredTag,
 } from '@/store/data-visualize'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
+import type { AcceptanceCriterion } from '@/lib/acceptance-criteria'
+import type { ModelVersionNumber } from '@/lib/model-version-number'
 
 export type { SavedDataSource }
 
@@ -39,18 +41,28 @@ export interface TrainState {
   status: 'idle' | 'training' | 'done' | 'error'
   progress: number
   error?: string
+  /**
+   * Latest log line from the container (MODEL-FLOW-003-T09). A fit has no
+   * reportable percentage — train.py emits log lines, not a fraction — so
+   * this is what the UI shows in place of a fake progress bar while RUNNING.
+   */
+  lastLog?: string
 }
 
-export const MP_TOTAL_STEPS = 4
+export const MP_TOTAL_STEPS = 6
 
-// Lean wizard — Step 1: Select Dataset (+ model metadata), Step 2: Training
-// Configuration, Step 3: Results. Dataset ETL now lives entirely in Data Studio
-// (`store/dataset-studio.ts`); the model wizard only references a saved
-// `Dataset` by id + its cached snapshot (avoids a refetch on every render).
+// Wizard — Step 1: Select Dataset (+ model metadata), Step 2: Dataset Review
+// (MODEL-FLOW-010), Step 3: Training Configuration, Step 4: Model Selection
+// (MODEL-FLOW-013), Step 5: Evaluation, Step 6: Save Model. Dataset ETL now
+// lives entirely in Data Studio (`store/dataset-studio.ts`); the model
+// wizard only references a saved `Dataset` by id + its cached snapshot
+// (avoids a refetch on every render).
 export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)
 
 export type Algorithm =
   | 'ols'
+  | 'ridge'
+  | 'hist_gradient_boosting'
   | 'svm'
   | 'mlp'
   | 'grp'
@@ -62,6 +74,8 @@ export type Algorithm =
   | 'gru'
 export const ALGORITHMS: Algorithm[] = [
   'ols',
+  'ridge',
+  'hist_gradient_boosting',
   'svm',
   'mlp',
   'grp',
@@ -74,6 +88,8 @@ export const ALGORITHMS: Algorithm[] = [
 ]
 export const ALGORITHM_LABELS: Record<Algorithm, string> = {
   ols: 'Linear Regression',
+  ridge: 'Ridge Regression',
+  hist_gradient_boosting: 'Histogram Gradient Boosting',
   svm: 'Support Vector Machine',
   grp: 'Gaussian Process Regression',
   mlp: 'MLP (Neural Network)',
@@ -97,10 +113,85 @@ export const mpFindBestModelAtom = atom<boolean>(false)
 export const mpFindBestParamsAtom = atom<boolean>(false)
 export const mpTargetVariableAtom = atom<string[]>([])
 export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
-/** Evaluation metric optimized during training. See `LOSS_OPTIONS` in `lib/training-config`. */
-export const mpLossFunctionAtom = atom<string>('mse')
+/**
+ * MODEL-FLOW-022-T02. The NON-PRIMARY algorithms' hyperparameters, for a
+ * multi-algorithm sweep's tabbed block. `mpHyperparamsAtom` above stays the
+ * single source for the PRIMARY algorithm's values — this atom never holds
+ * an entry for `algorithms[0]`, so there is exactly one place a primary
+ * value can live and no drift between the two atoms is representable.
+ *
+ * An algorithm no longer selected has no entry here — pruned at
+ * `useRunConfigDraft`'s committed-snapshot composition, not by any writer,
+ * so every one of `mpAlgorithmsAtom`'s seven writers (including the four
+ * that bypass `useRunConfigDraft` entirely: Apply-from-RunParamsPanel,
+ * draft resume, "use as preset", edit-existing-model) gets the discard for
+ * free rather than needing its own copy of the rule.
+ */
+export const mpPerAlgorithmHyperparamsAtom = atom<
+  Partial<Record<Algorithm, Record<string, HyperparamValue>>>
+>({})
+
+/**
+ * MODEL-FLOW-026. Hyperparameter sets the user ADDED BY HAND to Step 3's
+ * variant table ("+ Add"), per algorithm — tried in addition to the curated
+ * grid, never in place of it (`extraVariants` on the candidate-job DTO does
+ * the appending server-side, so the grid stays declared in one place).
+ *
+ * NOT part of the run-config draft, deliberately. `useRunConfigDraft`'s
+ * dirty/Apply cycle exists for values that change WHAT THE NEXT RUN IS —
+ * they relock the split, clear trainState and re-fetch /split-stats. A row
+ * added here changes only what a SEARCH additionally tries; it touches no
+ * split, no target and no committed configuration, so gating it behind Apply
+ * would make Start Training say "unapplied changes" over a list the run
+ * config cannot see. Read at launch by `use-model-training`.
+ *
+ * ONE ALGORITHM CAN BE TUNED PER JOB, but this is keyed by algorithm anyway:
+ * the rows belong to the card they were typed on, and a user who switches
+ * the selected algorithm and switches back should find their own rows, not
+ * someone else's list reinterpreted.
+ */
+export const mpExtraVariantsAtom = atom<
+  Partial<Record<Algorithm, Record<string, HyperparamValue>[]>>
+>({})
+/**
+ * Evaluation metric recorded on the saved model. See `LOSS_OPTIONS` in
+ * `lib/training-config`.
+ *
+ * MODEL-FLOW-019-T37. Was `'mse'`, which `LOSS_OPTIONS` does not offer — so
+ * Step 3's Select matched no item and rendered an EMPTY trigger on every
+ * fresh draft. The literal is inlined rather than imported from
+ * `DEFAULT_LOSS_FUNCTION` to avoid the store → training-config cycle this
+ * file already avoids for `defaultHyperparams` (see `resetWizardAtom`), and
+ * `lib/__tests__/training-config.test.ts` asserts the two stay equal.
+ */
+export const mpLossFunctionAtom = atom<string>('rmse')
 /** Train split percentage (test = 100 − this). Default 80/20. */
 export const mpTrainTestSplitAtom = atom<number>(80)
+/** MODEL-FLOW-014-T06. The Split Distribution panel's own tag selection —
+ * ephemeral wizard-session state, NOT a ModelDraft column (the panel has no
+ * server state of its own, per T05's own finding). Read by
+ * `use-model-training.ts` at launch so the frozen `splitStats` sidecar
+ * matches what the panel actually displayed, not an approximation. */
+export const mpSplitStatsTagsAtom = atom<string[]>([])
+/** MODEL-FLOW-014-T07. The estimator seed — `undefined` means "the user did
+ * not choose one", distinct from an explicit value like `42`: the server
+ * generates its own random seed when this is omitted
+ * (model-run-launch.authorized.service.ts), and collapsing "not chosen"
+ * into a default would make a run's reproducibility claim silently wrong.
+ * Bounds match CreateTrainingRunSchema.seed: 1-2147483646. */
+export const mpSeedAtom = atom<number | undefined>(undefined)
+
+/** MODEL-FLOW-016-T10. `undefined` means Cross-Validation is OFF — the run
+ * launches with the ordinary chronological `trainTestSplit` above, exactly
+ * as before this feature. A number (3-10) means CV is ON with that many
+ * expanding folds; `trainTestSplit` is then ignored at launch (the two are
+ * mutually exclusive server-side — CreateTrainingRunSchema's own .refine()).
+ * CLIENT-ONLY, deliberately: `ModelDraft` has no column for this (this
+ * feature's own acceptance criterion forbids adding one — see the ledger's
+ * ModelDraft-has-no-column finding), so `useModelDraftSync`'s PATCH never
+ * carries it and a resumed draft always comes back with CV off. The value
+ * is committed into the run's own `splitSpec` only at Start Training. */
+export const mpNSplitsAtom = atom<number | undefined>(undefined)
 
 /** How the user chose to supply tags: direct connector, csv upload, or manual text. */
 export type TagInputMethod = '' | 'direct' | 'csv' | 'text'
@@ -170,7 +261,29 @@ export const mpTrainStateAtom = atom<TrainState>({
 })
 /** Set once on first successful create; guards against duplicate POSTs on Retrain. */
 export const mpCreatedModelIdAtom = atom<string>('')
+/**
+ * MODEL-SERVE-001-T08. The version Save Model's OWN transaction minted for
+ * `mpCreatedModelIdAtom`, held alongside it for the exact reason that atom
+ * exists: `useModelCommit`'s `if (createdModelId) return createdModelId`
+ * short-circuit would otherwise have no version to hand back on a second
+ * invocation within the same wizard visit, silently reintroducing a
+ * literal-shaped gap one layer down. Null until a create-mode save
+ * succeeds; never meaningful in edit mode.
+ */
+export const mpCreatedModelVersionAtom = atom<ModelVersionNumber | null>(null)
 export const mpSelectedMetricsAtom = atom<MetricKey[]>([...METRIC_KEYS])
+
+export const mpCompareRunIdsAtom = atom<ReadonlySet<string>>(new Set<string>())
+
+/**
+ * MODEL-FLOW-019-T07. VIEW STATE, NOT DRAFT STATE — a threshold is how the
+ * user chooses to READ a set of candidates, not a fact about what produced
+ * them, so it lives beside `mpSelectedMetricsAtom` rather than as a
+ * `ModelDraft` column. Committed only on Apply (`useRunConfigDraft`'s own
+ * draft/apply boundary), never on keystroke. Empty means no threshold is
+ * set anywhere — the advisory default.
+ */
+export const mpAcceptanceCriteriaAtom = atom<AcceptanceCriterion[]>([])
 
 // --- Model Draft workspace (client-only; MODEL-FLOW-002) -------------------
 // The wizard's "Model Draft" is the in-memory collection of `mp*` atoms — it has
@@ -184,12 +297,44 @@ export const mpDraftIdAtom = atom<string>('')
 /** Draft lifecycle: 'draft' → 'trained' (Step 2 done) → 'saved' (Step 4 commit). */
 export const mpDraftStateAtom = atom<DraftState>('draft')
 
-/** Mock training summary produced in Step 2 (client-only — no real artifact file). */
+/**
+ * Server-side ModelDraft id (MODEL-FLOW-002), distinct from mpDraftIdAtom
+ * above — that one is a purely client-local session id with no backend
+ * record; this one IS the row a training container reads its spec from.
+ * null until Step 1 -> 2 first creates it. Cleared on every wizard reset,
+ * same as mpDraftIdAtom, so a fresh wizard run never inherits a stale
+ * draft's id.
+ */
+export const mpServerDraftIdAtom = atom<string | null>(null)
+
+/**
+ * Training summary produced in Step 2, sourced from a real ModelTrainingRun
+ * (MODEL-FLOW-003-T05) — no longer a mock. `metrics` is denormalised from
+ * the run's own `metrics.json` sidecar and passed through as-is; mapping it
+ * onto the Step 3 Evaluation UI's specific metric keys is the next
+ * feature's job, not this one's.
+ */
 export interface DraftTrainingResult {
+  runId: string
   algorithm: Algorithm
+  metrics: Record<string, unknown> | null
   trainedAt: string
+  /** MODEL-FLOW-016-T11. Set only for a Cross-Validation run — Step 4's
+   *  single-run pass-through keys its mean±std render off this, never
+   *  `algorithm`. Always null from the sweep-winner path (`pollJob` below):
+   *  CV and Find Best Model are mutually exclusive by construction. */
+  cvFoldsKey: string | null
 }
 export const mpTrainingResultAtom = atom<DraftTrainingResult | null>(null)
+
+/**
+ * MODEL-FLOW-013. Set when Start Training launches an algorithm-sweep
+ * candidate job (Find Best Model) rather than a single run — Step 4 (Model
+ * Selection) reads this to fetch the job's candidates; null means an
+ * ordinary single-run launch, which Step 4 passes through honestly with no
+ * comparison table. Reset everywhere `mpTrainingResultAtom` already is.
+ */
+export const mpCandidateJobIdAtom = atom<string | null>(null)
 
 /** Mock evaluation summary produced in Step 3 (client-computed metrics). */
 export interface DraftEvaluationResult {
@@ -199,15 +344,17 @@ export interface DraftEvaluationResult {
 export const mpEvaluationResultAtom = atom<DraftEvaluationResult | null>(null)
 
 /**
- * Reference to the trained model artifact. Mock — training is client-side, so
- * this holds a synthetic id only, letting Save Model record an artifact ref.
- * TODO(MODEL-FLOW-006): point at a real object-storage artifact once training is real.
+ * Object-storage key of the trained model artifact (MODEL-FLOW-003-T06) —
+ * the completed run's own `modelKey`, under `drafts/{draftId}/runs/{runId}/`
+ * until Save Model adopts it by pointer.
  */
 export const mpArtifactRefAtom = atom<string | null>(null)
 
-// TODO(MODEL-FLOW-005): Fine-tuning is skipped by scope decision (client-only
-// draft, no background worker/queue). Reintroduce mpFineTuningStatus/Result
-// atoms here if a real fine-tuning stage is added later.
+// MODEL-FLOW-005/013: candidate-job orchestration (algorithm sweep) lives
+// server-side on ModelCandidateJob; the client only tracks its id
+// (mpCandidateJobIdAtom, above) and polls it the same way it polls a single
+// run. Hyperparameter search over a sweep's winner ("Find Best Parameters")
+// remains unbuilt — see automl-toggles.tsx's disabled state.
 
 // Step 4 — Deploy (advanced MLOps guardrails). Captured config only; persisted
 // to `Model.data.config.deployment`. No runtime retrain/drift engine yet.
@@ -219,8 +366,6 @@ export const mpRetrainWarnSdAtom = atom<number>(1.5)
 export const mpRetrainCriticalSdAtom = atom<number>(3.0)
 /** Master toggle for input-sensor drift monitoring. */
 export const mpDriftMonitorAtom = atom<boolean>(false)
-/** Max allowed live-input deviation (%) from the training baseline before a Drift Alarm. */
-export const mpDriftThresholdPctAtom = atom<number>(10)
 
 export const mpCurrentStepAtom = atom<number>(1)
 export const mpHighestUnlockedAtom = atom<number>(1)
@@ -287,22 +432,45 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   // Default algorithm is `ols` — seed its clean hyperparameters (mirrors
   // `defaultHyperparams('ols')`; inlined to avoid a store → training-config cycle).
   set(mpHyperparamsAtom, { fit_intercept: true })
-  set(mpLossFunctionAtom, 'mse')
+  set(mpPerAlgorithmHyperparamsAtom, {})
+  // MODEL-FLOW-026. Hand-added variant rows belong to the draft that was
+  // being configured; a fresh wizard must not inherit them.
+  set(mpExtraVariantsAtom, {})
+  // MODEL-FLOW-019-T37. Was 'mse' — not a `LOSS_OPTIONS` member, so a reset
+  // wizard rendered an empty Loss control. Same inlined literal as the atom's
+  // own default above, held equal to `DEFAULT_LOSS_FUNCTION` by test.
+  set(mpLossFunctionAtom, 'rmse')
   set(mpTrainTestSplitAtom, 80)
+  set(mpSplitStatsTagsAtom, [])
+  set(mpSeedAtom, undefined)
   set(mpTrainStateAtom, { status: 'idle', progress: 0 })
   set(mpCreatedModelIdAtom, '')
+  set(mpCreatedModelVersionAtom, null)
   set(mpSelectedMetricsAtom, [...METRIC_KEYS])
+  // MODEL-FLOW-019-T08. Client-only view state, same as its neighbour above
+  // — a compare set ticked against the PREVIOUS draft's runs must not
+  // survive into a fresh wizard run and silently narrow Step 3/4 to ids
+  // that no longer exist on the new draft.
+  set(mpCompareRunIdsAtom, new Set<string>())
+  // MODEL-FLOW-019-T07. Same client-only view-state classification as
+  // mpCompareRunIdsAtom above — a threshold set against the PREVIOUS
+  // draft's own metric distributions has no meaning for a fresh one.
+  set(mpAcceptanceCriteriaAtom, [])
   // Fresh Model Draft workspace (client-only) — new id, clean lifecycle/results.
   set(mpDraftIdAtom, nanoid())
   set(mpDraftStateAtom, 'draft')
   set(mpTrainingResultAtom, null)
+  set(mpCandidateJobIdAtom, null)
   set(mpEvaluationResultAtom, null)
   set(mpArtifactRefAtom, null)
+  // Server-side ModelDraft id — a fresh wizard run must not inherit a
+  // previous run's draft, the same reasoning the dataset wizard's own
+  // resetDatasetWizardAtom states for dwDraftIdAtom.
+  set(mpServerDraftIdAtom, null)
   set(mpAutoRetrainAtom, false)
   set(mpRetrainWarnSdAtom, 1.5)
   set(mpRetrainCriticalSdAtom, 3.0)
   set(mpDriftMonitorAtom, false)
-  set(mpDriftThresholdPctAtom, 10)
   set(mpModeAtom, 'create')
   set(mpEditModelIdAtom, '')
   set(mpCurrentStepAtom, 1)

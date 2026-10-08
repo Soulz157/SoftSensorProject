@@ -1,15 +1,14 @@
 'use client'
 
-import Link from 'next/link'
-import { Download, ExternalLink } from 'lucide-react'
+import { Download } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
-import { SensorTrendChart } from '@/app/(default)/data-visualize/components/sensor-trend-chart'
-import { ScatterRegressionChart } from '@/app/(default)/data-visualize/components/scatter-regression-chart'
-import { TimeRangeToggle } from '@/app/(default)/data-visualize/components/time-range-toggle'
+import { SensorTrendChart } from '@/components/charts/sensor-trend-chart'
+import { ScatterRegressionChart } from '@/components/charts/scatter-regression-chart'
+import { TimeRangeToggle } from '@/components/charts/time-range-toggle'
 import { MOCK_PI_TAGS } from '@/lib/mock-readings'
 import { useQuickVisualizer } from '@/hooks/use-quick-visualizer'
 
@@ -76,12 +75,6 @@ export function QuickVisualizerPanel() {
           >
             <Download className="h-3.5 w-3.5" />
             Export Data
-          </Button>
-          <Button asChild variant="outline" size="sm" className="gap-1.5">
-            <Link href="/data-visualize">
-              <ExternalLink className="h-3.5 w-3.5" />
-              Open Full Visualizer
-            </Link>
           </Button>
         </div>
       </CardHeader>

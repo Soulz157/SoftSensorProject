@@ -76,14 +76,20 @@ const OVERSCAN = 6
 export function RawReadingsTable({
   dataset,
   scalers,
+  ignoreTags = [],
 }: {
   dataset: Dataset
   /** Per-tag scaler config — tags with an entry get a "transformed" badge. */
   scalers?: Record<string, ScalerMethod>
+  /** Tags exempt from freeze detection (e.g. user-entered constants). */
+  ignoreTags?: string[]
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const badDataCount = useMemo(() => badDataByTag(dataset), [dataset])
+  const badDataCount = useMemo(
+    () => badDataByTag(dataset, { ignoreTags }),
+    [dataset, ignoreTags],
+  )
 
   const tagStatus = useMemo(() => {
     const status = new Map<string, SensorQuality | undefined>()

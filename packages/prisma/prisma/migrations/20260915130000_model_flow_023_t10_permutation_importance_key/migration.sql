@@ -1,0 +1,21 @@
+-- MODEL-FLOW-023-T10. One nullable column on ModelTrainingRun:
+--   permutationImportanceKey  object-storage key for
+--                             permutation_importance.json, set only for the
+--                             one strategy that populates
+--                             TrainingResult.permutation_population today
+--                             (windowed.run, i.e. lstm/gru) — null for every
+--                             other run, the same honest-legacy-null pattern
+--                             featureImportanceKey already uses (see
+--                             20260907120000_model_flow_019_t09_feature_importance).
+-- Additive, nullable, no default — NULL is the correct value for every
+-- existing row (a run predating this feature simply never had the concept).
+--
+-- Hand-written, not `prisma migrate dev`: MODEL-FLOW-023-T04 records that
+-- path as known-broken against this shared dev DB (DatasetArtifact
+-- .droppedBadRows exists live with no migration file, and migration
+-- 20260825030923's checksum no longer matches its applied record — Prisma's
+-- own remedy is a full reset, refused as destructive against evidence four
+-- other tasks depend on). Apply via psql, then
+-- `prisma migrate resolve --applied 20260915130000_model_flow_023_t10_permutation_importance_key`
+-- so a future deploy does not attempt to re-run it.
+ALTER TABLE "ModelTrainingRun" ADD COLUMN "permutationImportanceKey" TEXT;

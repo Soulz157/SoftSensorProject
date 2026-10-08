@@ -1,0 +1,565 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import {
+  SIZE_TIER_LOWER_BOUNDS,
+  TUNING_GRID,
+  TUNING_GRID_OVERRIDES,
+  TUNE_VARIANTS_PER_JOB,
+  batchSizeBand,
+  distinctExtraVariants,
+  sizeTierFor,
+  tuningCandidatesFor,
+  tuningVariantsFor,
+  type SizeTier,
+} from './tuning-grid';
+
+/**
+ * MODEL-FLOW-013-T11. A static source guard, not a hand-copied table:
+ * mirrors `apps/client/lib/run-params.test.ts`'s existing precedent — reads
+ * the trainer's own `build_model` source and extracts exactly the keys each
+ * branch reads via `hyperparameters.get("KEY", ...)`. If TUNING_GRID names a
+ * key the trainer never reads for that algorithm, this fails — a hand-typed
+ * grid would keep passing while a tuning variant silently changed nothing the
+ * estimator saw.
+ *
+ * Points at `app/models.py`, not `train.py`: the trainer image was split into
+ * a package and `build_model` moved to its own module, leaving `train.py` as
+ * the mode dispatch alone. Note that a wrong path here fails at readFileSync
+ * with ENOENT, BEFORE the "has it moved or been renamed?" guard below can
+ * report it — so if that module moves again, this constant is the first thing
+ * to fix, not that message.
+ */
+const MODELS_FILE = path.resolve(
+  __dirname,
+  '../../../../images/trainer/app/models.py',
+);
+
+function readTrainer(): string {
+  return readFileSync(MODELS_FILE, 'utf-8');
+}
+
+function extractBuildModelBody(source: string): string {
+  const start = source.indexOf('def build_model(');
+  if (start === -1) {
+    throw new Error(
+      'build_model not found in app/models.py — has it moved or been renamed?',
+    );
+  }
+  const rest = source.slice(start);
+  const nextDef = rest.indexOf('\ndef ', 1);
+  return nextDef === -1 ? rest : rest.slice(0, nextDef);
+}
+
+const HEADER_TO_ALGORITHM: { pattern: RegExp; algorithm: string }[] = [
+  {
+    pattern: /if algorithm in \("hgb", "hist_gradient_boosting"\):/,
+    algorithm: 'hist_gradient_boosting',
+  },
+  { pattern: /if algorithm == "ridge":/, algorithm: 'ridge' },
+  { pattern: /if algorithm == "ols":/, algorithm: 'ols' },
+  { pattern: /if algorithm == "svm":/, algorithm: 'svm' },
+  { pattern: /if algorithm == "mlp":/, algorithm: 'mlp' },
+  { pattern: /if algorithm == "grp":/, algorithm: 'grp' },
+  { pattern: /if algorithm == "pls":/, algorithm: 'pls' },
+  { pattern: /if algorithm == "random_forest":/, algorithm: 'random_forest' },
+  { pattern: /if algorithm == "lightgbm":/, algorithm: 'lightgbm' },
+  { pattern: /if algorithm == "xgboost":/, algorithm: 'xgboost' },
+  // MODEL-FLOW-024. lstm and gru share ONE branch, so one header serves both;
+  // `extractConsumedKeys` copies its keys onto `gru`. Listing it also ends
+  // xgboost's block where it should — before this header existed xgboost's
+  // block ran to the end of build_model and "consumed" the sequence keys too.
+  { pattern: /if algorithm in SEQUENCE_ALGORITHMS:/, algorithm: 'lstm' },
+];
+
+function extractConsumedKeys(body: string): Record<string, string[]> {
+  const headers = HEADER_TO_ALGORITHM.map(({ pattern, algorithm }) => {
+    const match = pattern.exec(body);
+    if (!match) {
+      throw new Error(
+        `app/models.py no longer has a build_model branch matching ${pattern} ` +
+          `(expected for "${algorithm}") — TUNING_GRID is stale.`,
+      );
+    }
+    return { algorithm, index: match.index };
+  }).sort((a, b) => a.index - b.index);
+
+  const result: Record<string, string[]> = {};
+  headers.forEach(({ algorithm, index }, i) => {
+    const next = headers[i + 1];
+    const end = next ? next.index : body.length;
+    const block = body.slice(index, end);
+    const keys = [...block.matchAll(/hyperparameters\.get\(\s*"([^"]+)"/g)]
+      .map((m) => m[1])
+      .filter((k): k is string => k !== undefined);
+    result[algorithm] = [...new Set(keys)];
+  });
+  result['gru'] = result['lstm'] ?? [];
+  return result;
+}
+
+describe('TUNING_GRID matches images/trainer/app/models.py, read live', () => {
+  const body = extractBuildModelBody(readTrainer());
+  const actual = extractConsumedKeys(body);
+
+  // MODEL-FLOW-024. The key-set guard runs over EVERY tier, not just the
+  // medium table: an override could otherwise name a key the trainer never
+  // reads and nothing would notice until a tuning variant silently changed
+  // nothing. An algorithm a tier does not override reads the medium table, so
+  // it is covered by the `medium` row.
+  const tables: [string, Record<string, Record<string, unknown>[]>][] = [
+    ['medium', TUNING_GRID],
+    ...(['tiny', 'small', 'large'] as const).map(
+      (tier): [string, Record<string, Record<string, unknown>[]>] => [
+        tier,
+        TUNING_GRID_OVERRIDES[tier],
+      ],
+    ),
+  ];
+
+  for (const [tier, table] of tables) {
+    for (const algorithm of Object.keys(table)) {
+      it(`${tier}/${algorithm}: every grid variant uses only keys build_model actually reads`, () => {
+        const consumed = new Set(actual[algorithm] ?? []);
+        expect(consumed.size).toBeGreaterThan(0);
+        for (const variant of table[algorithm] ?? []) {
+          for (const key of Object.keys(variant)) {
+            expect(consumed.has(key)).toBe(true);
+          }
+        }
+      });
+    }
+  }
+
+  it('lstm and gru have a grid, and it does not name sequence_length', () => {
+    // MODEL-FLOW-024. sequence_length feeds windowing and the split spec, not
+    // build_model — it belongs to the base run and is carried across by
+    // tuningCandidatesFor, so it must never appear in the table itself.
+    for (const algorithm of ['lstm', 'gru']) {
+      expect(TUNING_GRID[algorithm]?.length).toBeGreaterThan(0);
+      for (const variant of TUNING_GRID[algorithm] ?? []) {
+        expect(Object.keys(variant)).not.toContain('sequence_length');
+      }
+    }
+  });
+});
+
+// One representative row count per tier, derived from the bounds so moving a
+// bound moves every fixture below with it.
+const ROWS = {
+  tiny: Math.floor(SIZE_TIER_LOWER_BOUNDS.small / 2),
+  small: SIZE_TIER_LOWER_BOUNDS.small,
+  medium: SIZE_TIER_LOWER_BOUNDS.medium,
+  large: SIZE_TIER_LOWER_BOUNDS.large * 2,
+};
+
+describe('sizeTierFor', () => {
+  it.each([
+    [0, 'tiny'],
+    [SIZE_TIER_LOWER_BOUNDS.small - 1, 'tiny'],
+    [SIZE_TIER_LOWER_BOUNDS.small, 'small'],
+    [SIZE_TIER_LOWER_BOUNDS.medium - 1, 'small'],
+    [SIZE_TIER_LOWER_BOUNDS.medium, 'medium'],
+    [SIZE_TIER_LOWER_BOUNDS.large - 1, 'medium'],
+    [SIZE_TIER_LOWER_BOUNDS.large, 'large'],
+    [100_000, 'large'],
+  ] as [number, SizeTier][])('%d rows is %s', (n, tier) => {
+    expect(sizeTierFor(n)).toBe(tier);
+  });
+
+  it('pins the bounds to the user’s durations of hourly data: 6 months, 1 year, 3 years', () => {
+    const HOURS_PER_YEAR = 24 * 365;
+    expect(SIZE_TIER_LOWER_BOUNDS).toEqual({
+      small: HOURS_PER_YEAR / 2,
+      medium: HOURS_PER_YEAR,
+      large: HOURS_PER_YEAR * 3,
+    });
+  });
+
+  it('resolves an unknown figure to medium, never to a tighter tier', () => {
+    expect(sizeTierFor(null)).toBe('medium');
+    expect(sizeTierFor(undefined)).toBe('medium');
+    expect(sizeTierFor(Number.NaN)).toBe('medium');
+  });
+
+  it('puts every dataset this system has measured (4,470-15,441 rows) in small or medium', () => {
+    expect([4_470, 8_350, 15_441].map((n) => sizeTierFor(n))).toEqual([
+      'small',
+      'small',
+      'medium',
+    ]);
+  });
+});
+
+describe('batchSizeBand', () => {
+  it('is the old fixed 16-128 band for an unknown row count and for 1,024+ rows', () => {
+    expect(batchSizeBand(null)).toEqual({ min: 16, max: 128 });
+    expect(batchSizeBand(undefined)).toEqual({ min: 16, max: 128 });
+    expect(batchSizeBand(1_024)).toEqual({ min: 16, max: 128 });
+    expect(batchSizeBand(15_441)).toEqual({ min: 16, max: 128 });
+  });
+
+  it('caps at an eighth of the rows, with a floor of 8 on the cap', () => {
+    expect(batchSizeBand(400)).toEqual({ min: 12, max: 50 });
+    expect(batchSizeBand(100)).toEqual({ min: 4, max: 12 });
+    expect(batchSizeBand(20)).toEqual({ min: 4, max: 8 });
+    expect(batchSizeBand(0)).toEqual({ min: 4, max: 8 });
+  });
+
+  it('never returns an empty band', () => {
+    for (const rows of [0, 1, 7, 8, 63, 64, 65, 500, 1_023, 1_024, 99_999]) {
+      const { min, max } = batchSizeBand(rows);
+      expect(min).toBeLessThan(max);
+    }
+  });
+});
+
+describe('tuningVariantsFor', () => {
+  it('is TUNING_GRID itself, by reference, when no size is given or the tier is medium', () => {
+    expect(tuningVariantsFor('ridge')).toBe(TUNING_GRID.ridge);
+    expect(tuningVariantsFor('ridge', { rows: ROWS.medium })).toBe(
+      TUNING_GRID.ridge,
+    );
+  });
+
+  it('never tiers on the distinct labelled count — rows alone pick the tier', () => {
+    // 32 distinct values used to mean `tiny`. It is recorded, not read.
+    expect(tuningVariantsFor('ridge', { distinctLabelled: 32 })).toBe(
+      TUNING_GRID.ridge,
+    );
+    expect(
+      tuningVariantsFor('ridge', { rows: ROWS.medium, distinctLabelled: 32 }),
+    ).toBe(TUNING_GRID.ridge);
+    expect(
+      tuningVariantsFor('ridge', { rows: ROWS.tiny, distinctLabelled: 900 }),
+    ).toBe(TUNING_GRID_OVERRIDES.tiny.ridge);
+  });
+
+  it('serves the tier override where one exists, and the medium table where it does not', () => {
+    expect(tuningVariantsFor('ridge', { rows: ROWS.tiny })).toBe(
+      TUNING_GRID_OVERRIDES.tiny.ridge,
+    );
+    expect(tuningVariantsFor('ridge', { rows: ROWS.large })).toBe(
+      TUNING_GRID_OVERRIDES.large.ridge,
+    );
+    // ols, grp and pls have no size prior — every tier reads the medium table.
+    for (const algorithm of ['ols', 'grp', 'pls']) {
+      for (const rows of Object.values(ROWS)) {
+        expect(tuningVariantsFor(algorithm, { rows })).toBe(
+          TUNING_GRID[algorithm],
+        );
+      }
+    }
+  });
+
+  it('returns [] for an unknown algorithm', () => {
+    expect(tuningVariantsFor('not-a-real-algorithm')).toEqual([]);
+  });
+
+  describe('pls n_components is capped at the feature count', () => {
+    const componentsOf = (features: number | null | undefined) =>
+      tuningVariantsFor('pls', { features }).map((v) => Number(v.n_components));
+
+    it('is TUNING_GRID.pls itself when the feature count is unknown or ample', () => {
+      expect(tuningVariantsFor('pls')).toBe(TUNING_GRID.pls);
+      expect(tuningVariantsFor('pls', { features: null })).toBe(
+        TUNING_GRID.pls,
+      );
+      expect(tuningVariantsFor('pls', { features: 6 })).toBe(TUNING_GRID.pls);
+      expect(tuningVariantsFor('pls', { features: 40 })).toBe(TUNING_GRID.pls);
+    });
+
+    it.each([1, 2, 3, 4, 5])(
+      'never asks for more components than %d features',
+      (features) => {
+        for (const n of componentsOf(features)) {
+          expect(n).toBeGreaterThanOrEqual(1);
+          expect(n).toBeLessThanOrEqual(features);
+        }
+      },
+    );
+
+    it('drops an exact duplicate a cap creates, and keeps variants that still differ', () => {
+      // 1 feature: every n_components becomes 1; {1,500} appears twice.
+      const one = tuningVariantsFor('pls', { features: 1 });
+      const keys = one.map((v) => JSON.stringify(v));
+      expect(new Set(keys).size).toBe(keys.length);
+      // 3 features: {3,500} vs {3,1000} vs {3,250} differ on max_iter — kept.
+      expect(tuningVariantsFor('pls', { features: 3 }).length).toBe(4);
+    });
+
+    it('does not touch any other algorithm', () => {
+      expect(tuningVariantsFor('ridge', { features: 1 })).toBe(
+        TUNING_GRID.ridge,
+      );
+    });
+
+    it('reaches tuningCandidatesFor: no candidate can exceed the feature count', () => {
+      for (const v of tuningCandidatesFor(
+        'pls',
+        { n_components: 2, max_iter: 500 },
+        { features: 3 },
+      )) {
+        expect(Number(v.n_components)).toBeLessThanOrEqual(3);
+      }
+    });
+  });
+
+  it('is TUNING_GRID itself for lstm/gru too whenever the batch cap does not bind — served, not copied', () => {
+    for (const algorithm of ['lstm', 'gru']) {
+      expect(tuningVariantsFor(algorithm)).toBe(TUNING_GRID[algorithm]);
+      expect(tuningVariantsFor(algorithm, {})).toBe(TUNING_GRID[algorithm]);
+      expect(tuningVariantsFor(algorithm, { rows: 1_024 })).toBe(
+        TUNING_GRID[algorithm],
+      );
+      expect(tuningVariantsFor(algorithm, { rows: 15_441 })).toBe(
+        TUNING_GRID[algorithm],
+      );
+      // ...and is a fresh, clamped copy only when the cap actually binds.
+      expect(tuningVariantsFor(algorithm, { rows: 400 })).not.toBe(
+        TUNING_GRID[algorithm],
+      );
+    }
+  });
+
+  it('shrinks tree capacity on small data and grows it on large data', () => {
+    const maxOf = (algorithm: string, key: string, rows: number) =>
+      Math.max(
+        ...tuningVariantsFor(algorithm, { rows }).map((v) => Number(v[key])),
+      );
+    for (const [algorithm, key] of [
+      ['xgboost', 'n_estimators'],
+      ['xgboost', 'max_depth'],
+      ['lightgbm', 'num_leaves'],
+      ['hist_gradient_boosting', 'num_leaves'],
+      ['random_forest', 'n_estimators'],
+    ] as const) {
+      const tiny = maxOf(algorithm, key, ROWS.tiny);
+      const medium = maxOf(algorithm, key, ROWS.medium);
+      const large = maxOf(algorithm, key, ROWS.large);
+      // Jest's expect takes no message argument, so the offender is carried in
+      // the compared value instead — a failure names the algorithm and key.
+      expect([algorithm, key, tiny < medium]).toEqual([algorithm, key, true]);
+      expect([algorithm, key, large > medium]).toEqual([algorithm, key, true]);
+    }
+  });
+
+  it('clamps lstm/gru batch_size into the rows band', () => {
+    for (const rows of [100, 400, 5_000]) {
+      const { min, max } = batchSizeBand(rows);
+      for (const algorithm of ['lstm', 'gru']) {
+        for (const variant of tuningVariantsFor(algorithm, { rows })) {
+          expect(Number(variant.batch_size)).toBeGreaterThanOrEqual(min);
+          expect(Number(variant.batch_size)).toBeLessThanOrEqual(max);
+        }
+      }
+    }
+  });
+
+  it('does not size lstm/gru capacity by tier, only batch_size from rows', () => {
+    const noFigure = tuningVariantsFor('lstm');
+    // Once the batch cap stops binding (1,024+ rows) every tier serves the
+    // same list: the tier changes nothing for a sequence model.
+    for (const rows of [ROWS.tiny, ROWS.small, ROWS.medium, ROWS.large]) {
+      expect(tuningVariantsFor('lstm', { rows })).toEqual(noFigure);
+    }
+  });
+});
+
+describe('tuningCandidatesFor', () => {
+  it('excludes a variant identical to what already ran', () => {
+    // MODEL-FLOW-027: ridge variants now carry fit_intercept/solver
+    // alongside alpha, so alreadyTried must be the full record to match by
+    // whole-record equality.
+    const result = tuningCandidatesFor('ridge', {
+      alpha: 0.1,
+      fit_intercept: true,
+      solver: 'auto',
+    });
+    expect(result.some((v) => v.alpha === 0.1)).toBe(false);
+  });
+
+  it('runs whatever exists, even a single variant (ols has only one)', () => {
+    const result = tuningCandidatesFor('ols', { fit_intercept: true });
+    expect(result).toEqual([{ fit_intercept: false }]);
+  });
+
+  it('caps at TUNE_VARIANTS_PER_JOB', () => {
+    const result = tuningCandidatesFor('xgboost', {});
+    expect(result.length).toBeLessThanOrEqual(TUNE_VARIANTS_PER_JOB);
+  });
+
+  it('returns [] for an unknown algorithm, never throws', () => {
+    expect(tuningCandidatesFor('not-a-real-algorithm', {})).toEqual([]);
+  });
+
+  it('keeps the original whole-record comparison for tabular algorithms: a base with an extra key does not cover a variant', () => {
+    // Pinned to PRESERVE pre-existing behaviour, not to endorse it. Comparing
+    // on the variant's keys alone (which lstm/gru need) would exclude the
+    // matching variant here, silently narrowing what a retrain search tries
+    // for a base that carries a key the grid does not name. MODEL-FLOW-027:
+    // ridge variants now carry fit_intercept/solver too, so the "extra key"
+    // this base needs beyond a full variant record is a fourth, made-up one.
+    const result = tuningCandidatesFor('ridge', {
+      alpha: 0.01,
+      fit_intercept: true,
+      solver: 'auto',
+      unrelated_extra_key: true,
+    });
+    expect(result).toContainEqual({
+      alpha: 0.01,
+      fit_intercept: true,
+      solver: 'auto',
+    });
+  });
+
+  it('with no size figure is what it was before sizing existed', () => {
+    expect(tuningCandidatesFor('xgboost', {})).toEqual(
+      TUNING_GRID.xgboost.slice(0, TUNE_VARIANTS_PER_JOB),
+    );
+    expect(tuningCandidatesFor('xgboost', {}, {})).toEqual(
+      tuningCandidatesFor('xgboost', {}),
+    );
+  });
+
+  it('builds the variants from the tier the size figure selects', () => {
+    expect(tuningCandidatesFor('xgboost', {}, { rows: ROWS.tiny })).toEqual(
+      TUNING_GRID_OVERRIDES.tiny.xgboost,
+    );
+    expect(tuningCandidatesFor('xgboost', {}, { rows: ROWS.large })).toEqual(
+      TUNING_GRID_OVERRIDES.large.xgboost,
+    );
+  });
+
+  it('still never re-runs the base setting inside a tier', () => {
+    const base = TUNING_GRID_OVERRIDES.tiny.xgboost[0];
+    const result = tuningCandidatesFor('xgboost', base, {
+      rows: ROWS.tiny,
+    });
+    expect(result).not.toContainEqual(base);
+    expect(result).toHaveLength(3);
+  });
+
+  describe('lstm/gru', () => {
+    const base = {
+      epochs: 50,
+      batch_size: 32,
+      hidden_size: 64,
+      sequence_length: 48,
+    };
+
+    it.each(['lstm', 'gru'])(
+      '%s: up to 4 variants, each carrying the base sequence_length',
+      (algorithm) => {
+        const result = tuningCandidatesFor(algorithm, base);
+        expect(result.length).toBeGreaterThan(0);
+        expect(result.length).toBeLessThanOrEqual(TUNE_VARIANTS_PER_JOB);
+        for (const variant of result) {
+          expect(variant.sequence_length).toBe(48);
+          expect(Object.keys(variant).sort()).toEqual([
+            'batch_size',
+            'epochs',
+            'hidden_size',
+            'sequence_length',
+          ]);
+        }
+      },
+    );
+
+    it('carries nothing when the base has no sequence_length', () => {
+      const result = tuningCandidatesFor('lstm', {
+        epochs: 50,
+        batch_size: 32,
+        hidden_size: 64,
+      });
+      for (const variant of result) {
+        expect(Object.keys(variant)).not.toContain('sequence_length');
+      }
+    });
+
+    it('does not re-run the base when it equals a variant on the variant keys', () => {
+      // The base carries an extra key (sequence_length) no variant names, so a
+      // whole-record comparison would never match and the base would come back
+      // as its own tuning variant.
+      const variant = TUNING_GRID.lstm[1];
+      const result = tuningCandidatesFor('lstm', {
+        ...variant,
+        sequence_length: 24,
+      });
+      expect(result).toHaveLength(3);
+      expect(result.map((v) => v.epochs)).not.toContain(variant.epochs);
+    });
+
+    it('keeps batch_size inside the rows band', () => {
+      const { min, max } = batchSizeBand(100);
+      for (const variant of tuningCandidatesFor('lstm', base, { rows: 100 })) {
+        expect(Number(variant.batch_size)).toBeGreaterThanOrEqual(min);
+        expect(Number(variant.batch_size)).toBeLessThanOrEqual(max);
+      }
+    });
+  });
+});
+
+/**
+ * MODEL-FLOW-026. Step 3's hand-added variant rows. The rule is the same one
+ * the grid obeys — never buy a fit that is already going to run — applied to
+ * a list the USER wrote, so every exclusion here is one the table above it
+ * must also be able to explain.
+ */
+describe('distinctExtraVariants', () => {
+  it('keeps a variant the base and the grid do not already cover', () => {
+    const grid = [{ alpha: 0.01 }];
+    expect(
+      distinctExtraVariants('ridge', [{ alpha: 7 }], { alpha: 1 }, grid),
+    ).toEqual([{ alpha: 7 }]);
+  });
+
+  it('drops one identical to the base — that fit already runs as candidate 1', () => {
+    expect(
+      distinctExtraVariants('ridge', [{ alpha: 1 }], { alpha: 1 }, []),
+    ).toEqual([]);
+  });
+
+  it('drops one the grid already tries', () => {
+    expect(
+      distinctExtraVariants('ridge', [{ alpha: 0.01 }], { alpha: 1 }, [
+        { alpha: 0.01 },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('collapses two identical hand-typed rows to one', () => {
+    expect(
+      distinctExtraVariants(
+        'ridge',
+        [{ alpha: 7 }, { alpha: 7 }],
+        { alpha: 1 },
+        [],
+      ),
+    ).toEqual([{ alpha: 7 }]);
+  });
+
+  it('is not capped at TUNE_VARIANTS_PER_JOB — the cap bounds the curated list, not what the user asked for', () => {
+    const extras = [2, 3, 4, 5, 6].map((alpha) => ({ alpha }));
+    expect(
+      distinctExtraVariants('ridge', extras, { alpha: 1 }, []),
+    ).toHaveLength(5);
+    expect(extras.length).toBeGreaterThan(TUNE_VARIANTS_PER_JOB);
+  });
+
+  it('carries the base sequence_length onto an lstm variant, as tuningCandidatesFor does', () => {
+    expect(
+      distinctExtraVariants(
+        'lstm',
+        [{ epochs: 10, hidden_size: 16, batch_size: 32 }],
+        { epochs: 30, hidden_size: 32, batch_size: 128, sequence_length: 24 },
+        [],
+      ),
+    ).toEqual([
+      { epochs: 10, hidden_size: 16, batch_size: 32, sequence_length: 24 },
+    ]);
+  });
+
+  it('returns [] for no extras', () => {
+    expect(distinctExtraVariants('ridge', [], { alpha: 1 }, [])).toEqual([]);
+  });
+});

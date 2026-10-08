@@ -2,7 +2,9 @@
   "name": "boxplot_outlier_cap_truncates",
   "engine": "boxplot",
   "input": {
-    "tags": ["TI-101"],
+    "tags": [
+      "TI-101"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -188,7 +190,9 @@
   },
   "config": {
     "source_key": "fixture/chart-artifact.parquet",
-    "tags": ["TI-101"],
+    "tags": [
+      "TI-101"
+    ],
     "outlier_cap": 3
   },
   "expected": {
@@ -204,7 +208,11 @@
         "max": 652,
         "whisker_low": 67,
         "whisker_high": 75,
-        "outliers": [-518, -498, -478],
+        "outliers": [
+          -518,
+          -498,
+          -478
+        ],
         "outlier_count": 8,
         "count": 20
       }

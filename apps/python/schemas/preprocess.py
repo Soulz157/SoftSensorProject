@@ -17,7 +17,13 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from intergrations.object_store import DATA_FILENAME
+from intergrations.object_store import (
+    DATA_FILENAME,
+    draft_run_prefix,
+    draft_runs_prefix,
+    is_committed_artifact_key,
+    is_draft_run_prefix,
+)
 from schemas.data_source import PIFetchRequest, SQLQueryRequest
 
 # Ceilings chosen so a preview always answers inside PYTHON_TIMEOUT.metadata
@@ -30,6 +36,39 @@ DEFAULT_PREVIEW_ROWS = 20
 # DS-LAKE-005B-A-T06. A chart never needs more points than it has pixels for;
 # 10,000 is generous headroom above any realistic viewport width.
 MAX_DOWNSAMPLE_POINTS = 10_000
+
+# MODEL-FLOW-004. `run_predictions` serves a training run's ENTIRE test split
+# with no decimation branch — the largest observed run is 4,633 rows, and a
+# decimated series must never feed a distribution plot (LTTB preserves a time
+# series' visual shape, not its value distribution), so histogram/Q-Q would
+# need a second, server-side implementation the day this cap is exceeded.
+# Comfortably under MAX_SAMPLE_ROWS; a run this large is refused by name
+# rather than silently decimated, so the refusal is legible when it happens.
+MAX_PREDICTION_POINTS = 20_000
+
+# MODEL-FLOW-017-T02. Step 4 Model Selection renders every terminal
+# candidate's actual-vs-predicted series at once — the caller MAX_PREDICTION_
+# POINTS' own comment named as the day decimation could no longer be
+# deferred. Two independent ceilings, because the worst case is bounded on
+# BOTH axes, not one:
+#
+# MAX_PREDICTION_BATCH_RUNS caps how many runs one call may decimate.
+# CreateCandidateJobSchema caps a submitted set at 20
+# (dto/model-candidate-job.authorized.dto.ts), but SWEEP_THEN_TUNE appends a
+# phase-2 group to the SAME candidates array once phase 1 exhausts, bounded
+# by TUNE_VARIANTS_PER_JOB=4 (lib/tuning-grid.ts) — so 24, not 20, is the
+# real ceiling a caller can present. Refused by name rather than truncated,
+# same discipline as MAX_PREDICTION_POINTS above: whoever raises either cap
+# must re-derive it from source, not from this comment.
+#
+# MAX_PREDICTION_BATCH_POINTS caps points PER RUN. The client asks for 1,000
+# (chosen so 24 runs decimated at once stays under ~1.6 MB of JSON, measured
+# against the largest real predictions.parquet observed: 4,633 rows / 68.7
+# bytes per point as JSON) — this ceiling is deliberately looser (2,000) so
+# a caller with a smaller candidate set can ask for more detail per chart
+# without a schema change.
+MAX_PREDICTION_BATCH_RUNS = 24
+MAX_PREDICTION_BATCH_POINTS = 2_000
 # When max_points is set, build_preview runs operations over the FULL
 # tag/time-filtered window instead of sample_rows' head cut (V05's "local
 # extrema of the source series" cannot be reachable if the series was
@@ -60,11 +99,14 @@ class CleaningOperation(BaseModel):
     # Domain-friendly aliases.
     window: Optional[int] = Field(None, description="smooth{moving_avg}")
     alpha: Optional[float] = Field(None, description="smooth{exponential}")
-    threshold: Optional[float] = Field(
-        None, description="remove_outlier{zscore}")
+    threshold: Optional[float] = Field(None, description="remove_outlier{zscore}")
     value: Optional[float] = Field(None, description="fill_missing{constant}")
     min: Optional[float] = Field(None, description="clip lower bound")
     max: Optional[float] = Field(None, description="clip upper bound")
+
+    # DS-LAKE-032. Inclusive naive wall-clock window for clip/crop/exclude.
+    start_time: Optional[str] = Field(None, alias="startTime")
+    end_time: Optional[str] = Field(None, alias="endTime")
 
     model_config = {"populate_by_name": True}
 
@@ -86,6 +128,10 @@ class CleaningOperation(BaseModel):
                 payload[name] = found
         if self.param_low is not None:
             payload["paramLow"] = self.param_low
+        if self.start_time is not None:
+            payload["startTime"] = self.start_time
+        if self.end_time is not None:
+            payload["endTime"] = self.end_time
         return payload
 
 
@@ -126,6 +172,74 @@ class ArtifactStatsResponse(BaseModel):
     #: from claiming an uncomputed feature ran). Always [] for materialize/
     #: clean, which never call apply_features.
     skipped_features: list[str] = []
+    #: DS-LAKE-018-T03. Rows written to `validate_data.parquet` — None means
+    #: no holdout was requested; only `materialize()` ever sets this.
+    #: BUGFIX (found during T05): `_stats_payload` has put this in the
+    #: response dict since T03, but it was never declared HERE — FastAPI's
+    #: `response_model=ArtifactStatsResponse` on `/materialize` was silently
+    #: stripping it from every real HTTP response, so NestJS has never
+    #: actually received a value (unit tests call `artifact_service.
+    #: materialize` directly and never saw the gap; only a real HTTP round
+    #: trip does).
+    validation_row_count: Optional[int] = None
+    #: DS-LAKE-018-T05. The resolved holdout boundary, same string
+    #: `replay_holdout`'s own `holdout_from` expects — so NestJS can persist
+    #: DatasetArtifact.validationHoldoutFrom and hand it straight back at
+    #: replay time without re-deriving it. None under the same condition as
+    #: validation_row_count above.
+    validation_holdout_from: Optional[str] = None
+    #: MODEL-FLOW-010-T06. Share of `validate_data.parquet` cells that are
+    #: not Good, captured at write time while the frame is already in
+    #: memory. None under the same condition as validation_row_count above.
+    #: Declared here deliberately, unlike the bug T05's own comment records
+    #: above — an undeclared field on this response_model is silently
+    #: stripped from the real HTTP response even though `_stats_payload`
+    #: puts it in the dict.
+    validation_missing_pct: Optional[float] = None
+    #: DS-LAKE-023-T05. Rows `drop_bad_feature_rows` removed before
+    #: `to_model_ready` ran on THIS write — None for a caller that never
+    #: scales (materialize/clean). Declared here for the SAME reason
+    #: validation_missing_pct is, per the comment directly above: an
+    #: undeclared field is silently stripped from the real HTTP response.
+    dropped_bad_rows: Optional[int] = None
+
+
+class ExportRequest(BaseModel):
+    """DS-LAKE-021-T01. `source_key` is the committed FINAL artifact's
+    data.parquet key — NestJS resolves which artifact is FINAL and passes
+    its objectKey verbatim, same convention every other *Request here uses.
+
+    DS-LAKE-021-T04: `target_key` is the EXPORT artifact's OWN key (its own
+    `/artifacts/{exportArtifactId}/export.csv`, minted by NestJS the same
+    way `FeaturesRequest.target_key` already is) — an export used to derive
+    its own key via `sidecar_key(source_key, ...)`, landing INSIDE the
+    source artifact's own prefix; reclaiming it then risked deleting the
+    source's own data.parquet too. Writing to a NestJS-chosen `target_key`
+    instead gives the export its own prefix, same as every other committed
+    artifact type."""
+
+    source_key: str
+    target_key: str
+    #: DS-LAKE-028-T05. The SOURCE artifact's `feature_spec.json` key, so the
+    #: export can invert its columns back to engineering units on the way out.
+    #: NestJS passes the FINAL row's own `featureSpecKey` (EXPORT rows carry
+    #: none of their own — 0 of 5 live ones do — while their parent FINAL
+    #: carries it on 5 of 5, so this is one hop, not a lineage walk).
+    #: Optional and defaulted: a source with no spec exports its bytes as
+    #: they are, which is correct for a frame that was never scaled.
+    feature_spec_key: str | None = None
+
+
+class ExportStatsResponse(BaseModel):
+    """What NestJS persists on the new EXPORT DatasetArtifact row."""
+
+    object_key: str
+    row_count: int
+    #: LOGICAL tag count — __status columns are dropped, so this is the
+    #: same count FINAL's own columnCount already records, not 2N+1.
+    column_count: int
+    size_bytes: int
+    checksum: str
 
 
 class ArtifactPresignRequest(BaseModel):
@@ -150,23 +264,536 @@ class ArtifactPresignResponse(BaseModel):
     #: downloaded against what NestJS recorded on the run row.
     checksum: str
     row_count: int
+    #: MODEL-SERVE-007-T06. The bucket `source_key` is relative to, so a run
+    #: manifest can record a LOCATION rather than half of one. This service is
+    #: the only component that knows the bucket name — NestJS has no S3
+    #: configuration at all — so it has to travel on this response.
+    #:
+    #: DECLARED HERE OR IT DOES NOT EXIST: FastAPI filters the handler's return
+    #: value through this response_model and DROPS any key the model does not
+    #: declare, silently and with no error. A field added only to
+    #: `artifact_service.presign_artifact` never reaches the wire.
+    #:
+    #: Optional so a caller that does not care is unaffected; the consumer
+    #: (run_manifest.json's gold_bucket) already treats absence as "resolve it
+    #: from the key", which is correct for every manifest written before this.
+    bucket: str | None = None
     expires_at: str
 
 
 class ModelRunUploadPresignRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    model_id: str
+    #: EXACTLY ONE of model_id / draft_id — same "never neither" shape
+    #: Prisma's ModelTrainingRun.modelId/modelDraftId CHECK constraint uses.
+    #: A run started from the wizard has no model_id yet (MODEL-FLOW-003-T08)
+    #: and writes under drafts/{draftId}/runs/{runId}/ instead.
+    model_id: str | None = None
+    draft_id: str | None = None
     run_id: str
-    #: Filenames under models/{modelId}/runs/{runId}/. Explicit rather than
-    #: "presign everything" so a run that produced no predictions.parquet is
-    #: not handed a URL implying it should have.
+    #: Filenames under {models|drafts}/{ownerId}/runs/{runId}/. Explicit
+    #: rather than "presign everything" so a run that produced no
+    #: predictions.parquet is not handed a URL implying it should have.
     filenames: list[str]
+
+    @model_validator(mode="after")
+    def exactly_one_owner(self) -> "ModelRunUploadPresignRequest":
+        if (self.model_id is None) == (self.draft_id is None):
+            raise ValueError(
+                "Provide exactly one of 'model_id' or 'draft_id'. A presign "
+                "request naming both or neither cannot resolve a single "
+                "unambiguous run-output prefix."
+            )
+        return self
 
 
 class ModelRunUploadPresignResponse(BaseModel):
     upload_urls: dict[str, str]
     expires_at: str
+
+
+class ModelRunPredictionsRequest(BaseModel):
+    """MODEL-FLOW-004. Reads a training run's `predictions.parquet` and
+    parses it — unlike `/artifacts/presign`, which only mints a URL, this
+    endpoint exists because a run's test-split predictions have no `__status`
+    sidecar columns and so cannot go through `/rows`' `sample_rows` path
+    (`services/preview_service.sample_rows` assumes one).
+
+    `source_key` is guarded structurally (`is_draft_run_key` or
+    `is_model_run_key`, filename `PREDICTIONS_FILENAME`) rather than by an
+    id pair — NestJS already resolved which run's key this is from the
+    `ModelTrainingRun` row before calling here, the same division of labour
+    `/artifacts/presign` uses for a committed artifact's `source_key`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's predictions.parquet key.")
+    #: Absent means no manifest read — `derived_from_target`/`target_scaled`
+    #: come back null, same "missing sidecar is null, not a failure"
+    #: convention `presign_artifact`'s `sidecars` uses.
+    manifest_key: str | None = None
+
+
+class RunCvGapPoint(BaseModel):
+    """MODEL-SERVE-026-T05. One fold-test row of the CV-gap series."""
+
+    fold: int
+    timestamp: str
+    y_true: float
+    #: The candidate CONFIGURATION refitted on this fold's train window.
+    y_pred: float
+    #: The current version's prediction; null before its own cut.
+    y_pred_current: float | None
+
+
+class RunCvGapResponse(BaseModel):
+    source_key: str
+    row_count: int
+    points: list[RunCvGapPoint]
+
+
+class RunPredictionPoint(BaseModel):
+    #: ISO 8601, `sep=" "` — same convention `sample_rows`/
+    #: `get_frame_metadata` already use for a parsed timestamp.
+    timestamp: str
+    y_true: float
+    y_pred: float
+
+
+class ModelRunPredictionsResponse(BaseModel):
+    source_key: str
+    #: Rows in the FULL frame — always `len(points)` here, because this
+    #: endpoint has no decimation branch (see `MAX_PREDICTION_POINTS`). Named
+    #: explicitly anyway so a caller never has to assume the two agree.
+    row_count: int
+    #: Residual population SD, computed over the full frame — the number the
+    #: Actual-vs-Predicted and Residual charts draw their ±k·SD bands around.
+    residual_sd: float
+    #: Cross-check only. The run's own `metrics.json` (`r2`/`rmse`, already
+    #: on the `ModelTrainingRun` row) are the numbers the UI displays; this
+    #: is recomputed from `predictions.parquet` so a divergence between the
+    #: two files is detectable, not so a caller has a second RMSE to choose
+    #: between.
+    residual_rmse_check: float
+    y_true_min: float
+    y_true_max: float
+    y_pred_min: float
+    y_pred_max: float
+    points: list[RunPredictionPoint]
+    #: From `run_manifest.json` when `manifest_key` was given and the object
+    #: exists. `derived_from_target` is the MODEL-FLOW-000-T02 leakage
+    #: guard's own record — non-empty means the request contract at serve
+    #: time differs (MODEL-SERVE-002-T06), which this feature does not build
+    #: but must not misrepresent by omitting. Both null if no manifest.
+    derived_from_target: list[str] | None = None
+    target_scaled: bool | None = None
+
+
+class RunPredictionsBatchRequest(BaseModel):
+    """MODEL-FLOW-017-T02/T03. Decimated actual/predicted series for N runs
+    in one call — Step 4 Model Selection's overlay + small-multiple charts,
+    never Step 5's single full-width chart (that stays on
+    `ModelRunPredictionsRequest`, undecimated).
+
+    `keys` are `predictions.parquet` object keys, already resolved by
+    NestJS off the `ModelTrainingRun` rows it looked up — same division of
+    labour `ModelRunPredictionsRequest.source_key` uses, just N of them.
+    Each is guarded structurally on read, not accepted on trust.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    keys: list[str] = Field(..., min_length=1, max_length=MAX_PREDICTION_BATCH_RUNS)
+    #: Per-run point budget. Bounded by MAX_PREDICTION_BATCH_POINTS, not
+    #: MAX_PREDICTION_POINTS — that ceiling governs the undecimated
+    #: single-run endpoint and has no bearing on a decimated series' size.
+    max_points: int = Field(default=1_000, ge=3, le=MAX_PREDICTION_BATCH_POINTS)
+
+
+class RunPredictionsBatchItem(BaseModel):
+    """One run's decimated series, or its failure — MODEL-FLOW-017-T02.
+
+    Soft-fail per run, mirroring the per-candidate loss-history hydration
+    precedent (`model-candidate-job.authorized.service.ts`'s
+    `reconcileAndShape`): a candidate list is data the whole screen depends
+    on, so one run's unreadable artifact must not blank every other
+    candidate's chart. `error` non-null means every other field but
+    `source_key` is a placeholder (`None`/`0`/`[]`/`False`), never a
+    best-effort partial result a caller could mistake for real data.
+    """
+
+    source_key: str
+    row_count: int | None = None
+    residual_sd: float | None = None
+    residual_rmse_check: float | None = None
+    y_true_min: float | None = None
+    y_true_max: float | None = None
+    y_pred_min: float | None = None
+    y_pred_max: float | None = None
+    #: DECIMATED. y_true and y_pred share every kept timestamp by
+    #: construction — see `run_predictions_batch`'s own docstring for why
+    #: bucketing is keyed on y_true and never derived independently per
+    #: column.
+    points: list[RunPredictionPoint] = Field(default_factory=list)
+    #: TRUE count this run's frame held before decimation — same
+    #: `points`/`row_count`/`downsampled` triple `DraftScatterResult`
+    #: already establishes, so a chart can state "N of M shown".
+    downsampled: bool = False
+    error: str | None = None
+
+
+class RunPredictionsBatchResponse(BaseModel):
+    results: list[RunPredictionsBatchItem]
+
+
+class ModelObjectVerifyRequest(BaseModel):
+    """MODEL-SERVE-001-T05. Existence + checksum check for ONE training-run
+    output object, called by promote/rollback BEFORE flipping a
+    `ModelVersion`'s stage. Deliberately separate from `/artifacts/presign`:
+    that endpoint is hard-restricted to committed artifact `data.parquet`
+    keys (`is_committed_artifact_key`), and `model.joblib` is not one —
+    conflating the two guards would let a promote check accept a key it
+    should refuse, or a presign accept one it should not.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's model.joblib key.")
+
+
+class ModelObjectVerifyResponse(BaseModel):
+    exists: bool
+    #: Recomputed from the object's own bytes, same discipline
+    #: `ArtifactPresignResponse.checksum` uses — null when `exists` is
+    #: false, since there is nothing to hash.
+    checksum: str | None = None
+
+
+class RunObjectPresignRequest(BaseModel):
+    """MODEL-FLOW-016-T08/T07. Presigns a training-run-scoped object for
+    READING — `validate_ready.parquet` (the model-ready holdout
+    `tryReplayHoldout`, model-run.authorized.service.ts, writes under a
+    run's own prefix) or `model.joblib` (the holdout-scoring container's own
+    claim step, T07). Deliberately separate from `/artifacts/presign`: that
+    endpoint is hard-restricted to `is_committed_artifact_key` (a committed
+    DATASET artifact's data.parquet), which a run-scoped object under
+    drafts/{draftId}/runs/{runId}/ or models/{modelId}/runs/{runId}/ is not
+    — the exact refusal `presign_run_object`'s own docstring records as
+    having silently swallowed every holdout score in this system to date.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's validate_ready.parquet or model.joblib key."
+    )
+
+
+class RunObjectPresignResponse(BaseModel):
+    data_url: str
+    #: Always empty — a run-scoped object has no sidecars. Kept in the
+    #: response only so its shape matches `ArtifactPresignResponse` and the
+    #: TypeScript caller can reuse that same parsed type without a second
+    #: zod schema.
+    sidecar_urls: dict[str, str | None]
+    checksum: str
+    #: None for model.joblib — a pickled estimator has no row count.
+    #: Real only for validate_ready.parquet.
+    row_count: int | None
+    expires_at: str
+
+
+class InferenceWindowUploadPresignRequest(BaseModel):
+    """MODEL-SERVE-006-T06. Mints WRITE URLs for one inference window's own
+    outputs (predictions.parquet, metrics.json) — mirrors
+    `PredictionJobUploadPresignRequest`'s exact shape one root over
+    (inference/{modelId}/{modelVersionId}/dt=.../hour=.../ instead of
+    predictions/{modelId}/{jobId}/). `dt`/`hour` are supplied by the
+    caller (NestJS, computed from the window's own windowStart in UTC),
+    never derived here — same discipline `inference_window_prefix`'s own
+    doc comment states."""
+
+    model_config = {"extra": "forbid"}
+
+    model_id: str
+    model_version_id: str
+    dt: str = Field(..., examples=["2026-09-10"])
+    hour: str = Field(..., examples=["08"])
+    filenames: list[str] = Field(..., min_length=1, max_length=3)
+
+
+class InferenceWindowUploadPresignResponse(BaseModel):
+    upload_urls: dict[str, str]
+    expires_at: str
+
+
+class InferenceWindowObjectPresignRequest(BaseModel):
+    """MODEL-SERVE-006-T06. Presigns an inference window's own
+    predictions.parquet for READING — deliberately separate from
+    `/artifacts/presign` for the same reason
+    `PredictionJobObjectPresignRequest` is: an inference-window object
+    satisfies neither of `is_committed_artifact_key`'s conditions."""
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The window's predictions.parquet key.")
+
+
+class InferenceWindowObjectPresignResponse(BaseModel):
+    data_url: str
+    sidecar_urls: dict[str, str | None]
+    checksum: str
+    row_count: int | None
+    expires_at: str
+
+
+class PredictionJobUploadPresignRequest(BaseModel):
+    """MODEL-SERVE-003. Mints WRITE URLs for a batch container's own two
+    outputs (output.parquet, batch_manifest.json) — mirrors
+    `ModelRunUploadPresignRequest`'s exact shape one root over
+    (predictions/{modelId}/{jobId}/ instead of {models|drafts}/{ownerId}/
+    runs/{runId}/). No draft/model split needed here: a PredictionJob always
+    has a modelId (Save Model already happened by the time a model can be
+    promoted to PRODUCTION and scored)."""
+
+    model_config = {"extra": "forbid"}
+
+    model_id: str
+    job_id: str
+    filenames: list[str] = Field(
+        ..., description="Filenames under predictions/{modelId}/{jobId}/."
+    )
+
+
+class PredictionJobUploadPresignResponse(BaseModel):
+    upload_urls: dict[str, str]
+    expires_at: str
+
+
+class PredictionJobObjectPresignRequest(BaseModel):
+    """MODEL-SERVE-003. Presigns a PredictionJob's own output.parquet for
+    READING — deliberately separate from `/artifacts/presign`: that endpoint
+    is hard-restricted to `is_committed_artifact_key`, which a prediction-job
+    output satisfies neither condition of (no /artifacts/ segment, no
+    ALL_DATA_FILENAMES match). Mirrors `RunObjectPresignRequest`'s exact
+    shape one root over — see `presign_prediction_job_object`'s own
+    docstring for why reusing `/artifacts/presign` here would repeat the
+    exact mistake `presign_run_object` was built to fix."""
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The job's output.parquet key.")
+
+
+class PredictionJobObjectPresignResponse(BaseModel):
+    data_url: str
+    #: Always empty — a prediction-job output has no sidecars in the
+    #: /artifacts/presign sense. Kept only so the response shape matches
+    #: ArtifactPresignResponse/RunObjectPresignResponse.
+    sidecar_urls: dict[str, str | None]
+    checksum: str
+    row_count: int | None
+    expires_at: str
+
+
+class RunLossHistoryRequest(BaseModel):
+    """MODEL-FLOW-013-T05/T07. Reads a training run's `loss_history.json`
+    verbatim — it is already the exact shape the client renders (see
+    `extract_loss_history` in `images/trainer/train.py`), so this is a
+    read-and-validate, not a parse-and-reshape like `run_predictions`.
+
+    `source_key` is guarded the same structural way `run_predictions`
+    guards its own — NestJS already resolved which run's key this is off
+    the `ModelTrainingRun` row before calling here.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's loss_history.json key.")
+
+
+class RunLossHistoryResponse(BaseModel):
+    algorithm: str
+    #: "rmse" for lightgbm/xgboost (the same number metrics.json reports);
+    #: "loss" for mlp/hist_gradient_boosting, whose native trajectory is in
+    #: the estimator's own loss units — never assumed comparable across
+    #: algorithms.
+    metric: str
+    series: dict[str, list[float]]
+
+
+class RunCvFoldsRequest(BaseModel):
+    """MODEL-FLOW-016-T11. Reads a training run's `cv_folds.json` verbatim —
+    already exactly the response shape (`images/trainer/train.py` writes it
+    that way on purpose, MODEL-FLOW-016-T04) — a read-and-validate, not a
+    parse-and-reshape, same discipline as `RunLossHistoryRequest`.
+
+    `source_key` is guarded the same structural way `run_predictions` and
+    `RunLossHistoryRequest` guard their own.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's cv_folds.json key.")
+
+
+class CvFoldRecord(BaseModel):
+    fold: int
+    cut_timestamp: str
+    train_rows: int
+    test_rows: int
+    distinct: int
+    r2: float
+    rmse: float
+    mae: float
+    train_r2: float
+    train_rmse: float
+    train_mae: float
+
+
+class RunCvFoldsResponse(BaseModel):
+    algorithm: str
+    n_splits: int
+    folds: list[CvFoldRecord]
+
+
+class RunFeatureImportanceRequest(BaseModel):
+    """MODEL-FLOW-019-T09. Reads a training run's `feature_importance.json`
+    verbatim — already exactly the response shape
+    (`images/trainer/app/importance.py` writes it that way on purpose) — a
+    read-and-validate, not a parse-and-reshape, same discipline as
+    `RunCvFoldsRequest`/`RunLossHistoryRequest`.
+
+    `source_key` is guarded the same structural way those requests guard
+    their own.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's feature_importance.json key.")
+
+
+class FeatureImportanceEntry(BaseModel):
+    name: str
+    #: Always non-negative — for a coefficient method this is `abs(coefficient)`,
+    #: never the signed value, so ranking and "share of total" stay meaningful.
+    importance: float
+    #: Present only for a coefficient method ("coefficient"/"pls-coefficient")
+    #: — the signed value, absent for "impurity" where no such quantity exists.
+    coefficient: float | None = None
+
+
+class RunFeatureImportanceResponse(BaseModel):
+    algorithm: str
+    #: "impurity" (feature_importances_), "coefficient" (raw coef_), or
+    #: "pls-coefficient" (coef_ on a latent-component projection, kept
+    #: distinct from "coefficient" — never assumed the same quantity).
+    method: str
+    #: Whether the inputs were scaled — only meaningful for a coefficient
+    #: method; `None` for "impurity". A coefficient over unscaled inputs
+    #: ranks by unit, not by influence (MODEL-FLOW-019 AC27) — the CLIENT
+    #: refuses to rank when this is `False`.
+    standardized: bool | None
+    scaling_methods: list[str]
+    features: list[FeatureImportanceEntry]
+
+
+class RunPermutationImportanceRequest(BaseModel):
+    """MODEL-FLOW-023-T10. Reads a training run's
+    `permutation_importance.json` verbatim — same discipline as
+    `RunFeatureImportanceRequest`, file for file.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's permutation_importance.json key."
+    )
+
+
+class PermutationFeatureImportanceEntry(BaseModel):
+    name: str
+    #: The CLAMPED value (`max(0, importance_raw)`) — safe to sum for a share
+    #: column. Never abs() — a negative drop means "no contribution", and
+    #: abs() would rank that above a genuinely weak-but-positive feature.
+    importance: float
+    #: The signed mean drop across `n_repeats` reshuffles, unclamped — kept
+    #: beside `importance` the same two-fields-not-one shape a coefficient
+    #: method uses for its own signed value.
+    importance_raw: float
+    #: Population std (ddof=0) of the per-repeat drop. REQUIRED, never
+    #: optional — a permutation figure never renders without its spread.
+    std: float
+
+
+class RunPermutationImportanceResponse(BaseModel):
+    algorithm: str
+    #: Always "permutation" today — a distinct string from
+    #: RunFeatureImportanceResponse.method's four values, so a client can
+    #: never mistake one artifact's shape for the other's.
+    method: str
+    #: The population permutation was scored against, read VERBATIM off the
+    #: artifact — "test_windows" for lstm/gru today. Never derived from a
+    #: run's CV/scoring phase client-side (MODEL-FLOW-019 records that
+    #: derivation added and removed five times under different names).
+    scored_on: str
+    #: MODEL-FLOW-023-T10/AC16. The scored population's own size — a WINDOW
+    #: count for a sequence run, never assumed to be a row count. The unit
+    #: is not named here; a reader gets it from `scored_on`.
+    n: int
+    #: "rmse", minimised — MODEL-FLOW-005's reason: r2 read -1,110,858 on a
+    #: real run while rmse stayed readable.
+    metric: str
+    n_repeats: int
+    #: The unpermuted metric this run's drops are measured against — a drop
+    #: of 0.04 means nothing without it.
+    baseline_score: float
+    features: list[PermutationFeatureImportanceEntry]
+
+
+class RunManifestRequest(BaseModel):
+    """MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. Reads a training run's
+    `run_manifest.json` for the fields Save Model / ModelVersion creation
+    need that are NOT already a column on `ModelTrainingRun` —
+    gold_object_key, artifact_checksum, target_y, algorithm, hyperparameters,
+    seed, split and metrics ARE already recorded there via `complete()`'s own
+    write, so duplicating those here would be a second, driftable copy of
+    the same facts.
+
+    CORRECTED 2026-09-01 (MODEL-SERVE-001-T01): this docstring previously
+    listed `model_sha256` alongside those already-a-column fields. It is
+    not one — verified against `schema.prisma`: `ModelTrainingRun` has
+    `artifactChecksum` (data.parquet) and `tokenHash` (the run token), no
+    model.joblib checksum column at all. `model_sha256` is read from the
+    manifest here, same as `framework_versions` always was.
+
+    `source_key` is guarded the same structural way `RunLossHistoryRequest`
+    guards its own — NestJS already resolved which run's manifest this is off
+    the `ModelTrainingRun` row before calling here.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's run_manifest.json key.")
+
+
+class RunManifestResponse(BaseModel):
+    #: Absent (null) for every run trained by a trainer image before 1.0.3 —
+    #: Save Model must treat this as "not recorded for this run", not fail
+    #: the save. sklearn is always present when set (scalers/preprocessing
+    #: run through it regardless of the final estimator); lightgbm/xgboost
+    #: are present only when that algorithm trained.
+    framework_versions: dict[str, str] | None = None
+    #: MODEL-SERVE-001-T01. sha256 of model.joblib, computed by the trainer
+    #: at fit time. Null for a run trained before the manifest recorded it —
+    #: `ModelVersion.modelChecksum` inherits the same honest-legacy-null
+    #: policy `framework_versions` already established above.
+    model_sha256: str | None = None
+    #: MODEL-FLOW-016-T07. The exact columns, in the exact order, model.
+    #: predict expects — no DB column carries this. Null for a run trained
+    #: before this field was added, same honest-legacy-null policy.
+    feature_columns: list[str] | None = None
 
 
 class ValidationCheckResponse(BaseModel):
@@ -179,6 +806,11 @@ class ValidationCheckResponse(BaseModel):
     measured: Optional[float] = None
     threshold: Optional[float] = None
     offenders: list[str] = Field(default_factory=list)
+    #: DS-LAKE-019-T01. Mirrors `CheckResult.severity` — a property of the
+    #: check's NAME (`validation_service.BLOCKING_CHECKS`), not a per-result
+    #: judgment call, so a client cannot drift from the server's own
+    #: weighting the day a check is added.
+    severity: Literal["blocking", "advisory"]
 
 
 class ValidationReportResponse(BaseModel):
@@ -193,6 +825,10 @@ class ValidationReportResponse(BaseModel):
     quality_score: float
     checks: list[ValidationCheckResponse]
     failed_checks: list[str]
+    #: DS-LAKE-019-T01. Failed checks that did NOT flip `status` to FAIL —
+    #: a strict subset of `failed_checks`. Surfaced separately so the UI can
+    #: show them prominently without implying the save was blocked.
+    advisory_failures: list[str] = Field(default_factory=list)
     validation_report_key: str
 
 
@@ -207,6 +843,20 @@ class SqlMaterializeSpec(BaseModel):
     timestamp_column: str = Field(..., examples=["ts"])
     #: Columns to keep as tags. Omitted means every column but the timestamp.
     tags: Optional[list[str]] = None
+
+
+class HoldoutSplitRequest(BaseModel):
+    """DS-LAKE-018-T03: the raw validation holdout window, selected at Step 2
+    (`describeHoldoutSelection`, apps/client/lib/holdout.ts). Same string
+    convention as `PIFetchRequest.start_time`/`end_time` — a local wall-clock
+    string, compared directly against the materialized frame's own
+    already-localised timestamps (`frame_service._normalise_timestamp`
+    converts to Bangkok-naive), never re-interpreted through a second
+    timezone.
+    """
+
+    from_time: str = Field(..., examples=["2026-08-01 00:00:00"])
+    to_time: str = Field(..., examples=["2026-08-10 00:00:00"])
 
 
 class MaterializeRequest(BaseModel):
@@ -227,6 +877,8 @@ class MaterializeRequest(BaseModel):
     sql: Optional[SqlMaterializeSpec] = None
     #: Committed keys are immutable; only a retry writing a tmp key sets this.
     overwrite: bool = False
+    #: DS-LAKE-018-T03. Absent means no holdout — behaves exactly as today.
+    holdout: Optional[HoldoutSplitRequest] = None
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "MaterializeRequest":
@@ -236,6 +888,322 @@ class MaterializeRequest(BaseModel):
                 "is ambiguous, and one with neither has nothing to read."
             )
         return self
+
+
+class InferenceWindowMaterializeRequest(BaseModel):
+    """MODEL-SERVE-006. Fetch, feature, and trim ONE inference window —
+    the scheduled counterpart of `MaterializeRequest`, sourced from a
+    PINNED recipe instead of a fresh caller-supplied one.
+
+    `feature_columns` is resolved by NestJS off the pinned ModelVersion's
+    `run_manifest.json` (the same hop `model-serving.authorized.service.ts`
+    takes for /predict) — this endpoint never re-derives it. `feature_spec_
+    key` is read here for the `features` recipe only; no scaling happens in
+    this service at all (decisions.batch_input_is_pre_scale one entity
+    over: the container applies `to_model_ready`, exactly as
+    MODEL-SERVE-002/003 already do).
+
+    `window_start`/`window_end` are REAL UTC instants (unlike
+    `HoldoutSplitRequest.from_time`/`to_time`, which are already
+    Bangkok-local wall-clock strings passed through unchanged) — see
+    `frame_service.utc_to_wall_clock`'s own doc comment for why this
+    endpoint converts rather than merely strips the timezone marker the
+    way `artifact_service._wall_clock` does for the (different) values
+    that were never really UTC to begin with.
+
+    `interval` is the fetch cadence (e.g. "1m") snapshotted on
+    InferenceSchedule.fetchConfig at enable time — it is what converts
+    the recipe's own compound lookback (`max_replay_lookback`, counted in
+    ROWS) into a widened fetch DURATION. No cadence is recorded anywhere
+    else that this endpoint could derive it from instead.
+
+    NO `target_key` FIELD, unlike `MaterializeRequest` — this endpoint
+    builds its own key via `inference_window_key`, from `model_id`/
+    `model_version_id`/`dt`/`hour`. `inference/` is python's ONLY writer
+    and ONLY key-builder (see `object_store.INFERENCE_ROOT`'s own doc
+    comment, the same arrangement SERVING_LOG_ROOT already has) — handing
+    NestJS a target_key to construct itself would create a second builder
+    for a root only this side is meant to own.
+    """
+
+    feature_spec_key: str
+    feature_columns: list[str] = Field(..., min_length=1)
+    #: MODEL-SERVE-009-T05. The model's TARGET tag, when the caller knows it.
+    #: Optional because every existing caller predates it and a window
+    #: materializes perfectly well without it — the target is never a feature
+    #: and is dropped by `select_columns` like any other unused base tag.
+    #: Supplied ONLY so the target's own held value and last-changed time can
+    #: be recorded alongside the features' (`tag_observations`), which is
+    #: what makes "the lab reported the same number again" distinguishable
+    #: from "the lab has not reported". It does NOT enter the scored frame,
+    #: and nothing here pairs it with a prediction: that remains the truth
+    #: join's job, behind its EventWeighted Count probe.
+    target_column: Optional[str] = None
+    model_id: str
+    model_version_id: str
+    #: `YYYY-MM-DD` / zero-padded `HH`, computed by NestJS from windowStart
+    #: in UTC — same caller-supplied, never-derived-here discipline
+    #: `inference_window_prefix`'s own doc comment states.
+    dt: str = Field(..., examples=["2026-09-10"])
+    hour: str = Field(..., examples=["08"])
+    window_start: str = Field(..., examples=["2026-09-10T08:00:00.000Z"])
+    window_end: str = Field(..., examples=["2026-09-10T09:00:00.000Z"])
+    interval: str = Field(..., examples=["1m"])
+    pi: Optional[PIFetchRequest] = None
+    sql: Optional[SqlMaterializeSpec] = None
+    #: A retry re-materializing the same window writes over its own prior
+    #: (failed) attempt — the window row, not the object key, is this
+    #: entity's immutability boundary (unlike a committed dataset version).
+    overwrite: bool = True
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> "InferenceWindowMaterializeRequest":
+        if (self.pi is None) == (self.sql is None):
+            raise ValueError(
+                "Provide exactly one of 'pi' or 'sql'. A materialize with both "
+                "is ambiguous, and one with neither has nothing to read."
+            )
+        return self
+
+
+class InferenceWindowMaterializeResponse(BaseModel):
+    """MODEL-SERVE-006-T05. A dedicated, narrow response — NOT
+    `ArtifactStatsResponse`, which carries several fields (column_stats_key,
+    feature_spec_key, skipped_features, validation_*) that mean nothing for
+    a pre-scale scoring input and would invite a caller to read a field this
+    endpoint never populates meaningfully.
+    """
+
+    object_key: str
+    #: Rows inside [window_start, window_end) after feature computation,
+    #: BEFORE dropping any row with a Bad feature cell — the denominator
+    #: `missing_pct` is computed against.
+    row_count: int
+    #: Rows actually written to `object_key` — after `drop_bad_feature_rows`.
+    #: Never imputed: a row with any Bad kept-feature cell is excluded
+    #: entirely, not filled. This is what `InferenceWindow.inputRows` holds.
+    scored_rows: int
+    missing_pct: float
+    checksum: str
+    #: MODEL-SERVE-001-T17. Per-tag `{counts, below, above}`, bucketed
+    #: against `feature_spec.json`'s frozen `psiRefEdges` — the window-plane
+    #: counterpart of `PredictionLog.featureHistograms`. `None` exactly when
+    #: no tag in the recipe had a frozen reference (a spec that predates
+    #: MODEL-SERVE-001-T13), never a fabricated empty histogram.
+    feature_histograms: dict[str, dict[str, Any]] | None = None
+    #: MODEL-SERVE-001-T17. Per-tag `{n, sum, sumsq, min, max}` in
+    #: MODEL-READY (scaled) units — the window-plane counterpart of
+    #: `PredictionLog.featureStats`. `None` exactly when no feature column
+    #: had a usable `scalingParams` entry to scale with.
+    feature_stats: dict[str, dict[str, float]] | None = None
+    #: MODEL-SERVE-018-T01. The TARGET tag's `{n, sum, sumsq, min, max}` in
+    #: RAW units (the target is never scaled in GOLD). Kept out of
+    #: `feature_stats` so model health never reads it. `None` when there is
+    #: no target_column, the target was not fetched, or the spec is
+    #: `target_scaled`.
+    target_stats: dict[str, float] | None = None
+    #: MODEL-SERVE-018-T01. The TARGET tag's `{counts, below, above}` against
+    #: its frozen `psiRefEdges`. `None` when there is no reference for it.
+    target_histogram: dict[str, Any] | None = None
+    #: MODEL-SERVE-009-T02. Per-tag `{last_value, last_status, observed_at}`
+    #: as of THIS fetch, read from the frame BEFORE `drop_bad_feature_rows`
+    #: — the only point where a Bad cell is still visible. `last_status` is
+    #: the FETCH PATH's arrival health (the `{tag}__status` the pipeline
+    #: itself acts on), never PI's own good/questionable/substituted flag,
+    #: which reaches this system only on the snapshot path
+    #: (MODEL-SERVE-001-T15) and means a different thing. A tag absent from
+    #: the frame is OMITTED rather than reported null — absence of evidence
+    #: is not evidence of a value. Empty `{}` on an empty frame.
+    tag_observations: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class InferenceWindowTruthJoinRequest(BaseModel):
+    """MODEL-SERVE-005-T03. Re-fetch ONE window's TARGET tag on its own,
+    much longer lag and join it to that window's stored predictions.
+
+    The same `pi | sql` fork `InferenceWindowMaterializeRequest` already
+    carries, for the same reason: this side holds the only source
+    credentials in the call. What differs is everything about WHAT is
+    fetched — one column, not the feature set; no recipe replay (the target
+    is a base tag, so `apply_features` and `max_replay_lookback` padding do
+    not apply); and the summary settings are NOT the schedule's own.
+
+    THE SUMMARY SETTINGS ARE OVERRIDDEN, NOT INHERITED — this is the single
+    correctness rule of this endpoint. PI holds a sparse `.lab` tag's last
+    value between samples, so the schedule's `TimeWeighted`/`Average`
+    fetchConfig returns a plausible number for EVERY interval, including
+    every interval in which no lab measurement was ever taken. Joining
+    against that would publish a confident R2 computed against a held
+    value, with nothing anywhere to point at. So the PI branch establishes
+    EVENT PRESENCE first (an `EventWeighted`/`Count` probe) and keeps only
+    intervals that actually carry a lab event.
+
+    `tolerance_seconds` is how near a lab sample must fall to a prediction
+    timestamp to pair with it — the server-side twin of the `toleranceMs`
+    `apps/client/lib/lab-ingestion.ts`'s `alignLabToPredictions` already
+    applies, so both surfaces mean one thing by "aligned".
+
+    NO `target_key` FIELD, same as the materialize request one entity over:
+    `inference/` has exactly one writer and one key-builder, and this
+    endpoint builds `truth.parquet`'s key from `model_id`/`model_version_id`
+    /`dt`/`hour` itself.
+    """
+
+    predictions_key: str
+    target_column: str = Field(..., examples=["S204FBP.lab"])
+    model_id: str
+    model_version_id: str
+    dt: str = Field(..., examples=["2026-09-14"])
+    hour: str = Field(..., examples=["08"])
+    window_start: str = Field(..., examples=["2026-09-14T08:00:00.000Z"])
+    window_end: str = Field(..., examples=["2026-09-14T09:00:00.000Z"])
+    tolerance_seconds: int = Field(..., gt=0, examples=[1800])
+    pi: Optional[PIFetchRequest] = None
+    sql: Optional[SqlMaterializeSpec] = None
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> "InferenceWindowTruthJoinRequest":
+        if (self.pi is None) == (self.sql is None):
+            raise ValueError(
+                "Provide exactly one of 'pi' or 'sql'. A truth join with both "
+                "is ambiguous, and one with neither has nothing to read."
+            )
+        return self
+
+
+class InferenceWindowTruthJoinResponse(BaseModel):
+    """SUMS, never finished metrics. NestJS computes r2/rmse/mae/sd from
+    these (`lib/live-error.ts`), exactly as MODEL-SERVE-005-T01 keeps every
+    aggregate on the NestJS side and lets this service see only rows.
+
+    Sufficient statistics rather than a per-window metric because a window
+    typically carries ZERO lab samples and occasionally one: a per-window
+    RMSE over one sample is a single residual wearing a metric's name.
+    Pooled across windows these give an EXACT rolling metric, never an
+    average of averages.
+
+    Sign convention: `residual = predicted - actual`, matching
+    `apps/client/lib/model-evaluation.ts`'s `computeMetrics` exactly, so
+    Monitoring and Evaluation can never report opposite signs.
+    """
+
+    #: None when nothing paired — no object is written for an empty join,
+    #: and the caller must record "no error", never an error of zero.
+    object_key: Optional[str] = None
+    checksum: Optional[str] = None
+    #: Lab samples that survived the event-presence/Bad-status filters in
+    #: the fetch range. Zero here means the lab has not reported yet.
+    truth_rows: int
+    #: Rows in the window's own predictions.parquet.
+    prediction_rows: int
+    #: Lab samples that found a prediction inside `tolerance_seconds`.
+    #: `truth_rows > 0` with `paired_rows == 0` is a real and different
+    #: state: truth arrived, but none of it lands near a scored row.
+    paired_rows: int
+    n: int
+    sum_se: float
+    sum_ae: float
+    sum_signed: float
+    sum_actual: float
+    sum_actual_sq: float
+
+
+class InferenceWindowTruthSeriesRequest(BaseModel):
+    """MODEL-SERVE-005-T03, read side. The joined pairs for a set of
+    windows, for the Monitoring tab's Actual-vs-Predict and Residual charts.
+
+    TAKES EXPLICIT KEYS, unlike `PredictionLogSeriesRequest`, which walks
+    hour partitions with `list_object_keys`. The difference is deliberate
+    and structural: a sampled prediction log writes a uuid-named object per
+    request, so only a listing can find them, whereas every truth object is
+    already indexed by an `InferenceWindowTruth.pairsKey` column NestJS has
+    in hand. Listing here would re-derive, less reliably, something the
+    database already knows.
+    """
+
+    keys: list[str] = Field(..., min_length=1, max_length=2000)
+    #: Rows returned before truncation — a chart cap, not a retention limit,
+    #: the same meaning PREDICTION_LOG_SERIES_CAP has one entity over.
+    limit: int = Field(5000, ge=1, le=20000)
+
+
+class InferenceWindowTruthPoint(BaseModel):
+    timestamp: str
+    predicted: float
+    actual: float
+    residual: float
+
+
+class InferenceWindowTruthSeriesResponse(BaseModel):
+    points: list[InferenceWindowTruthPoint]
+    #: True when `limit` cut the series — stated rather than silently
+    #: returning a shorter chart that looks like a quiet plant.
+    truncated: bool
+
+
+class InferenceWindowMetricsSeriesRequest(BaseModel):
+    """MODEL-SERVE-011-T12. One point per SCHEDULED window, for the
+    Actual-vs-Predict chart.
+
+    READS metrics.json, NEVER predictions.parquet. Every figure this returns
+    was already computed by the infer container when it wrote the window
+    (`predictionMean/Min/Max/Std`, `rowCount`), so an hourly series costs one
+    small JSON read per window instead of opening a 60-row Parquet frame and
+    re-aggregating it here — a second computation that could drift from the
+    first.
+
+    TAKES EXPLICIT KEYS, for the same reason `InferenceWindowTruthSeries
+    Request` does: NestJS holds every `InferenceWindow.metricsKey` in its own
+    table, so listing a prefix would re-derive, less reliably, what the
+    database already knows.
+    """
+
+    keys: list[str] = Field(..., min_length=1, max_length=2000)
+
+
+class InferenceWindowMetricsPoint(BaseModel):
+    """The window's own boundaries come from INSIDE metrics.json, not from
+    parsing its key's dt=/hour= partition — the container wrote both, and the
+    written value is the one the predictions were actually scored over."""
+
+    key: str
+    window_start: str
+    window_end: str
+    row_count: int
+    prediction_mean: float
+    prediction_min: float
+    prediction_max: float
+    prediction_std: float
+
+
+class InferenceWindowMetricsSeriesResponse(BaseModel):
+    points: list[InferenceWindowMetricsPoint]
+    #: Keys that did not resolve or carried no usable metrics — a reclaimed
+    #: window is a GAP in the chart, never a failed range read, and the count
+    #: is stated rather than left for a reader to infer from a short series.
+    missing: int
+
+
+class ResplitHoldoutRequest(BaseModel):
+    """Re-split an EXISTING, PRISTINE (never-split) BRONZE against a holdout
+    window, without re-fetching from the source.
+
+    `source_key` MUST point at a frame `_split_holdout` has never run on —
+    the caller (NestJS `resplitDraftHoldoutService`) is responsible for
+    resolving the draft's pristine root and refusing an already-split one,
+    since a re-split OF a split result would silently shed the rows the
+    previous split already cut. `holdout` is required (not Optional, unlike
+    `MaterializeRequest.holdout`): clearing a holdout never reaches this
+    endpoint at all — NestJS moves the draft pointer back to the pristine
+    root directly, since the unsplit artifact already IS the no-holdout
+    state.
+    """
+
+    source_key: str
+    target_key: str
+    holdout: HoldoutSplitRequest
+    #: Committed keys are immutable; only a retry writing a tmp key sets this.
+    overwrite: bool = False
 
 
 class CleanRequest(BaseModel):
@@ -327,13 +1295,79 @@ class FeaturesRequest(BaseModel):
     pipeline: `applyFeatures -> precleanse -> ... -> selectColumns ->
     toModelReady`; this endpoint covers the feature/select/scale tail, not
     cleaning, which already happened to produce the SILVER source).
+
+    DS-LAKE-022-T02: `scale` (default True, so every existing caller keeps
+    today's byte-identical combined write) splits the scaling tail out.
+    `scale=False` produces the feature-stage artifact alone — applyFeatures
+    -> selectColumns, no toModelReady, no feature_spec.json — for a caller
+    that will run `ScaleRequest`/`scale()` separately afterward. Both modes
+    stay live side by side; DS-LAKE-022-T04..T07 is what switches the wizard
+    over and eventually retires the `scale=True` path.
     """
 
     source_key: str
     target_key: str
     features: list[FeatureConfigRequest] = Field(default_factory=list)
-    selected_columns: Optional[list[str]] = Field(
-        None, alias="selectedColumns")
+    selected_columns: Optional[list[str]] = Field(None, alias="selectedColumns")
+    scalers: dict[str, str] = Field(default_factory=dict)
+    overwrite: bool = False
+    target_y: str | None = Field(
+        default=None,
+        description=(
+            "The tag the model predicts. Recorded in feature_spec.json and "
+            "force-kept through select_columns. Never scaled."
+        ),
+    )
+    scale: bool = Field(
+        default=True,
+        description=(
+            "DS-LAKE-022-T02. True (default): legacy combined behaviour — "
+            "applyFeatures -> selectColumns -> toModelReady, feature_spec.json "
+            "written here. False: applyFeatures -> selectColumns only, no "
+            "scaling, no feature_spec.json — pair with a later ScaleRequest."
+        ),
+    )
+    #: DS-LAKE-023-T01. The validation holdout window, selected AFTER feature
+    #: engineering rather than at materialize time (`MaterializeRequest`'s own
+    #: `holdout` field, DS-LAKE-018-T03) — same request shape, different
+    #: pipeline stage. Absent means no holdout, exactly as today. Present
+    #: means this call splits AFTER applyFeatures/selectColumns and BEFORE
+    #: `target_key` is written: `target_key` becomes the train side,
+    #: `validate_data.parquet` (written beside it via `sidecar_key`) carries
+    #: the holdout window WITH its derived columns already computed — no
+    #: lead-in, no later replay needed for this artifact.
+    holdout: Optional[HoldoutSplitRequest] = None
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def target_differs_from_source(self) -> "FeaturesRequest":
+        if self.source_key == self.target_key:
+            raise ValueError(
+                "source_key and target_key must differ — a features write "
+                "produces a new artifact and never edits its input in place."
+            )
+        return self
+
+
+class ScaleRequest(BaseModel):
+    """DS-LAKE-022-T02. The trailing half of the old combined `/features`
+    write, split out so a caller can run cleaning BETWEEN feature computation
+    and scaling — see `services.artifact_service.scale`'s own docstring for
+    why order matters here (DEFAULT_SCALER is "minmax", so an empty
+    `scalers` dict still scales every column; this is never a safe no-op to
+    skip calling).
+
+    Carries the full recipe (`features`/`selected_columns`/`scalers`/
+    `target_y`), not just `source_key`/`target_key`, because
+    `build_feature_spec` needs all of it and this is the one call that writes
+    `feature_spec.json` post-split (DS-LAKE-022 decision D2).
+    """
+
+    source_key: str
+    target_key: str
+    features: list[FeatureConfigRequest] = Field(default_factory=list)
+    selected_columns: Optional[list[str]] = Field(None, alias="selectedColumns")
     scalers: dict[str, str] = Field(default_factory=dict)
     overwrite: bool = False
     target_y: str | None = Field(
@@ -347,13 +1381,240 @@ class FeaturesRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
     @model_validator(mode="after")
-    def target_differs_from_source(self) -> "FeaturesRequest":
+    def target_differs_from_source(self) -> "ScaleRequest":
         if self.source_key == self.target_key:
             raise ValueError(
-                "source_key and target_key must differ — a features write "
+                "source_key and target_key must differ — a scale write "
                 "produces a new artifact and never edits its input in place."
             )
         return self
+
+
+class ReplayHoldoutRequest(BaseModel):
+    """DS-LAKE-018-T04. Replays a saved GOLD recipe over the RAW validation
+    holdout (`validate_data.parquet`, DS-LAKE-018-T03), producing a
+    model-ready frame the trained model can score.
+
+    RESOLVED (user decision, not a guess): the holdout stays fully raw —
+    `apply_features -> select_columns -> to_model_ready` only, the same
+    tail `FeaturesRequest` runs, no `apply_operations`/cleaning step at all.
+    Scaler params are SUPPLIED via `scaling_params` (DS-LAKE-018-T02's own
+    `feature_spec.json` field) and never re-fit — fitting fresh on the
+    holdout's own statistics is a silently DIFFERENT, wrong transform (see
+    that task's own finding).
+    """
+
+    source_key: str
+    target_key: str
+    #: The ORIGINAL holdout boundary (same string convention as
+    #: `HoldoutSplitRequest.from_time`) — rows in `source_key` before this
+    #: are lead-in scaffolding for lag/rolling, trimmed AFTER replay, never
+    #: scored.
+    holdout_from: str
+    features: list[FeatureConfigRequest] = Field(default_factory=list)
+    selected_columns: Optional[list[str]] = Field(None, alias="selectedColumns")
+    scalers: dict[str, str] = Field(default_factory=dict)
+    scaling_params: dict[str, dict[str, float]] = Field(default_factory=dict)
+    target_y: Optional[str] = None
+    overwrite: bool = False
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def target_differs_from_source(self) -> "ReplayHoldoutRequest":
+        if self.source_key == self.target_key:
+            raise ValueError(
+                "source_key and target_key must differ — a replay produces "
+                "a new artifact and never edits its input in place."
+            )
+        return self
+
+
+class ReplayHoldoutForRunRequest(BaseModel):
+    """DS-LAKE-018-T05. Same replay `ReplayHoldoutRequest` runs, but sourced
+    from an EXISTING GOLD's own recorded recipe instead of the caller
+    re-supplying features/scalers/scaling_params by hand — this is what
+    NestJS's `claim()` calls, since it never re-derives a training run's
+    recipe itself. `feature_spec_key` is `ModelTrainingRun.featureSpecKey`,
+    already pinned on the run row at training-create time.
+    """
+
+    feature_spec_key: str
+    source_key: str
+    target_key: str
+    holdout_from: str
+    overwrite: bool = False
+
+
+class PrepareHoldoutForRunRequest(BaseModel):
+    """DS-LAKE-023-T03. The SILVER-branch counterpart to
+    `ReplayHoldoutForRunRequest` — for a holdout produced by the reordered
+    features-stage split (`FeaturesRequest.holdout`, T01), which already
+    carries its derived columns and has no lead-in rows to trim. No
+    `holdout_from` field: unlike a raw BRONZE-stage holdout, there is
+    nothing to trim after the fact — `_split_holdout` already wrote this
+    sidecar with `lead_in=timedelta(0)`.
+
+    Same `feature_spec_key`-sourced recipe-hydration pattern as
+    `ReplayHoldoutForRunRequest` — NestJS's `claim()` never re-derives a
+    training run's recipe itself.
+    """
+
+    feature_spec_key: str
+    source_key: str
+    target_key: str
+    overwrite: bool = False
+
+
+class PassthroughHoldoutForRunRequest(BaseModel):
+    """MODEL-SERVE-015-T04. The THIRD holdout shape, beside
+    `ReplayHoldoutForRunRequest` (BRONZE, raw) and
+    `PrepareHoldoutForRunRequest` (SILVER/edit-mode GOLD, feature-bearing
+    but unscaled) — for a holdout that is ALREADY model-ready: a retrain-
+    augmentation candidate's frozen-eval slice, cut straight out of the
+    already-scaled base FINAL artifact (`ModelRetrainAugmentAuthorizedService.
+    buildCombinedArtifact`). Running it through `prepare_holdout_for_run`'s
+    `to_model_ready(fitted_params=...)` would double-scale it — checked and
+    ruled out, along with inverse-scaling it back to raw form, which
+    `inverse_scale_column`'s own docstring warns is never byte-exact and
+    never meant to be fed back into another transform.
+
+    No `feature_spec_key`, no scalers, no `drop_bad_feature_rows` — there is
+    nothing to apply. This function COPIES, it does not TRANSFORM; every
+    other holdout endpoint's `feature_spec_key`/refuse-if-target-scaled
+    guard exists only because those endpoints run `to_model_ready`, which
+    this one deliberately never does.
+
+    `NestJS`'s `tryReplayHoldout` (model-run.authorized.service.ts) chooses
+    this endpoint over `prepare_holdout_for_run` by reading
+    `DatasetArtifact.validationAlreadyScaled` — false for every existing
+    holdout shape, true only for a combined artifact.
+    """
+
+    source_key: str
+    target_key: str
+    overwrite: bool = False
+
+
+class CombineForRetrainRequest(BaseModel):
+    """MODEL-SERVE-015-T03. Merges a base FINAL artifact's own train-side
+    rows with a newly selected dataset's rows, reusing the base's exact
+    feature/scaling recipe — NEVER re-fit, the retrain-augmentation
+    feature's own decision — and carves the base's OWN frozen test rows out
+    as a passthrough holdout, so a candidate trained on the combined data can
+    still be scored on precisely the rows the incumbent version was scored
+    on.
+
+    `base_data_key`/`base_feature_spec_key` point at the INCUMBENT's own
+    FINAL artifact — already fully feature-engineered and scaled; its rows
+    before `cut_timestamp` and at/after it are used AS-IS, with no transform
+    at all (re-scaling an already-scaled slice is exactly the double-scale
+    bug this feature's own design note rules out).
+
+    `new_data_key` points at the newly selected dataset's nearest SILVER
+    ancestor — cleaned, but pre-feature-engineering and pre-scaling. That is
+    the correct source to apply the base's pinned recipe onto: the new
+    dataset's OWN FINAL was feature-engineered and scaled under ITS OWN
+    fitted params, which disagree with the base's by construction (each
+    dataset's scaler was fit on its own rows) — using it here would silently
+    combine two different feature spaces into one.
+
+    `cut_timestamp` is the incumbent's own resolved split boundary
+    (`ModelTrainingRun.splitSpec`'s computed value, not a fresh ratio). This
+    endpoint re-derives the new dataset's own start time from the frame it
+    actually loads (never trusts a caller-supplied value for that) and
+    refuses — the SAME "no uncontaminated eval window" rule NestJS's own
+    pre-flight check enforces — if the new dataset starts at or before
+    `cut_timestamp`; belt-and-suspenders, since NestJS validates this before
+    ever calling here but this is the endpoint that can see the real data.
+    """
+
+    base_data_key: str
+    base_feature_spec_key: str
+    new_data_key: str
+    target_key: str
+    target_y: str
+    cut_timestamp: str
+    overwrite: bool = False
+    # MODEL-SERVE-017. False is the "New Data Only" retrain strategy: the
+    # new rows are prepared EXACTLY as described above — the base's pinned
+    # recipe and its already-fitted scalers, never re-fit — but `base_train`
+    # is not concatenated, so the candidate trains on the new data alone.
+    # Every other guarantee is deliberately unchanged, above all the frozen
+    # evaluation slice: it still comes from the BASE's own test rows, which
+    # is what keeps a New-Data-Only candidate scorable against the incumbent
+    # on identical rows. Defaults True so every existing caller keeps the
+    # augmentation behaviour with no change.
+    combine: bool = True
+    #: An operator-chosen window inside the NEW dataset, held out of
+    #: training and committed as a SECOND validation sidecar
+    #: (`validate_new_data.parquet`). Both bounds are inclusive and must be
+    #: supplied together — a half-open request is a caller bug, not a
+    #: defaultable intent, so it is refused rather than guessed at.
+    #:
+    #: This does NOT touch the frozen evaluation slice: that still comes
+    #: from the base's own test rows and remains the basis for `rmseDelta`.
+    #: This window exists to answer a different question — how the candidate
+    #: scores on the NEW data specifically — which the frozen set, being
+    #: entirely old rows, cannot answer.
+    #:
+    #: Rows inside the window are removed from the training frame. A row may
+    #: never be both trained on and validated on.
+    new_validation_from: Optional[str] = None
+    new_validation_to: Optional[str] = None
+
+
+class CombineForRetrainResponse(ArtifactStatsResponse):
+    """`ArtifactStatsResponse`'s shape already describes the combined GOLD's
+    own `data.parquet` write, reused by inheritance rather than duplicated —
+    NestJS persists the resulting `DatasetArtifact` row the same way
+    `commit()` (preprocessing-job.service.ts) already does for every other
+    GOLD write. `validation_row_count`/`validation_holdout_from`/
+    `validation_missing_pct` (inherited) carry the frozen-eval slice's own
+    figures, the same fields `features()`'s holdout branch already
+    populates — `frozen_eval_checksum` is the one figure that shape has no
+    slot for, since a plain holdout replay never needed to publish it
+    separately from the row it lands on.
+    """
+
+    #: sha256 of the frozen-eval parquet, independent of the combined GOLD's
+    #: own `checksum` (that one covers `data.parquet`, the TRAIN side).
+    #: None for New Data Only (`combine=False`, MODEL-SERVE-021), which carves
+    #: no frozen slice. Was a required `str`, which made FastAPI's response
+    #: validation turn every New Data Only retrain into a bare 500 after all
+    #: its objects were written. NestJS's own schema was already nullable.
+    frozen_eval_checksum: Optional[str] = None
+    #: Rows dropped because their timestamp collided with a new-dataset row
+    #: at the same instant (new wins — `combine_for_retrain`'s own
+    #: docstring). 0 for the overwhelming majority of merges, where the two
+    #: datasets' time ranges are simply disjoint.
+    dedupe_dropped: int
+    #: Diagnostic row counts so NestJS can build an honest `operations`
+    #: entry without re-deriving them from the merged frame — `row_count`
+    #: (inherited) equals `base_train_row_count + new_train_row_count -
+    #: dedupe_dropped`.
+    base_train_row_count: int
+    new_train_row_count: int
+    #: The second holdout's own figures. None when the caller asked for no
+    #: new-data validation window — absent, never a zero, because 0 rows is
+    #: a real and different outcome from "not requested" and the two must
+    #: not read alike downstream.
+    new_validation_row_count: Optional[int] = None
+    new_validation_checksum: Optional[str] = None
+    #: Echoed back from the rows actually selected, not from the request —
+    #: the caller's bounds and the real data's first/last timestamps inside
+    #: them are different facts, and the UI reports what was measured.
+    new_validation_from: Optional[str] = None
+    new_validation_to: Optional[str] = None
+    #: MODEL-SERVE-019 / MODEL-SERVE-027, found 2026-10-02. combine_for_retrain
+    #: has always PUT these three in its payload, but they were never declared
+    #: here — FastAPI's response_model drops undeclared keys, so 0 of 12 real
+    #: combine records ever stored them. `frozen_eval_to` is the new data's
+    #: first timestamp: the boundary an Existing + new candidate's trainer
+    #: needs to cut its test split on the old rows only (027).
+    frozen_eval_to: Optional[str] = None
+    combined_end_time: Optional[str] = None
+    frozen_eval_dropped_rows: Optional[int] = None
 
 
 class ValidateRequest(BaseModel):
@@ -493,6 +1754,19 @@ class TagColumnStats(BaseModel):
     min: Optional[float] = None
     max: Optional[float] = None
     mean: Optional[float] = None
+    #: MODEL-SERVE-005. Present in `column_stats.json` since this class was
+    #: first written, but never declared here — FastAPI's `response_model`
+    #: silently stripped both from every `/v1/preprocess/column-stats`
+    #: response, even though the backend zod schema (`TagColumnStatsSchema`,
+    #: dataset-version.authorized.dto.ts) and the client type
+    #: (`ArtifactTagColumnStats`, services/dataset-version.ts) both already
+    #: declare and render them (dataset-detail-sheet.tsx). Verified live
+    #: against a real sidecar: the object carried `std`/`median`, the
+    #: response did not. `std` is what MODEL-SERVE-005's drift z-score
+    #: divides by — an undeclared field here would have made every column
+    #: report UNKNOWN.
+    median: Optional[float] = None
+    std: Optional[float] = None
     #: `mean - parent_mean` for this tag on the immediate parent artifact.
     #: None for a lineage root (BRONZE has no parent — nothing to compare,
     #: not "zero drift") or when either side has no Good cells for the tag.
@@ -521,6 +1795,103 @@ class ColumnStatsResponse(BaseModel):
     #: scanning a list, and this is a single-page response by design (see
     #: ColumnStatsRequest).
     stats: dict[str, TagColumnStats]
+
+
+class PredictionLogRow(BaseModel):
+    """One sampled request's ONE row, as apps/serving received it — RAW
+    (engineering-unit) values, never the scaled/model-ready ones. The
+    drift computation (apps/backend) never reads this object; it only
+    consumes the sufficient-statistics aggregates apps/serving computed
+    over the model-ready frame and sent straight to Postgres, bypassing
+    this service entirely. This row exists for the Monitoring page's
+    actual-vs-predict view, which needs values a domain user recognizes.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    features: dict[str, float]
+    prediction: float
+
+
+class PredictionLogAppendRequest(BaseModel):
+    """MODEL-SERVE-005-T01. Write ONE sampled request's capped row subset
+    as a single Parquet object. `rows` is already capped to
+    SERVING_LOG_MAX_ROWS by apps/serving before this call — this endpoint
+    trusts the caller's cap rather than re-enforcing one, the same
+    division of responsibility ColumnStatsRequest/split_stats_service
+    already draw between "backend decides policy" and "this service does
+    the I/O"."""
+
+    model_config = {"extra": "forbid"}
+
+    model_id: str
+    model_version_id: str
+    requested_at: datetime
+    #: At least one row — an empty append is the caller's bug (a
+    #: sampled-in request with zero logged rows should never call this at
+    #: all), not a 0-row object silently written.
+    rows: list[PredictionLogRow] = Field(..., min_length=1)
+
+
+class PredictionLogAppendResponse(BaseModel):
+    object_key: str
+    object_checksum: str
+    row_count: int
+
+
+class PredictionLogSeriesRequest(BaseModel):
+    """MODEL-SERVE-005. Read every row logged for one model version across
+    a time range, walking the dt=/hour= partitions the write side created —
+    no separate index of "which hours have objects" exists or is needed,
+    the same reasoning `delete_prefix`'s own listing loop uses."""
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+    model_id: str
+    model_version_id: str
+    range_from: datetime = Field(..., alias="from")
+    range_to: datetime = Field(..., alias="to")
+
+
+class PredictionLogPoint(BaseModel):
+    timestamp: datetime
+    prediction: float
+    features: dict[str, float]
+
+
+class PredictionLogSeriesResponse(BaseModel):
+    points: list[PredictionLogPoint]
+    #: True when more points existed in range than PREDICTION_LOG_SERIES_CAP
+    #: — the response is the OLDEST-first slice up to the cap, never a
+    #: silent partial series presented as complete.
+    truncated: bool
+
+
+class FeatureSpecRequest(BaseModel):
+    """DS-LAKE-025-T06. Read feature_spec.json beside a committed artifact.
+
+    Exactly `ColumnStatsRequest`'s shape and for the same reason — the
+    sidecar is whole-artifact, so there is nothing to page or filter.
+    """
+
+    source_key: str
+
+
+class FeatureSpecResponse(BaseModel):
+    """DS-LAKE-025-T06.
+
+    `spec` is returned UNVALIDATED (`dict[str, Any]`, not a typed model) on
+    purpose. `build_feature_spec` writes a versioned document whose shape
+    widens over time (`featureVersion`, and fields like `target_scaled` /
+    `derived_from_target` that are absent on older artifacts). A strict model
+    here would 500 on a legacy sidecar that reads perfectly well — the same
+    "only WIDENS" discipline `ALL_DATA_FILENAMES` already documents. Callers
+    read the one field they need and tolerate its absence.
+    """
+
+    source_key: str
+    feature_spec_key: str
+    spec: dict[str, Any]
 
 
 class RowsResponse(BaseModel):
@@ -555,8 +1926,7 @@ class CleanupRequest(BaseModel):
     @model_validator(mode="after")
     def prefix_is_a_directory(self) -> "CleanupRequest":
         if not self.prefix.endswith("/"):
-            raise ValueError(
-                "prefix must end with '/' so it cannot match a sibling.")
+            raise ValueError("prefix must end with '/' so it cannot match a sibling.")
         if "tmp/" not in self.prefix:
             raise ValueError(
                 "Refusing to clear a prefix outside tmp/. Committed dataset "
@@ -583,14 +1953,17 @@ class ArtifactReclaimRequest(BaseModel):
     cannot be pointed at `tmp/`, a preset, or a legacy version key by mistake.
     """
 
-    object_key: str = Field(..., examples=[
-        "ds-1/artifacts/art-7/data.parquet"])
+    object_key: str = Field(..., examples=["ds-1/artifacts/art-7/data.parquet"])
 
     @model_validator(mode="after")
     def object_key_is_a_committed_artifact(self) -> "ArtifactReclaimRequest":
-        if "/artifacts/" not in self.object_key or not self.object_key.endswith(
-            f"/{DATA_FILENAME}"
-        ):
+        # DS-LAKE-016-T02: routed through `is_committed_artifact_key` instead
+        # of duplicating its check inline — this validator IS the guard
+        # `presign_artifact` shares that predicate with (see its own doc
+        # comment: "the presign guard cannot drift from it"). Before this fix
+        # it duplicated the OLD, legacy-`data.parquet`-only version of that
+        # check, which would have refused a real stage-suffixed artifact.
+        if not is_committed_artifact_key(self.object_key):
             raise ValueError(
                 "object_key must be a committed artifact's data key "
                 f"('.../artifacts/{{artifactId}}/{DATA_FILENAME}'). Refusing "
@@ -605,6 +1978,119 @@ class ArtifactReclaimResponse(BaseModel):
     deleted: int
 
 
+class DraftRunReclaimRequest(BaseModel):
+    """Delete one ModelDraft's training-run objects — MODEL-FLOW-011-T02.
+
+    NestJS never sends a prefix, only ids — the same discipline
+    `ArtifactReclaimRequest`'s own doc comment describes. `run_id` omitted
+    (or null) reclaims the WHOLE `drafts/{draft_id}/runs/` subtree in one
+    call — used when none of the draft's runs are adopted (`modelId` unset
+    on every one), and the one case that also catches a run prefix whose
+    `ModelTrainingRun` row is already gone. `run_id` given reclaims exactly
+    that one run, leaving its siblings (in particular any adopted run —
+    MODEL-FLOW-011-T05) untouched.
+    """
+
+    draft_id: str = Field(..., examples=["a1b2c3d4-…"])
+    run_id: str | None = Field(default=None, examples=["e5f6a7b8-…"])
+
+    @staticmethod
+    def _is_bare_segment(value: str) -> bool:
+        return not value or "/" in value or value in (".", "..")
+
+    @model_validator(mode="after")
+    def ids_are_bare_segments(self) -> "DraftRunReclaimRequest":
+        # A `/` or `.`/`..` here would let a caller name a path outside
+        # `drafts/{draft_id}/runs/` — the exact class of bug
+        # `is_model_run_key`/`is_draft_run_key` exist to catch on the
+        # write side. Checked again below via the structural predicate on
+        # the ASSEMBLED prefix, so a bare-segment bypass still fails closed.
+        if self._is_bare_segment(self.draft_id):
+            raise ValueError("draft_id must be a single non-empty path segment")
+        if self.run_id is not None and self._is_bare_segment(self.run_id):
+            raise ValueError("run_id must be a single non-empty path segment")
+        prefix = (
+            draft_run_prefix(self.draft_id, self.run_id)
+            if self.run_id
+            else draft_runs_prefix(self.draft_id)
+        )
+        if not is_draft_run_prefix(prefix):
+            raise ValueError(
+                "draft_id/run_id must resolve to a well-formed "
+                "drafts/{draft_id}/runs/[{run_id}/] prefix"
+            )
+        return self
+
+
+class DraftRunReclaimResponse(BaseModel):
+    prefix: str
+    deleted: int
+
+
+class ArtifactAdoptRequest(BaseModel):
+    """Copy one committed artifact's objects into a dataset's own namespace.
+
+    DS-LAKE-025. The counterpart to `ArtifactReclaimRequest`: that one
+    removes an artifact's bytes, this one gives them a permanent home.
+
+    Called ONLY by `saveDraftAsDatasetService`, once per artifact it is
+    adopting (the FINAL, and the lineage-root BRONZE the recipe replays
+    from). Until this existed, Save adopted a draft artifact BY POINTER —
+    the saved dataset's `objectKey` still read `drafts/{draftId}/...` for
+    the rest of its life, which made a registry dataset's readability
+    depend on draft-space bytes surviving forever. Two saved datasets were
+    found in exactly that state with their objects already gone: Postgres
+    rows live, MinIO 404. Promotion itself stays pointer-only
+    (ADR-DS-LAKE-005B-B-006, `global_definition_of_done`: "Promotion
+    changes metadata only; no artifact is copied or regenerated") — this
+    runs at Save, a different boundary.
+
+    Same guard as `/artifacts/reclaim`: the source must be a committed
+    artifact data key, so this cannot be pointed at `tmp/`, a preset or a
+    legacy version object.
+    """
+
+    object_key: str = Field(
+        ...,
+        description="Source artifact data key, typically under drafts/",
+        examples=["drafts/draft-1/artifacts/art-7/data_gold.parquet"],
+    )
+    dataset_id: str = Field(..., examples=["ds-1"])
+    #: The artifact row being repointed. NOT necessarily the id embedded in
+    #: `object_key`: a FINAL promoted by pointer carries its parent GOLD's
+    #: key, and Save adopts it under the FINAL's OWN id so the destination
+    #: prefix matches the row that will name it.
+    artifact_id: str = Field(..., examples=["art-9"])
+
+    @model_validator(mode="after")
+    def object_key_is_a_committed_artifact(self) -> "ArtifactAdoptRequest":
+        if not is_committed_artifact_key(self.object_key):
+            raise ValueError(
+                "object_key must be a committed artifact's data key "
+                f"('.../artifacts/{{artifactId}}/{DATA_FILENAME}'). Refusing "
+                "to adopt a tmp/, preset or legacy object through this "
+                "endpoint."
+            )
+        return self
+
+
+class ArtifactAdoptResponse(BaseModel):
+    source_prefix: str
+    destination_prefix: str
+    #: The new data key. Written back onto `DatasetArtifact.objectKey`.
+    object_key: str
+    #: Sidecar pointers, null when that sidecar does not exist for this
+    #: artifact — the same three nullable columns the artifact row carries.
+    feature_spec_key: str | None = None
+    validation_key: str | None = None
+    column_stats_key: str | None = None
+    #: Every destination key now present, sidecars included. Counts objects
+    #: already there from an earlier attempt as well as ones copied now,
+    #: because the endpoint is idempotent and the caller cares that the
+    #: destination is COMPLETE, not that this particular call did the work.
+    keys: list[str] = Field(default_factory=list)
+
+
 class PreviewRequest(BaseModel):
     source_key: str = Field(
         ...,
@@ -614,8 +2100,7 @@ class PreviewRequest(BaseModel):
     operations: list[CleaningOperation] = Field(default_factory=list)
     #: Per-tag decimal places. Python has no access to the client's tagMeta, so
     #: this must travel in the request or every value rounds to the default.
-    precision: dict[str, int] = Field(
-        default_factory=dict, examples=[{"TI-101": 1}])
+    precision: dict[str, int] = Field(default_factory=dict, examples=[{"TI-101": 1}])
     sample_rows: int = Field(
         DEFAULT_SAMPLE_ROWS,
         ge=1,
@@ -665,8 +2150,7 @@ class HistogramRequest(BaseModel):
     of `/preview`'s own scrubber-driven one.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     operations: list[CleaningOperation] = Field(default_factory=list)
     precision: dict[str, int] = Field(default_factory=dict)
     #: Which tags to overlay — REQUIRED (unlike `PreviewRequest.tags`, which
@@ -678,7 +2162,7 @@ class HistogramRequest(BaseModel):
         DEFAULT_SAMPLE_ROWS,
         ge=1,
         le=MAX_SAMPLE_ROWS,
-        description="Rows read from the head of the WINDOW to compute against",
+        description="Rows systematically sampled across the WINDOW's full span to compute against (MODEL-FLOW-014-T02) — not a head cut of its earliest rows",
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None
@@ -735,8 +2219,7 @@ class BoxplotRequest(BaseModel):
     proved live against real MinIO data, not a second implementation of it.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     operations: list[CleaningOperation] = Field(default_factory=list)
     precision: dict[str, int] = Field(default_factory=dict)
     #: Tags to summarize — REQUIRED, same rationale as `HistogramRequest.tags`:
@@ -747,7 +2230,7 @@ class BoxplotRequest(BaseModel):
         DEFAULT_SAMPLE_ROWS,
         ge=1,
         le=MAX_SAMPLE_ROWS,
-        description="Rows read from the head of the WINDOW to compute against",
+        description="Rows systematically sampled across the WINDOW's full span to compute against (MODEL-FLOW-014-T02) — not a head cut of its earliest rows",
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None
@@ -778,13 +2261,156 @@ class BoxplotResponse(BaseModel):
     tags: list[TagBoxplot]
     #: Requested tags with 0 Good values in this window. NOT a port of the
     #: client's presentational `hasData` check (`min != max or median != 0`)
-    #: — `boxplot_service.py::_qualifies` deliberately gates on `count > 0`
+    #: — `boxplot_service.py::qualifies` deliberately gates on `count > 0`
     #: instead, since `hasData` mislabels a tag whose Good values are ALL
     #: exactly 0 (e.g. a valve stuck fully closed) as insufficient data,
-    #: when it is real data. See `_qualifies`'s own docstring for the full
+    #: when it is real data. See `qualifies`'s own docstring for the full
     #: reasoning; DS-LAKE-005B-D-T02's chart-parity fixture
     #: `boxplot_all_zero_tag_qualifies` pins this divergence directly.
     insufficient_tags: list[str]
+
+
+# MODEL-FLOW-014-T03. `tags` here is a SELECTION the panel's user makes (the
+# client's own MAX_COMPARE is 5) — this cap is deliberately generous
+# headroom above that, refused BY NAME rather than truncated silently, the
+# same discipline MAX_PREDICTION_POINTS states on itself. If a caller ever
+# needs more than this, that is a paging design to have on purpose, not a
+# number to raise without noticing why it was here.
+MAX_SPLIT_STATS_TAGS = 20
+
+
+class SplitStatsRequest(BaseModel):
+    """MODEL-FLOW-014-T03. Both sides of the train/test chronological split
+    `images/trainer/train.py` would actually make for `split_ratio`, from
+    ONE read of a COMMITTED artifact.
+
+    Deliberately narrower than `BoxplotRequest`: no `operations`, no
+    `precision`, no `start_time`/`end_time`. This reads a committed FINAL
+    artifact — the population under test IS the whole frame, and there is no
+    live-editing scrubber state to replay operations against (that is what
+    `/preview` and the wizard-draft chart family are for).
+
+    `precision` is dropped rather than kept-but-inert: `cleaning_service.
+    apply_operations(frame, operations, precision)` only threads `precision`
+    into `preprocess_pipelines` from INSIDE its per-operation loop
+    (`for operation in operations: ... out = preprocess_pipelines(...)`).
+    With `operations` empty that loop body never runs, so calling
+    `apply_operations(frame, [], precision)` — which the original design
+    for this schema proposed, to keep precision "working" — would in fact do
+    nothing at all; `precision` would sit in the request looking load-bearing
+    while every value passed through unrounded. Dropping the field is the
+    honest fix, traced against `cleaning_service.py` directly rather than
+    assumed.
+    """
+
+    source_key: str = Field(..., description="Object key of the source artifact")
+    #: Tags to summarize per side — REQUIRED, same rationale as
+    #: `BoxplotRequest.tags`. Refused BY NAME past `MAX_SPLIT_STATS_TAGS`.
+    tags: list[str] = Field(..., min_length=1, max_length=MAX_SPLIT_STATS_TAGS)
+    #: The target column — used ONLY to derive the labelled-row mask that
+    #: decides where the cut falls (mirrors `train.py::labelled_mask`
+    #: exactly). Does not have to be a member of `tags`.
+    target_y: str
+    #: A FRACTION, never a percentage — same convention `CreateTrainingRunSchema
+    #: .trainTestSplit` and `ModelDraft.splitRatio` already use. Bounds match
+    #: the launch path the wizard actually calls. MODEL-FLOW-016-T02/T09:
+    #: EXACTLY ONE of `split_ratio` / `n_splits` — enforced below, the same
+    #: "never both, never neither" shape `ModelRunUploadPresignRequest`'s own
+    #: model_id/draft_id pair uses. A single chronological cut and a k-fold
+    #: expanding-window plan are different questions with different
+    #: response shapes; this endpoint answers exactly one per call.
+    split_ratio: float | None = Field(None, ge=0.5, le=0.95)
+    #: MODEL-FLOW-016-T09. When set, the response carries a k-fold expanding
+    #: fold plan instead of a single cut's box statistics. Bounds match
+    #: MODEL-FLOW-016-T10's control (3-10 in the wizard); 2 is admitted here
+    #: since the service-level floor is `max_admissible_k`, not the UI's own
+    #: default — a caller other than the wizard should not be blocked at 3
+    #: by a bound this endpoint does not itself require.
+    n_splits: int | None = Field(None, ge=2, le=10)
+    sample_rows: int = Field(
+        DEFAULT_SAMPLE_ROWS,
+        ge=1,
+        le=MAX_SAMPLE_ROWS,
+        description=(
+            "Rows systematically sampled, per side, to compute the box "
+            "statistics against. Bounds the DISPLAY sample only — the cut "
+            "itself is always derived from the full labelled frame "
+            "(MODEL-FLOW-014 finding: sample_rows must never determine the "
+            "cut). Unused in n_splits mode, which returns no box statistics "
+            "at all (MODEL-FLOW-016-T09)."
+        ),
+    )
+    outlier_cap: int = Field(DEFAULT_BOXPLOT_OUTLIER_CAP, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def _exactly_one_of_ratio_or_splits(self) -> "SplitStatsRequest":
+        if (self.split_ratio is None) == (self.n_splits is None):
+            raise ValueError(
+                "Exactly one of split_ratio or n_splits is required — a "
+                "single chronological cut and a k-fold expanding plan are "
+                "different questions with different response shapes."
+            )
+        return self
+
+
+class SplitStatsSide(BaseModel):
+    """One side of the split — same shape as `BoxplotResponse` minus
+    `source_key` (which belongs once, at the top of `SplitStatsResponse`),
+    so the client's existing `TagBoxplotChart` (typed against
+    `DraftBoxplotResult`) renders either side with no translation layer."""
+
+    tags: list[TagBoxplot]
+    insufficient_tags: list[str]
+
+
+class SplitStatsFold(BaseModel):
+    """MODEL-FLOW-016-T09. One expanding-window fold's plan — no box
+    statistics (per this feature's own userDecisions: a CV run itself
+    writes no predictions.parquet, and a per-fold box-plot pair for every
+    selected tag would be k times this endpoint's existing payload for a
+    number the UI does not currently show). Just enough for T11's per-fold
+    table: the cut, both row counts (an expanding window's fold 1 trains on
+    a fraction of what fold k does — invisible without this), and the
+    fold's own distinct labelled count (T02's effective-sample-size figure,
+    per fold rather than only in aggregate).
+    """
+
+    cut_timestamp: str
+    train_rows: int
+    test_rows: int
+    distinct: int
+
+
+class SplitStatsResponse(BaseModel):
+    source_key: str
+    target_y: str
+    #: Present only in ratio mode — None in n_splits mode, where there is no
+    #: single cut. MODEL-FLOW-016-T09 widens every field below split_ratio
+    #: to optional for the same reason.
+    split_ratio: float | None = None
+    #: The cut ECHOED back — the client cannot infer which boundary it got,
+    #: the same reason `/correlation` echoes its resolved tag list. This is
+    #: the FIRST TEST ROW's timestamp (train = strictly before, test = at or
+    #: after), matching `train.py::chronological_split`'s own convention.
+    cut_timestamp: str | None = None
+    train_labelled_rows: int | None = None
+    test_labelled_rows: int | None = None
+    #: The pre-mask row count, kept alongside so sparsity is visible in the
+    #: record rather than only inferable — same reasoning
+    #: `train.py`'s own `split_spec["source_rows"]` states for itself.
+    source_rows: int
+    train: SplitStatsSide | None = None
+    test: SplitStatsSide | None = None
+    #: MODEL-FLOW-016-T02. ALWAYS present, in both modes — see
+    #: `build_split_stats`'s own docstring for why: the wizard needs these
+    #: before the user ever opens CV mode, to disable-with-reason at config
+    #: time rather than after a round trip.
+    distinct_labelled_values: int
+    max_admissible_k: int
+    #: Present only in n_splits mode — echoes the request the same way
+    #: split_ratio does for ratio mode.
+    n_splits: int | None = None
+    folds: list[SplitStatsFold] | None = None
 
 
 #: Grid/hex-binning decimation cap for the plotted point cloud — see
@@ -801,8 +2427,7 @@ class ScatterRequest(BaseModel):
     overlay.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     operations: list[CleaningOperation] = Field(default_factory=list)
     precision: dict[str, int] = Field(default_factory=dict)
     x_tag: str = Field(..., min_length=1)
@@ -811,21 +2436,22 @@ class ScatterRequest(BaseModel):
         DEFAULT_SAMPLE_ROWS,
         ge=1,
         le=MAX_SAMPLE_ROWS,
-        description="Rows read from the head of the WINDOW to compute against",
+        description="Rows systematically sampled across the WINDOW's full span to compute against (MODEL-FLOW-014-T02) — not a head cut of its earliest rows",
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     #: Caps the PLOTTED point cloud only — see `n`/regression fields on the
     #: response, which are always computed over the FULL Good-filtered
     #: frame, never the decimated sample (this task's own HARD REQUIREMENT).
-    max_points: int = Field(
-        DEFAULT_SCATTER_MAX_POINTS, ge=10, le=MAX_DOWNSAMPLE_POINTS
-    )
+    max_points: int = Field(DEFAULT_SCATTER_MAX_POINTS, ge=10, le=MAX_DOWNSAMPLE_POINTS)
 
 
 class ScatterPoint(BaseModel):
     x: float
     y: float
+    #: DS-LAKE-034. The reading's naive wall-clock time, so the client can
+    #: colour the cloud by month/year. Optional: older responses omit it.
+    t: Optional[str] = None
 
 
 class ScatterResponse(BaseModel):
@@ -872,8 +2498,7 @@ class CorrelationRequest(BaseModel):
     `len(resolved) <= top_k`, regardless of `len(tags)`.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     operations: list[CleaningOperation] = Field(default_factory=list)
     precision: dict[str, int] = Field(default_factory=dict)
     tags: list[str] = Field(..., min_length=1)
@@ -881,13 +2506,11 @@ class CorrelationRequest(BaseModel):
         DEFAULT_SAMPLE_ROWS,
         ge=1,
         le=MAX_SAMPLE_ROWS,
-        description="Rows read from the head of the WINDOW to compute against",
+        description="Rows systematically sampled across the WINDOW's full span to compute against (MODEL-FLOW-014-T02) — not a head cut of its earliest rows",
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None
-    top_k: int = Field(
-        DEFAULT_CORRELATION_TOP_K, ge=2, le=MAX_CORRELATION_TOP_K
-    )
+    top_k: int = Field(DEFAULT_CORRELATION_TOP_K, ge=2, le=MAX_CORRELATION_TOP_K)
 
 
 class CorrelationResponse(BaseModel):

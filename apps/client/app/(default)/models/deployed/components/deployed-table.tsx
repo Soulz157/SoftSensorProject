@@ -25,7 +25,7 @@ const DEPLOY_MAP = {
     cls: 'bg-emerald-500/15 text-emerald-500',
   },
   stopped: {
-    label: 'Stopped',
+    label: 'Offline',
     icon: StopCircle,
     cls: 'bg-zinc-500/15 text-zinc-400',
   },

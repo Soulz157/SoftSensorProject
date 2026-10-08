@@ -2,7 +2,12 @@
   "name": "select_columns_keep_all_is_identity",
   "engine": "selectColumns",
   "input": {
-    "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+    "tags": [
+      "TI-101",
+      "VI-202",
+      "FI-404",
+      "XX-999"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -856,7 +861,12 @@
     "kept": null
   },
   "expected": {
-    "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+    "tags": [
+      "TI-101",
+      "VI-202",
+      "FI-404",
+      "XX-999"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",

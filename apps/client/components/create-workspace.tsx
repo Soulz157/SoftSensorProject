@@ -118,8 +118,10 @@ export function CreateWorkspaceDialog({
   }
 
   const onSubmit = async (values: CreateWorkspaceFormValues) => {
-    await createWorkspace(values)
-    handleClose()
+    // Close only on success: a failed create keeps what was typed (the hook
+    // already shows the error toast).
+    const result = await createWorkspace(values)
+    if (result.success) handleClose()
   }
 
   const handleThumbnailChange = (file?: File) => {

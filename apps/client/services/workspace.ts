@@ -1,6 +1,7 @@
 import { fetchClient } from '@/lib/fetcher'
 import type {
   AdminWorkspace,
+  AdminWorkspaceSummary,
   AdminWorkspaceDetail,
   CreateWorkspaceInput,
   Paginated,
@@ -10,6 +11,7 @@ import type {
   WorkspaceLog,
   WorkspaceMember,
   WorkspaceModel,
+  WorkspacePermission,
   WorkspaceRole,
 } from '@/types'
 
@@ -44,15 +46,27 @@ export const workspaceService = {
       method: 'GET',
     })
   },
-  getAdminAllWorkspaces: () =>
-    fetchClient('/api/v1/admin/workspace', { method: 'GET' }),
 
   createWorkspace: async (data: CreateWorkspaceInput): Promise<Workspace> => {
     const res = await fetchClient('/api/v1/admin/workspace/create', {
       method: 'POST',
       body: JSON.stringify(data),
     })
-    return { ...res.data, modelsCount: 0 }
+    // The create endpoint does not run `deriveNodeSummary`, so its response
+    // carries no status and no relation counts. A brand-new workspace is
+    // genuinely empty and genuinely normal, so these are truthful values —
+    // NOT placeholders. Without them the card reads `toBinaryStatus(undefined)`
+    // as `abnormal` and paints a freshly created workspace with a pulsing red
+    // alarm ring, on the one surface DESIGN.md:153 reserves red for.
+    return {
+      ...res.data,
+      status: 'normal' as const,
+      nodeCount: 0,
+      alarmCount: 0,
+      modelsCount: 0,
+      plantsCount: 0,
+      datasetsCount: 0,
+    }
   },
 
   updateWorkspace: async (
@@ -83,6 +97,9 @@ export const workspaceService = {
       body: JSON.stringify({ workspaceId }),
     })
   },
+
+  getAdminWorkspaceSummary: (): Promise<{ data: AdminWorkspaceSummary }> =>
+    fetchClient('/api/v1/admin/workspace/summary', { method: 'GET' }),
 
   getAdminWorkspaces: (params: {
     page?: number
@@ -116,10 +133,12 @@ export const workspaceService = {
     workspaceId: string,
     memberId: string,
     role: WorkspaceRole,
+    // Omitted → the backend keeps the member's current grants.
+    permissions?: WorkspacePermission[],
   ): Promise<{ data: WorkspaceMember }> =>
     fetchClient(
       `/api/v1/authorized/workspace/${workspaceId}/members/${memberId}`,
-      { method: 'PATCH', body: JSON.stringify({ role }) },
+      { method: 'PATCH', body: JSON.stringify({ role, permissions }) },
     ),
 
   removeMember: (workspaceId: string, memberId: string): Promise<unknown> =>

@@ -7,10 +7,12 @@ import { MATERIALIZE_EPOCH } from '@/lib/pipeline-config'
 import type { PipelineConfig } from '@/lib/pipeline-config'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import { toPiTime } from '@/lib/dataset-fetch'
+import { ApiError } from '@/lib/fetcher'
 import {
   datasetVersionService,
   fetchVersionDataset,
 } from '@/services/dataset-version'
+import type { DatasetArtifactStage } from '@/services/dataset-draft'
 import type { SavedDataset } from '@/store/datasets'
 
 /**
@@ -46,6 +48,15 @@ export type VersionRowsStatus =
 export interface VersionRowsState {
   dataset: Dataset | null
   source: RowSource | null
+  /**
+   * Pipeline stage of the artifact `dataset` was hydrated from — null while
+   * `source !== 'stored'` (synthetic rows have no real stage) or before a
+   * fetch resolves. `currentArtifactId` is stage-polymorphic (BRONZE from
+   * `createRaw`, FINAL once Save Dataset adopts it), so a caller that
+   * replays a recipe over these rows needs to know which one it got: doing
+   * so on top of a FINAL artifact double-applies the pipeline.
+   */
+  stage: DatasetArtifactStage | null
   status: VersionRowsStatus
   /** Rows loaded so far, and the artifact total — for the progress UI. */
   loaded: number
@@ -53,16 +64,42 @@ export interface VersionRowsState {
   error: string | null
   /** Why branch 3 was taken. Null unless `source === 'synthetic'`. */
   syntheticReason: string | null
+  /**
+   * DS-LAKE-025. The MACHINE-readable half of `syntheticReason`, so callers
+   * can branch on the cause instead of matching on its prose. Null unless
+   * `source === 'synthetic'`.
+   *
+   * `'bytes-missing'` is the one that matters: the dataset HAS a committed
+   * artifact, its row still says so, and object storage no longer holds the
+   * object. It is the only cause where the rows on screen stand in for data
+   * that genuinely existed, which is why Save blocks on it
+   * (`step-6-review-save.tsx`) rather than letting an edit overwrite the
+   * dataset's real `tags`/`rowCount`/`missingPct` with numbers derived from
+   * a seed.
+   */
+  syntheticCause: SyntheticCause | null
 }
+
+/**
+ * Why synthetic rows are standing in for real ones.
+ *
+ * - `bytes-missing`    — the artifact's object is gone from storage (API 404).
+ * - `not-materialized` — no artifact exists yet and this caller may not make
+ *   one (`materialize: false`, or `materializeBlocker` refused the recipe).
+ * - `unreadable`       — anything else: source unreachable, fetch failed.
+ */
+export type SyntheticCause = 'bytes-missing' | 'not-materialized' | 'unreadable'
 
 const IDLE: VersionRowsState = {
   dataset: null,
   source: null,
+  stage: null,
   status: 'idle',
   loaded: 0,
   total: 0,
   error: null,
   syntheticReason: null,
+  syntheticCause: null,
 }
 
 /**
@@ -158,7 +195,7 @@ export function useDatasetVersionRows(
 
     // NOT named `use*`: it is a plain closure, and the `use` prefix would make
     // the linter police it as a React hook.
-    const fallBackToSynthetic = (reason: string) => {
+    const fallBackToSynthetic = (reason: string, cause: SyntheticCause) => {
       if (signal.aborted) return
       setState({
         dataset: buildRawDataset(
@@ -168,15 +205,20 @@ export function useDatasetVersionRows(
           config.tagConstants,
         ),
         source: 'synthetic',
+        stage: null,
         status: 'done',
         loaded: 0,
         total: 0,
         error: null,
         syntheticReason: reason,
+        syntheticCause: cause,
       })
     }
 
-    const page = async (versionId: string) => {
+    const page = async (
+      versionId: string,
+      stage: DatasetArtifactStage | null,
+    ) => {
       const rows = await fetchVersionDataset(dataset.id, versionId, {
         signal,
         onProgress: (loaded, total) =>
@@ -188,45 +230,82 @@ export function useDatasetVersionRows(
       setState({
         dataset: rows,
         source: 'stored',
+        stage,
         status: 'done',
         loaded: rows.rows.length,
         total: rows.rows.length,
         error: null,
         syntheticReason: null,
+        syntheticCause: null,
       })
     }
 
     /**
-     * The artifact to read. For recipe replay this must be the RAW version,
-     * not the newest one — see the `prefer` note above.
+     * The artifact to read, and the pipeline stage it is at. For recipe
+     * replay this must be the RAW version, not the newest one — see the
+     * `prefer` note above.
      */
-    const resolveVersionId = async (): Promise<string | null> => {
+    const resolveVersionId = async (): Promise<{
+      id: string
+      stage: DatasetArtifactStage | null
+    } | null> => {
+      // DS-LAKE-017-T03: for RECIPE REPLAY (prefer === 'raw'), the adopted
+      // lineage-root BRONZE (T01/T02) is the one artifact that is both raw
+      // AND actually readable through the dataset routes — this is the fix
+      // for the double-apply DS-LAKE-013 could only diagnose (its own
+      // non-BRONZE banner), not close. Checked BEFORE `currentArtifactId`
+      // below, which is FINAL-only for any saved dataset and would replay
+      // Step 3's rules on top of an already-cleaned FINAL otherwise. Falls
+      // through to today's behaviour (case b/c: reclaimed or never
+      // backfilled) whenever `adoptedBronzeArtifactId` is null — that is
+      // three real states this field does not distinguish, and it does not
+      // need to: all three have no raw bytes left to read.
+      if (prefer === 'raw' && dataset.adoptedBronzeArtifactId) {
+        return { id: dataset.adoptedBronzeArtifactId, stage: 'BRONZE' }
+      }
+
       // DS-LAKE-004: new datasets carry `currentArtifactId` and get no
       // `currentVersionId` until Save Dataset. The bronze artifact IS the raw
       // one, so there is no lineage to walk and no version list to fetch —
       // which also removes the extra round trip the `prefer: 'raw'` path costs.
-      if (dataset.currentArtifactId) return dataset.currentArtifactId
+      // `currentArtifactType` names whichever stage the pointer is CURRENTLY
+      // at (BRONZE from `createRaw`, FINAL once Save Dataset repoints it) —
+      // see `SavedDataset.currentArtifactType`'s doc comment.
+      if (dataset.currentArtifactId) {
+        return {
+          id: dataset.currentArtifactId,
+          stage: dataset.currentArtifactType,
+        }
+      }
 
       if (!dataset.currentVersionId) return null
-      if (prefer === 'current') return dataset.currentVersionId
+      // Legacy-only past this point: DS-LAKE-002's backfill sets
+      // `currentArtifactId` on every dataset that has a `currentVersionId`,
+      // so this branch is unreachable for any dataset in the DB today —
+      // kept for a hypothetical row a future migration misses.
+      // `DatasetVersion` carries no `stage` column (that concept moved to
+      // `PreprocessingJob`), so there is no server signal left to pick a
+      // RAW version by; every version this resolves to points at the FINAL
+      // artifact it was saved with (`DatasetVersion.artifactId`, written
+      // once at Save and never rewritten).
+      if (prefer === 'current') {
+        return { id: dataset.currentVersionId, stage: 'FINAL' }
+      }
 
       const versions = await datasetVersionService.list(dataset.id)
-      const raw = versions.data
-        .filter(v => v.stage === 'RAW')
-        .sort((a, b) => a.versionNumber - b.versionNumber)[0]
-      // No RAW version means the lineage predates this scheme; the current one
-      // is the only thing to read, and re-applying the recipe is still closer
-      // to right than showing nothing.
-      return raw?.id ?? dataset.currentVersionId
+      const earliest = versions.data.sort(
+        (a, b) => a.versionNumber - b.versionNumber,
+      )[0]
+      return { id: earliest?.id ?? dataset.currentVersionId, stage: 'FINAL' }
     }
 
     const run = async () => {
       // ── 1. a committed artifact exists ──────────────────────────────────
       if (dataset.currentArtifactId || dataset.currentVersionId) {
         setState({ ...IDLE, status: 'loading' })
-        const versionId = await resolveVersionId()
-        if (signal.aborted || !versionId) return
-        await page(versionId)
+        const resolved = await resolveVersionId()
+        if (signal.aborted || !resolved) return
+        await page(resolved.id, resolved.stage)
         return
       }
 
@@ -234,13 +313,14 @@ export function useDatasetVersionRows(
       if (!materialize) {
         fallBackToSynthetic(
           'This dataset has no stored rows yet. Open it in Data Studio to fetch them from the source.',
+          'not-materialized',
         )
         return
       }
 
       const blocker = materializeBlocker(config)
       if (blocker) {
-        fallBackToSynthetic(blocker)
+        fallBackToSynthetic(blocker, 'not-materialized')
         return
       }
 
@@ -253,7 +333,9 @@ export function useDatasetVersionRows(
         endTime: toPiTime(config.customDateRange!.to),
       })
       if (signal.aborted) return
-      await page(created.data.id)
+      // `createRaw` always produces a BRONZE artifact
+      // (`dataset-version.authorized.service.ts`'s `createRawArtifactService`).
+      await page(created.data.id, 'BRONZE')
     }
 
     run().catch((err: unknown) => {
@@ -261,10 +343,19 @@ export function useDatasetVersionRows(
       // ── 3. source gone, unreachable, or the fetch failed ────────────────
       // Showing something beats showing nothing, but never silently: the
       // banner carries this reason verbatim.
+      //
+      // DS-LAKE-025: a 404 is singled out because it is not "the fetch
+      // failed" at all — it is the API saying this dataset's committed
+      // object is no longer in storage. Same fallback (the wizard still has
+      // to render something), but a different `cause`, which is what lets
+      // Step 6 refuse to overwrite a real dataset's stats with figures
+      // derived from these stand-in rows.
+      const bytesMissing = err instanceof ApiError && err.status === 404
       fallBackToSynthetic(
         err instanceof Error
           ? `Could not load stored rows: ${err.message}`
           : 'Could not load stored rows from the server.',
+        bytesMissing ? 'bytes-missing' : 'unreadable',
       )
     })
 

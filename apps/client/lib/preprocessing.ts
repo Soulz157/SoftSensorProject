@@ -14,6 +14,7 @@ import {
   type TimeRange,
 } from '@/lib/mock-readings'
 import type { SensorChartRow } from '@/hooks/use-sensor-readings'
+import { toWallClock } from '@/lib/time-window'
 
 export interface Cell {
   value: number
@@ -333,7 +334,7 @@ export function preprocess(
 // A per-tag ORDERED list of steps applied in sequence over the wide dataset.
 // Additive engine that shares the same primitives as `preprocess`
 // (`applyFillStrategy`, `median`, `roundTo`); the legacy `preprocess(strategies)`
-// above stays intact for the data-visualize wizard.
+// above stays intact for its remaining callers.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type CleaningCategory = 'missing' | 'outliers' | 'smoothing'
@@ -350,6 +351,8 @@ export type CleaningMethod =
   // outliers
   | 'zscore'
   | 'clip'
+  | 'crop'
+  | 'exclude'
   | 'outlier_median'
   // smoothing
   | 'moving_avg'
@@ -359,10 +362,70 @@ export interface CleaningStep {
   uid: string
   category: CleaningCategory
   method: CleaningMethod
-  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip high */
+  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip/crop/exclude high */
   param?: number
-  /** clip low bound only */
+  /** clip/crop/exclude low bound only */
   paramLow?: number
+  /**
+   * DS-LAKE-032-D01. Tags this step applies to, within the batch. Absent =
+   * every tag the pipeline is applied to — how every step behaved before
+   * this field existed, so saved recipes need no migration.
+   */
+  tags?: string[]
+  /**
+   * DS-LAKE-032-D02. Optional inclusive time window, wall-clock
+   * `yyyy-MM-ddTHH:mm` (the `CalendarDateTimePicker` stamp). Read ONLY by
+   * clip/crop/exclude: readings outside it are left alone. Absent = the whole
+   * series.
+   */
+  startTime?: string
+  endTime?: string
+}
+
+/** `YYYY-MM-DD HH:MM` — wall clock, `T` or space, seconds dropped. */
+function minuteKey(stamp: string): string {
+  return stamp.replace('T', ' ').slice(0, 16)
+}
+
+/**
+ * DS-LAKE-032-D04. Whether a row falls inside `step`'s window. Compared as
+ * WALL CLOCK strings at minute precision, never through `Date`/UTC: the
+ * artifact's timestamps are naive Bangkok time, and a UTC round-trip would
+ * shift the window by seven hours. An offset-suffixed row timestamp is first
+ * restated on that wall clock (`toWallClock`). Both ends inclusive, the end
+ * through its whole minute. No window → always inside.
+ */
+export function inStepWindow(
+  timestamp: string,
+  step: Pick<CleaningStep, 'startTime' | 'endTime'>,
+): boolean {
+  if (!step.startTime && !step.endTime) return true
+  const at = minuteKey(toWallClock(timestamp))
+  if (step.startTime && at < minuteKey(step.startTime)) return false
+  if (step.endTime && at > minuteKey(step.endTime)) return false
+  return true
+}
+
+/**
+ * DS-LAKE-032. Applies a scope/window patch to one step. A key patched to
+ * `undefined` is DELETED, not stored: pipelines are compared and grouped by
+ * JSON (`pipelineEq` in step 5, `toCleaningOperationsFromRecord`), and a step
+ * whose scope was cleared must read exactly like one that never had a scope.
+ */
+export function patchCleaningStep(
+  step: CleaningStep,
+  patch: Pick<Partial<CleaningStep>, 'tags' | 'startTime' | 'endTime'>,
+): CleaningStep {
+  const next: CleaningStep = { ...step, ...patch }
+  for (const key of Object.keys(patch) as (keyof typeof patch)[]) {
+    if (patch[key] === undefined) delete next[key]
+  }
+  return next
+}
+
+/** DS-LAKE-032-D01. Whether `step` applies to `tag` at all. */
+export function stepAppliesToTag(step: CleaningStep, tag: string): boolean {
+  return !step.tags || step.tags.includes(tag)
 }
 
 export type TagPipeline = CleaningStep[]
@@ -454,9 +517,54 @@ function applyCleaningStep(
     const high = step.param
     for (const row of rows) {
       const cell = row.cells[tag]
-      if (!cell) continue
+      if (!cell || !inStepWindow(row.timestamp, step)) continue
       if (low !== undefined && cell.value < low) cell.value = low
       if (high !== undefined && cell.value > high) cell.value = high
+    }
+    return
+  }
+  // Value-axis counterparts of the cropping chart's `crop`/`exclude` drag
+  // modes, sharing the Min/Max params `clip` already uses. The trio differs
+  // only in what it does to a matched reading: `clip` clamps it to the bound,
+  // `crop` KEEPS the band and drops the rows outside it, `exclude` keeps
+  // everything outside and marks what is inside Bad.
+  //
+  // Both are a deliberate no-op while neither bound is set, the same guard
+  // `clip` documents: an unbounded `crop` would drop every row and an
+  // unbounded `exclude` would mark the whole tag Bad, so adding the step
+  // before typing a bound must change nothing.
+  if (method === 'crop') {
+    const low = step.paramLow
+    const high = step.param
+    if (low === undefined && high === undefined) return
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      const cell = row?.cells[tag]
+      if (!cell || !inStepWindow(row.timestamp, step)) continue
+      const outside =
+        (low !== undefined && cell.value < low) ||
+        (high !== undefined && cell.value > high)
+      // Row-level, like `drop` — the union across tags is removed once at the
+      // end of preprocessPipelines, so cropping one tag trims that timestamp
+      // for the others too. That is the same trade `drop` already makes.
+      if (outside) dropRows.add(i)
+    }
+    return
+  }
+  if (method === 'exclude') {
+    const low = step.paramLow
+    const high = step.param
+    if (low === undefined && high === undefined) return
+    for (const row of rows) {
+      const cell = row.cells[tag]
+      if (!cell || !inStepWindow(row.timestamp, step)) continue
+      const inside =
+        (low === undefined || cell.value >= low) &&
+        (high === undefined || cell.value <= high)
+      // Marked Bad rather than dropped: null-equivalent, so a later fill step
+      // in the same pipeline can impute it, and only THIS tag is affected —
+      // dropping the row would delete the timestamp for every other tag.
+      if (inside) cell.status = 'Bad'
     }
     return
   }
@@ -536,6 +644,7 @@ export function preprocessPipelines(
     const steps = pipelines[tag]!
     const precision = tagMeta(tag)?.precision ?? 2
     for (const step of steps) {
+      if (!stepAppliesToTag(step, tag)) continue
       applyCleaningStep(rows, tag, step, dropRows, precision)
     }
   }

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { deriveNodeSummary, type NodeSummary } from '@/lib/node-summary';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
 import type {
@@ -107,35 +108,8 @@ export class WorkspacePlantAuthorizedService {
     }
   }
 
-  private deriveNodeSummary(nodes: { data: unknown }[]): {
-    nodeCount: number;
-    alarmCount: number;
-    status: 'normal' | 'warning' | 'alarm' | 'offline';
-  } {
-    const priority: Record<string, number> = {
-      alarm: 3,
-      offline: 2,
-      warning: 1,
-      normal: 0,
-    };
-    const statusMap: Record<
-      number,
-      'normal' | 'warning' | 'alarm' | 'offline'
-    > = { 0: 'normal', 1: 'warning', 2: 'offline', 3: 'alarm' };
-    let worst = 0;
-    let alarmCount = 0;
-    for (const node of nodes) {
-      const data = node.data as Record<string, unknown>;
-      const st = typeof data?.status === 'string' ? data.status : 'normal';
-      if (st !== 'normal') alarmCount++;
-      const p = priority[st] ?? 0;
-      if (p > worst) worst = p;
-    }
-    return {
-      nodeCount: nodes.length,
-      alarmCount,
-      status: statusMap[worst] ?? 'normal',
-    };
+  private deriveNodeSummary(nodes: { data: unknown }[]): NodeSummary {
+    return deriveNodeSummary(nodes);
   }
 
   async getPlants(
@@ -179,7 +153,14 @@ export class WorkspacePlantAuthorizedService {
       statusCode: 201,
       message: 'Plant created successfully',
       type: 'SUCCESS' as const,
-      data: { ...plan, nodeCount: 0, alarmCount: 0, status: 'normal' as const },
+      data: {
+        ...plan,
+        nodeCount: 0,
+        alarmCount: 0,
+        warningCount: 0,
+        offlineCount: 0,
+        status: 'normal' as const,
+      },
     };
   }
 

@@ -2,9 +2,15 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { useWorkspacePlants } from '../workspace/use-workspace-plants'
 import { NodeStatus } from '@/store/status-colors'
 import { useDashboardData } from '../use-dashboard-data'
-import { createNode } from '@/services/canvas'
+import {
+  createNode,
+  deleteNode,
+  updateNode,
+  type EquipmentFormValues,
+} from '@/services/canvas'
+import { toast } from 'sonner'
 import { useModels } from '../workspace/use-models'
-import { failedDeploys } from '@/lib/model-status'
+import { abnormalModelCountByNodeId, failedDeploys } from '@/lib/model-status'
 
 type ViewMode = 'plants' | 'equipment'
 type DisplayMode = 'map' | 'grid'
@@ -23,6 +29,9 @@ export function usePlantsController(
   const [statusFilter] = useState<NodeStatus | null>(null)
   const [isAddPlanOpen, setIsAddPlanOpen] = useState(false)
   const [isAddEquipmentOpen, setIsAddEquipmentOpen] = useState(false)
+  // MODEL-SERVE-025-D02. Equipment being edited in the shared Add/Edit form;
+  // null = the form is in add mode (or closed).
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
   const [isPanelOpen, setIsPanelOpen] = useState(false)
 
   const activeWorkspaceId =
@@ -38,6 +47,13 @@ export function usePlantsController(
           .map(m => m.nodesId)
           .filter((id): id is string => id !== null),
       ),
+    [modelsRaw],
+  )
+  // MODEL-SERVE-024-D02. Equipment carrying an abnormal model (failed deploy
+  // or monitoring ALERT) — Abnormal on the plant map even when the node's own
+  // status is normal.
+  const abnormalModelNodeIds = useMemo(
+    () => new Set(Object.keys(abnormalModelCountByNodeId(modelsRaw ?? []))),
     [modelsRaw],
   )
 
@@ -138,20 +154,48 @@ export function usePlantsController(
       handleCreatePlan: async (name: string) => {
         await createPlan({ name })
       },
-      handleAddEquipment: async (
-        name: string,
-        type: 'machine' | 'sensor' | 'controller',
-      ) => {
+      handleAddEquipment: async (values: EquipmentFormValues) => {
         if (!activeWorkspaceId || !selectedPlanId) return
         await createNode(activeWorkspaceId, selectedPlanId, {
-          name,
-          type,
+          name: values.name,
+          type: values.type,
+          // A new equipment always starts Normal (the form offers status
+          // only when editing).
           status: 'normal',
           x: 0,
           y: 0,
         })
         refetch()
       },
+      handleEditEquipment: async (values: EquipmentFormValues) => {
+        if (!editingNodeId) return
+        try {
+          await updateNode(editingNodeId, values)
+          toast.success('Equipment updated')
+        } catch (err) {
+          toast.error(
+            err instanceof Error ? err.message : 'Failed to update equipment',
+          )
+          throw err
+        }
+        refetch()
+      },
+      handleDeleteEquipment: async (nodeId: string) => {
+        try {
+          await deleteNode(nodeId)
+          toast.success('Equipment deleted')
+        } catch (err) {
+          toast.error(
+            err instanceof Error ? err.message : 'Failed to delete equipment',
+          )
+          return
+        }
+        setSelectedNodeId(null)
+        setIsPanelOpen(false)
+        refetch()
+      },
+      handleOpenEditEquipment: (nodeId: string) => setEditingNodeId(nodeId),
+      handleCloseEditEquipment: () => setEditingNodeId(null),
       handleResetToPlantsView: () => {
         setViewMode('plants')
         setSelectedPlanId(null)
@@ -176,6 +220,7 @@ export function usePlantsController(
       createPlan,
       activeWorkspaceId,
       refetch,
+      editingNodeId,
     ],
   )
 
@@ -185,6 +230,7 @@ export function usePlantsController(
       displayMode,
       isAddPlanOpen,
       isAddEquipmentOpen,
+      editingNodeId,
       isPanelOpen,
       selectedPlanId,
       selectedNodeId,
@@ -206,6 +252,7 @@ export function usePlantsController(
       warningCount,
       deployFailedCount,
       failedNodeIds,
+      abnormalModelNodeIds,
     },
     setters: {
       setDisplayMode,

@@ -26,14 +26,19 @@ from intergrations.object_store import (
     tag_columns,
 )
 from schemas.preprocess import (
+    ArtifactAdoptRequest,
+    ArtifactPresignResponse,
     ArtifactReclaimRequest,
     CleaningOperation,
     CleanRequest,
     CleanupRequest,
     ColumnStatsRequest,
+    DraftRunReclaimRequest,
     MaterializeRequest,
     MetadataRequest,
     RowsRequest,
+    RunFeatureImportanceRequest,
+    RunManifestRequest,
     TagCatalogRequest,
 )
 from services import artifact_service
@@ -163,6 +168,28 @@ class RecordingStore:
             del self.objects[key]
         self.deleted_prefixes.append(prefix)
         return len(hits)
+
+    def copy_prefix(self, src_prefix: str, dst_prefix: str) -> list[str]:
+        """DS-LAKE-025. Mirrors the real `ObjectStore.copy_prefix`.
+
+        Unlike `delete_prefix` above, this DOES span both dicts: sidecars
+        live in `.documents`, and an adoption that moved only `.objects`
+        would leave the copied data file with sidecars still resolving to
+        the source prefix — precisely the half-copy the real method exists
+        to avoid. Skips a destination that already exists, so a repeated
+        call converges the same way the real one does.
+        """
+        if not src_prefix.endswith("/") or not dst_prefix.endswith("/"):
+            raise ValueError("copy_prefix needs directory-style prefixes")
+
+        copied: list[str] = []
+        for store in (self.objects, self.documents):
+            for src_key in [k for k in store if k.startswith(src_prefix)]:
+                dst_key = f"{dst_prefix}{src_key[len(src_prefix):]}"
+                if dst_key not in store:
+                    store[dst_key] = store[src_key]
+                copied.append(dst_key)
+        return copied
 
     def get_frame_metadata(self, key: str) -> dict[str, object]:
         if key not in self.objects:
@@ -664,6 +691,32 @@ def test_reclaim_is_idempotent() -> None:
     assert second["deleted"] == 0
 
 
+def test_reclaim_of_a_stage_suffixed_artifact_deletes_a_non_zero_count() -> None:
+    """DS-LAKE-016-T02/V02: the exact defect this task exists to close. A
+    hardcoded `object_key[: -len(DATA_FILENAME)]` slice against a longer,
+    stage-suffixed key leaves a filename FRAGMENT on the prefix
+    (`.../data_`), so `delete_prefix` silently matches nothing and this
+    would report `deleted: 0` while every sidecar stays orphaned. Asserting
+    ONLY "no error" would pass against that exact bug — `deleted` must be > 0
+    and the object must actually be gone."""
+    store = RecordingStore(
+        {
+            "ds-1/artifacts/art-7/data_gold.parquet": frame(),
+            "ds-1/artifacts/art-7/manifest.json": frame(),
+            "ds-1/artifacts/art-8/data_gold.parquet": frame(),
+        }
+    )
+    request = ArtifactReclaimRequest(
+        object_key="ds-1/artifacts/art-7/data_gold.parquet"
+    )
+
+    result = artifact_service.reclaim_artifact(store, request)
+
+    assert result["prefix"] == "ds-1/artifacts/art-7/"
+    assert result["deleted"] > 0
+    assert set(store.objects) == {"ds-1/artifacts/art-8/data_gold.parquet"}
+
+
 def test_reclaim_refuses_a_key_outside_artifacts() -> None:
     """The opposite guard from cleanup: this must never be pointed at tmp/."""
     with pytest.raises(ValueError, match="committed artifact's data key"):
@@ -675,6 +728,72 @@ def test_reclaim_refuses_a_sidecar_key() -> None:
     copy-paste of the wrong key rather than the intended artifact's."""
     with pytest.raises(ValueError, match="committed artifact's data key"):
         ArtifactReclaimRequest(object_key="ds-1/artifacts/art-7/manifest.json")
+
+
+# ── reclaim_draft_runs (MODEL-FLOW-011-T02) ─────────────────────────────
+
+
+def test_reclaim_draft_runs_deletes_one_run_only_when_run_id_given() -> None:
+    store = RecordingStore(
+        {
+            "drafts/draft-1/runs/run-a/model.joblib": frame(),
+            "drafts/draft-1/runs/run-b/model.joblib": frame(),
+        }
+    )
+    result = artifact_service.reclaim_draft_runs(
+        store, DraftRunReclaimRequest(draft_id="draft-1", run_id="run-a")
+    )
+
+    assert result == {"prefix": "drafts/draft-1/runs/run-a/", "deleted": 1}
+    assert set(store.objects) == {"drafts/draft-1/runs/run-b/model.joblib"}
+
+
+def test_reclaim_draft_runs_deletes_the_whole_subtree_when_run_id_omitted() -> None:
+    """The shape used when no run on the draft is adopted — also the ONLY
+    shape that reaches a run prefix whose ModelTrainingRun row is already
+    gone, since a per-run delete can only ever name a row that still
+    exists."""
+    store = RecordingStore(
+        {
+            "drafts/draft-1/runs/run-a/model.joblib": frame(),
+            "drafts/draft-1/runs/run-b/model.joblib": frame(),
+            "drafts/draft-2/runs/run-c/model.joblib": frame(),
+        }
+    )
+    result = artifact_service.reclaim_draft_runs(
+        store, DraftRunReclaimRequest(draft_id="draft-1", run_id=None)
+    )
+
+    assert result == {"prefix": "drafts/draft-1/runs/", "deleted": 2}
+    assert set(store.objects) == {"drafts/draft-2/runs/run-c/model.joblib"}
+
+
+def test_reclaim_draft_runs_is_idempotent() -> None:
+    store = RecordingStore({"drafts/draft-1/runs/run-a/model.joblib": frame()})
+    request = DraftRunReclaimRequest(draft_id="draft-1", run_id="run-a")
+
+    first = artifact_service.reclaim_draft_runs(store, request)
+    second = artifact_service.reclaim_draft_runs(store, request)
+
+    assert first["deleted"] == 1
+    assert second["deleted"] == 0
+
+
+def test_reclaim_draft_runs_refuses_a_slash_in_either_id() -> None:
+    """The class of bug is_model_run_key/is_draft_run_key exist to catch on
+    the write side: a bare-segment bypass here would let a caller name a
+    path outside drafts/{draft_id}/runs/."""
+    with pytest.raises(ValueError, match="path segment"):
+        DraftRunReclaimRequest(draft_id="../other-draft", run_id="run-a")
+    with pytest.raises(ValueError, match="path segment"):
+        DraftRunReclaimRequest(draft_id="draft-1", run_id="../../x")
+
+
+def test_reclaim_draft_runs_refuses_an_empty_or_dot_id() -> None:
+    with pytest.raises(ValueError, match="path segment"):
+        DraftRunReclaimRequest(draft_id="", run_id=None)
+    with pytest.raises(ValueError, match="path segment"):
+        DraftRunReclaimRequest(draft_id=".", run_id=None)
 
 
 # ── materialize request validation ───────────────────────────────────────
@@ -718,6 +837,127 @@ def test_materialize_rejects_two_sources() -> None:
     }
     with pytest.raises(ValueError, match="exactly one"):
         MaterializeRequest(target_key="ds-1/v1.parquet", pi=pi, sql=sql)
+
+
+# ── DS-LAKE-018-T03: holdout split at BRONZE ─────────────────────────────
+#
+# `_split_holdout` is tested directly, not through `materialize()` — same
+# reasoning `test_a_lineage_root_gets_null_drift_not_zero` already states:
+# the fetch itself needs a live PI/SQL source to exercise meaningfully, but
+# the split is a pure function of a frame it already holds.
+
+
+def _daily_frame(days: int) -> pd.DataFrame:
+    """`days` rows, one per day starting 2026-01-01, TI-101 valued 0..days-1
+    so train/validate CONTENT (not just row counts) can be asserted exactly."""
+    ts = pd.Timestamp("2026-01-01") + pd.to_timedelta(range(days), unit="D")
+    return pd.DataFrame(
+        {
+            "timestamp": ts,
+            "TI-101": [float(i) for i in range(days)],
+            "TI-101__status": pd.array([STATUS_GOOD] * days, dtype="int8"),
+        }
+    )
+
+
+def test_split_holdout_cuts_the_window_from_train_and_builds_validate_with_lead_in() -> None:
+    from schemas.preprocess import HoldoutSplitRequest
+
+    src = _daily_frame(15)  # day0 (2026-01-01) .. day14 (2026-01-15)
+    # day10 (2026-01-11) .. day12 (2026-01-13).
+    holdout = HoldoutSplitRequest(from_time="2026-01-11", to_time="2026-01-13")
+
+    train, validate = artifact_service._split_holdout(src, holdout)
+
+    # Holdout rows (day10-12, values 10/11/12) are GONE from train — the
+    # whole point of the cut (finding: "HOLDOUT ROWS MUST BE CUT FROM
+    # data.parquet TOO").
+    assert set(train["TI-101"]) == {
+        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 13.0, 14.0,
+    }
+    # validate = the 7-day lead-in (day3-day9, values 3-9) THEN the holdout
+    # itself (day10-day12, values 10-12), in timestamp order.
+    assert list(validate["TI-101"]) == [
+        3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ]
+    # Lead-in rows are COPIED into validate, not MOVED — they must still be
+    # in train too (userDecisions[0]: "cost nothing extra to carry").
+    assert {3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0}.issubset(set(train["TI-101"]))
+    # Same columns on both sides — a downstream reader must not see a
+    # different schema depending on which file it opened.
+    assert list(train.columns) == list(src.columns)
+    assert list(validate.columns) == list(src.columns)
+
+
+def test_split_holdout_excludes_rows_before_the_lead_in_window() -> None:
+    from schemas.preprocess import HoldoutSplitRequest
+
+    src = _daily_frame(15)
+    holdout = HoldoutSplitRequest(from_time="2026-01-11", to_time="2026-01-13")
+
+    _, validate = artifact_service._split_holdout(src, holdout)
+
+    # day0-day2 (values 0,1,2) precede the 7-day lead-in window (which starts
+    # at day3) — real exclusion, not merely "everything before holdout".
+    assert not {0.0, 1.0, 2.0} & set(validate["TI-101"])
+
+
+def test_split_holdout_excludes_rows_after_the_holdout_window() -> None:
+    from schemas.preprocess import HoldoutSplitRequest
+
+    src = _daily_frame(15)
+    holdout = HoldoutSplitRequest(from_time="2026-01-11", to_time="2026-01-13")
+
+    _, validate = artifact_service._split_holdout(src, holdout)
+
+    # day13/day14 (values 13, 14) are after the holdout — validate is not
+    # "everything from the lead-in start onward".
+    assert not {13.0, 14.0} & set(validate["TI-101"])
+
+
+def test_split_holdout_on_the_whole_fetch_window_leaves_train_empty() -> None:
+    """T01's own guard 1 refuses a holdout OUTSIDE the fetch window, but not
+    one that equals it exactly — `materialize()` itself is what turns this
+    into a loud refusal (via `assert_frame_is_usable`), not `_split_holdout`,
+    which stays a pure, unconditional split."""
+    from schemas.preprocess import HoldoutSplitRequest
+
+    src = _daily_frame(5)
+    holdout = HoldoutSplitRequest(from_time="2026-01-01", to_time="2026-01-05")
+
+    train, validate = artifact_service._split_holdout(src, holdout)
+
+    assert len(train) == 0
+    assert len(validate) == 5
+
+
+def test_stats_payload_survives_the_artifact_stats_response_model() -> None:
+    """BUGFIX regression, found during DS-LAKE-018-T05: `_stats_payload` has
+    put `validation_row_count` in the response dict since T03, but
+    `ArtifactStatsResponse` — the `response_model` FastAPI filters every real
+    `/materialize` HTTP reply through — never declared it, so it was silently
+    STRIPPED before reaching NestJS. A direct call to `artifact_service.
+    materialize()` (what the rest of this module exercises) never sees this
+    gap; only round-tripping through the pydantic response model does, which
+    is what this test does instead of hitting the router over HTTP."""
+    from schemas.preprocess import ArtifactStatsResponse
+
+    payload = artifact_service._stats_payload(
+        ArtifactStats(
+            object_key="ds-1/artifacts/a1/data.parquet",
+            row_count=10,
+            column_count=1,
+            size_bytes=100,
+            missing_pct=0.0,
+            checksum="deadbeef",
+        ),
+        started=0.0,
+        validation_row_count=3,
+        validation_holdout_from="2026-01-11 00:00:00",
+    )
+    reserialized = ArtifactStatsResponse(**payload).model_dump()
+    assert reserialized["validation_row_count"] == 3
+    assert reserialized["validation_holdout_from"] == "2026-01-11 00:00:00"
 
 
 # ── the empty-fetch guard, directly ──────────────────────────────────────
@@ -975,3 +1215,389 @@ def test_rows_route_still_returns_json_when_format_is_omitted(client) -> None:
     assert response.headers["content-type"].startswith("application/json")
     body = response.json()
     assert "rows" in body and "total_row_count" in body
+
+
+# ── DS-LAKE-025: adopt_artifact ─────────────────────────────────────────────
+#
+# Save Dataset's counterpart to reclaim: instead of removing an artifact's
+# bytes, it gives them a permanent home under the dataset's own prefix. Before
+# this, a saved dataset's FINAL kept pointing at `drafts/{draftId}/...` for the
+# rest of its life, so the registry's readability depended on draft-space bytes
+# surviving. Two saved datasets were found with theirs gone.
+
+
+def _draft_artifact_store() -> RecordingStore:
+    src = "drafts/draft-1/artifacts/gold-1/"
+    store = RecordingStore({f"{src}data_gold.parquet": frame()})
+    store.documents[f"{src}manifest.json"] = {"n": 1}
+    store.documents[f"{src}feature_spec.json"] = {"features": []}
+    store.documents[f"{src}column_stats.json"] = {"TI-101": {}}
+    return store
+
+
+def test_adopt_artifact_copies_out_of_draft_space_under_the_row_id() -> None:
+    store = _draft_artifact_store()
+
+    result = artifact_service.adopt_artifact(
+        store,
+        ArtifactAdoptRequest(
+            object_key="drafts/draft-1/artifacts/gold-1/data_gold.parquet",
+            dataset_id="ds-1",
+            artifact_id="final-9",
+        ),
+    )
+
+    # Destination is keyed by the ROW being repointed (`final-9`), not by the
+    # id in the source key: a FINAL promoted by pointer carries its parent
+    # GOLD's key, and it has to land under its own id.
+    assert result["destination_prefix"] == "ds-1/artifacts/final-9/"
+    assert result["object_key"] == "ds-1/artifacts/final-9/data_gold.parquet"
+    assert "drafts/" not in result["object_key"]
+    # The copied object keeps the source stage's filename, so a FINAL's key
+    # still says which stage produced it.
+    assert result["object_key"].endswith("data_gold.parquet")
+
+
+def test_adopt_artifact_returns_every_sidecar_pointer() -> None:
+    store = _draft_artifact_store()
+
+    result = artifact_service.adopt_artifact(
+        store,
+        ArtifactAdoptRequest(
+            object_key="drafts/draft-1/artifacts/gold-1/data_gold.parquet",
+            dataset_id="ds-1",
+            artifact_id="final-9",
+        ),
+    )
+
+    # These three are literally the artifact row's nullable key columns —
+    # repointing the data file without them would leave the row's sidecars
+    # resolving into draft space.
+    assert result["feature_spec_key"] == "ds-1/artifacts/final-9/feature_spec.json"
+    assert result["column_stats_key"] == "ds-1/artifacts/final-9/column_stats.json"
+    assert "ds-1/artifacts/final-9/manifest.json" in result["keys"]
+    # Absent sidecars report null rather than a key to a nonexistent object.
+    assert result["validation_key"] is None
+
+
+def test_adopt_artifact_leaves_the_source_alone() -> None:
+    """Save is never destructive. Deleting the draft's objects is cleanup's
+    job — doing it here would mean a half-failed Save takes the draft's bytes
+    down with it."""
+    store = _draft_artifact_store()
+
+    artifact_service.adopt_artifact(
+        store,
+        ArtifactAdoptRequest(
+            object_key="drafts/draft-1/artifacts/gold-1/data_gold.parquet",
+            dataset_id="ds-1",
+            artifact_id="final-9",
+        ),
+    )
+
+    assert "drafts/draft-1/artifacts/gold-1/data_gold.parquet" in store.objects
+    assert store.deleted_prefixes == []
+
+
+def test_adopt_artifact_is_idempotent() -> None:
+    """A retried Save converges instead of failing the second time."""
+    store = _draft_artifact_store()
+    request = ArtifactAdoptRequest(
+        object_key="drafts/draft-1/artifacts/gold-1/data_gold.parquet",
+        dataset_id="ds-1",
+        artifact_id="final-9",
+    )
+
+    first = artifact_service.adopt_artifact(store, request)
+    second = artifact_service.adopt_artifact(store, request)
+
+    assert sorted(first["keys"]) == sorted(second["keys"])
+    assert first["object_key"] == second["object_key"]
+
+
+def test_adopt_artifact_on_an_already_owned_artifact_is_a_no_op() -> None:
+    """Source == destination degenerates to a listing, no branch needed."""
+    owned = "ds-1/artifacts/final-9/"
+    store = RecordingStore({f"{owned}data.parquet": frame()})
+
+    result = artifact_service.adopt_artifact(
+        store,
+        ArtifactAdoptRequest(
+            object_key=f"{owned}data.parquet",
+            dataset_id="ds-1",
+            artifact_id="final-9",
+        ),
+    )
+
+    assert result["source_prefix"] == result["destination_prefix"] == owned
+    assert result["object_key"] == f"{owned}data.parquet"
+    assert list(store.objects) == [f"{owned}data.parquet"]
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "ds-1/tmp/job-1/0.parquet",
+        "feature-presets/ws-1/import-1/preset.json",
+        "ds-1/v1.parquet",
+        "drafts/draft-1/artifacts/gold-1/manifest.json",
+    ],
+)
+def test_adopt_artifact_refuses_anything_but_a_committed_artifact_key(
+    bad_key: str,
+) -> None:
+    """Same guard as /artifacts/reclaim, in the opposite direction: this
+    endpoint must not be pointable at tmp/, a preset, or a legacy object."""
+    with pytest.raises(ValueError, match="committed artifact"):
+        ArtifactAdoptRequest(
+            object_key=bad_key, dataset_id="ds-1", artifact_id="final-9"
+        )
+
+
+# ── get_run_manifest (MODEL-FLOW-007-T11) ───────────────────────────────
+
+
+def test_get_run_manifest_returns_framework_versions_when_present() -> None:
+    key = "drafts/draft-1/runs/run-a/run_manifest.json"
+    store = RecordingStore()
+    store.put_json(key, {"algorithm": "lightgbm", "framework_versions": {
+        "sklearn": "1.5.1",
+        "lightgbm": "4.3.0",
+    }})
+
+    result = artifact_service.get_run_manifest(
+        store, RunManifestRequest(source_key=key)
+    )
+
+    # All three keys, not just the one this test is named for: `get_run_manifest`
+    # returns `model_sha256` (MODEL-SERVE-001-T01) and `feature_columns`
+    # (MODEL-FLOW-016-T07) too, both null for a manifest that records neither.
+    # Kept as exact equality rather than narrowed to a subset check — the whole
+    # point of this assertion is that a NEW field cannot appear unnoticed.
+    assert result == {
+        "framework_versions": {"sklearn": "1.5.1", "lightgbm": "4.3.0"},
+        "model_sha256": None,
+        "feature_columns": None,
+    }
+
+
+def test_get_run_manifest_returns_none_for_a_legacy_manifest() -> None:
+    """Every manifest written before the trainer pass that added this field —
+    Save Model must treat this as 'not recorded', not fail the read."""
+    key = "drafts/draft-1/runs/run-a/run_manifest.json"
+    store = RecordingStore()
+    store.put_json(key, {"algorithm": "ols", "target_y": "TI-101"})
+
+    result = artifact_service.get_run_manifest(
+        store, RunManifestRequest(source_key=key)
+    )
+
+    # A legacy manifest records none of the three, and each is returned as
+    # None rather than raising — the "not recorded, not a failure" contract
+    # this test is named for, now asserted across all three fields.
+    assert result == {
+        "framework_versions": None,
+        "model_sha256": None,
+        "feature_columns": None,
+    }
+
+
+def test_get_run_manifest_accepts_an_adopted_model_run_key_too() -> None:
+    """Save Model adopts by pointer — an adopted run's manifest still lives
+    under drafts/, but a future read against models/{modelId}/runs/... must
+    not be refused either (same acceptance run_predictions/loss_history give
+    both roots)."""
+    key = "models/model-1/runs/run-a/run_manifest.json"
+    store = RecordingStore()
+    store.put_json(key, {"framework_versions": {"sklearn": "1.5.1"}})
+
+    result = artifact_service.get_run_manifest(
+        store, RunManifestRequest(source_key=key)
+    )
+
+    assert result == {
+        "framework_versions": {"sklearn": "1.5.1"},
+        "model_sha256": None,
+        "feature_columns": None,
+    }
+
+
+# ── get_run_feature_importance (MODEL-FLOW-019-T09) ─────────────────────
+
+
+def test_get_run_feature_importance_reads_an_impurity_artifact() -> None:
+    key = "drafts/draft-1/runs/run-a/feature_importance.json"
+    store = RecordingStore()
+    store.put_json(
+        key,
+        {
+            "algorithm": "random_forest",
+            "method": "impurity",
+            "standardized": None,
+            "scaling_methods": [],
+            "features": [
+                {"name": "TI-101", "importance": 0.6},
+                {"name": "FI-404", "importance": 0.4},
+            ],
+        },
+    )
+
+    result = artifact_service.get_run_feature_importance(
+        store, RunFeatureImportanceRequest(source_key=key)
+    )
+
+    assert result["algorithm"] == "random_forest"
+    assert result["method"] == "impurity"
+    assert result["standardized"] is None
+    assert result["scaling_methods"] == []
+    assert result["features"] == [
+        {"name": "TI-101", "importance": 0.6},
+        {"name": "FI-404", "importance": 0.4},
+    ]
+
+
+def test_get_run_feature_importance_reads_a_coefficient_artifact_with_standardized_flag() -> None:
+    key = "drafts/draft-1/runs/run-a/feature_importance.json"
+    store = RecordingStore()
+    store.put_json(
+        key,
+        {
+            "algorithm": "ridge",
+            "method": "coefficient",
+            "standardized": True,
+            "scaling_methods": ["standard"],
+            "features": [{"name": "TI-101", "importance": 0.4, "coefficient": -0.4}],
+        },
+    )
+
+    result = artifact_service.get_run_feature_importance(
+        store, RunFeatureImportanceRequest(source_key=key)
+    )
+
+    assert result["method"] == "coefficient"
+    assert result["standardized"] is True
+    assert result["scaling_methods"] == ["standard"]
+    assert result["features"][0]["coefficient"] == -0.4
+
+
+def test_get_run_feature_importance_refuses_a_key_not_named_feature_importance_json() -> None:
+    with pytest.raises(ValueError, match="does not name"):
+        artifact_service.get_run_feature_importance(
+            RecordingStore(),
+            RunFeatureImportanceRequest(
+                source_key="drafts/draft-1/runs/run-a/metrics.json"
+            ),
+        )
+
+
+def test_get_run_feature_importance_refuses_a_malformed_key_root() -> None:
+    key = "ds-1/tmp/job-1/feature_importance.json"
+    with pytest.raises(ValueError, match="not a well-formed training-run output key"):
+        artifact_service.get_run_feature_importance(
+            RecordingStore(), RunFeatureImportanceRequest(source_key=key)
+        )
+
+
+def test_get_run_feature_importance_refuses_a_malformed_payload() -> None:
+    key = "drafts/draft-1/runs/run-a/feature_importance.json"
+    store = RecordingStore()
+    store.put_json(key, {"algorithm": "ridge"})  # missing method/features
+
+    with pytest.raises(ValueError, match="not a well-formed feature_importance.json"):
+        artifact_service.get_run_feature_importance(
+            store, RunFeatureImportanceRequest(source_key=key)
+        )
+
+
+def test_get_run_feature_importance_accepts_an_adopted_model_run_key_too() -> None:
+    """Same acceptance run_predictions/loss_history/cv_folds/manifest all
+    give both roots — Save Model adopts a run's objects by pointer, so a
+    read against models/{modelId}/runs/... must not be refused either."""
+    key = "models/model-1/runs/run-a/feature_importance.json"
+    store = RecordingStore()
+    store.put_json(
+        key,
+        {
+            "algorithm": "random_forest",
+            "method": "impurity",
+            "standardized": None,
+            "scaling_methods": [],
+            "features": [{"name": "TI-101", "importance": 1.0}],
+        },
+    )
+
+    result = artifact_service.get_run_feature_importance(
+        store, RunFeatureImportanceRequest(source_key=key)
+    )
+
+    assert result["algorithm"] == "random_forest"
+
+
+def test_get_run_manifest_refuses_a_key_not_named_run_manifest_json() -> None:
+    with pytest.raises(ValueError, match="run_manifest.json"):
+        artifact_service.get_run_manifest(
+            RecordingStore(),
+            RunManifestRequest(
+                source_key="drafts/draft-1/runs/run-a/metrics.json"
+            ),
+        )
+
+
+def test_get_run_manifest_refuses_a_malformed_run_key() -> None:
+    with pytest.raises(ValueError, match="well-formed training-run"):
+        artifact_service.get_run_manifest(
+            RecordingStore(),
+            RunManifestRequest(source_key="ds-1/run_manifest.json"),
+        )
+
+
+def test_get_run_manifest_refuses_a_malformed_framework_versions() -> None:
+    key = "drafts/draft-1/runs/run-a/run_manifest.json"
+    store = RecordingStore()
+    store.put_json(key, {"framework_versions": {"sklearn": 1.5}})
+
+    with pytest.raises(ValueError, match="malformed framework_versions"):
+        artifact_service.get_run_manifest(store, RunManifestRequest(source_key=key))
+
+
+def test_artifact_presign_response_declares_bucket() -> None:
+    """MODEL-SERVE-007-T06. FastAPI filters a handler's return value through
+    this response_model and DROPS any key the model does not declare —
+    silently, with no error at any layer. `bucket` was added to
+    `presign_artifact`'s returned dict first and was being stripped here,
+    which no test of the service function could ever have caught, because the
+    service function was already correct.
+
+    Asserted against the SCHEMA rather than the service for that reason: this
+    is the boundary that decides whether the field reaches the wire at all,
+    and the whole presign -> claim -> run_manifest.gold_bucket chain is dead
+    without it."""
+    filtered = ArtifactPresignResponse.model_validate(
+        {
+            "data_url": "https://minio.example/ds-1/artifacts/a1/data.parquet",
+            "sidecar_urls": {},
+            "checksum": "abc",
+            "row_count": 2,
+            "bucket": "datasets",
+            "expires_at": "2026-09-16T00:00:00+00:00",
+        }
+    ).model_dump()
+
+    assert filtered["bucket"] == "datasets"
+
+
+def test_artifact_presign_response_tolerates_a_missing_bucket() -> None:
+    """A python deployment predating the field, and every manifest written
+    before it: absence must parse, not raise. `class_for_key`'s rootless
+    default is the correct answer for all of them."""
+    filtered = ArtifactPresignResponse.model_validate(
+        {
+            "data_url": "https://minio.example/ds-1/artifacts/a1/data.parquet",
+            "sidecar_urls": {},
+            "checksum": "abc",
+            "row_count": 2,
+            "expires_at": "2026-09-16T00:00:00+00:00",
+        }
+    ).model_dump()
+
+    assert filtered["bucket"] is None

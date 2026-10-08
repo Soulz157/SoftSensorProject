@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { datasetDraftService } from '@/services/dataset-draft'
 import type { DraftCorrelationResult } from '@/services/dataset-draft'
 import type { CleaningOperationInput } from '@/services/dataset-version'
+import { windowKey, windowParams, type TimeWindow } from '@/lib/time-window'
 import { useDebouncedAbortableRequest } from './internal/use-debounced-abortable-request'
 
 export interface DatasetCorrelationState {
@@ -41,6 +42,8 @@ export function useDatasetCorrelation(
   /** Forwarded as-is. No caller sets this yet — `undefined` lets the
    * server apply its own default (`DEFAULT_CORRELATION_TOP_K = 20`). */
   topK?: number,
+  /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
+  timeWindow?: TimeWindow | null,
 ): DatasetCorrelationState {
   const [correlation, setCorrelation] = useState<DraftCorrelationResult | null>(
     null,
@@ -53,7 +56,7 @@ export function useDatasetCorrelation(
 
   const enabled = !!draftId && !!artifactId && tags.length > 0
   const cacheKey = enabled
-    ? `correlation|${draftId}|${artifactId}|${tagsKey}|${opsKey}|${topK ?? ''}`
+    ? `correlation|${draftId}|${artifactId}|${tagsKey}|${opsKey}|${topK ?? ''}|${windowKey(timeWindow)}`
     : null
 
   useDebouncedAbortableRequest<DraftCorrelationResult>({
@@ -64,7 +67,12 @@ export function useDatasetCorrelation(
         .correlation(
           draftId!,
           artifactId!,
-          { operations, tags, ...(topK !== undefined && { topK }) },
+          {
+            operations,
+            tags,
+            ...(topK !== undefined && { topK }),
+            ...windowParams(timeWindow),
+          },
           signal,
         )
         .then(res => res.data),

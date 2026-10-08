@@ -20,6 +20,7 @@ import {
   AdminMoveMemberDto,
   AdminUpdateMemberRoleDto,
   AdminWorkspaceListResponseDto,
+  AdminWorkspaceSummaryResponseDto,
   AdminWorkspaceQueryDto,
   CreateWorkspaceRequestDto,
   CreateWorkspaceResponseDto,
@@ -29,14 +30,18 @@ import {
 } from './dto/workspace.admin.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { RolesGuard } from '@/guards/roles.guard';
-// import { Roles } from '@/common/decorators/roles.decorator';
+import { Roles } from '@/common/decorators/roles.decorator';
 
 @Controller('admin/workspace')
+// ADMIN is enforced per route, not on the class: `POST /create` is the
+// onboarding path every USER takes (create-workspace-form → workspaceService
+// .createWorkspace), so a class-level @Roles('ADMIN') would lock new users
+// out of creating their first workspace.
 @UseGuards(JwtAccessGuard, RolesGuard)
-// @Roles('ADMIN')
 export class WorkspaceAdminController {
   constructor(private readonly workspaceAdminService: WorkspaceAdminService) {}
 
+  @Roles('ADMIN')
   @Get('/')
   @HttpCode(200)
   @ApiOkResponse({ type: AdminWorkspaceListResponseDto })
@@ -44,6 +49,16 @@ export class WorkspaceAdminController {
     return this.workspaceAdminService.listWorkspaces(query);
   }
 
+  // Declared BEFORE `/:id` — otherwise "summary" is read as a workspace id.
+  @Roles('ADMIN')
+  @Get('/summary')
+  @HttpCode(200)
+  @ApiOkResponse({ type: AdminWorkspaceSummaryResponseDto })
+  async getSummary() {
+    return this.workspaceAdminService.getSummary();
+  }
+
+  @Roles('ADMIN')
   @Get('/:id')
   @HttpCode(200)
   @ApiOkResponse({ type: AdminGetWorkspaceByIdResponseDto })
@@ -51,6 +66,8 @@ export class WorkspaceAdminController {
     return this.workspaceAdminService.getWorkspaceById(id);
   }
 
+  // Intentionally open to any authenticated user — see the class comment.
+  // TODO: move to the authorized workspace controller.
   @Post('/create')
   @HttpCode(201)
   @ApiOkResponse({ type: CreateWorkspaceResponseDto })
@@ -62,6 +79,7 @@ export class WorkspaceAdminController {
     return this.workspaceAdminService.createWorkspace(user, args);
   }
 
+  @Roles('ADMIN')
   @Patch('/:id')
   @HttpCode(200)
   async updateWorkspace(
@@ -72,6 +90,7 @@ export class WorkspaceAdminController {
     return this.workspaceAdminService.updateWorkspace(id, user, args);
   }
 
+  @Roles('ADMIN')
   @Post('/:id/members')
   @HttpCode(201)
   async inviteMember(
@@ -81,6 +100,7 @@ export class WorkspaceAdminController {
     return this.workspaceAdminService.inviteMember(id, body);
   }
 
+  @Roles('ADMIN')
   @Patch('/:id/members/:mid')
   @HttpCode(200)
   async updateMemberRole(
@@ -91,6 +111,7 @@ export class WorkspaceAdminController {
     return this.workspaceAdminService.updateMemberRole(id, mid, body);
   }
 
+  @Roles('ADMIN')
   @Patch('/:id/members/:mid/move')
   @HttpCode(200)
   async moveMember(
@@ -101,12 +122,14 @@ export class WorkspaceAdminController {
     return this.workspaceAdminService.moveMember(id, mid, body);
   }
 
+  @Roles('ADMIN')
   @Delete('/:id/members/:mid')
   @HttpCode(200)
   async removeMember(@Param('id') id: string, @Param('mid') mid: string) {
     return this.workspaceAdminService.removeMember(id, mid);
   }
 
+  @Roles('ADMIN')
   @Delete('/delete')
   @HttpCode(200)
   @ApiOkResponse({ type: DeleteWorkspaceResponseDto })

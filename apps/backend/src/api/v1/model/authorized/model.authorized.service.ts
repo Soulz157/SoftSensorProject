@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
 import { z } from 'zod';
+import { deriveDeployStatuses, overlayDeployStatus } from '@/lib/deploy-status';
 import {
   AppendLogSchema,
   CreateModelSchema,
@@ -10,10 +11,22 @@ import {
 
 type ModelData = {
   deployStatus: 'stopped' | 'running' | 'error' | 'initializing';
+  /** MODEL-SERVE-001-T19. The setting the operator owns, alongside the fact
+   *  `deployStatus` derives from it — a Start/Stop control binds to THIS,
+   *  never to `deployStatus` (see lib/deploy-status.ts's `DeployState`). */
+  enabled: boolean;
   prodStatus: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen';
   statusDetail?: string;
   deployedBy?: string;
   deployedAt?: string;
+  lastEditedBy?: string;
+  lastEditedAt?: string;
+  lastEditedFields?: string[];
+  editHistory: Array<{
+    by: string;
+    at: string;
+    fields: string[];
+  }>;
   logs: Array<{
     level: 'info' | 'warn' | 'error';
     message: string;
@@ -29,15 +42,77 @@ function normalizeData(raw: unknown): ModelData {
     deployStatus: (r.deployStatus ??
       r.status ??
       'stopped') as ModelData['deployStatus'],
+    // The value READ back off a stored row here is never authoritative —
+    // same shape as `deployStatus` above (T12), same reason: the real
+    // setting lives on InferenceSchedule.enabled. `overlayDeployStatus`
+    // (lib/deploy-status.ts) OVERWRITES this field on every one of its four
+    // call sites with a fresh read; this default only feeds the brief
+    // window between `normalizeData` and that overlay (e.g. a create
+    // response, before any schedule exists). Never trust a value read from
+    // here as the live setting.
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : false,
     prodStatus: (r.prodStatus ?? 'normal') as ModelData['prodStatus'],
     ...(typeof r.statusDetail === 'string' && { statusDetail: r.statusDetail }),
     ...(typeof r.deployedBy === 'string' && { deployedBy: r.deployedBy }),
     ...(typeof r.deployedAt === 'string' && { deployedAt: r.deployedAt }),
+    ...(typeof r.lastEditedBy === 'string' && {
+      lastEditedBy: r.lastEditedBy,
+    }),
+    ...(typeof r.lastEditedAt === 'string' && {
+      lastEditedAt: r.lastEditedAt,
+    }),
+    ...(Array.isArray(r.lastEditedFields) && {
+      lastEditedFields: r.lastEditedFields as string[],
+    }),
+    editHistory: Array.isArray(r.editHistory)
+      ? (r.editHistory as ModelData['editHistory'])
+      : [],
     logs: Array.isArray(r.logs) ? (r.logs as ModelData['logs']) : [],
     ...(r.config && typeof r.config === 'object'
       ? { config: r.config as Record<string, unknown> }
       : {}),
   };
+}
+
+/**
+ * MODEL-FLOW-016-T12. Config keys DERIVED SERVER-SIDE at Save Model, which no
+ * client can author: `saveDraftService` reads them off the adopted training
+ * run, and `buildModelConfig` (apps/client/lib/model-config.ts) has no field
+ * for either — it assembles config from wizard atoms alone.
+ *
+ * That combination is a real data-loss bug, not a hypothetical: edit mode
+ * ("Save Changes") sends a freshly-built config, and the merge below replaces
+ * `config` wholesale — so before this const existed, renaming a saved model
+ * silently dropped `frameworkVersions` (MODEL-FLOW-007-T11's provenance) from
+ * the row. T11 guarded the SIBLING-key case via `normalizeData`'s top-level
+ * whitelist; this is the second, uncovered one.
+ *
+ * Deliberately a NAMED LIST rather than a blanket `{...current, ...incoming}`
+ * merge: a blanket merge would resurrect keys the user actually cleared (an
+ * emptied description makes `buildModelConfig` omit `description` entirely,
+ * and the old value would come back). Only keys the client cannot express are
+ * preserved.
+ */
+const SERVER_DERIVED_CONFIG_KEYS = [
+  'frameworkVersions',
+  'crossValidation',
+] as const;
+
+/** Carry the server-derived provenance keys forward onto an incoming config
+ *  that does not mention them. An incoming config that DOES carry a key wins,
+ *  so a future server-side writer can still update one. */
+function preserveServerDerivedConfig(
+  incoming: Record<string, unknown>,
+  current: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!current) return incoming;
+  const preserved: Record<string, unknown> = {};
+  for (const key of SERVER_DERIVED_CONFIG_KEYS) {
+    if (!(key in incoming) && key in current) preserved[key] = current[key];
+  }
+  return Object.keys(preserved).length > 0
+    ? { ...incoming, ...preserved }
+    : incoming;
 }
 
 const NODE_INCLUDE = {
@@ -106,11 +181,17 @@ export class ModelAuthorizedService {
       include: NODE_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
+    // MODEL-SERVE-006-T12. deployStatus is DERIVED here, not read off the
+    // stored row — one batched query (lib/deploy-status.ts), not N+1.
+    const statuses = await deriveDeployStatuses(
+      this.prisma,
+      models.map((m) => m.id),
+    );
     return {
       statusCode: 200,
       message: 'Models fetched',
       type: 'SUCCESS' as const,
-      data: models,
+      data: models.map((m) => overlayDeployStatus(m, statuses[m.id])),
     };
   }
 
@@ -151,7 +232,11 @@ export class ModelAuthorizedService {
 
     const initData: ModelData = {
       deployStatus: 'stopped',
+      // A freshly created model has no InferenceSchedule row yet — matches
+      // deriveDeployStatuses's own default for an absent schedule.
+      enabled: false,
       prodStatus: 'normal',
+      editHistory: [],
       logs: [],
       ...(dto.config && { config: dto.config }),
     };
@@ -215,31 +300,57 @@ export class ModelAuthorizedService {
 
     const current = normalizeData(existing.data);
 
-    let deployFields: Partial<ModelData> = {};
-    if (dto.deployStatus === 'running') {
+    const editedLabels: string[] = [];
+    if (dto.name !== undefined) editedLabels.push('Name');
+    if ('nodeId' in dto) editedLabels.push('Assigned node');
+    if ('datasetId' in dto) editedLabels.push('Dataset');
+    if (dto.statusDetail !== undefined) editedLabels.push('Status detail');
+    if (dto.config !== undefined) editedLabels.push('Configuration');
+
+    let editorName = '';
+    if (editedLabels.length > 0) {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { firstName: true, lastName: true },
       });
-      const name = [user?.firstName, user?.lastName]
+      editorName = [user?.firstName, user?.lastName]
         .filter(Boolean)
         .join(' ')
         .trim();
-      deployFields = {
-        deployedAt: new Date().toISOString(),
-        ...(name && { deployedBy: name }),
-      };
     }
+
+    // MODEL-SERVE-006-T12. deployStatus/deployedAt/deployedBy no longer
+    // written here — `dto` has no `deployStatus` field anymore (removed
+    // from UpdateModelSchema), and `deployedAt`/`deployedBy` provenance now
+    // stamps at the NEW deploy action (InferenceWindowAuthorizedService.
+    // putScheduleService's `stampDeployed`, on the schedule's OFF -> ON
+    // transition) instead of here.
+    const editFields: Partial<ModelData> =
+      editedLabels.length > 0
+        ? {
+            lastEditedAt: new Date().toISOString(),
+            lastEditedFields: editedLabels,
+            ...(editorName && { lastEditedBy: editorName }),
+            editHistory: [
+              ...current.editHistory,
+              {
+                by: editorName || 'Unknown user',
+                at: new Date().toISOString(),
+                fields: editedLabels,
+              },
+            ].slice(-200),
+          }
+        : {};
 
     const newData: ModelData = {
       ...current,
-      ...(dto.deployStatus && { deployStatus: dto.deployStatus }),
-      ...(dto.prodStatus && { prodStatus: dto.prodStatus }),
       ...(dto.statusDetail !== undefined && {
         statusDetail: dto.statusDetail ?? undefined,
       }),
-      ...(dto.config !== undefined && { config: dto.config }),
-      ...deployFields,
+      ...(dto.config !== undefined && {
+        config: preserveServerDerivedConfig(dto.config, current.config),
+      }),
+      ...editFields,
     };
 
     const updated = await this.prisma.model.update({
@@ -253,12 +364,21 @@ export class ModelAuthorizedService {
       },
       include: NODE_INCLUDE,
     });
+    const status = await this.deployStatusFor(modelId);
     return {
       statusCode: 200,
       message: 'Model updated',
       type: 'SUCCESS' as const,
-      data: updated,
+      data: overlayDeployStatus(updated, status),
     };
+  }
+
+  /** One-model convenience over `deriveDeployStatuses` for the single-row
+   *  return paths (`updateModelService`/`appendLogService`) — same batched
+   *  helper, called with a one-element id list. */
+  private async deployStatusFor(modelId: string) {
+    const statuses = await deriveDeployStatuses(this.prisma, [modelId]);
+    return statuses[modelId];
   }
 
   async appendLogService(
@@ -292,11 +412,12 @@ export class ModelAuthorizedService {
       data: { data: JSON.parse(JSON.stringify(newData)) },
       include: NODE_INCLUDE,
     });
+    const status = await this.deployStatusFor(modelId);
     return {
       statusCode: 200,
       message: 'Log appended',
       type: 'SUCCESS' as const,
-      data: updated,
+      data: overlayDeployStatus(updated, status),
     };
   }
 

@@ -2,7 +2,10 @@
   "name": "histogram_insufficient_tag_excluded",
   "engine": "histogram",
   "input": {
-    "tags": ["TI-101", "VI-202"],
+    "tags": [
+      "TI-101",
+      "VI-202"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -73,7 +76,10 @@
   },
   "config": {
     "source_key": "fixture/chart-artifact.parquet",
-    "tags": ["TI-101", "VI-202"],
+    "tags": [
+      "TI-101",
+      "VI-202"
+    ],
     "bin_count": 12,
     "kde_samples": 100
   },
@@ -496,6 +502,8 @@
         ]
       }
     ],
-    "insufficient_tags": ["VI-202"]
+    "insufficient_tags": [
+      "VI-202"
+    ]
   }
 }

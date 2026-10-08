@@ -1,0 +1,578 @@
+"""Training. One run, one target, one exit.
+
+Reads the GOLD artifact over a presigned URL — this process never holds S3
+credentials, matching the rule the connector service states on itself. It talks
+to exactly two hosts: the internal API (for its spec and its result) and object
+storage (for bytes).
+
+THE STEP ORDER BELOW IS NOT COSMETIC, AND IT IS THE REASON THIS FUNCTION EXISTS
+RATHER THAN THREE SELF-CONTAINED STRATEGY MODULES. Steps 6-7 (drop non-Good
+target) must precede step 8 (split), because a lab target sampled daily against
+a 1-minute PI grid has orders of magnitude fewer labels than rows: splitting
+first yields a "20,000-row test set" holding a dozen labels, and every number
+reported off it is meaningless while looking entirely plausible. That ordering is
+enforced HERE, once, for all three strategies — a strategy receives a
+`PreparedRun` in which steps 1-7 have already happened and cannot reorder them.
+
+    1. claim the run spec
+    2. download the artifact (in full, before any read)
+    3. verify its checksum
+    4. read the spec's own account of the target
+    5. select X / y columns
+    6-7. drop non-Good target rows, and refuse unusable target-derived features
+    8-9. STRATEGY: split, fit, score        <- chronological / windowed / cv
+    9b. score the raw validation holdout, KEEPING its per-row frame
+    10. write artifacts, upload, complete
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+import pandas as pd
+
+from api import RunApi
+from artifacts import (
+    ArtifactSet,
+    CV_GAP_PREDICTIONS_FILENAME,
+    FEATURE_IMPORTANCE_FILENAME,
+    HOLDOUT_PREDICTIONS_FILENAME,
+    INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+    NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+    LOSS_HISTORY_FILENAME,
+    MANIFEST_FILENAME,
+    METRICS_FILENAME,
+    MODEL_FILENAME,
+    PERMUTATION_IMPORTANCE_FILENAME,
+    PREDICTIONS_FILENAME,
+)
+from config import SCRATCH, STATUS_SUFFIX, TIMESTAMP_COLUMN, RunContext
+from guards import assert_no_target_leakage
+from holdout import score_holdout
+from importance import extract_feature_importance, extract_permutation_importance
+from labels import labelled_mask
+from manifest import build_run_manifest
+from models import SEQUENCE_ALGORITHMS
+from pipelines import chronological, cv_expanding, windowed
+from pipelines.cv_gap import cv_gap_if_requested
+from pipelines.context import (
+    PreparedRun,
+    TrainingResult,
+    resolve_feature_columns,
+)
+from storage import download, download_verified, sha256_of, upload_artifacts
+
+
+def run_training(context: RunContext, api: RunApi) -> int:
+    started = time.time()
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+
+    prepared = _prepare(api)
+    strategy = _select_strategy(prepared, api)
+    result = strategy(prepared, api)
+    holdout_metrics, holdout_predictions = _score_holdout_if_present(
+        prepared, result, api
+    )
+    (
+        new_data_holdout_metrics,
+        new_data_holdout_predictions,
+        incumbent_new_data_holdout_metrics,
+        incumbent_new_data_holdout_predictions,
+    ) = _score_new_data_holdout_if_present(prepared, result, api)
+    # MODEL-SERVE-026-T05. After every other measurement, so a slow or failed
+    # CV pass can never cost the run its window scores. None unless the spec
+    # asked for it.
+    cv_gap_series = cv_gap_if_requested(prepared, api, SCRATCH)
+    _publish(
+        context,
+        api,
+        prepared,
+        result,
+        holdout_metrics,
+        holdout_predictions,
+        started,
+        new_data_holdout_metrics,
+        new_data_holdout_predictions,
+        incumbent_new_data_holdout_metrics,
+        incumbent_new_data_holdout_predictions,
+        cv_gap_series,
+    )
+    return 0
+
+
+# ── 1-7. shared preamble ─────────────────────────────────────────────────────
+def _prepare(api: RunApi) -> PreparedRun:
+    # ── 1. run spec ──────────────────────────────────────────────────────
+    spec = api.claim()
+    api.log(f"Claimed run: target={spec['targetY']} algo={spec['algorithm']}")
+
+    # ── 2-3. download (in full, before any read), then verify ────────────
+    data_path, artifact_checksum = download_verified(
+        spec["dataUrl"], SCRATCH /
+        "data.parquet", spec["artifactChecksum"], "Artifact"
+    )
+    api.log("Checksum verified")
+
+    feature_spec: dict[str, Any] = {}
+    if spec.get("featureSpecUrl"):
+        feature_spec = json.loads(
+            download(
+                spec["featureSpecUrl"], SCRATCH / "feature_spec.json"
+            ).read_text()
+        )
+
+    # ── 4. read the spec's own account of the target ─────────────────────
+    target_y = spec["targetY"]
+    if feature_spec.get("target_y") and feature_spec["target_y"] != target_y:
+        raise RuntimeError(
+            f"Run targets '{target_y}' but feature_spec.json says "
+            f"'{feature_spec['target_y']}'."
+        )
+    # An absent field is NOT read as False. The writer emits `target_scaled`
+    # explicitly precisely so "not scaled" and "not recorded" stay distinct.
+    if "target_scaled" in feature_spec and feature_spec["target_scaled"]:
+        raise RuntimeError(
+            f"'{target_y}' is stored scaled and no inverse transform is "
+            "recorded — predictions could not be returned in engineering units."
+        )
+    derived = list(feature_spec.get("derived_from_target", []))
+
+    frame = pd.read_parquet(data_path)
+    if target_y not in frame.columns:
+        raise RuntimeError(f"'{target_y}' is not a column in the artifact.")
+
+    # ── 5. X / y ─────────────────────────────────────────────────────────
+    # Status columns are quality metadata, not signal — leaving them in would
+    # let the model learn from the shape of missingness.
+    status_cols = [c for c in frame.columns if c.endswith(STATUS_SUFFIX)]
+    feature_cols = [
+        c
+        for c in frame.columns
+        if c not in (TIMESTAMP_COLUMN, target_y) and c not in status_cols
+    ]
+    if not feature_cols:
+        raise RuntimeError(
+            "No feature columns left after removing the target.")
+
+    # MODEL-FLOW-019-T31. An explicit subset, for a feature-count sweep: every
+    # row of that ladder is the same artifact and the same target with a
+    # DIFFERENT number of features, and no other axis in the run spec
+    # expresses that. Absent, the derivation above stands unchanged — which is
+    # every run this system has launched to date. See `resolve_feature_columns`
+    # for why a missing column is refused rather than intersected away.
+    offered = len(feature_cols)
+    feature_cols, missing = resolve_feature_columns(
+        feature_cols, spec.get("featureColumns")
+    )
+    if missing:
+        raise RuntimeError(
+            f"featureColumns names {len(missing)} column(s) this artifact does "
+            f"not have: {sorted(missing)[:10]}. Training on the remainder "
+            "would report a feature count the run did not actually use."
+        )
+    if len(feature_cols) != offered:
+        api.log(f"Feature subset: {len(feature_cols)} of {offered} columns")
+
+    # ── 6-7. drop non-Good target, BEFORE any split ──────────────────────
+    label_mask = labelled_mask(frame, target_y, log_fn=api.log)
+    assert_no_target_leakage(
+        frame, target_y, derived, label_mask, log_fn=api.log)
+
+    return PreparedRun(
+        spec=spec,
+        frame=frame,
+        feature_spec=feature_spec,
+        target_y=target_y,
+        feature_cols=feature_cols,
+        label_mask=label_mask,
+        derived=derived,
+        artifact_checksum=artifact_checksum,
+    )
+
+
+def _select_strategy(prepared: PreparedRun, api: RunApi):
+    """Pick exactly one strategy, and refuse the one combination that has no
+    implementation rather than silently degrading to another."""
+    is_sequence = prepared.algorithm in SEQUENCE_ALGORITHMS
+    is_cv = prepared.spec["splitSpec"].get("method") == "cv_expanding"
+
+    # MODEL-FLOW-016-T01(c)/T03. CV is TABULAR ONLY — the same scope
+    # /split-stats' own panel declares (that endpoint's docstring), inherited
+    # here rather than decided twice. Refused before any fold fits, not merely
+    # disabled in the wizard: MODEL-FLOW-014's own SeedControl-style UI disable
+    # is one layer; this is the fit-time backstop underneath it.
+    if is_cv and is_sequence:
+        raise RuntimeError(
+            "Cross-validation is tabular-only: lstm/gru cut on WINDOW count "
+            "via chronological_split_windows, a different rule this CV path "
+            "does not implement. See MODEL-FLOW-016-T01(c)."
+        )
+
+    if is_cv:
+        return cv_expanding.run
+    if is_sequence:
+        return windowed.run
+    return chronological.run
+
+
+# ── 9b. holdout, beside the test metrics ─────────────────────────────────────
+def _score_holdout_if_present(
+    prepared: PreparedRun, result: TrainingResult, api: RunApi
+) -> tuple[dict[str, Any], pd.DataFrame] | tuple[None, None]:
+    """DS-LAKE-018-T05. `holdoutDataUrl` is present only when the dataset has
+    one AND claim()'s replay succeeded — absent for the overwhelming majority of
+    runs (no holdout). A holdout problem must never fail an otherwise-successful
+    run, so this whole step is best-effort: any exception here is logged and
+    swallowed, the same soft-fail contract claim() itself already applies to the
+    replay.
+
+    MODEL-FLOW-019-T26. Returns the PER-ROW FRAME beside the aggregate, rather
+    than discarding it. `score_holdout` has always returned both (its own
+    docstring says so); this caller kept only the metrics, which is the single
+    reason 0 of 252 SUCCEEDED runs carried a holdout series while 188 carried a
+    holdout AGGREGATE — and therefore the reason a user had to click "Score
+    against holdout" to see a Validate chart at all. The cost of keeping it is
+    one parquet write in `_publish`: the frame is already built, and no second
+    predict pass, model reload or scoring container is involved.
+
+    NON-CV ONLY, by `result.holdout_eligible` above. A CV run sets it False
+    (cv_expanding.py) because it has no inline model to score at this point;
+    its holdout series still arrives through score.py, where `predictionsKey`
+    IS the holdout (MODEL-FLOW-016-T07).
+    """
+    if not prepared.spec.get("holdoutDataUrl") or not result.holdout_eligible:
+        return None, None
+
+    try:
+        holdout_path, _ = download_verified(
+            prepared.spec["holdoutDataUrl"],
+            SCRATCH / "holdout.parquet",
+            prepared.spec["holdoutArtifactChecksum"],
+            "Holdout",
+        )
+        holdout_metrics, holdout_predictions = score_holdout(
+            result.model,
+            pd.read_parquet(holdout_path),
+            prepared.target_y,
+            prepared.feature_cols,
+            dropped_bad_features=prepared.spec.get("holdoutDroppedBadRows"),
+            sequence_length=result.holdout_sequence_length,
+            log_fn=api.log,
+        )
+        api.log(f"holdout r2={holdout_metrics['r2']:.4f} — "
+                f"test r2 was {result.metrics['r2']:.4f}")
+        return holdout_metrics, holdout_predictions
+    except Exception as exc:  # noqa: BLE001 - best-effort, see docstring above
+        api.log(f"Holdout scoring skipped: {exc}", "warn")
+        return None, None
+
+
+def _score_new_data_holdout_if_present(
+    prepared: PreparedRun, result: TrainingResult, api: RunApi
+) -> tuple[
+    dict[str, Any] | None,
+    pd.DataFrame | None,
+    dict[str, Any] | None,
+    pd.DataFrame | None,
+]:
+    """The candidate's score on the operator-defined NEW-DATA validation
+    window, present only when an augmented retrain carved one out of the
+    newly merged dataset and claim() prepared it.
+
+    This is a SECOND, independent holdout beside the one above, and the
+    distinction is the whole point: `holdoutDataUrl` is the FROZEN
+    incumbent-test slice — all OLD rows — which is what makes `rmseDelta`
+    comparable against the incumbent. This one is all NEW rows, which the
+    incumbent was never scored on, so its figure is reported on its own and
+    must never be differenced against the incumbent's.
+
+    Scored with the SAME `score_holdout` as its sibling — same function,
+    different input — so the two numbers are computed identically and stay
+    comparable to each other.
+
+    Best-effort on its own terms: a failure here must not disturb the frozen
+    holdout's metrics or fail the run, so it carries its own try/except
+    rather than sharing one with the scoring above.
+
+    MODEL-SERVE-020-T06. Returns the per-row frame beside the aggregate. It used
+    to be discarded ("nothing renders a second holdout series today"); the
+    Retrain tab's Actual vs Predicted and Residual charts now read it, so it is
+    published as `new_data_holdout_predictions.parquet`. `(None, None)` on every
+    path that scores nothing, so the two are present or absent together.
+
+    MODEL-SERVE-021-T03. Also scores the CURRENT version on this identical
+    window when claim() presigned one (`incumbentModelUrl`) — true only for
+    "New data only", which replaces the training set outright and so has no
+    frozen incumbent-test slice left to compare against; this window is the
+    only data both versions can be scored on. Same frame, same
+    `score_holdout`, but the incumbent's OWN feature columns
+    (`incumbentFeatureColumns`) — the two versions need not share a feature
+    set — and `sequence_length=None` always: the backend never presigns an
+    lstm/gru incumbent here (no `sequence_length` is recorded anywhere it can
+    read one from), so a presigned incumbent is guaranteed tabular. A failure
+    scoring the incumbent must never cost the candidate's own new-data
+    metrics above, so it has its own nested try/except and returns
+    `(None, None)` for just its own pair.
+    """
+    if not prepared.spec.get("newDataHoldoutUrl") or not result.holdout_eligible:
+        return None, None, None, None
+
+    try:
+        path, _ = download_verified(
+            prepared.spec["newDataHoldoutUrl"],
+            SCRATCH / "holdout_new_data.parquet",
+            prepared.spec["newDataHoldoutChecksum"],
+            "New-data holdout",
+        )
+        window = pd.read_parquet(path)
+        metrics, predictions = score_holdout(
+            result.model,
+            window,
+            prepared.target_y,
+            prepared.feature_cols,
+            # Nothing is dropped on this path: the window was cut from the
+            # already-cleaned, already-scaled frame the training rows came
+            # from, exactly like the frozen slice.
+            dropped_bad_features=None,
+            sequence_length=result.holdout_sequence_length,
+            log_fn=api.log,
+        )
+        api.log(
+            f"new-data holdout r2={metrics['r2']:.4f} — "
+            f"test r2 was {result.metrics['r2']:.4f}"
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
+        api.log(f"New-data holdout scoring skipped: {exc}", "warn")
+        return None, None, None, None
+
+    incumbent_metrics: dict[str, Any] | None = None
+    incumbent_predictions: pd.DataFrame | None = None
+    if prepared.spec.get("incumbentModelUrl") and prepared.spec.get(
+        "incumbentFeatureColumns"
+    ):
+        try:
+            import joblib
+
+            incumbent_path, _ = download_verified(
+                prepared.spec["incumbentModelUrl"],
+                SCRATCH / "incumbent_model.joblib",
+                prepared.spec["incumbentModelChecksum"],
+                "Current version model",
+            )
+            incumbent_model = joblib.load(incumbent_path)
+            incumbent_metrics, incumbent_predictions = score_holdout(
+                incumbent_model,
+                window,
+                prepared.target_y,
+                prepared.spec["incumbentFeatureColumns"],
+                dropped_bad_features=None,
+                sequence_length=None,
+                log_fn=api.log,
+            )
+            api.log(
+                f"current-version new-data r2={incumbent_metrics['r2']:.4f} — "
+                f"candidate r2 was {metrics['r2']:.4f}"
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
+            api.log(f"Current-version new-data scoring skipped: {exc}", "warn")
+            incumbent_metrics, incumbent_predictions = None, None
+
+    return metrics, predictions, incumbent_metrics, incumbent_predictions
+
+
+# ── 10. write, upload, complete ──────────────────────────────────────────────
+def _publish(
+    context: RunContext,
+    api: RunApi,
+    prepared: PreparedRun,
+    result: TrainingResult,
+    holdout_metrics: dict[str, Any] | None,
+    holdout_predictions: pd.DataFrame | None,
+    started: float,
+    new_data_holdout_metrics: dict[str, Any] | None = None,
+    new_data_holdout_predictions: pd.DataFrame | None = None,
+    incumbent_new_data_holdout_metrics: dict[str, Any] | None = None,
+    incumbent_new_data_holdout_predictions: pd.DataFrame | None = None,
+    cv_gap_series: pd.DataFrame | None = None,
+) -> None:
+    import joblib
+
+    artifacts = ArtifactSet(SCRATCH)
+
+    model_path = SCRATCH / MODEL_FILENAME
+    joblib.dump(result.model, model_path)
+    artifacts.add_existing(MODEL_FILENAME, model_path)
+
+    artifacts.add_json(METRICS_FILENAME, result.metrics)
+
+    if result.predictions is not None:
+        artifacts.add_parquet(PREDICTIONS_FILENAME, result.predictions)
+
+    # MODEL-FLOW-019-T26. The holdout series, under its OWN filename — never
+    # PREDICTIONS_FILENAME, which the line above has just written with this
+    # run's TEST split. Same {timestamp,y_true,y_pred} schema, a different
+    # population; the whole point of the separate name (see artifacts.py and
+    # MIRRORS.md entry 8).
+    #
+    # None for every run with no dataset holdout, for a CV run (not
+    # holdout_eligible — see _score_holdout_if_present), and whenever holdout
+    # scoring soft-failed. Absent rather than empty, exactly like
+    # loss_history/feature_importance above: `complete()` then records
+    # holdoutPredictionsKey as NULL and the UI states an honest absence.
+    #
+    # For lstm/gru this frame is one row per WINDOW, not per source row — the
+    # same distinction holdout.py's own `row_count` comment documents, and it
+    # needs no reader change because the schema is identical either way.
+    if holdout_predictions is not None:
+        artifacts.add_parquet(
+            HOLDOUT_PREDICTIONS_FILENAME, holdout_predictions)
+
+    # MODEL-SERVE-020-T06. The retrain candidate's series on the operator's
+    # NEW-DATA window — a third population under its OWN filename, so it can
+    # never overwrite the test split or the frozen-slice holdout above. None
+    # for every run with no such window (every non-retrain run, a KEEP
+    # retrain) and whenever its scoring soft-failed: absent rather than empty,
+    # so `complete()` records newDataHoldoutPredictionsKey as NULL and the UI
+    # states an honest absence.
+    if new_data_holdout_predictions is not None:
+        artifacts.add_parquet(
+            NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+            new_data_holdout_predictions,
+        )
+
+    # MODEL-SERVE-021-T03. The current PRODUCTION version's series on that
+    # SAME window — a fourth population under its OWN filename, so it can
+    # never overwrite the candidate's own new-data series above. None for
+    # every run that is not a "New data only" retrain, and whenever incumbent
+    # scoring soft-failed: absent rather than empty, so `complete()` records
+    # incumbentNewDataHoldoutPredictionsKey as NULL and the UI states an
+    # honest absence.
+    if incumbent_new_data_holdout_predictions is not None:
+        artifacts.add_parquet(
+            INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+            incumbent_new_data_holdout_predictions,
+        )
+
+    # MODEL-SERVE-026-T05. The CV-gap series — absent rather than empty when
+    # not requested or when it soft-failed, like every population above.
+    if cv_gap_series is not None:
+        artifacts.add_parquet(CV_GAP_PREDICTIONS_FILENAME, cv_gap_series)
+
+    # Written only when a series was actually extracted — an estimator with no
+    # iterations (or one that exceeded MAX_LOSS_HISTORY_POINTS) gets no artifact
+    # and no placeholder.
+    if result.loss_history is not None:
+        artifacts.add_json(LOSS_HISTORY_FILENAME, result.loss_history)
+
+    # MODEL-FLOW-019-T09. Computed HERE, centrally, rather than as a
+    # per-strategy TrainingResult field: result.model/prepared.feature_cols/
+    # prepared.feature_spec are all already in scope, this covers CV's own
+    # refit (fit k+1) uniformly with the other two strategies, and it adds no
+    # new field to TrainingResult — so a future fourth strategy gets this for
+    # free rather than needing to remember it, the exact trap context.py's own
+    # docstring exists to close off.
+    #
+    # MODEL-FLOW-019-T32 AMENDS THAT IN ONE RESPECT, AND ONLY ONE. The
+    # EXTRACTION still happens here, for every strategy; what moved to a field
+    # is the one input this site cannot derive — the per-feature std over the
+    # rows `result.model` was fit on. PreparedRun carries the whole frame and
+    # the label mask but never the SPLIT, and the split differs per strategy
+    # (train rows for chronological, the full labelled frame for CV's refit),
+    # so measuring it here would describe a different population than the
+    # coefficients being rescaled. A fourth strategy that leaves the field None
+    # loses standardisation, not importance — the honest-absence path rather
+    # than a wrong number.
+    importance = extract_feature_importance(
+        prepared.algorithm,
+        result.model,
+        prepared.feature_cols,
+        prepared.feature_spec,
+        train_feature_std=result.train_feature_std,
+        log_fn=api.log,
+    )
+    if importance is not None:
+        artifacts.add_json(FEATURE_IMPORTANCE_FILENAME, importance)
+
+    # MODEL-FLOW-023-T10. A SECOND, independent extraction — never merged
+    # into `importance` above, per importance.py's own finding 6 (a signed
+    # drop and an always-non-negative fit-internal value cannot share one
+    # file). Only strategies that populate `permutation_population` offer
+    # anything here; today that is `windowed.run` alone, scored on its own
+    # test split (never the holdout — MODEL-FLOW-023-T10a's own audit found a
+    # windowed holdout has never once scored a real lstm/gru run in this
+    # system's live database).
+    if result.permutation_population is not None:
+        perm_X, perm_y, perm_population = result.permutation_population
+        permutation_importance = extract_permutation_importance(
+            prepared.algorithm,
+            result.model,
+            prepared.feature_cols,
+            perm_X,
+            perm_y,
+            prepared.seed,
+            perm_population,
+            log_fn=api.log,
+        )
+        if permutation_importance is not None:
+            artifacts.add_json(
+                PERMUTATION_IMPORTANCE_FILENAME, permutation_importance)
+
+    for filename, payload in result.extra_json.items():
+        artifacts.add_json(filename, payload)
+
+    for filename, frame in result.extra_parquet.items():
+        artifacts.add_parquet(filename, frame)
+
+    artifacts.add_json(
+        MANIFEST_FILENAME,
+        build_run_manifest(
+            run_id=context.run_id,
+            spec=prepared.spec,
+            artifact_checksum=prepared.artifact_checksum,
+            target_y=prepared.target_y,
+            feature_spec=prepared.feature_spec,
+            derived=prepared.derived,
+            feature_cols=prepared.feature_cols,
+            split_spec=result.split_spec,
+            metrics=result.metrics,
+            holdout_metrics=holdout_metrics,
+            model_path=model_path,
+            duration_ms=int((time.time() - started) * 1000),
+        ),
+    )
+
+    uploaded = upload_artifacts(api, artifacts.as_outputs(), log_fn=api.log)
+
+    api.complete(
+        {
+            "status": "SUCCEEDED",
+            "metrics": result.metrics,
+            **({"holdoutMetrics": holdout_metrics} if holdout_metrics else {}),
+            # Reported on its own, never differenced against the incumbent:
+            # the incumbent was never scored on these rows.
+            **(
+                {"newDataHoldoutMetrics": new_data_holdout_metrics}
+                if new_data_holdout_metrics
+                else {}
+            ),
+            # MODEL-SERVE-021-T03. The current version's OWN score on that
+            # same window — never merged into newDataHoldoutMetrics above,
+            # same reasoning as that field's own comment.
+            **(
+                {
+                    "incumbentNewDataHoldoutMetrics": (
+                        incumbent_new_data_holdout_metrics
+                    )
+                }
+                if incumbent_new_data_holdout_metrics
+                else {}
+            ),
+            "splitSpec": result.split_spec,
+            "uploaded": uploaded,
+        }
+    )
+
+
+__all__ = ["run_training", "sha256_of"]

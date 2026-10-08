@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# Serving image — build + scan only, from the first commit.
+#
+# NOT wired into release.yml: that pipeline targets a dslake-shaped layout
+# (apps/api/Dockerfile, apps/client/Dockerfile, services/connector/Dockerfile)
+# this repo does not have, and both its local composite actions are misnamed
+# (actions.yml, GitHub requires action.yml) so every `uses: ./.github/actions/
+# setup-*` in it fails to resolve. Repairing that pipeline is separate,
+# unticketed work — not this feature's job (see docs/feature_list_model.json,
+# MODEL-SERVE-002's delta re-audit finding).
+#
+# This workflow calls the reusable _build-image.yml directly instead, which
+# uses only marketplace actions and resolves on its own. push:false is
+# deliberate: pushing to a registry belongs to a repaired release pipeline,
+# not to this workflow. What this gives from commit one is the thing T01
+# actually asked for — CI proof that the image builds and passes its
+# vulnerability scan, so "the source is correct" and "what would deploy is
+# correct" cannot silently drift apart the way images/trainer/Dockerfile did
+# before it (see MODEL-FLOW-000-T04's verification_note).
+# ---------------------------------------------------------------------------
+name: Serving image
+
+on:
+    pull_request:
+        branches: [main, develop]
+        paths:
+            - "apps/serving/**"
+            - "packages/py-scaling/**"
+            - ".github/workflows/serving-image.yml"
+            - ".github/workflows/_build-image.yml"
+    push:
+        branches: [main]
+        paths:
+            - "apps/serving/**"
+            - "packages/py-scaling/**"
+            - ".github/workflows/serving-image.yml"
+            - ".github/workflows/_build-image.yml"
+    workflow_dispatch: {}
+
+permissions:
+    contents: read
+
+concurrency:
+    group: serving-image-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+    build:
+        name: Build + scan
+        uses: ./.github/workflows/_build-image.yml
+        with:
+            image: soft-sensor-serving
+            dockerfile: apps/serving/Dockerfile
+            context: .
+            push: false
+        secrets: inherit

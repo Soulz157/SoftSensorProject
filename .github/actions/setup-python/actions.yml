@@ -1,0 +1,53 @@
+name: "Setup Python (uv)"
+description: >
+  Sets up Python with uv, restores the uv cache and installs the project in
+  editable mode with dev extras. Falls back to pip + requirements files when no
+  uv.lock is present.
+
+inputs:
+  python-version:
+    description: "Python version"
+    required: false
+    default: "3.12"
+  working-directory:
+    description: "Directory containing pyproject.toml / requirements*.txt"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5 # TODO: pin to commit SHA
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5 # TODO: pin to commit SHA
+      with:
+        enable-cache: true
+        cache-dependency-glob: |
+          ${{ inputs.working-directory }}/uv.lock
+          ${{ inputs.working-directory }}/requirements*.txt
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        if [ -f uv.lock ]; then
+          # --frozen: fail if uv.lock is out of sync with pyproject.toml
+          uv sync --frozen --all-extras
+        elif [ -f requirements-dev.txt ]; then
+          uv venv
+          uv pip install -r requirements-dev.txt
+        elif [ -f requirements.txt ]; then
+          uv venv
+          uv pip install -r requirements.txt
+        else
+          echo "::error::No uv.lock, requirements-dev.txt or requirements.txt in ${{ inputs.working-directory }}"
+          exit 1
+        fi
+
+    - name: Export venv to PATH
+      shell: bash
+      run: echo "${{ github.workspace }}/${{ inputs.working-directory }}/.venv/bin" >> "$GITHUB_PATH"

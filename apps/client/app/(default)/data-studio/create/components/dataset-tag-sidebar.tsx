@@ -38,7 +38,6 @@ import {
   dwSelectedTagsAtom,
   dwTagSidebarCollapsedAtom,
   dwCurrentStepAtom,
-  dwProcessingSubStepAtom,
   dwCleaningTagsAtom,
   dwCleanedTagsAtom,
   dwHighestUnlockedAtom,
@@ -100,15 +99,16 @@ export function DatasetTagSidebar() {
   const [collapsed, setCollapsed] = useAtom(dwTagSidebarCollapsedAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
   const currentStep = useAtomValue(dwCurrentStepAtom)
-  const subStep = useAtomValue(dwProcessingSubStepAtom)
   const [cleaningTags, setCleaningTags] = useAtom(dwCleaningTagsAtom)
   const cleanedTags = useAtomValue(dwCleanedTagsAtom)
   const setHighestUnlocked = useSetAtom(dwHighestUnlockedAtom)
-  const isCleaning = currentStep === 3 && subStep === 2
+  // DS-LAKE-022-T04..T07: Step 3's EDA/Cleaning sub-step switch died —
+  // cleaning is now its own whole step (5), not a sub-step of 3.
+  const isCleaning = currentStep === 5
   const cleaningSet = useMemo(() => new Set(cleaningTags), [cleaningTags])
   const cleanedSet = useMemo(() => new Set(cleanedTags), [cleanedTags])
 
-  const relock = () => setHighestUnlocked(prev => Math.min(prev, 4))
+  const relock = () => setHighestUnlocked(prev => Math.min(prev, 5))
   const toggleCleaning = (tag: string) => {
     setCleaningTags(prev =>
       prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag],
@@ -259,7 +259,7 @@ export function DatasetTagSidebar() {
 
         {/* Tag list */}
         <div className="relative min-h-0 flex-1">
-          <ScrollArea className="h-full w-full">
+          <ScrollArea className="h-full w-full [&_[data-radix-scroll-area-viewport]>div]:!block">
             {tags.length === 0 ? (
               <p className="px-4 py-6 text-center text-xs text-muted-foreground">
                 Select tags in Step 1 to populate this list.
@@ -280,10 +280,12 @@ export function DatasetTagSidebar() {
                       className="border-none"
                     >
                       <AccordionTrigger className="px-3 py-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase hover:no-underline">
-                        {group.label}
-                        <Badge className="ml-2 h-4 items-center bg-muted font-medium text-muted-foreground">
-                          {group.id === 'target' ? 'Y' : group.tags.length}
-                        </Badge>
+                        <div className="flex flex-1 items-center">
+                          {group.label}
+                          <Badge className="ml-2 h-4 items-center bg-muted font-medium text-muted-foreground">
+                            {group.id === 'target' ? 'Y' : group.tags.length}
+                          </Badge>
+                        </div>
                       </AccordionTrigger>
                       <AccordionContent className="pb-2">
                         {groupTags.length === 0 ? (
@@ -324,7 +326,7 @@ export function DatasetTagSidebar() {
                                       }
                                     }}
                                     className={cn(
-                                      'flex cursor-pointer items-center gap-2 border-l-2 px-1 py-2 transition-colors',
+                                      'flex w-full min-w-0 cursor-pointer items-center gap-2 border-l-2 px-1 py-2 transition-colors',
                                       isFocused
                                         ? 'border-primary bg-primary/10'
                                         : 'border-transparent hover:bg-sidebar-accent',
@@ -363,10 +365,10 @@ export function DatasetTagSidebar() {
                                       <TooltipContent>
                                         <p>{tag}</p>
                                       </TooltipContent>
-                                      <TooltipTrigger>
+                                      <TooltipTrigger asChild>
                                         <span
                                           className={cn(
-                                            'truncate font-mono text-xs',
+                                            'min-w-0 flex-1 truncate font-mono text-xs',
                                             isFocused
                                               ? 'font-medium text-foreground'
                                               : isHidden
@@ -407,7 +409,7 @@ export function DatasetTagSidebar() {
                                               onClick={e => e.stopPropagation()}
                                               aria-label={`Bad data detail for ${tag}`}
                                               className="flex items-center gap-1 rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-500/20 dark:text-purple-400"
-                                              title={`${badCount} Bad/Questionable rows`}
+                                              title={`${badCount} Bad/Questionable/Frozen rows`}
                                             >
                                               {badCount}
                                               <Info className="h-3 w-3 opacity-70" />

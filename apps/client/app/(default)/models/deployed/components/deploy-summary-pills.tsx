@@ -23,7 +23,7 @@ const PILLS = [
   },
   {
     key: 'stopped' as DeployStatus,
-    label: 'Stopped',
+    label: 'Offline',
     icon: PauseCircle,
     cls: 'bg-zinc-500/10 text-zinc-400',
   },

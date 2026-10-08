@@ -15,34 +15,29 @@ export const useRegister = () => {
     try {
       await authService.register(data)
 
-      toast.success('Account created! Please sign in.')
-
-      toast.success('เข้าสู่ระบบสำเร็จ')
-
+      // The account exists from here on; signing in is a convenience.
       const result = await signIn('credentials', {
         email: data.email,
         password: data.password,
         redirect: false,
       })
 
-      if (!result) {
-        toast.error('เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง')
-        return
-      }
-
-      if (result.error) {
-        toast.error('สมัครสมาชิกสำเร็จ')
+      if (!result || result.error) {
+        toast.success('Account created', {
+          description: 'Sign in to continue.',
+        })
         router.push('/login')
       } else {
-        toast.success('เข้าสู่ระบบสำเร็จ')
+        toast.success('Account created')
         router.push('/')
       }
     } catch (error) {
-      if (error instanceof Error) {
-        toast.error(error.message)
-      } else {
-        toast.error('เกิดข้อผิดพลาดในการเชื่อมต่อ')
-      }
+      toast.error("Couldn't create your account", {
+        description:
+          error instanceof Error
+            ? error.message
+            : 'Check your connection and try again.',
+      })
     } finally {
       setIsLoading(false)
     }

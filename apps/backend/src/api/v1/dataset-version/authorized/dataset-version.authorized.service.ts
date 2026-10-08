@@ -7,20 +7,34 @@ import {
   postToPython,
   PYTHON_TIMEOUT,
 } from '@/lib/python-client';
-import { artifactKey } from '@/lib/artifact-keys';
+import { presignArtifact } from '@/lib/python-preprocess-client';
+import {
+  artifactKey,
+  sidecarKey,
+  VALIDATE_DATA_FILENAME,
+} from '@/lib/artifact-keys';
 import { buildSourceBlock } from '@/lib/source-block';
 import { isLegalTransition } from '@/lib/dataset-version-transitions';
 import { PreprocessingJobService } from './preprocessing-job.service';
 import { LoaderJobService } from '../../loader/loader-job.service';
 import {
   ArtifactStatsSchema,
+  BoxplotRequestDto,
   CorrelationRequestDto,
+  HistogramRequestDto,
+  PythonBoxplotSchema,
   PythonColumnStatsSchema,
   PythonCorrelationSchema,
+  PythonFeatureSpecSchema,
+  PythonHistogramSchema,
   PythonMetadataSchema,
   PythonPreviewSchema,
   PythonRowsSchema,
+  PythonScatterSchema,
+  PythonSplitStatsSchema,
   PythonTagCatalogSchema,
+  ScatterRequestDto,
+  SplitStatsRequestDto,
   type CreateRawVersionDto,
   type ListRowsDto,
   type PreviewVersionDto,
@@ -228,6 +242,9 @@ export class DatasetVersionAuthorizedService {
         // createdBy) was already here — checksum was the one gap.
         checksum: item.checksum,
         qualityScore: item.qualityScore,
+        // DS-LAKE-019-T05. Frozen at Save time, same as qualityScore right
+        // above — null on a version saved before this feature existed.
+        validationAdvisory: item.validationAdvisory,
         rowCount: item.rowCount,
         columnCount: item.columnCount,
         featureCount: item.featureCount,
@@ -443,8 +460,13 @@ export class DatasetVersionAuthorizedService {
       await postToPython(
         '/v1/preprocess/materialize',
         {
-          target_key: artifactKey(datasetId, artifactId),
+          target_key: artifactKey(datasetId, artifactId, 'BRONZE'),
           ...buildSourceBlock(source, dto),
+          // DS-LAKE-018-T03. Mirrors materializeDraftArtifactService exactly
+          // (this method's own doc comment).
+          ...(dto.holdout && {
+            holdout: { from_time: dto.holdout.from, to_time: dto.holdout.to },
+          }),
         },
         PYTHON_TIMEOUT.preprocess,
       ),
@@ -476,6 +498,11 @@ export class DatasetVersionAuthorizedService {
           // A bronze artifact is produced by a FETCH, not by operations.
           operations: [],
           columnStatsKey: stats.column_stats_key,
+          // DS-LAKE-018-T03. null when no holdout was requested — mirrors
+          // materializeDraftArtifactService.
+          validationRowCount: stats.validation_row_count ?? null,
+          // MODEL-FLOW-010-T06. Same null-when-no-holdout convention.
+          validationMissingPct: stats.validation_missing_pct ?? null,
           durationMs: Date.now() - startedAt,
           createdById: user.id,
         },
@@ -499,6 +526,7 @@ export class DatasetVersionAuthorizedService {
         rowCount: artifact.rowCount,
         columnCount: artifact.columnCount,
         missingPct: artifact.missingPct,
+        validationRowCount: artifact.validationRowCount,
       },
     };
   }
@@ -741,6 +769,328 @@ export class DatasetVersionAuthorizedService {
   }
 
   /**
+   * DS-LAKE-025-T06. Serves `feature_spec.json` for a committed artifact.
+   * Mirrors `getArtifactColumnStatsService` directly above, including its
+   * short-circuit: `featureSpecKey` being null is knowable from Postgres
+   * alone, so a legacy artifact gets a clear 404 here rather than a
+   * round-trip to Python for its own 422 about the same missing object.
+   *
+   * Exists so a display surface can present ENGINEERING UNITS from a
+   * model-ready artifact's scaled bytes, using the `scalingParams` each
+   * scaler actually fit. It never unscales the artifact: T06 read 6
+   * established that `images/trainer/train.py` consumes the scaled bytes
+   * directly and re-fits nothing, so FINAL being scaled is load-bearing and
+   * changing it would break training.
+   */
+  async getArtifactFeatureSpecService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true, featureSpecKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+    if (!artifact.featureSpecKey) {
+      throw new AppException({
+        statusCode: 404,
+        message:
+          'No feature specification available for this artifact (written by a stage that produces none, such as BRONZE, or before this sidecar existed).',
+        type: 'ERROR',
+      });
+    }
+    try {
+      const result = PythonFeatureSpecSchema.parse(
+        await postToPython(
+          '/v1/preprocess/feature-spec',
+          { source_key: artifact.objectKey },
+          PYTHON_TIMEOUT.metadata,
+        ),
+      );
+      return {
+        statusCode: 200,
+        message: 'Feature specification fetched successfully',
+        type: 'SUCCESS' as const,
+        data: {
+          featureSpecKey: result.feature_spec_key,
+          // `scalingParams` absent (pre-DS-LAKE-018-T02) is NOT the same as
+          // "nothing was scaled" — it means the fit was never recorded, so a
+          // caller cannot invert and must say so rather than render the
+          // scaled number as if it were an engineering value.
+          scalingParams: result.spec.scalingParams ?? null,
+          spec: result.spec,
+        },
+      };
+    } catch (err) {
+      if ((err as { statusCode?: number })?.statusCode === 422) {
+        throw new AppException({
+          statusCode: 404,
+          message:
+            'Feature specification is recorded but missing from storage.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * MODEL-FLOW-010-T06 (widened lookup). Shared by `getArtifactHoldoutService`
+   * and `getArtifactValidationRowsService` — both need "which artifact in
+   * this run actually carries the validation split", and a single query
+   * means the two can never disagree on which sibling that is.
+   *
+   * `artifactId` can be BRONZE/SILVER/GOLD/FINAL (`SavedDataset.currentArtifactId`
+   * is stage-polymorphic), so the holdout is resolved via the artifact's
+   * `runId`, not its own type — and NOT via a fixed BRONZE-sibling lookup
+   * either. DS-LAKE-022's reordered pipeline (features before cleaning) moved
+   * where the split is written: `validate_data.parquet` is now sidecar'd
+   * beside SILVER, not BRONZE, on any run using the reordered order. This
+   * finds whichever sibling in the run actually carries the validation
+   * columns, by those columns rather than by a stage assumption —
+   * `orderBy: createdAt desc` breaks the tie deterministically on a run with
+   * more than one candidate (e.g. two BRONZE rows from a re-materialize,
+   * only one of which split a holdout).
+   */
+  private async findHoldoutArtifact(runId: string) {
+    return this.prisma.datasetArtifact.findFirst({
+      where: {
+        runId,
+        validationRowCount: { not: null },
+        validationHoldoutFrom: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        objectKey: true,
+        validationRowCount: true,
+        validationHoldoutFrom: true,
+        validationMissingPct: true,
+      },
+    });
+  }
+
+  /**
+   * MODEL-FLOW-010-T06. The raw validation holdout window for the given
+   * artifact's run, read-only — no client-facing route exposed this before
+   * (only `model-run.authorized.service.ts::tryReplayHoldout` resolved it,
+   * server-side, at training-claim time).
+   *
+   * Returns `holdout: null` — NOT a 404 — when the dataset has no holdout
+   * (the overwhelming majority) or the artifact predates this feature. A
+   * missing holdout is a normal state with its own UI copy, the same
+   * discipline `getArtifactColumnStatsService`'s `missing` state already
+   * established for a missing column_stats.json sidecar.
+   */
+  async getArtifactHoldoutService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { runId: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const holdoutArtifact = await this.findHoldoutArtifact(artifact.runId);
+    if (!holdoutArtifact) {
+      return {
+        statusCode: 200,
+        message: 'This dataset has no validation holdout',
+        type: 'SUCCESS' as const,
+        data: { holdout: null },
+      };
+    }
+
+    // Footer-only read (never data.parquet's rows) for the window's end —
+    // `validationHoldoutFrom` above is the exact persisted boundary, but
+    // `holdout_to` itself was never persisted (only used transiently at
+    // split time), so the last timestamp actually written to
+    // validate_data.parquet is the honest stand-in for "where the window
+    // ends" (DS-LAKE-018's own row_count precedent for a derived-not-
+    // requested figure).
+    //
+    // Derived from `holdoutArtifact.objectKey` (the key actually written),
+    // not rebuilt from `datasetId` — a draft-built dataset's artifact lives
+    // under `drafts/{draftId}/…`, not `{datasetId}/…`, and
+    // `validate_data.parquet` was written beside that real key (bug fixed
+    // here: the old `validateDataKey(datasetId, bronze.id)` call
+    // 404'd/NoSuchKey'd for every such dataset).
+    let meta: ReturnType<typeof PythonMetadataSchema.parse>;
+    try {
+      meta = PythonMetadataSchema.parse(
+        await postToPython(
+          '/v1/preprocess/metadata',
+          {
+            source_key: sidecarKey(
+              holdoutArtifact.objectKey,
+              VALIDATE_DATA_FILENAME,
+            ),
+          },
+          PYTHON_TIMEOUT.metadata,
+        ),
+      );
+    } catch (err) {
+      if ((err as { statusCode?: number })?.statusCode === 422) {
+        // Same `missing` discipline as `getArtifactColumnStatsService`: the
+        // row says a holdout was recorded, but its sidecar object is gone
+        // from storage — do not let the raw object key in Python's error
+        // text reach the browser console (that leak is what originally
+        // surfaced this bug's symptom).
+        throw new AppException({
+          statusCode: 404,
+          message:
+            'Validation holdout is recorded but its data is missing from storage.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Validation holdout fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        holdout: {
+          holdoutFrom: holdoutArtifact.validationHoldoutFrom!.toISOString(),
+          holdoutTo: meta.end_time,
+          rowCount: holdoutArtifact.validationRowCount!,
+          // Null for a holdout captured before MODEL-FLOW-010-T06 — the
+          // panel must say so plainly, never silently omit the figure or
+          // imply a clean 0%.
+          missingPct: holdoutArtifact.validationMissingPct,
+        },
+      },
+    };
+  }
+
+  /**
+   * Compare view (train vs. validation). Reads a bounded page of
+   * `validate_data.parquet` for the artifact's run, via the same
+   * `findHoldoutArtifact` lookup `getArtifactHoldoutService` uses — so the
+   * two can never resolve a different sibling for the same artifact.
+   *
+   * Reuses `ListRowsDto`/`PythonRowsSchema` and the JSON branch of
+   * `listRowsService` exactly: same bound (`ListRowsSchema.limit`, default
+   * 1,000, ceiling `MAX_SAMPLE_ROWS`), same tag-projection query shape. No
+   * `format: 'arrow'` branch — no current caller needs it, and adding one
+   * unused is dead code (CLAUDE.md "Minimal Changes").
+   *
+   * 404s — never `rows: null` — both when there is no holdout to read and
+   * when one was recorded but its sidecar is gone from storage, matching
+   * `getArtifactHoldoutService`'s own two-reasons-are-different discipline.
+   * A caller only reaches this route after that endpoint already reported
+   * `holdout !== null`, so either 404 here means state changed between the
+   * two calls (e.g. cleanup ran in between) — worth surfacing as an error,
+   * not silently swallowing into an empty chart.
+   */
+  async getArtifactValidationRowsService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    query: ListRowsDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { runId: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const holdoutArtifact = await this.findHoldoutArtifact(artifact.runId);
+    if (!holdoutArtifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'This dataset has no validation holdout',
+        type: 'ERROR',
+      });
+    }
+
+    const pythonBody = {
+      source_key: sidecarKey(holdoutArtifact.objectKey, VALIDATE_DATA_FILENAME),
+      offset: query.offset,
+      limit: query.limit,
+      ...(query.tags && { tags: query.tags }),
+      // `ListRowsDto` already accepts these and Python's `RowsRequest` applies
+      // them before paging, exactly as `listRowsService` forwards them above.
+      ...(query.startTime && { start_time: query.startTime }),
+      ...(query.endTime && { end_time: query.endTime }),
+    };
+
+    let page: ReturnType<typeof PythonRowsSchema.parse>;
+    try {
+      page = PythonRowsSchema.parse(
+        await postToPython(
+          '/v1/preprocess/rows',
+          pythonBody,
+          PYTHON_TIMEOUT.fetch,
+        ),
+      );
+    } catch (err) {
+      if ((err as { statusCode?: number })?.statusCode === 422) {
+        // DS-LAKE-025-T06 read 2. Python answers 422 for BOTH "the object is
+        // gone" and "that column is not in this frame" (an unknown tag is
+        // `pyarrow.ArrowInvalid`, a ValueError, which `routers/preprocess._run`
+        // maps to 422 — see `RowsRequest.tags`' own doc comment). Those are
+        // different facts and must not share a message: a holdout split at the
+        // BRONZE stage is PRE-FEATURES, so asking it for a derived feature
+        // column fails while the sidecar itself is perfectly intact. Reporting
+        // that as "no longer retained" sends someone hunting for a storage
+        // problem that does not exist.
+        const detail = (err as { message?: string })?.message ?? '';
+        const isUnknownColumn = /No match for FieldRef|ArrowInvalid/i.test(
+          detail,
+        );
+        throw new AppException({
+          statusCode: isUnknownColumn ? 422 : 404,
+          message: isUnknownColumn
+            ? 'One or more requested tags do not exist in the validation holdout. A holdout split before feature engineering contains the raw tags only, not derived feature columns.'
+            : 'Validation holdout is recorded but its data is missing from storage.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Validation rows fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        totalRowCount: page.total_row_count,
+        offset: page.offset,
+        tags: page.tags,
+        filtered: page.filtered,
+        startTime: page.start_time,
+        endTime: page.end_time,
+        rows: page.rows,
+      },
+    };
+  }
+
+  /**
    * DS-LAKE-005B-D-T05b (saved leg). Mirrors
    * `dataset-draft.authorized.service.ts::getDraftArtifactCorrelationService`
    * exactly — same Python call, same zod parse, response returned unmapped.
@@ -789,6 +1139,362 @@ export class DatasetVersionAuthorizedService {
       message: 'Correlation matrix generated successfully',
       type: 'SUCCESS' as const,
       data: correlation,
+    };
+  }
+
+  async getArtifactHistogramService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: HistogramRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const histogram = PythonHistogramSchema.parse(
+      await postToPython(
+        '/v1/preprocess/histogram',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.kdeSamples && { kde_samples: dto.kdeSamples }),
+          ...(dto.binCount && { bin_count: dto.binCount }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Histogram generated successfully',
+      type: 'SUCCESS' as const,
+      data: histogram,
+    };
+  }
+
+  async getArtifactBoxplotService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: BoxplotRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const boxplot = PythonBoxplotSchema.parse(
+      await postToPython(
+        '/v1/preprocess/boxplot',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Boxplot generated successfully',
+      type: 'SUCCESS' as const,
+      data: boxplot,
+    };
+  }
+
+  /**
+   * MODEL-FLOW-014-T04. Both sides of the train/test chronological split
+   * `images/trainer/train.py` would actually make for `dto.splitRatio`,
+   * from one read of the dataset's committed FINAL artifact — verbatim
+   * copy of `getArtifactCorrelationService`'s shape (assert access, resolve
+   * `objectKey` OFF THE ARTIFACT ROW, never from the request, then
+   * postToPython + zod-parse + envelope).
+   */
+  async getArtifactSplitStatsService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: SplitStatsRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const splitStats = PythonSplitStatsSchema.parse(
+      await postToPython(
+        '/v1/preprocess/split-stats',
+        {
+          source_key: artifact.objectKey,
+          tags: dto.tags,
+          target_y: dto.targetY,
+          // MODEL-FLOW-016-T02/T09. EXACTLY ONE of the two — the DTO's own
+          // .refine() already enforces this before the request reaches
+          // here, so at most one of these spreads is ever non-empty.
+          ...(dto.splitRatio !== undefined && { split_ratio: dto.splitRatio }),
+          ...(dto.nSplits !== undefined && { n_splits: dto.nSplits }),
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Split statistics generated successfully',
+      type: 'SUCCESS' as const,
+      data: splitStats,
+    };
+  }
+
+  /**
+   * Shared by the three `validation-*` chart methods below. Same lookup
+   * `getArtifactValidationRowsService` (:1001+) and `getArtifactHoldoutService`
+   * (:890+) already perform — `findHoldoutArtifact` by `runId`, then
+   * `sidecarKey(holdoutArtifact.objectKey, VALIDATE_DATA_FILENAME)` — so all
+   * four routes can never resolve a different sibling for the same artifact.
+   *
+   * Deliberately does NOT catch a 422 from Python: `postToPython` never
+   * produces one here (a missing object surfaces as 404, everything else
+   * upstream 4xx collapses to 400 — see `python-client.ts`), so the
+   * `statusCode === 422` branch `getArtifactValidationRowsService` carries is
+   * dead code, not a pattern to copy forward.
+   */
+  private async resolveValidationSourceKey(
+    datasetId: string,
+    artifactId: string,
+  ): Promise<string> {
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { runId: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const holdoutArtifact = await this.findHoldoutArtifact(artifact.runId);
+    if (!holdoutArtifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'This dataset has no validation holdout',
+        type: 'ERROR',
+      });
+    }
+
+    return sidecarKey(holdoutArtifact.objectKey, VALIDATE_DATA_FILENAME);
+  }
+
+  /**
+   * Compare-view twin of `getArtifactCorrelationService` (:1095) — identical
+   * Python call and DTO, over the run's `validate_data.parquet` sidecar
+   * instead of the artifact's own object.
+   */
+  async getArtifactValidationCorrelationService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: CorrelationRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const sourceKey = await this.resolveValidationSourceKey(
+      datasetId,
+      artifactId,
+    );
+
+    const correlation = PythonCorrelationSchema.parse(
+      await postToPython(
+        '/v1/preprocess/correlation',
+        {
+          source_key: sourceKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.topK && { top_k: dto.topK }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Validation correlation matrix generated successfully',
+      type: 'SUCCESS' as const,
+      data: correlation,
+    };
+  }
+
+  /**
+   * Compare-view twin of `getArtifactHistogramService` (:1139) — identical
+   * Python call and DTO, over the run's `validate_data.parquet` sidecar
+   * instead of the artifact's own object.
+   */
+  async getArtifactValidationHistogramService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: HistogramRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const sourceKey = await this.resolveValidationSourceKey(
+      datasetId,
+      artifactId,
+    );
+
+    const histogram = PythonHistogramSchema.parse(
+      await postToPython(
+        '/v1/preprocess/histogram',
+        {
+          source_key: sourceKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.kdeSamples && { kde_samples: dto.kdeSamples }),
+          ...(dto.binCount && { bin_count: dto.binCount }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Validation histogram generated successfully',
+      type: 'SUCCESS' as const,
+      data: histogram,
+    };
+  }
+
+  /**
+   * Compare-view twin of `getArtifactBoxplotService` (:1184) — identical
+   * Python call and DTO, over the run's `validate_data.parquet` sidecar
+   * instead of the artifact's own object.
+   */
+  async getArtifactValidationBoxplotService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: BoxplotRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const sourceKey = await this.resolveValidationSourceKey(
+      datasetId,
+      artifactId,
+    );
+
+    const boxplot = PythonBoxplotSchema.parse(
+      await postToPython(
+        '/v1/preprocess/boxplot',
+        {
+          source_key: sourceKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Validation boxplot generated successfully',
+      type: 'SUCCESS' as const,
+      data: boxplot,
+    };
+  }
+
+  async getArtifactScatterService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: ScatterRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const scatter = PythonScatterSchema.parse(
+      await postToPython(
+        '/v1/preprocess/scatter',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          x_tag: dto.xTag,
+          y_tag: dto.yTag,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.maxPoints && { max_points: dto.maxPoints }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Boxplot generated successfully',
+      type: 'SUCCESS' as const,
+      data: scatter,
     };
   }
 
@@ -922,6 +1628,7 @@ export class DatasetVersionAuthorizedService {
         attempts: job.attempts,
         sourceVersionId: job.sourceVersionId,
         resultVersionId: job.resultVersionId,
+        resultArtifactId: job.resultArtifactId,
         startedAt: job.startedAt?.toISOString() ?? null,
         finishedAt: job.finishedAt?.toISOString() ?? null,
       },
@@ -1086,6 +1793,111 @@ export class DatasetVersionAuthorizedService {
       message: 'Retry accepted',
       type: 'SUCCESS' as const,
       data: { jobId: job.id, status: job.status, retryOf: previous.id },
+    };
+  }
+
+  // ── export ───────────────────────────────────────────────────────────────
+
+  /**
+   * DS-LAKE-021-T02. The dataset's `currentArtifactId` is stage-polymorphic
+   * (per its own doc comment elsewhere in this file) — it is FINAL only once
+   * the dataset is fully saved. This looks up the FINAL row explicitly rather
+   * than trusting `currentArtifactId`, same discipline
+   * `saveDraftAsDatasetService` already uses on the draft side, so an export
+   * started against a dataset with no FINAL commit fails loudly instead of
+   * exporting the wrong stage.
+   */
+  async startExportService(user: Auth.UserPayload, datasetId: string) {
+    await this.assertDatasetAccess(datasetId, user);
+
+    const final = await this.prisma.datasetArtifact.findFirst({
+      where: { datasetId, type: 'FINAL' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!final) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset has no FINAL artifact to export.',
+        type: 'ERROR',
+      });
+    }
+
+    const job = await this.prisma.preprocessingJob.create({
+      data: {
+        datasetId,
+        sourceArtifactId: final.id,
+        stage: 'EXPORT',
+        operations: { kind: 'export' },
+        createdById: user.id,
+      },
+    });
+
+    this.jobs.start(job.id);
+
+    return {
+      statusCode: 202,
+      message: 'Export job started',
+      type: 'SUCCESS' as const,
+      data: { jobId: job.id, status: job.status },
+    };
+  }
+
+  /**
+   * DS-LAKE-021-T03. First NestJS method that hands a presigned URL to the
+   * browser — every existing `presignArtifact` caller is server-to-server
+   * (e.g. `ModelRunAuthorizedService.claim()` embeds one in its response to
+   * the training container, not a browser tab). Presigns FRESH on every
+   * call rather than caching a value from job completion — presigned URLs
+   * expire (`expires_at`), so a stale link served from an old job payload
+   * would 403 client-side with no way to recover short of re-running export.
+   *
+   * DS-LAKE-021-T04: presigns the EXPORT artifact's OWN `objectKey`
+   * directly. It used to hop through `parentArtifactId` to the source
+   * FINAL and presign ITS key with `sidecars: [EXPORT_CSV_FILENAME]` —
+   * that was only ever necessary because the export object lived inside
+   * the FINAL's own prefix. Now that an EXPORT artifact owns its key the
+   * same way every other committed artifact type does, this is a single
+   * lookup and a plain (no-sidecar) presign, same as any other artifact
+   * download.
+   */
+  async getExportDownloadService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+
+    const exportArtifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId, type: 'EXPORT' },
+      select: { objectKey: true },
+    });
+    if (!exportArtifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Export artifact not found for this dataset.',
+        type: 'ERROR',
+      });
+    }
+
+    // `data_url` is non-nullable per PresignArtifactSchema — Python's
+    // presigned_get() signs a URL unconditionally, without checking the
+    // object exists (that's what `sidecar_urls`' nullability was for, back
+    // when the export lived as a sidecar). A genuinely missing export
+    // object surfaces as a Python-side failure from `presignArtifact`
+    // itself (it also reads the object's metadata/checksum), not a falsy
+    // `data_url` here — so there is no separate 404 branch to write.
+    const presigned = await presignArtifact({
+      source_key: exportArtifact.objectKey,
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Export download link',
+      type: 'SUCCESS' as const,
+      data: {
+        downloadUrl: presigned.data_url,
+        expiresAt: presigned.expires_at,
+      },
     };
   }
 }

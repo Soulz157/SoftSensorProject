@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: Asia/Bangkok
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per risk class instead of 40 individual PRs nobody reviews.
+      patch-and-minor:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Majors are handled deliberately, not by a bot.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: pip
+    directory: "/services/connector"
+    schedule:
+      interval: weekly
+    groups:
+      patch-and-minor:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    directories:
+      - "/apps/api"
+      - "/apps/client"
+      - "/services/connector"
+    schedule:
+      interval: weekly
+
+  # Keeps SHA pins fresh — this is what makes pinning sustainable.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

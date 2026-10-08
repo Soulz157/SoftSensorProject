@@ -17,7 +17,12 @@ export function WizardStepIndicator({
   onGoTo,
 }: Props) {
   return (
-    <div className="flex w-full items-center">
+    <div
+      className="grid w-full items-start"
+      style={{
+        gridTemplateColumns: `repeat(${labels.length}, minmax(0, 1fr))`,
+      }}
+    >
       {labels.map((label, idx) => {
         const step = idx + 1
         const isActive = step === currentStep
@@ -25,13 +30,17 @@ export function WizardStepIndicator({
         const isClickable = step <= highestUnlocked && step !== currentStep
 
         return (
-          <div
-            key={label}
-            className={cn(
-              'flex items-center',
-              idx < labels.length - 1 ? 'flex-1' : 'flex-none',
+          <div key={label} className="relative flex flex-col items-center">
+            {idx > 0 && (
+              <div className="pointer-events-none absolute left-0 top-4 h-px w-full -translate-x-1/2 px-5">
+                <div
+                  className={cn(
+                    'h-px w-full transition-colors',
+                    step <= currentStep ? 'bg-primary' : 'bg-border',
+                  )}
+                />
+              </div>
             )}
-          >
             <button
               type="button"
               disabled={!isClickable}

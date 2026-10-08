@@ -1,0 +1,51 @@
+# Consumed by dorny/paths-filter in .github/workflows/ci.yml.
+# Keeping filters in a separate file means the same definitions can be reused
+# by other workflows without copy-paste drift.
+#
+# NOTE: any change to CI plumbing itself must invalidate every filter, otherwise
+# a broken workflow edit can merge without ever having run.
+
+_ci: &ci
+  - ".github/workflows/**"
+  - ".github/actions/**"
+  - ".github/paths-filter.yml"
+
+node:
+  - *ci
+  - "package.json"
+  - "pnpm-lock.yaml"
+  - "pnpm-workspace.yaml"
+  - "turbo.json"
+  - "tsconfig*.json"
+  - "apps/**"
+  - "packages/**"
+
+client:
+  - *ci
+  - "apps/client/**"
+  - "packages/**"
+  - "pnpm-lock.yaml"
+
+api:
+  - *ci
+  - "apps/api/**"
+  - "packages/**"
+  - "pnpm-lock.yaml"
+
+python:
+  - *ci
+  - "services/connector/**"
+  - "services/**/*.py"
+
+migrations:
+  - *ci
+  - "apps/api/prisma/migrations/**"
+  - "apps/api/src/database/migrations/**"
+  - "db/migrations/**"
+
+docker:
+  - *ci
+  - "**/Dockerfile"
+  - "**/Dockerfile.*"
+  - "docker-compose*.yml"
+  - ".dockerignore"

@@ -1,10 +1,11 @@
 import { useState } from 'react'
+import { isAbnormal } from '@/lib/overview-status'
 import { usePathname } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { useAlertCount } from '@/hooks/workspace/use-alert-count'
 import { useAllModels } from '@/hooks/use-all-models'
-import { failedCountByWorkspace } from '@/lib/model-status'
+import { abnormalModelCountByWorkspace } from '@/lib/model-status'
 import type { NavItem } from '@/components/layout/sidebar/types'
 
 export function getInitials(name: string): string {
@@ -16,10 +17,10 @@ export function getInitials(name: string): string {
     .slice(0, 2)
 }
 
-// Binary workspace indicator: green when Normal, red for any abnormal state
-// (warning/alarm/offline all collapse to red). Models are unaffected.
+// Binary workspace indicator through THE one rule (MODEL-SERVE-024-D02):
+// red only for an alerting workspace; warning/offline read green.
 export function workspaceStatusDot(status?: string): string {
-  return status && status !== 'normal' ? 'bg-red-500' : 'bg-green-500'
+  return isAbnormal(status) ? 'bg-red-500' : 'bg-green-500'
 }
 
 export function useSidebar() {
@@ -28,14 +29,14 @@ export function useSidebar() {
   const { workspaces } = useWorkspaces()
   const alertCount = useAlertCount()
   const { models } = useAllModels()
-  const failedByWorkspace = failedCountByWorkspace(models ?? [])
+  // MODEL-SERVE-024-D02. Models that make a workspace Abnormal: a failed
+  // deploy or a monitoring ALERT. A monitoring WARN/FROZEN does not.
+  const abnormalModelsByWorkspace = abnormalModelCountByWorkspace(models ?? [])
   const isAdmin = session?.user?.role === 'ADMIN'
 
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
     models: pathname.startsWith('/models'),
-    'data-management':
-      pathname.startsWith('/analytics') ||
-      pathname.startsWith('/data-visualize'),
+    'data-management': pathname.startsWith('/analytics'),
     admin: pathname.startsWith('/admin'),
   })
 
@@ -58,7 +59,6 @@ export function useSidebar() {
   }
 
   const isActiveNav = (href: string) => {
-    if (href === '/admin') return pathname === '/admin'
     return pathname.startsWith(href)
   }
 
@@ -69,7 +69,7 @@ export function useSidebar() {
     pathname,
     workspaces,
     alertCount,
-    failedByWorkspace,
+    abnormalModelsByWorkspace,
     isAdmin,
     currentWorkspace,
     activeWorkspace,

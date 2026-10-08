@@ -1,0 +1,335 @@
+'use client'
+
+import { Fragment, useState } from 'react'
+import { format } from 'date-fns'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import type { PsiColumn, PsiReport } from '@/services/model-monitoring'
+import {
+  explainPsiColumn,
+  explainPsiReport,
+} from '@/lib/monitoring-status-explain'
+import {
+  explainTargetPsi,
+  unrecordedTargetColumn,
+  withTargetFirst,
+} from '@/lib/monitoring-target-row'
+import { StatusBadgeWithExplanation } from '../status-badge-with-explanation'
+import { TargetBadge } from '../target-badge'
+import { PsiBinChart } from './psi-bin-chart'
+import { PsiBinTable } from './psi-bin-table'
+
+interface Props {
+  report: PsiReport | null
+  loading: boolean
+  unavailableReason: string | null
+}
+
+const COLUMN_COUNT = 5
+
+function formatPsi(value: number): string {
+  return value.toFixed(3)
+}
+
+/** `continuous` -> "quantile", matching T13's own vocabulary (the worked
+ *  example calls its edges "10 frozen quantile bins"; `psi.py` calls the
+ *  same edges "quantile boundaries"). Never the raw enum value on screen —
+ *  a reader outside this codebase has no reason to know `binMode`. */
+function binModeLabel(mode: 'continuous' | 'categorical'): string {
+  return mode === 'continuous' ? 'quantile' : 'categorical'
+}
+
+function formatWindow(fromIso: string, toIso: string): string {
+  try {
+    return `${format(new Date(fromIso), 'MMM d, HH:mm')}–${format(new Date(toIso), 'HH:mm')}`
+  } catch {
+    return `${fromIso} – ${toIso}`
+  }
+}
+
+/**
+ * MODEL-SERVE-001-T13/T16. Level 1 of T13's own chosen display spec — a
+ * SEPARATE card from the z-score table, never a column inside it (T13
+ * explicitly REJECTED that shape: adjacent colour-coded Status columns
+ * with different threshold vocabularies — z's +/-1.5/+/-3 SD vs. PSI's
+ * 0.1/0.25 — assert a comparability that does not exist).
+ *
+ * Its own three-rung ladder (loading / unavailableReason / empty) — the
+ * original merged drift component gated a perfectly good PSI report behind
+ * the z-score's own empty states. Since MODEL-SERVE-028 this is the only
+ * drift card; the z-score card was removed.
+ *
+ * "Computed over" replaces T13's literal "rolling 24h" instruction (which
+ * would print a FALSE cadence here — this hook fetches PSI over the SAME
+ * `[from, to]` as the z-score, not a fixed rolling 24h window; see
+ * `use-prediction-monitoring.ts`'s own doc comment) with the REAL window
+ * from `basis.from`/`basis.to`, satisfying T13's actual intent — a reader
+ * must not have to INFER the cadence — without asserting one the system
+ * does not have.
+ */
+export function PsiPanel({ report, loading, unavailableReason }: Props) {
+  const [expandedColumn, setExpandedColumn] = useState<string | null>(null)
+
+  if (loading) {
+    return (
+      <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+        Loading PSI report…
+      </div>
+    )
+  }
+
+  if (unavailableReason) {
+    return (
+      <div className="flex h-32 flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
+        <p>{unavailableReason}</p>
+      </div>
+    )
+  }
+
+  if (!report || report.columns.length === 0) {
+    // MODEL-SERVE-001-T17. `report`
+    // (when present) names its own plane — a model with an
+    // InferenceSchedule but no `psiRefEdges` yet (a spec predating T13,
+    // TM2's own live state) lands here too, since `_psi_histograms` writes
+    // `null` for EVERY window when no tag has a frozen reference at all,
+    // which pools to zero columns just like zero /predict traffic does.
+    const onWindowPlane = report?.basis.plane === 'window'
+    return (
+      <div className="flex h-32 flex-col items-center justify-center gap-1 px-6 text-center">
+        <p className="text-sm text-muted-foreground">
+          {onWindowPlane
+            ? 'No PSI-eligible inference windows in this range.'
+            : 'No PSI-eligible /predict traffic in this range.'}
+        </p>
+        <p className="text-xs text-muted-foreground/70">
+          {onWindowPlane
+            ? "PSI reads each window's own bucketed feature histogram, written since this metric shipped on the scheduled plane. A window materialized before that — or one whose model version has no frozen PSI bins yet (rebuild the dataset artifact to mint them) — carries none; the z-score above still covers it."
+            : "PSI reads each request's own bucketed feature histogram, recorded per row since this metric shipped. A request logged before that — or served under a spec with no frozen bins — carries none; the z-score above still covers it."}
+        </p>
+      </div>
+    )
+  }
+
+  const onWindowPlane = report.basis.plane === 'window'
+  // MODEL-SERVE-001-T17. `basis.from`/`basis.to` is the REQUESTED range;
+  // the window plane pools at most 24 windows within it (the rolling
+  // horizon T17 itself specifies), so when more exist, the ACTUALLY pooled
+  // span is narrower than what was requested. `windowStartEarliest`/
+  // `windowStartLatest` are the real span — preferred here for the
+  // identical reason "Computed over" replaced T13's own literal "rolling
+  // 24h" text in the first place (this module's own doc comment above):
+  // never print a range the figure was not actually computed over.
+  const windowLabel =
+    onWindowPlane &&
+    report.basis.windowStartEarliest &&
+    report.basis.windowStartLatest
+      ? formatWindow(
+          report.basis.windowStartEarliest,
+          report.basis.windowStartLatest,
+        )
+      : formatWindow(report.basis.from, report.basis.to)
+  // "window(s)" on the window plane, "sampled request(s)" on /predict —
+  // the COUNTS (`histogramRequests`/`sampleRequests`) already carry the
+  // right numbers on both planes.
+  const unitLabel = onWindowPlane ? 'window' : 'sampled request'
+  const unitLabelShort = onWindowPlane ? 'windows' : 'reqs'
+  const unrecordedColumn = unrecordedTargetColumn(report)
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>
+          {report.basis.histogramRequests} of {report.basis.sampleRequests}{' '}
+          {unitLabel}
+          {report.basis.sampleRequests === 1 ? '' : 's'} carried a histogram,
+          vs. version {report.basis.version}&apos;s frozen bins
+        </span>
+        <StatusBadgeWithExplanation
+          status={report.status}
+          explanation={explainPsiReport(report)}
+        />
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-xs">
+          <thead className="bg-muted/50 text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">Tag</th>
+              <th className="px-3 py-2 text-right font-medium">PSI</th>
+              <th className="px-3 py-2 text-left font-medium">Status</th>
+              <th className="px-3 py-2 text-right font-medium">Bins used</th>
+              <th className="px-3 py-2 text-right font-medium">
+                Computed over
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {unrecordedColumn && (
+              <tr className="border-t border-border text-muted-foreground">
+                <td className="px-3 py-2 font-mono">
+                  <span className="inline-flex items-center gap-1.5">
+                    {unrecordedColumn}
+                    <TargetBadge />
+                  </span>
+                </td>
+                <td colSpan={COLUMN_COUNT - 1} className="px-3 py-2 italic">
+                  Not recorded in this range — needs a PSI reference for the
+                  target (models trained before PSI bins have none) and windows
+                  materialized after target tracking shipped.
+                </td>
+              </tr>
+            )}
+            {/* MODEL-SERVE-018: target (y) pinned first — from
+                `report.target`, never `columns`, so the header badge stays
+                a features-only verdict. */}
+            {withTargetFirst(report.columns, report.target).map(
+              ({ row: col, isTarget }) => {
+                const canExpand =
+                  col.bins !== null && col.status !== 'INSUFFICIENT_DATA'
+                const isOpen = expandedColumn === col.column
+
+                return (
+                  <PsiRow
+                    key={isTarget ? `target:${col.column}` : col.column}
+                    col={col}
+                    isTarget={isTarget}
+                    canExpand={canExpand}
+                    isOpen={isOpen}
+                    windowLabel={windowLabel}
+                    histogramRequests={report.basis.histogramRequests}
+                    sampleRequests={report.basis.sampleRequests}
+                    unitLabelShort={unitLabelShort}
+                    thresholds={report.basis.thresholds}
+                    onToggle={() =>
+                      setExpandedColumn(c =>
+                        c === col.column ? null : col.column,
+                      )
+                    }
+                  />
+                )
+              },
+            )}
+          </tbody>
+        </table>
+      </div>
+      {/* T13 cost (c): the 0.1/0.25 thresholds are CONVENTIONAL
+          credit-scoring cutoffs, never measured against this plant's own
+          process data — read from `basis.thresholds` (env-derived) rather
+          than a literal, so this text can never silently drift from what
+          `computePsi` was actually called with. T13 cost (b): the epsilon
+          substituted for a zero bin proportion must be STATED, never
+          hidden in a constant. */}
+      <p className="text-[11px] text-muted-foreground/70">
+        PSI thresholds ({report.basis.thresholds.warn} warn /{' '}
+        {report.basis.thresholds.critical} critical) are conventional cutoffs,
+        not measured against this plant&apos;s own data, as are the
+        out-of-range cutoffs ({report.basis.thresholds.outOfRangeWarnPct}% warn
+        / {report.basis.thresholds.outOfRangeCriticalPct}% critical of live
+        rows outside the trained range), which grade a column alongside PSI.
+        A zero-proportion bin is floored at {report.basis.epsilon} before
+        comparison.
+      </p>
+    </div>
+  )
+}
+
+function PsiRow({
+  col,
+  isTarget,
+  canExpand,
+  isOpen,
+  windowLabel,
+  histogramRequests,
+  sampleRequests,
+  unitLabelShort,
+  thresholds,
+  onToggle,
+}: {
+  col: PsiColumn
+  /** MODEL-SERVE-018. The pinned target (y) row. */
+  isTarget: boolean
+  canExpand: boolean
+  isOpen: boolean
+  windowLabel: string
+  histogramRequests: number
+  sampleRequests: number
+  /** The report's OWN thresholds, threaded down so the status tooltip
+   *  quotes the numbers `computePsi` actually ran with rather than a
+   *  literal — `PsiReport.basis.thresholds`'s own doc comment requires
+   *  this. */
+  thresholds: PsiReport['basis']['thresholds']
+  /** "windows" on the window plane, "reqs" on /predict — MODEL-SERVE-001-T17. */
+  unitLabelShort: string
+  onToggle: () => void
+}) {
+  return (
+    <Fragment>
+      <tr
+        className={cn(
+          'border-t border-border',
+          canExpand && 'cursor-pointer hover:bg-muted/30',
+        )}
+        onClick={canExpand ? onToggle : undefined}
+      >
+        <td className="px-3 py-2 font-mono">
+          <span className="inline-flex items-center gap-1">
+            {canExpand &&
+              (isOpen ? (
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-3 w-3 text-muted-foreground" />
+              ))}
+            {col.column}
+            {isTarget && <TargetBadge />}
+          </span>
+        </td>
+        <td className="px-3 py-2 text-right font-mono">
+          {col.psi === null ? '—' : formatPsi(col.psi)}
+        </td>
+        <td className="px-3 py-2">
+          {/* `col.reason` moved from a native `title` into the tooltip
+              body (`explainPsiColumn`), which also carries the
+              measured-vs-threshold line a `title` could not render. */}
+          <StatusBadgeWithExplanation
+            status={col.status}
+            explanation={
+              isTarget
+                ? explainTargetPsi(col, thresholds)
+                : explainPsiColumn(col, thresholds)
+            }
+          />
+          {/* First-class INSUFFICIENT_DATA readout — rows-vs-floor, never a
+              bare badge with no shape to it. T13: publish "insufficient
+              data", never a numeric PSI computed from too few samples. */}
+          {col.status === 'INSUFFICIENT_DATA' && col.bins && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground">
+              {col.liveTotal} of {col.bins.minSamples} rows
+            </div>
+          )}
+        </td>
+        <td className="px-3 py-2 text-right font-mono">
+          {col.bins
+            ? `${col.bins.binCount} (${binModeLabel(col.bins.binMode)})`
+            : '—'}
+        </td>
+        <td className="px-3 py-2 text-right">
+          <div className="font-mono text-[11px] leading-tight">
+            {windowLabel}
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            {histogramRequests} of {sampleRequests} {unitLabelShort}
+          </div>
+        </td>
+      </tr>
+      {canExpand && isOpen && col.bins && (
+        <tr className="hover:bg-transparent">
+          <td colSpan={COLUMN_COUNT} className="bg-muted/20 p-0">
+            <div className="space-y-3 px-4 py-3">
+              <PsiBinChart bins={col.bins} liveTotal={col.liveTotal} />
+              <PsiBinTable bins={col.bins} liveTotal={col.liveTotal} />
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  )
+}

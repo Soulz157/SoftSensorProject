@@ -1,7 +1,7 @@
-export const dynamic = 'force-dynamic'
+import { redirect } from 'next/navigation'
 
-import { AdminOverview } from './components/admin-overview'
-
+// The admin home is /admin/dashboard — the old "System Overview" was folded
+// into it (workspace table, search and recent activity live there now).
 export default function AdminPage() {
-  return <AdminOverview />
+  redirect('/admin/dashboard')
 }

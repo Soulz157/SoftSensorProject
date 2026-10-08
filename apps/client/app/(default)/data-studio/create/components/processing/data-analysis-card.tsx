@@ -38,21 +38,47 @@ import {
   type BoundedSample,
 } from '@/lib/preprocessing'
 import { tagDistribution } from '@/lib/data-quality'
+import { CHART_MAX_POINTS, downsampleRows } from '@/lib/downsample'
+import {
+  describePreviewWindow,
+  monthOptions,
+  windowLabel,
+  type EdaWindowControl,
+} from '@/lib/time-window'
+import {
+  mergeMonthlyBoxplots,
+  mergeMonthlyHistograms,
+  MAX_MONTHS,
+  monthlyPending,
+} from '@/lib/monthly-compare'
 import type { TimeRange } from '@/lib/mock-readings'
 import {
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
   dwDraftGoldArtifactIdAtom,
   dwScalerConfigsAtom,
+  dwEditingDatasetAtom,
+  dwModeAtom,
 } from '@/store/dataset-studio'
-import { useDatasetArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
+import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
+import { useArtifactHistogram } from '@/hooks/dataset/artifact/use-artifact-histogram'
+import { useArtifactBoxplot } from '@/hooks/dataset/artifact/use-artifact-boxplot'
+import { useArtifactScatter } from '@/hooks/dataset/artifact/use-artifact-scatter'
+import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
+import { useDatasetArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import { useDatasetHistogram } from '@/hooks/dataset/use-dataset-histogram'
 import { useDatasetBoxplot } from '@/hooks/dataset/use-dataset-boxplot'
 import { useDatasetScatter } from '@/hooks/dataset/use-dataset-scatter'
 import { useDatasetCorrelation } from '@/hooks/dataset/use-dataset-correlation'
-import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
+import { SegmentedToggle } from '@/components/segmented-toggle'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
 import { useCompareTags } from '@/hooks/dataset/use-compare-tags'
+import { useMonthPicker } from '@/hooks/dataset/use-month-picker'
+import {
+  useMonthlyBoxplots,
+  useMonthlyHistograms,
+  type ArtifactLeg,
+} from '@/hooks/dataset/use-monthly-compare'
 import { RawTrendChart } from '../chart/raw-data-chart'
 import { RawReadingsTable } from '../raw-readings-table'
 import { TagHistogramChart } from '../chart/tag-histogram-chart'
@@ -60,6 +86,8 @@ import { TagBoxplotChart } from '../chart/tag-boxplot-chart'
 import { TagScatterChart } from '../chart/tag-scatter-chart'
 import { TagCorrelationChart } from '../chart/tag-correlation-chart'
 import { CompareTagsPopover } from './compare-tags-popover'
+import { CompareMonthsPopover } from './compare-months-popover'
+import { MonthWindowSelect } from './month-window-select'
 import { FeatureTransformDialog } from '../feature-engineering/transformation-panel'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
@@ -77,8 +105,65 @@ interface Props {
    */
   dataset: BoundedSample
   range: TimeRange
+  /**
+   * MODEL-FLOW-010: an explicit dataset-scoped artifact to analyse. Supplying
+   * both makes every server-backed tab read THAT artifact through the
+   * dataset-scoped routes, and no `dw*` draft atom takes part in the routing
+   * decision — which is what lets a caller outside the data-studio wizard (the
+   * model wizard's Dataset Review step) mount this card at all. Left off, the
+   * routing falls back to the draft atoms exactly as before, so both
+   * data-studio callers are unaffected.
+   */
+  datasetId?: string | null
+  artifactId?: string | null
+  /**
+   * Feature transforms WRITE `dwScalerConfigsAtom` — the data-studio draft
+   * store. A read-only caller must not mount that dialog, or changing a scaler
+   * while reviewing a dataset for training would silently edit an unrelated
+   * dataset draft. It also must not INHERIT that config: those scalers belong
+   * to another wizard's pipeline, so the Raw/Scaled toggle and the stat-table
+   * badges are suppressed with it. Defaults to true for the existing callers.
+   */
+  showTransforms?: boolean
+  /**
+   * Shows `RawTrendChart`'s built-in tag selector on the Line tab. OFF by
+   * default (`hideTagSelector` stays true) — Data Studio's two callers
+   * (`step-3-1-EDA.tsx`, `step-4-feature-engineering.tsx`) already drive tag
+   * visibility from the wizard's own sidebar (`useDatasetTagSelection` →
+   * `dwHiddenTagsAtom`), so a second selector on the chart itself would
+   * fight it. The model wizard's Dataset Review step has no such sidebar and
+   * opts in explicitly — that selector is the ONLY visibility control it has,
+   * which is why an inherited hidden-tag set was unrecoverable there before
+   * `isolated` (see `explicit` below).
+   */
+  showTagSelector?: boolean
+  /**
+   * Period picker, plus what is needed to caption the loaded page honestly.
+   * The CALLER owns the window because it also owns the fetch of `dataset`:
+   * this card can re-scope only its own server-computed tabs (histogram, box,
+   * scatter, correlation), not the rows it is handed. Leaving it off shows no
+   * picker and every tab reads the whole artifact, as before.
+   */
+  edaWindow?: EdaWindowControl
+  /**
+   * Which comparison the Histogram and Box Plot tabs open in. Defaults to
+   * `'tag'`, so existing callers are unchanged. A caller that wants month
+   * compare front and centre (the dataset detail dialog) passes `'month'`;
+   * it still only takes effect once the artifact spans at least two months,
+   * and a one-line note says so when it does not.
+   */
+  defaultCompareMode?: CompareMode
 }
-type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready'
+type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
+
+/** Stable empty ref — a fresh `{}` each render would re-run every memo below. */
+const NO_SCALERS: Record<string, ScalerMethod> = {}
+
+/** Stable empty tag list — what the tag-compare hooks get in monthly mode,
+ * which makes them idle rather than fetch a chart nobody is shown. */
+const NO_TAGS: string[] = []
+
+type CompareMode = 'tag' | 'month'
 
 function fmt(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -111,7 +196,7 @@ function AxisSelect({
         {axis}
       </span>
       <Select value={value ?? undefined} onValueChange={onChange}>
-        <SelectTrigger className="h-8 w-55 c2ursor-pointer font-mono text-xs">
+        <SelectTrigger className="h-8 w-55 cursor-pointer font-mono text-xs">
           <SelectValue placeholder={`Select ${axis} tag`} />
         </SelectTrigger>
         <SelectContent>
@@ -136,9 +221,82 @@ function AxisSelect({
   )
 }
 
-export function DataAnalysisCard({ dataset, range }: Props) {
+/**
+ * DS-LAKE-031. What a monthly comparison is computed on, stated plainly:
+ * which months, that the header's Period filter does not apply (the months
+ * ARE the periods), that histogram heights are counts (a month with more Good
+ * readings draws taller — not normalised, same as the compare modal), and any
+ * picked month that contributed nothing.
+ */
+function MonthlyCaption({
+  tag,
+  months,
+  missing,
+  error,
+  periodFilterShown,
+  countsNote = false,
+  spanMonths = null,
+}: {
+  tag: string | null
+  months: string[]
+  missing: string[]
+  error: string | null
+  periodFilterShown: boolean
+  countsNote?: boolean
+  /** "All months" scope: how many months the artifact spans, to say when
+   * only the latest `MAX_ALL_MONTHS` of them are shown. */
+  spanMonths?: number | null
+}) {
+  return (
+    <p className="mb-3 text-[11px] text-muted-foreground">
+      <span className="font-mono">{tag}</span> across{' '}
+      {months.length > MAX_MONTHS
+        ? `${months.length} months, ${months[0]} – ${months[months.length - 1]}`
+        : months.join(', ')}
+      , computed on the saved artifact one month at a time — crop and outlier
+      rules below are not reflected here yet.
+      {spanMonths !== null &&
+        spanMonths > months.length &&
+        ` Only the latest ${months.length} of ${spanMonths} months are compared.`}
+      {periodFilterShown && ' The Period filter above does not apply here.'}
+      {countsNote &&
+        ' Heights are counts, so a month with more Good readings draws taller.'}
+      {error
+        ? ` Could not load any month: ${error}.`
+        : missing.length > 0 &&
+          ` No usable readings for ${missing.join(', ')}.`}
+    </p>
+  )
+}
+
+export function DataAnalysisCard({
+  dataset,
+  range,
+  datasetId,
+  artifactId,
+  showTransforms = true,
+  showTagSelector = false,
+  edaWindow,
+  defaultCompareMode = 'tag',
+}: Props) {
+  // Declared before the tag-selection hook because it also decides WHERE that
+  // selection lives, not just which artifact routes are read: a caller naming
+  // its own dataset/artifact is by definition outside the Data Studio wizard,
+  // so it must not inherit that wizard's hidden-tag set. It did — leftover
+  // hidden tags covering the whole list left the Line tab stuck on "Select one
+  // or more PI tags to plot", with no tag sidebar in reach to undo it.
+  //
+  // This makes one flag mean two things — WHICH routes to read, and WHERE the
+  // tag selection lives — and that only holds while no id-supplying caller
+  // renders alongside a `DatasetTagSidebar`. One that did would keep its
+  // sidebar wired to the atoms while the card quietly stopped listening, and
+  // the two would disagree with nothing to show for it. If that caller ever
+  // appears, split this: isolation tracks `showTagSelector` (the card shows
+  // its own selector exactly when no sidebar is present), not the ids.
+  const explicit = Boolean(datasetId && artifactId)
+
   const { activeTags, focusedTag, colorForTag, selectAll } =
-    useDatasetTagSelection(dataset)
+    useDatasetTagSelection(dataset, { isolated: explicit })
   const { compareTags, toggle, atCap } = useCompareTags(activeTags)
 
   // DS-LAKE-005B-D-T01/T03. Histogram and boxplot tabs read the SERVER
@@ -159,14 +317,55 @@ export function DataAnalysisCard({ dataset, range }: Props) {
   // Shared across every server-backed tab (not `histogramArtifactId` —
   // T03 needs the identical id, so this is named for what it IS, not for
   // the first tab that happened to need it).
+
   const draftId = useAtomValue(dwDraftIdAtom)
   const draftArtifactId = useAtomValue(dwDraftArtifactIdAtom)
   const goldArtifactId = useAtomValue(dwDraftGoldArtifactIdAtom)
   const analysisArtifactId = goldArtifactId ?? draftArtifactId
-  const { metadata: analysisMetadata } = useDatasetArtifactMetadata(
-    draftId,
-    analysisArtifactId,
-  )
+  const editingDataset = useAtomValue(dwEditingDatasetAtom)
+
+  // Route every server-backed tab to whichever leg can actually READ the
+  // artifact in play. Edit mode's BRONZE is dataset-gated (adopted at Save,
+  // DS-LAKE-017-T01); the draft leg's `where: { id, draftId }` misses it,
+  // because that artifact's draftId belongs to the draft that originally
+  // created it, not to the fresh draft an edit session opens. That mismatch
+  // is why these tabs sat empty in edit mode while Step 3.2 showed BRONZE
+  // rows fine — that step reads the hydrated client frame
+  // (`useDatasetEditHydration` -> dwRawDatasetAtom), not an artifact id, and
+  // that hook deliberately fills only the row atoms.
+  //
+  // Falls back to the draft leg the moment `analysisArtifactId` appears:
+  // once the user Applies in edit mode a real SILVER exists in THIS draft,
+  // and staying pinned to the adopted BRONZE would show raw data for the
+  // rest of the session.
+  // An explicitly supplied artifact wins outright and short-circuits all of
+  // the above: the caller has named exactly what to read, so no draft atom
+  // gets a say. Without this the model wizard — where every `dw*` atom is
+  // null — resolves to no artifact at all and the four server-backed tabs sit
+  // on 'pending' forever.
+  const adoptedBronzeId = editingDataset?.adoptedBronzeArtifactId ?? null
+  const useDatasetLeg = explicit || (!analysisArtifactId && !!adoptedBronzeId)
+
+  const dsId = explicit
+    ? (datasetId ?? null)
+    : useDatasetLeg
+      ? (editingDataset?.id ?? null)
+      : null
+  const dsArtifactId = explicit
+    ? (artifactId ?? null)
+    : useDatasetLeg
+      ? adoptedBronzeId
+      : null
+  const dfId = useDatasetLeg ? null : draftId
+  const dfArtifactId = useDatasetLeg ? null : analysisArtifactId
+
+  // Both legs are called unconditionally, one disabled by null ids — hook
+  // order must not vary with mode, and a disabled hook fires no request.
+  const draftMeta = useDatasetArtifactMetadata(dfId, dfArtifactId)
+  const dsMeta = useArtifactMetadata(dsId, dsArtifactId)
+  const analysisMetadata = useDatasetLeg ? dsMeta.metadata : draftMeta.metadata
+  const timeWindow = edaWindow?.value ?? null
+
   const artifactTags = useMemo(() => {
     if (!analysisMetadata) return []
     const inArtifact = new Set(analysisMetadata.tags)
@@ -178,27 +377,148 @@ export function DataAnalysisCard({ dataset, range }: Props) {
   // first, that render fell through to 'ready' with zero tags and
   // rendered a false "not enough values" finding instead of the true
   // reason. Same status derivation for both server-backed tabs.
+  const mode = useAtomValue(dwModeAtom)
+  const hasArtifact = Boolean(analysisArtifactId || dsArtifactId)
+  const artifactUnavailable =
+    !hasArtifact && mode === 'edit' && !editingDataset?.adoptedBronzeArtifactId
+
   const statusFor = (hasTags: boolean, loading: boolean): TabStatus =>
     !hasTags
       ? 'no-tags'
-      : !analysisArtifactId
-        ? 'pending'
-        : loading
-          ? 'loading'
-          : 'ready'
+      : artifactUnavailable
+        ? 'unavailable'
+        : !hasArtifact
+          ? 'pending'
+          : loading
+            ? 'loading'
+            : 'ready'
 
-  const { histogram, loading: histogramLoading } = useDatasetHistogram(
-    draftId,
-    analysisArtifactId,
-    compareTags,
+  const [tab, setTab] = useState('line')
+
+  // DS-LAKE-031-D01. Histogram and Box Plot compare either several TAGS over
+  // one period, or several MONTHS of one tag. One mode for both tabs, so
+  // switching between them keeps the comparison; the toggle only shows when
+  // the artifact spans at least two months.
+  const availableMonths = useMemo(
+    () => monthOptions(analysisMetadata?.startTime, analysisMetadata?.endTime),
+    [analysisMetadata?.startTime, analysisMetadata?.endTime],
   )
+  const canCompareMonths = availableMonths.length >= 2
+  const [compareModePick, setCompareMode] =
+    useState<CompareMode>(defaultCompareMode)
+  const monthly = canCompareMonths && compareModePick === 'month'
+
+  // D02: one tag at a time, from the sidebar tags the artifact actually has.
+  const [monthTagPick, setMonthTagPick] = useState<string | null>(null)
+  const monthTag = useMemo(() => {
+    if (monthTagPick && artifactTags.includes(monthTagPick)) return monthTagPick
+    const focused = focusedTag[0]
+    if (focused && artifactTags.includes(focused)) return focused
+    return artifactTags[0] ?? null
+  }, [monthTagPick, focusedTag, artifactTags])
+
+  // Shared with the Compare-validation modal (`hooks/dataset/use-month-picker`).
+  const {
+    pickedMonths,
+    pickedMonthKeys,
+    toggleMonth,
+    compareAllMonths,
+    setCompareAllMonths,
+  } = useMonthPicker(availableMonths)
+
+  const leg: ArtifactLeg = useDatasetLeg
+    ? { kind: 'dataset', datasetId: dsId, artifactId: dsArtifactId }
+    : { kind: 'draft', draftId: dfId, artifactId: dfArtifactId }
+  const monthlyHist = useMonthlyHistograms(
+    leg,
+    monthTag,
+    pickedMonths,
+    monthly && tab === 'histogram',
+  )
+  const monthlyBox = useMonthlyBoxplots(
+    leg,
+    monthTag,
+    pickedMonths,
+    monthly && tab === 'boxplot',
+  )
+  const mergedHist = useMemo(
+    () =>
+      monthlyHist.results && monthTag
+        ? mergeMonthlyHistograms(monthlyHist.results, monthTag)
+        : null,
+    [monthlyHist.results, monthTag],
+  )
+  const mergedBox = useMemo(
+    () =>
+      monthlyBox.results && monthTag
+        ? mergeMonthlyBoxplots(monthlyBox.results, monthTag)
+        : null,
+    [monthlyBox.results, monthTag],
+  )
+  const histStyleMap = mergedHist?.styleMap
+  const boxStyleMap = mergedBox?.styleMap
+  const histSeriesStyle = useMemo(
+    () =>
+      histStyleMap
+        ? (series: string) =>
+            histStyleMap.get(series) ?? { color: 'var(--muted-foreground)' }
+        : undefined,
+    [histStyleMap],
+  )
+  const boxSeriesStyle = useMemo(
+    () =>
+      boxStyleMap
+        ? (series: string) =>
+            boxStyleMap.get(series) ?? { color: 'var(--muted-foreground)' }
+        : undefined,
+    [boxStyleMap],
+  )
+  const monthlyReady = Boolean(monthTag && pickedMonths.length > 0)
+  const monthlyHistStatus = statusFor(monthlyReady, monthlyPending(monthlyHist))
+  const monthlyBoxStatus = statusFor(monthlyReady, monthlyPending(monthlyBox))
+  // When no month produced anything (all failed, or none had readings) the
+  // chart still gets the TAG, so its insufficient-data message names it
+  // instead of rendering "…for " with a blank.
+  const monthlyFallbackTags = monthTag ? [monthTag] : NO_TAGS
+
+  // In monthly mode the tag-compare hooks get no tags and idle.
+  const tagCompareTags = monthly ? NO_TAGS : compareTags
+
+  const draftHist = useDatasetHistogram(
+    dfId,
+    dfArtifactId,
+    tagCompareTags,
+    undefined,
+    timeWindow,
+  )
+  const dsHist = useArtifactHistogram(
+    dsId,
+    dsArtifactId,
+    tagCompareTags,
+    undefined,
+    timeWindow,
+  )
+  const { histogram, loading: histogramLoading } = useDatasetLeg
+    ? dsHist
+    : draftHist
   const histogramStatus = statusFor(compareTags.length > 0, histogramLoading)
 
-  const { boxplot, loading: boxplotLoading } = useDatasetBoxplot(
-    draftId,
-    analysisArtifactId,
-    compareTags,
+  const draftBox = useDatasetBoxplot(
+    dfId,
+    dfArtifactId,
+    tagCompareTags,
+    undefined,
+    undefined,
+    timeWindow,
   )
+  const dsBox = useArtifactBoxplot(
+    dsId,
+    dsArtifactId,
+    tagCompareTags,
+    undefined,
+    timeWindow,
+  )
+  const { boxplot, loading: boxplotLoading } = useDatasetLeg ? dsBox : draftBox
   const boxplotStatus = statusFor(compareTags.length > 0, boxplotLoading)
 
   // DS-LAKE-005B-D-T04. Scatter's Y follows the focused tag (same
@@ -235,12 +555,25 @@ export function DataAnalysisCard({ dataset, range }: Props) {
     setYPick(tag)
   }
 
-  const { scatter, loading: scatterLoading } = useDatasetScatter(
-    draftId,
-    analysisArtifactId,
+  const draftScatter = useDatasetScatter(
+    dfId,
+    dfArtifactId,
     scatterXTag,
     scatterYTag,
+    undefined,
+    undefined,
+    timeWindow,
   )
+  const dsScatter = useArtifactScatter(
+    dsId,
+    dsArtifactId,
+    scatterXTag,
+    scatterYTag,
+    timeWindow,
+  )
+  const { scatter, loading: scatterLoading } = useDatasetLeg
+    ? dsScatter
+    : draftScatter
   const scatterStatus = statusFor(
     Boolean(scatterXTag && scatterYTag),
     scatterLoading,
@@ -255,18 +588,40 @@ export function DataAnalysisCard({ dataset, range }: Props) {
   // + hard cap (DS-LAKE-005B-D-T05a/T05b) over whatever candidate list is
   // sent, so sending more than will be shown is by design, not waste.
 
-  const { correlation, loading: correlationLoading } = useDatasetCorrelation(
-    draftId,
-    analysisArtifactId,
+  const draftCorr = useDatasetCorrelation(
+    dfId,
+    dfArtifactId,
     artifactTags,
+    undefined,
+    undefined,
+    timeWindow,
   )
+  const dsCorr = useArtifactCorrelation(
+    dsId,
+    dsArtifactId,
+    artifactTags,
+    undefined,
+    undefined,
+    timeWindow,
+  )
+  const { correlation, loading: correlationLoading } = useDatasetLeg
+    ? dsCorr
+    : draftCorr
   const correlationStatus = statusFor(
     artifactTags.length >= 2,
     correlationLoading,
   )
 
   const pendingFeatureCount = activeTags.length - artifactTags.length
-  const [tab, setTab] = useState('line')
+
+  // DS-LAKE-031-D05. Opening a Top Relationships pair as a scatter plot sets
+  // both axes OUTRIGHT — `pickX`/`pickY`'s swap rule compares against the
+  // PREVIOUS axes and would scramble a pair that overlaps them.
+  const openPairAsScatter = ({ x, y }: { x: string; y: string }) => {
+    setXPick(x)
+    setYPick(y)
+    setTab('scatter')
+  }
   const [scaledView, setScaledView] = useState(false)
   const [isViewAll, setIsViewAll] = useState(false)
 
@@ -278,27 +633,49 @@ export function DataAnalysisCard({ dataset, range }: Props) {
     setScalerConfigs(prev => ({ ...prev, [column]: method }))
   }
 
+  // Read-only callers see NO scalers rather than another wizard's. Reading
+  // them would be the mirror of the write this flag already blocks: the
+  // Raw/Scaled toggle and the stat-table badges would report a transform the
+  // reviewer never configured and cannot see the origin of.
+  const activeScalers = showTransforms ? scalerConfigs : NO_SCALERS
+
   const columnGroups = useMemo(() => classifyColumns(dataset), [dataset])
 
   // How many columns have an explicit scaler — only these transform; the rest
   // pass through. Drives the Raw/Scaled toggle enablement + caption.
   const scaledTagCount = useMemo(
-    () => dataset.tags.filter(t => scalerConfigs[t]).length,
-    [dataset.tags, scalerConfigs],
+    () => dataset.tags.filter(t => activeScalers[t]).length,
+    [dataset.tags, activeScalers],
   )
 
   // Scale ONLY configured columns: pass 'none' for the rest so toModelReady
   // doesn't default them to min-max.
   const scaledDataset = useMemo(() => {
     const cfg = Object.fromEntries(
-      dataset.tags.map(t => [t, scalerConfigs[t] ?? 'none']),
+      dataset.tags.map(t => [t, activeScalers[t] ?? 'none']),
     ) as Record<string, ScalerMethod>
     return toModelReady(dataset, cfg)
-  }, [dataset, scalerConfigs])
+  }, [dataset, activeScalers])
 
   const showScaled = scaledView && scaledTagCount > 0
 
   const chartRows = useMemo(() => toChartRows(dataset), [dataset])
+  // Recharts draws one SVG path per tag, so a 10,000-row page is thinned to
+  // what the chart can draw without lagging (peaks kept). The raw table is
+  // virtualised and the stat table is arithmetic, so both still read every
+  // loaded row.
+  const trend = useMemo(
+    () => downsampleRows(chartRows, activeTags, CHART_MAX_POINTS),
+    [chartRows, activeTags],
+  )
+  const previewCaption = describePreviewWindow({
+    loadedRows: edaWindow?.loadedRows ?? dataset.rows.length,
+    totalRows: edaWindow?.totalRows ?? null,
+    window: timeWindow,
+  })
+  // Suffix for the tabs the SERVER computes: they read the saved artifact
+  // inside the window, not the loaded page.
+  const serverScope = timeWindow ? ` for ${windowLabel(timeWindow)}` : ''
   const statRows = useMemo(
     () => activeTags.map(tag => ({ tag, ...tagDistribution(dataset, tag) })),
     [dataset, activeTags],
@@ -326,7 +703,31 @@ export function DataAnalysisCard({ dataset, range }: Props) {
         <h2 className="text-sm font-semibold text-foreground">
           Data Analysis &amp; Visualization
         </h2>
+        {edaWindow && (
+          <MonthWindowSelect
+            className="ml-auto"
+            startTime={analysisMetadata?.startTime}
+            endTime={analysisMetadata?.endTime}
+            value={edaWindow.value}
+            onChange={edaWindow.onChange}
+            loading={edaWindow.loading}
+          />
+        )}
       </div>
+
+      {artifactUnavailable && (
+        <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
+          <p className="text-xs font-medium text-foreground">
+            Charts unavailable for this dataset
+          </p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            Its raw artifact was reclaimed, or it was saved before raw artifacts
+            were kept for editing. The rows below are loaded and usable —
+            applying a cleaning rule creates a new artifact and restores the
+            charts.
+          </p>
+        </div>
+      )}
 
       <Tabs value={tab} onValueChange={setTab} className="flex w-full flex-col">
         <TabsList className="mb-4 inline-flex flex-wrap gap-4 border-b border-border">
@@ -351,14 +752,49 @@ export function DataAnalysisCard({ dataset, range }: Props) {
         </TabsList>
 
         {(tab === 'histogram' || tab === 'boxplot') && (
-          <div className="mb-3 flex justify-end">
-            <CompareTagsPopover
-              activeTags={activeTags}
-              compareTags={compareTags}
-              toggle={toggle}
-              atCap={atCap}
-              colorForTag={colorForTag}
-            />
+          <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+            {/* A caller that asked for month compare gets told why it is not
+                on offer, instead of a toggle that silently never appears. */}
+            {defaultCompareMode === 'month' &&
+              !canCompareMonths &&
+              availableMonths.length === 1 && (
+                <p className="mr-auto text-xs text-muted-foreground">
+                  Comparing by month needs data spanning at least two months —
+                  this dataset covers {availableMonths[0]!.label}.
+                </p>
+              )}
+            {canCompareMonths && (
+              <SegmentedToggle
+                ariaLabel="Compare tags or months"
+                value={monthly ? 'month' : 'tag'}
+                onChange={setCompareMode}
+                options={[
+                  { value: 'tag', label: 'By tag' },
+                  { value: 'month', label: 'By month' },
+                ]}
+              />
+            )}
+            {monthly ? (
+              <CompareMonthsPopover
+                tags={artifactTags}
+                tag={monthTag}
+                onTagChange={setMonthTagPick}
+                colorForTag={colorForTag}
+                months={availableMonths}
+                picked={pickedMonthKeys}
+                toggleMonth={toggleMonth}
+                allMonths={compareAllMonths}
+                onAllMonthsChange={setCompareAllMonths}
+              />
+            ) : (
+              <CompareTagsPopover
+                activeTags={activeTags}
+                compareTags={compareTags}
+                toggle={toggle}
+                atCap={atCap}
+                colorForTag={colorForTag}
+              />
+            )}
           </div>
         )}
         {tab === 'scatter' && (
@@ -422,69 +858,138 @@ export function DataAnalysisCard({ dataset, range }: Props) {
                 />
               </div>
             )}
-            <FeatureTransformDialog
-              numericColumns={columnGroups.numeric}
-              categoricalColumns={columnGroups.categorical}
-              scalerConfigs={scalerConfigs}
-              setScalerConfig={handleSetScaler}
-            />
+            {showTransforms && (
+              <FeatureTransformDialog
+                numericColumns={columnGroups.numeric}
+                categoricalColumns={columnGroups.categorical}
+                scalerConfigs={scalerConfigs}
+                setScalerConfig={handleSetScaler}
+              />
+            )}
           </div>
         )}
 
         <div className="min-w-0">
           <TabsContent value="line" className="mt-0">
             <p className="mb-3 text-[11px] text-muted-foreground">
-              Preview window — a bounded sample, not the full artifact.
+              {previewCaption}
+              {trend.downsampled &&
+                ` The chart draws ${trend.rows.length.toLocaleString('en-US')} of them, keeping peaks — pick a month for full detail.`}
             </p>
             <RawTrendChart
-              rows={chartRows}
+              rows={trend.rows}
               tags={activeTags}
               range={range}
-              hideTagSelector
-              focusedTag={focusedTag}
+              hideTagSelector={!showTagSelector}
+              // Emphasis is only meaningful where something can change it.
+              // `focusedTag` never returns empty — it falls back to the first
+              // active tag — so handing it over in isolated mode would dim
+              // every other line to 0.2 permanently, with no sidebar row to
+              // click. The scatter axes below still use the same fallback as
+              // a sensible default; there it picks a series, not an opacity.
+              focusedTag={explicit ? undefined : focusedTag}
               isViewAll={isViewAll}
             />
           </TabsContent>
           <TabsContent value="raw-table" className="mt-0">
             <p className="mb-3 text-[11px] text-muted-foreground">
-              Preview window — a bounded sample, not the full artifact.
+              {previewCaption}
             </p>
             <RawReadingsTable
               dataset={showScaled ? scaledDataset : dataset}
-              scalers={scalerConfigs}
+              scalers={activeScalers}
             />
           </TabsContent>
           <TabsContent value="histogram" className="mt-0">
-            {histogramStatus === 'ready' && (
-              <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact — crop and outlier rules below
-                are not reflected here yet.
-              </p>
+            {monthly ? (
+              <>
+                {monthlyHistStatus === 'ready' && (
+                  <MonthlyCaption
+                    tag={monthTag}
+                    months={pickedMonths.map(m => m.label)}
+                    spanMonths={
+                      compareAllMonths ? availableMonths.length : null
+                    }
+                    missing={mergedHist?.missing ?? []}
+                    error={monthlyHist.error}
+                    periodFilterShown={Boolean(edaWindow)}
+                    countsNote
+                  />
+                )}
+                <TagHistogramChart
+                  data={mergedHist?.result ?? null}
+                  tags={
+                    mergedHist?.tags.length
+                      ? mergedHist.tags
+                      : monthlyFallbackTags
+                  }
+                  status={monthlyHistStatus}
+                  seriesStyle={histSeriesStyle}
+                />
+              </>
+            ) : (
+              <>
+                {histogramStatus === 'ready' && (
+                  <p className="mb-3 text-[11px] text-muted-foreground">
+                    Computed on the saved artifact{serverScope} — crop and
+                    outlier rules below are not reflected here yet.
+                  </p>
+                )}
+                <TagHistogramChart
+                  data={histogram}
+                  tags={compareTags}
+                  status={histogramStatus}
+                />
+              </>
             )}
-            <TagHistogramChart
-              data={histogram}
-              tags={compareTags}
-              status={histogramStatus}
-            />
           </TabsContent>
           <TabsContent value="boxplot" className="mt-0">
-            {boxplotStatus === 'ready' && (
-              <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact — crop and outlier rules below
-                are not reflected here yet.
-              </p>
+            {monthly ? (
+              <>
+                {monthlyBoxStatus === 'ready' && (
+                  <MonthlyCaption
+                    tag={monthTag}
+                    months={pickedMonths.map(m => m.label)}
+                    spanMonths={
+                      compareAllMonths ? availableMonths.length : null
+                    }
+                    missing={mergedBox?.missing ?? []}
+                    error={monthlyBox.error}
+                    periodFilterShown={Boolean(edaWindow)}
+                  />
+                )}
+                <TagBoxplotChart
+                  data={mergedBox?.result ?? null}
+                  tags={
+                    mergedBox?.tags.length
+                      ? mergedBox.tags
+                      : monthlyFallbackTags
+                  }
+                  status={monthlyBoxStatus}
+                  seriesStyle={boxSeriesStyle}
+                />
+              </>
+            ) : (
+              <>
+                {boxplotStatus === 'ready' && (
+                  <p className="mb-3 text-[11px] text-muted-foreground">
+                    Computed on the saved artifact{serverScope} — crop and
+                    outlier rules below are not reflected here yet.
+                  </p>
+                )}
+                <TagBoxplotChart
+                  data={boxplot}
+                  tags={compareTags}
+                  status={boxplotStatus}
+                />
+              </>
             )}
-            <TagBoxplotChart
-              data={boxplot}
-              tags={compareTags}
-              status={boxplotStatus}
-            />
           </TabsContent>
           <TabsContent value="scatter" className="mt-0">
             {scatterStatus === 'ready' && (
               <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact — crop and outlier rules below
-                are not reflected here yet.
+                Computed on the saved artifact{serverScope} — crop and outlier
+                rules below are not reflected here yet.
               </p>
             )}
             <TagScatterChart
@@ -497,8 +1002,8 @@ export function DataAnalysisCard({ dataset, range }: Props) {
           <TabsContent value="correlation" className="mt-0">
             {correlationStatus === 'ready' && (
               <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact — crop and outlier rules below
-                are not reflected here yet.
+                Computed on the saved artifact{serverScope} — crop and outlier
+                rules below are not reflected here yet.
                 {pendingFeatureCount > 0 && (
                   <>
                     {' '}
@@ -513,84 +1018,101 @@ export function DataAnalysisCard({ dataset, range }: Props) {
             <TagCorrelationChart
               data={correlation}
               status={correlationStatus}
+              onSelectPair={openPairAsScatter}
             />
           </TabsContent>
         </div>
       </Tabs>
 
       {statRows.length > 0 && (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <ScrollArea className="h-90 w-full overflow-auto">
-            <Table>
-              <TableHeader className="sticky top-0 z-10 bg-background shadow-sm">
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-3">Tag</TableHead>
-                  <TableHead className="text-right">Mean</TableHead>
-                  <TableHead className="text-right">Median</TableHead>
-                  <TableHead className="text-right">Max</TableHead>
-                  <TableHead className="text-right">Min</TableHead>
-                  <TableHead className="text-right">
-                    Range
-                    <span className="text-xs text-muted-foreground">
-                      {' '}
-                      (Max-Min)
-                    </span>
-                  </TableHead>
-                  <TableHead className="pr-3 text-right items-center">
-                    SD
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {statRows.map(row => (
-                  <TableRow
-                    key={row.tag}
-                    className={cn(row.tag === focusedTag[0] && 'bg-muted/50')}
-                  >
-                    <TableCell className="pl-3">
-                      <span className="flex items-center gap-2">
-                        <span
-                          className="h-2 w-2 shrink-0 rounded-full"
-                          style={{ backgroundColor: colorForTag(row.tag) }}
-                        />
-                        <span className="truncate font-mono text-xs">
-                          {row.tag}
-                        </span>
-                        {scalerConfigs[row.tag] &&
-                          scalerConfigs[row.tag] !== 'none' && (
-                            <span
-                              title={`Feature transform: ${scalerConfigs[row.tag]} scaler`}
-                              className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
-                            >
-                              <WandSparkles className="h-3 w-3 shrink-0" />
-                              {scalerConfigs[row.tag]}
-                            </span>
-                          )}
+        <div className="space-y-2">
+          <p className="text-[11px] text-muted-foreground">
+            Computed over the loaded rows — {previewCaption} Per-tag statistics
+            elsewhere on this page may differ; those are computed over the
+            entire artifact.
+          </p>
+          <div className="rounded-lg border border-border overflow-hidden">
+            <ScrollArea className="h-90 w-full overflow-auto">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-background shadow-sm">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="pl-3">Tag</TableHead>
+                    <TableHead className="text-right">Mean</TableHead>
+                    <TableHead className="text-right">Median</TableHead>
+                    <TableHead className="text-right">Max</TableHead>
+                    <TableHead className="text-right">Min</TableHead>
+                    <TableHead className="text-right">
+                      Range
+                      <span className="text-xs text-muted-foreground">
+                        {' '}
+                        (Max-Min)
                       </span>
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.mean)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.median)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.max)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.min)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.range)}
-                    </TableCell>
-                    <TableCell className="pr-3 text-right font-mono text-xs tabular-nums">
-                      {fmt(row.std)}
-                    </TableCell>
+                    </TableHead>
+                    <TableHead className="pr-3 text-right items-center">
+                      SD
+                    </TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </ScrollArea>
+                </TableHeader>
+                <TableBody>
+                  {statRows.map(row => {
+                    // Every field is 0 when a tag has zero Good cells in the
+                    // preview — indistinguishable from a genuine 0.00 reading
+                    // without checking `count`. `—` matches how
+                    // `PerTagStatsPanel` renders its own null server stat.
+                    const empty = row.count === 0
+                    return (
+                      <TableRow
+                        key={row.tag}
+                        className={cn(
+                          row.tag === focusedTag[0] && 'bg-muted/50',
+                        )}
+                      >
+                        <TableCell className="pl-3">
+                          <span className="flex items-center gap-2">
+                            <span
+                              className="h-2 w-2 shrink-0 rounded-full"
+                              style={{ backgroundColor: colorForTag(row.tag) }}
+                            />
+                            <span className="truncate font-mono text-xs">
+                              {row.tag}
+                            </span>
+                            {activeScalers[row.tag] &&
+                              activeScalers[row.tag] !== 'none' && (
+                                <span
+                                  title={`Feature transform: ${activeScalers[row.tag]} scaler`}
+                                  className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                                >
+                                  <WandSparkles className="h-3 w-3 shrink-0" />
+                                  {activeScalers[row.tag]}
+                                </span>
+                              )}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.mean)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.median)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.max)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.min)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.range)}
+                        </TableCell>
+                        <TableCell className="pr-3 text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.std)}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </ScrollArea>
+          </div>
         </div>
       )}
     </div>

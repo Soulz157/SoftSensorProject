@@ -6,8 +6,10 @@ import {
   AlertTriangle,
   Braces,
   Info,
+  Loader2,
   MoreHorizontal,
   Pencil,
+  Play,
   Power,
   RefreshCw,
   SlidersHorizontal,
@@ -19,9 +21,8 @@ import {
 import { cn } from '@/lib/utils'
 import { AIModel } from '@/types'
 import { type ModelWithWorkspace } from '@/hooks/use-all-models'
-import { effectiveProdStatus } from '@/lib/model-status'
+import { monitoringStatus } from '@/lib/model-status'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import { ModelDetailDialog } from './model-detail-dialog'
 import { ViewConfigDialog } from './view-config-dialog'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -37,6 +38,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
@@ -60,7 +62,7 @@ const DEPLOY_MAP = {
     cls: 'bg-emerald-500/15 text-emerald-500',
   },
   stopped: {
-    label: 'Stopped',
+    label: 'Offline',
     icon: StopCircle,
     cls: 'bg-zinc-500/15 text-zinc-400',
   },
@@ -147,23 +149,31 @@ export function ModelTable({
     model: AIModel
     next: 'running' | 'stopped'
   } | null>(null)
-  const [mutatingId, setMutatingId] = useState<string | null>(null)
-  const [optimisticStates, setOptimisticStates] = useState<
-    Record<string, string>
-  >({})
+  const [mutating, setMutating] = useState<{
+    id: string
+    next: 'running' | 'stopped'
+  } | null>(null)
 
+  /**
+   * No optimistic state. It used to flip the control to the requested
+   * setting at press and roll back only if `onToggleDeploy` threw, but the
+   * page's handler catches its own failure (it toasts the server's reason),
+   * so a refused Start never threw: the control stayed ON, the stale
+   * override was never cleared, and the row read "running" over a model the
+   * server never started. The row now shows a spinner while the call is in
+   * flight and then renders whatever the refetched model says, success or
+   * failure. The handler owns the toast and the refetch in both branches.
+   */
   async function handleToggle(m: AIModel, next: 'running' | 'stopped') {
-    setMutatingId(m.id)
-    const previousState =
-      optimisticStates[m.id] || (m.data?.deployStatus ?? 'stopped')
-    setOptimisticStates(prev => ({ ...prev, [m.id]: next }))
+    setMutating({ id: m.id, next })
     try {
       await onToggleDeploy(m, next)
     } catch {
+      // Only reached by a caller whose handler rethrows; the views page's
+      // own handler never does.
       toast.error('Failed to update deployment status. Please try again.')
-      setOptimisticStates(prev => ({ ...prev, [m.id]: previousState }))
     } finally {
-      setMutatingId(null)
+      setMutating(null)
     }
   }
 
@@ -221,21 +231,40 @@ export function ModelTable({
             )}
           >
             {models.map(m => {
-              const actualDeployKey = m.data?.deployStatus ?? 'stopped'
-              const deployKey = (optimisticStates[m.id] ??
-                actualDeployKey) as DS
+              const isMutating = mutating?.id === m.id
+              // While a Start is in flight the badge reads Initializing — the
+              // request runs the source preflight and can take seconds, and
+              // "Offline" under a pressed Start reads as nothing happening.
+              // Transitional only: once the call resolves the row shows the
+              // refetched server status (Running, Failed, or still Offline
+              // after a refusal), never this.
+              const deployKey = (
+                isMutating && mutating?.next === 'running'
+                  ? 'initializing'
+                  : (m.data?.deployStatus ?? 'stopped')
+              ) as DS
 
               const ds = DEPLOY_MAP[deployKey] ?? DEPLOY_MAP.stopped
-              const prodKey = effectiveProdStatus(m)
+              // MODEL-SERVE-012-T08. The MEASURED monitoring verdict off the
+              // list payload — no longer the hand-set `prodStatus` column,
+              // which could read "Normal" for a model the detail page badged
+              // Alert. `deriveDeployStatuses` now grades the output-error
+              // axis in two batched queries for the whole page.
+              const prodKey = monitoringStatus(m)
               const ps = PROD_MAP[prodKey]
 
               const monitoringDisabled =
                 deployKey === 'stopped' || deployKey === 'error'
               const DIcon = ds.icon
               const PIcon = ps.icon
-              const isMutating = mutatingId === m.id
-              const isOn =
-                deployKey === 'running' || deployKey === 'initializing'
+              // MODEL-SERVE-001-T19. Start vs Stop follows a SETTING the
+              // operator owns (`enabled`), never the DERIVED `deployStatus`
+              // badge beside it — an enabled-but-failing schedule reads
+              // status 'error' while `enabled` stays true, and binding the
+              // control to `deployKey` left that model with no Stop control
+              // anywhere (it read OFF, and the only action it offered wrote
+              // `enabled: true`).
+              const isOn = m.data?.enabled ?? false
               const isFrozen = prodKey === 'frozen'
 
               return (
@@ -252,25 +281,47 @@ export function ModelTable({
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-3">
-                      <Switch
-                        checked={isOn}
-                        disabled={deployKey === 'initializing' || isMutating}
-                        onCheckedChange={checked =>
-                          setDeployTarget({
-                            model: m,
-                            next: checked ? 'running' : 'stopped',
-                          })
-                        }
-                        aria-label={isOn ? `Stop ${m.name}` : `Start ${m.name}`}
-                        className={cn(
-                          deployKey === 'running' &&
-                            'data-[state=checked]:bg-emerald-500',
-                          deployKey === 'stopped' &&
-                            'data-[state=unchecked]:bg-zinc-400',
-                          deployKey === 'error' &&
-                            'data-[state=unchecked]:bg-red-500 data-[state=checked]:bg-red-500',
-                        )}
-                      />
+                      {/* MODEL-SERVE-001-T19 still holds: the control
+                          follows the SETTING (`enabled`), never the derived
+                          `deployStatus` badge beside it, so an enabled but
+                          failing schedule offers Stop. Start/Stop buttons
+                          match the model detail page's header. */}
+                      {isOn ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 gap-1.5 px-2.5 text-xs"
+                          disabled={deployKey === 'initializing' || isMutating}
+                          onClick={() =>
+                            setDeployTarget({ model: m, next: 'stopped' })
+                          }
+                          aria-label={`Stop ${m.name}`}
+                        >
+                          {isMutating ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <StopCircle className="h-3.5 w-3.5" />
+                          )}
+                          Stop
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="h-7 gap-1.5 px-2.5 text-xs"
+                          disabled={isMutating}
+                          onClick={() =>
+                            setDeployTarget({ model: m, next: 'running' })
+                          }
+                          aria-label={`Start ${m.name}`}
+                        >
+                          {isMutating ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Play className="h-3.5 w-3.5" />
+                          )}
+                          Start
+                        </Button>
+                      )}
                       <span
                         className={cn(
                           'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold',
@@ -326,6 +377,16 @@ export function ModelTable({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-full">
+                        {m.data?.lastEditedBy && (
+                          <>
+                            <DropdownMenuLabel className="font-normal text-xs text-muted-foreground">
+                              Last edited by {m.data.lastEditedBy}
+                              {m.data.lastEditedAt &&
+                                ` · ${formatDeployedAt(m.data.lastEditedAt)}`}
+                            </DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                          </>
+                        )}
                         <DropdownMenuItem onClick={() => onLog(m)}>
                           <Terminal className="h-3.5 w-3.5" />
                           Console

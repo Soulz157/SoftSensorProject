@@ -18,9 +18,11 @@ import {
 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
+import { toDateTimeLocal } from '@/components/date-time-picker'
+import { CalendarDateTimePicker } from '@/components/calendar-date-time-picker'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
+import { usePreloadedProgress } from '@/hooks/dataset/use-preloaded-progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useCsvMaterialize } from '@/hooks/dataset/use-csv-materialize'
@@ -29,6 +31,8 @@ import { useDatasetStudioPreview } from '@/hooks/dataset/use-dataset-studio-prev
 import { useSourceConnectionVerify } from '@/hooks/dataset/use-source-connection-verify'
 import { ConnectionVerifyPanel } from './source-configs/connection-verify-panel'
 import {
+  dwBronzeWarmStateAtom,
+  dwRetrainCutTimestampAtom,
   dwCustomIntervalAtom,
   dwFetchConfigAtom,
   dwNameAtom,
@@ -36,9 +40,11 @@ import {
   dwSelectedSourcesAtom,
   dwSelectedTagsAtom,
   dwSourceFetchConfigsAtom,
+  dwTagConstantsAtom,
 } from '@/store/dataset-studio'
 import type { CustomInterval, FetchPeriod } from '@/store/model-pipeline'
-import { resolveInterval } from '@/lib/dataset-fetch'
+import { formatElapsed, resolveInterval } from '@/lib/dataset-fetch'
+import { FetchElapsed } from './fetch-elapsed'
 import { datasetToCsv, datasetCsvFilename } from '@/lib/csv'
 import { datasetQuality } from '@/lib/data-quality'
 import { HistoricalFetchConfigCard } from './source-configs/historical-fetch-config-card'
@@ -57,6 +63,10 @@ import {
   defaultConfigForKind,
 } from './source-configs/source-fetch-config-card'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
+
+/** How many years back the Interval calendars can page before any data is
+ * fetched (there is no first reading to bound them by yet). */
+const FETCH_CALENDAR_YEARS = 10
 
 const PERIOD_LABELS: Record<FetchPeriod, string> = {
   '1min': 'Every 1 min',
@@ -84,6 +94,8 @@ export function Step2RawData({ nav }: Props) {
   // The tags the user checked in Step 1 (dwSelectedTagsAtom) are exactly what
   // we fetch — no separate fetch-subset sentinel.
   const fetchTags = useAtomValue(dwSelectedTagsAtom)
+  const tagConstants = useAtomValue(dwTagConstantsAtom)
+  const constantTags = useMemo(() => Object.keys(tagConstants), [tagConstants])
 
   const range = nav.timeRange
   const raw = useAtomValue(dwRawDatasetAtom)
@@ -128,14 +140,64 @@ export function Step2RawData({ nav }: Props) {
 
   const now = new Date()
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000)
-  const [customFrom, setCustomFrom] = useState(() =>
-    toDateTimeLocal(oneHourAgo),
+
+  // MODEL-SERVE-017. The earliest start a retrain-built dataset may have, as
+  // a `datetime-local` value. Formatted field by field in LOCAL time, never
+  // through `toISOString()` — the boundary arrives naive and space-separated
+  // ("2026-01-16 00:00:00", `str()` of a pandas Timestamp in `splits.py`) and
+  // is read as local, so rendering the clamp in UTC would put it hours off
+  // and let the picker offer times the server refuses.
+  const retrainCutTimestamp = useAtomValue(dwRetrainCutTimestampAtom)
+  const retrainMinStart = useMemo(() => {
+    if (!retrainCutTimestamp) return undefined
+    const ms = new Date(retrainCutTimestamp).getTime()
+    if (!Number.isFinite(ms)) return undefined
+    const d = new Date(ms + 60_000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return (
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    )
+  }, [retrainCutTimestamp])
+
+  // Defaults to one hour ago — EXCEPT in a retrain session, where that is
+  // almost always before the split boundary and would open the step on a
+  // window the server refuses. Computed above for exactly this reason.
+  const [customFrom, setCustomFrom] = useState(
+    () => retrainMinStart ?? toDateTimeLocal(oneHourAgo),
   )
   const [customTo, setCustomTo] = useState(() => toDateTimeLocal(now))
+
+  // How far the Interval calendars page. Nothing is fetched yet, so there is
+  // no first reading to bound by: the retrain split floor when there is one,
+  // else `FETCH_CALENDAR_YEARS` back, up to now. `allowed` below still decides
+  // what can be picked; this only sets the month/year dropdown's reach.
+  const nowStamp = toDateTimeLocal(now)
+  const earliestFetch = new Date(now)
+  earliestFetch.setFullYear(earliestFetch.getFullYear() - FETCH_CALENDAR_YEARS)
+  const fetchCalendarBounds = {
+    min: retrainMinStart ?? toDateTimeLocal(earliestFetch),
+    max: nowStamp,
+  }
 
   const locked = nav.isEditLocked
   const isFetching = fetch.status === 'fetching'
   const isDone = fetch.status === 'done'
+  // Real progress moves only when a whole batch lands; the bar runs ahead
+  // while a batch is in flight so a one-batch fetch is not stuck at 0%.
+  const shownProgress = usePreloadedProgress({
+    active: isFetching,
+    progress: fetch.progress,
+    completedBatches: fetch.detail.completedBatches,
+    totalBatches: fetch.detail.totalBatches,
+    runStartedAt: fetch.detail.startedAt,
+  })
+  // DS-LAKE-015-T04: `fetch.status === 'done'` only means the CLIENT-side
+  // batches landed — `useDatasetBronzeWarm`'s background materialize (fired
+  // from inside `useDatasetStudioFetch` right after this same 'done'
+  // transition) can still be running when this card renders. Say so, so
+  // "Dataset ready" doesn't read as "Step 3.1 is ready too".
+  const bronzeWarmState = useAtomValue(dwBronzeWarmStateAtom)
   // Edit mode freezes the raw query — disable every fetch control (but keep the
   // hydrated raw table visible, unlike an in-flight fetch).
   const controlsDisabled = isFetching || locked
@@ -372,25 +434,39 @@ export function Step2RawData({ nav }: Props) {
               <Label htmlFor="mp-fetch-from" className="text-xs">
                 Start
               </Label>
-              <DateTimePicker
+              <CalendarDateTimePicker
                 id="mp-fetch-from"
+                label="Fetch window start"
                 value={customFrom}
-                max={customTo}
+                // MODEL-SERVE-017. In a retrain-built dataset the start is
+                // clamped to the incumbent's split boundary: `assertCompatible`
+                // refuses data starting at or before it, because those rows
+                // are the frozen evaluation set the candidate is scored on.
+                // Clamping here is what lets the window be picked ONCE, in
+                // this step, instead of being collected in the retrain dialog
+                // first purely to enforce this rule.
+                allowed={{ min: retrainMinStart, max: customTo }}
+                dataBounds={fetchCalendarBounds}
+                defaultTime="00:00"
                 disabled={isFetching}
                 onChange={handleCustomFromChange}
+                className="w-full"
               />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="mp-fetch-to" className="text-xs">
                 End
               </Label>
-              <DateTimePicker
+              <CalendarDateTimePicker
                 id="mp-fetch-to"
+                label="Fetch window end"
                 value={customTo}
-                min={customFrom}
-                max={toDateTimeLocal(now)}
+                allowed={{ min: customFrom, max: nowStamp }}
+                dataBounds={fetchCalendarBounds}
+                defaultTime="23:59"
                 disabled={isFetching}
                 onChange={handleCustomToChange}
+                className="w-full"
               />
             </div>
           </div>
@@ -492,7 +568,10 @@ export function Step2RawData({ nav }: Props) {
                 {preview.dataset.rows.length} sample row
                 {preview.dataset.rows.length === 1 ? '' : 's'}
               </p>
-              <RawReadingsTable dataset={preview.dataset} />
+              <RawReadingsTable
+                dataset={preview.dataset}
+                ignoreTags={constantTags}
+              />
             </div>
           ) : null}
         </div>
@@ -538,7 +617,7 @@ export function Step2RawData({ nav }: Props) {
                 {raw.rows.length === 1 ? '' : 's'} from{' '}
                 {fetch.detail.completedTags}/{fetch.detail.totalTags} tags
               </p>
-              <RawReadingsTable dataset={raw} />
+              <RawReadingsTable dataset={raw} ignoreTags={constantTags} />
             </div>
           )}
         </div>
@@ -567,10 +646,21 @@ export function Step2RawData({ nav }: Props) {
               Cancel
             </Button>
           </div>
-          <Progress value={fetch.progress} />
+          {/* Progress is a generated shadcn component — composed around, never
+              edited. The clock sits on the same row so elapsed time reads as
+              part of the bar. */}
+          <div className="flex items-center gap-3">
+            <Progress value={shownProgress} className="flex-1" />
+            {fetch.detail.startedAt !== null && (
+              <FetchElapsed startedAt={fetch.detail.startedAt} />
+            )}
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {Math.round(shownProgress)}%
+            </span>
+          </div>
           {/* Show partial rows as batches land; skeleton only before the first. */}
           {raw.rows.length > 0 ? (
-            <RawReadingsTable dataset={raw} />
+            <RawReadingsTable dataset={raw} ignoreTags={constantTags} />
           ) : (
             <div className="space-y-2">
               {Array.from({ length: 4 }).map((_, i) => (
@@ -589,6 +679,20 @@ export function Step2RawData({ nav }: Props) {
                 <p className="text-sm font-medium text-foreground">
                   Dataset ready
                 </p>
+                {/* Frozen total for the run. Both stamps are required: edit
+                    mode hydrates status 'done' with no progress detail, and
+                    that must render nothing rather than "00:00:00". */}
+                {fetch.detail.startedAt !== null &&
+                  fetch.detail.finishedAt !== null && (
+                    <span className="text-xs text-muted-foreground">
+                      Fetched in{' '}
+                      <span className="font-mono tabular-nums">
+                        {formatElapsed(
+                          fetch.detail.finishedAt - fetch.detail.startedAt,
+                        )}
+                      </span>
+                    </span>
+                  )}
               </div>
               <Button
                 size="sm"
@@ -601,6 +705,13 @@ export function Step2RawData({ nav }: Props) {
                 Download CSV
               </Button>
             </div>
+
+            {bronzeWarmState === 'materializing' && (
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Still preparing this dataset in the background — Step 3.1 will
+                show a loading state until it’s ready.
+              </p>
+            )}
 
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
               <div>

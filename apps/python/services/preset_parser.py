@@ -47,6 +47,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
+from services.range_parser import ParsedRange, parse_range, range_parse_warning
+
 #: A plant tag: leading letter, then name characters that MAY include a slash,
 #: terminated by a dot-suffix. The dot is what stops the match, which is what
 #: keeps `FIC226.PV/FIC227.PV` from collapsing into one token.
@@ -89,6 +91,8 @@ class PresetFeature:
     formula: str | None
     description: str
     range: str
+    #: `range` resolved to a numeric bound. DS-LAKE-020-T02.
+    range_parsed: ParsedRange
     relation: str
     required_base_tags: tuple[str, ...]
     #: Non-fatal ambiguities a human should confirm.
@@ -350,15 +354,23 @@ def _build_feature(
         name = _unique_name(base, taken)
         formula = expression
 
+    range_text = _cell(frame, row, columns.get("range"))
+    range_parsed = parse_range(range_text)
+    warnings = _tag_warnings(tags)
+    range_warning = range_parse_warning(range_parsed)
+    if range_warning is not None:
+        warnings = warnings + (range_warning,)
+
     return PresetFeature(
         type=kind,
         name=name,
         formula=formula,
         description=description,
-        range=_cell(frame, row, columns.get("range")),
+        range=range_text,
+        range_parsed=range_parsed,
         relation=_cell(frame, row, columns.get("relation")),
         required_base_tags=tuple(tags),
-        parse_warnings=_tag_warnings(tags),
+        parse_warnings=warnings,
     )
 
 
@@ -549,7 +561,21 @@ def parse_workbook(
 # ---------------------------------------------------------------------------
 
 #: Bumped when a stored document changes in a way a reader must know about.
-SCHEMA_VERSION = 1
+#: 2 (DS-LAKE-020-T02): added `range_parsed`. Nothing in the repo branches on
+#: this value; a stored v1 document simply lacks the field, and the client
+#: treats its absence as "re-import this preset to enable range cutoffs"
+#: rather than re-parsing `range` itself.
+SCHEMA_VERSION = 2
+
+
+def _range_parsed_document(parsed: ParsedRange) -> dict[str, Any]:
+    return {
+        "kind": parsed.kind,
+        "min": parsed.min,
+        "max": parsed.max,
+        "unit": parsed.unit,
+        "raw": parsed.raw,
+    }
 
 
 def _feature_document(feature: PresetFeature) -> dict[str, Any]:
@@ -559,6 +585,7 @@ def _feature_document(feature: PresetFeature) -> dict[str, Any]:
         "formula": feature.formula,
         "description": feature.description,
         "range": feature.range,
+        "range_parsed": _range_parsed_document(feature.range_parsed),
         "relation": feature.relation,
         "required_base_tags": list(feature.required_base_tags),
         "parse_warnings": list(feature.parse_warnings),

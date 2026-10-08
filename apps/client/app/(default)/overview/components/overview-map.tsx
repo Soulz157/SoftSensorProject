@@ -8,7 +8,7 @@ import {
   computeLayoutBoundingBox,
 } from '@/lib/isomatric'
 import type { ZoneItem } from '@/lib/isomatric'
-import { PlantTower } from './overview-tower'
+import { PlantTower, PlantNameBadge, DEFAULT_SQUASH } from './overview-tower'
 import { OverviewHoverCard } from './overview-hover-card'
 import type { CanvasNode } from '@/services/canvas'
 import type { Workspace } from '@/types'
@@ -17,7 +17,6 @@ import {
   type BinaryStatus,
   BINARY_STATUS_META,
   deriveStatus,
-  deriveSystemStatus,
 } from '@/lib/overview-status'
 import { useMapViewport } from '@/hooks/canvas/use-map-viewport'
 import { failedDeploys } from '@/lib/model-status'
@@ -29,6 +28,28 @@ const CX = VIEWPORT_W / 2
 const CY = VIEWPORT_H / 2 - 20
 
 const FLOOR_EDGE_LAYERS = 10
+const ZONE_SPREAD = 1
+const FLOOR_SCALE = 0.69
+
+function pathSquash(d: string | undefined): number | null {
+  if (!d) return null
+  const nums = d.match(/-?\d+(?:\.\d+)?/g)?.map(Number)
+  if (!nums || nums.length < 8) return null
+  let minX = Infinity,
+    maxX = -Infinity,
+    minY = Infinity,
+    maxY = -Infinity
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    const x = nums[i]!,
+      y = nums[i + 1]!
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  const w = maxX - minX
+  return w > 0 ? (maxY - minY) / w : null
+}
 
 interface PlantsMapProps {
   workspaces: Workspace[]
@@ -39,6 +60,7 @@ interface PlantsMapProps {
   highlightedIds?: Set<string>
   failedDeploysByWorkspace?: Record<string, number>
   failedByNodeId?: Record<string, number>
+  abnormalNodeIds?: Set<string>
 }
 
 export function PlantsMap({
@@ -50,6 +72,7 @@ export function PlantsMap({
   highlightedIds,
   failedDeploysByWorkspace,
   failedByNodeId,
+  abnormalNodeIds,
 }: PlantsMapProps) {
   const { resolvedTheme, setTheme } = useTheme()
   const isDark = resolvedTheme !== 'light'
@@ -64,8 +87,23 @@ export function PlantsMap({
     return calculateIsometricLayout(zones, emptyMap, CX, CY)
   }, [zones])
 
+  const floorSquash = useMemo(
+    () => pathSquash(layoutData[0]?.floorPath) ?? DEFAULT_SQUASH,
+    [layoutData],
+  )
+  const spread = useMemo(
+    () =>
+      layoutData.map(d => ({
+        ...d,
+        dx: (d.labelX - CX) * (ZONE_SPREAD - 1),
+        dy: (d.labelY - CY) * (ZONE_SPREAD - 1),
+      })),
+    [layoutData],
+  )
+
   const vb = useMemo(
-    () => computeLayoutBoundingBox(layoutData, 160, 60),
+    () =>
+      computeLayoutBoundingBox(layoutData, 160 * ZONE_SPREAD, 60 * ZONE_SPREAD),
     [layoutData],
   )
   const vbCX = vb.x + vb.w / 2
@@ -90,26 +128,19 @@ export function PlantsMap({
     ? { bg: 'radial-gradient(ellipse at 50% 40%, #0e1520 0%, #080a0f 80%)' }
     : { bg: 'radial-gradient(ellipse at 50% 40%, #f0f4f8 0%, #dce8f0 80%)' }
 
-  const {
-    totalAlarms,
-    totalWarnings: nodeWarnings,
-    hasOffline,
-  } = useMemo(() => deriveSystemStatus(nodesByWorkspace), [nodesByWorkspace])
-
   const { data: hoveredModelsRaw } = useModels(hoveredId ?? '')
   const hoveredFailedCount = failedDeploys(hoveredModelsRaw ?? []).length
 
-  const overallBinary: BinaryStatus =
-    totalAlarms > 0 || hasOffline || nodeWarnings > 0 ? 'abnormal' : 'normal'
+  const totalAbnormal = abnormalNodeIds?.size ?? 0
+  // MODEL-SERVE-024-D02: Abnormal only for an alerting node or an abnormal
+  // model (`abnormalNodeIds`). Offline equipment no longer turns it red.
+  const overallBinary: BinaryStatus = totalAbnormal > 0 ? 'abnormal' : 'normal'
   const overallColor = BINARY_STATUS_META[overallBinary].color
   const overallTextColor = isDark
     ? overallColor
     : overallBinary === 'abnormal'
       ? '#dc2626'
       : '#15803d'
-  const totalAbnormal = Object.values(nodesByWorkspace)
-    .flat()
-    .filter(n => (n.data.status as NodeStatus) !== 'normal').length
   const abnormalText = isDark ? '#f87171' : '#dc2626'
   // const failedText = isDark ? '#fbbf24' : '#b45309'
 
@@ -325,19 +356,16 @@ export function PlantsMap({
         {...svgHandlers}
       >
         <g transform={groupTransform}>
-          {layoutData.map(({ zone, floorPath, labelX, labelY }) => {
+          {spread.map(({ zone, floorPath, labelX, labelY, dx, dy }) => {
             const ws = workspaces.find(w => w.id === zone.id)
             if (!ws) return null
             const nodes = nodesByWorkspace[ws.id] ?? []
             const nodeStatus =
               (ws.status as NodeStatus | undefined) ?? deriveStatus(nodes)
+            // MODEL-SERVE-024-D02: an abnormal model (failed deploy or
+            // monitoring ALERT) makes the workspace Abnormal, i.e. 'alarm'.
             const failedCount = failedDeploysByWorkspace?.[ws.id] ?? 0
-            const status: NodeStatus =
-              failedCount > 0 &&
-              nodeStatus !== 'alarm' &&
-              nodeStatus !== 'offline'
-                ? 'warning'
-                : nodeStatus
+            const status: NodeStatus = failedCount > 0 ? 'alarm' : nodeStatus
             const isSelected = selectedWorkspaceId === ws.id
             const isHovered = hoveredId === ws.id
             const isFiltered =
@@ -346,59 +374,64 @@ export function PlantsMap({
             return (
               <g
                 key={ws.id}
+                transform={`translate(${dx}, ${dy})`}
                 style={{
                   opacity: isFiltered ? 0.12 : 1,
                   transition: 'opacity 0.25s ease',
                   pointerEvents: isFiltered ? 'none' : 'auto',
                 }}
               >
-                {Array.from({ length: FLOOR_EDGE_LAYERS }).map((_, i) => (
-                  <path
-                    key={`edge-${i}`}
-                    d={floorPath}
-                    className={cn(
-                      'transition-colors duration-200',
-                      'fill-zinc-200 stroke-zinc-300',
-                      'dark:fill-zinc-900 dark:stroke-zinc-700',
-                      (isSelected || isHovered) &&
-                        'fill-zinc-300 dark:fill-zinc-800',
-                    )}
-                    strokeWidth={0.5}
-                    transform={`translate(0,${i + 1})`}
-                  />
-                ))}
+                <g
+                  transform={`translate(${labelX}, ${labelY}) scale(${FLOOR_SCALE}) translate(${-labelX}, ${-labelY})`}
+                >
+                  {Array.from({ length: FLOOR_EDGE_LAYERS }).map((_, i) => (
+                    <path
+                      key={`edge-${i}`}
+                      d={floorPath}
+                      className={cn(
+                        'transition-colors duration-200',
+                        'fill-zinc-200 stroke-zinc-300',
+                        'dark:fill-zinc-900 dark:stroke-zinc-700',
+                        (isSelected || isHovered) &&
+                          'fill-zinc-300 dark:fill-zinc-800',
+                      )}
+                      strokeWidth={0.5}
+                      transform={`translate(0,${i + 1})`}
+                    />
+                  ))}
 
-                {/* Floor top face */}
-                <path
-                  d={floorPath}
-                  strokeWidth={isSelected || isHovered ? 2 : 1.2}
-                  strokeDasharray={isSelected ? undefined : '8,5'}
-                  className={cn(
-                    'cursor-pointer transition-colors duration-200',
-                    'fill-zinc-100 stroke-zinc-300 hover:fill-zinc-200',
-                    'dark:fill-zinc-800 dark:stroke-zinc-600 dark:hover:fill-zinc-700',
-                    isSelected &&
-                      'fill-zinc-200 stroke-zinc-500 dark:fill-zinc-700 dark:stroke-zinc-400',
-                  )}
-                  onMouseEnter={() => !isDragging && setHoveredId(ws.id)}
-                  onMouseLeave={handleTowerLeave}
-                  onClick={() => !isDragging && onWorkspaceClick(ws.id)}
-                  onDoubleClick={() =>
-                    !isDragging && onWorkspaceDoubleClick(ws.id)
-                  }
-                />
+                  {/* Floor top face */}
+                  <path
+                    d={floorPath}
+                    strokeWidth={isSelected || isHovered ? 2 : 1.2}
+                    strokeDasharray={isSelected ? undefined : '8,5'}
+                    className={cn(
+                      'cursor-pointer transition-colors duration-200',
+                      'fill-zinc-100 stroke-zinc-300 hover:fill-zinc-200',
+                      'dark:fill-zinc-800 dark:stroke-zinc-600 dark:hover:fill-zinc-700',
+                      isSelected &&
+                        'fill-zinc-200 stroke-zinc-500 dark:fill-zinc-700 dark:stroke-zinc-400',
+                    )}
+                    onMouseEnter={() => !isDragging && setHoveredId(ws.id)}
+                    onMouseLeave={handleTowerLeave}
+                    onClick={() => !isDragging && onWorkspaceClick(ws.id)}
+                    onDoubleClick={() =>
+                      !isDragging && onWorkspaceDoubleClick(ws.id)
+                    }
+                  />
+                </g>
 
                 {/* Tower */}
                 <PlantTower
                   cx={labelX}
-                  cy={labelY - 30}
+                  cy={labelY - 10}
+                  squash={floorSquash}
+                  showBadge={false}
                   nodeCount={ws.nodeCount ?? nodes.length}
                   status={status}
                   nodeStatuses={nodes.map(n => {
                     const base = n.data.status as NodeStatus
-                    return (failedByNodeId?.[n.id] ?? 0) > 0 && base !== 'alarm'
-                      ? 'warning'
-                      : base
+                    return (failedByNodeId?.[n.id] ?? 0) > 0 ? 'alarm' : base
                   })}
                   workspaceColor={ws.color ?? 'blue'}
                   name={ws.name}
@@ -410,6 +443,45 @@ export function PlantsMap({
                   onDoubleClick={() =>
                     !isDragging && onWorkspaceDoubleClick(ws.id)
                   }
+                />
+              </g>
+            )
+          })}
+          {/* Badge layer — บนสุดเสมอ */}
+          {spread.map(({ zone, labelX, labelY, dx, dy }) => {
+            const ws = workspaces.find(w => w.id === zone.id)
+            if (!ws) return null
+            const nodes = nodesByWorkspace[ws.id] ?? []
+            const nodeStatus =
+              (ws.status as NodeStatus | undefined) ?? deriveStatus(nodes)
+            // MODEL-SERVE-024-D02: an abnormal model (failed deploy or
+            // monitoring ALERT) makes the workspace Abnormal, i.e. 'alarm'.
+            const failedCount = failedDeploysByWorkspace?.[ws.id] ?? 0
+            const status: NodeStatus = failedCount > 0 ? 'alarm' : nodeStatus
+            const isFiltered =
+              highlightedIds !== undefined && !highlightedIds.has(ws.id)
+
+            return (
+              <g
+                key={`badge-${ws.id}`}
+                transform={`translate(${dx}, ${dy})`}
+                style={{
+                  opacity: isFiltered ? 0.12 : 1,
+                  transition: 'opacity 0.25s ease',
+                  pointerEvents: 'none',
+                }}
+              >
+                <PlantNameBadge
+                  cx={labelX}
+                  cy={labelY - 30}
+                  status={status}
+                  nodeStatuses={nodes.map(n => {
+                    const base = n.data.status as NodeStatus
+                    return (failedByNodeId?.[n.id] ?? 0) > 0 ? 'alarm' : base
+                  })}
+                  name={ws.name}
+                  isDark={isDark}
+                  squash={floorSquash}
                 />
               </g>
             )

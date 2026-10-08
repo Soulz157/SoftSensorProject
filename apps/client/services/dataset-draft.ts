@@ -2,6 +2,7 @@ import { fetchClient } from '@/lib/fetcher'
 import type { DataRow, ScalerMethod } from '@/lib/preprocessing'
 import type { FeatureConfig } from '@/lib/feature-engineering'
 import type { PipelineConfig } from '@/lib/pipeline-config'
+import { timeQuery } from '@/lib/time-window'
 import type {
   CleaningOperationInput,
   CreateRawVersionInput,
@@ -27,6 +28,14 @@ interface ApiResponse<T> {
 
 export type DatasetDraftStatus = 'ACTIVE' | 'SAVED' | 'ABANDONED'
 
+/** Pipeline stage of a `DatasetArtifact` row — BRONZE (raw fetch) through
+ * FINAL (adopted at Save). Named here because it is the artifact's own
+ * identity, not draft- or dataset-specific; `SavedDataset.currentArtifactType`
+ * (`store/datasets.ts`) and `VersionRowsState.stage`
+ * (`hooks/dataset/use-dataset-version-rows.ts`) both reuse it rather than
+ * declaring a second copy of the same four literals. */
+export type DatasetArtifactStage = 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+
 export interface DatasetDraft {
   id: string
   name: string | null
@@ -35,14 +44,40 @@ export interface DatasetDraft {
   status: DatasetDraftStatus
   currentArtifactId: string | null
   savedDatasetId: string | null
+  // DS-LAKE-024. Set for a draft opened by editing an existing saved
+  // Dataset (`resolveOrCreateForDataset`'s own response); null for a
+  // create-mode draft.
+  editingDatasetId: string | null
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * DS-LAKE-024-T04. `resolveOrCreateForDataset`'s own response shape —
+ * `rootValidationRowCount` is the edit draft's root BRONZE's own
+ * `validationRowCount` (null = pristine, safe to re-split; non-null =
+ * already split at materialize time). Not on `DatasetDraft` itself: the
+ * other four endpoints that return one (create/get/abandon/touch) have no
+ * edit-draft root to report this about.
+ */
+export interface EditDraftResolution extends DatasetDraft {
+  rootValidationRowCount: number | null
+  /**
+   * DS-LAKE-027. True when the server found this draft's `currentArtifactId`
+   * pointing at an artifact whose bytes were reclaimed (DS-LAKE-014's idle
+   * sweep, working as designed) and re-pointed it at the draft's own live
+   * BRONZE root. The id in `currentArtifactId` is the recovered one, so
+   * nothing downstream needs to branch on this — it exists only so the
+   * wizard can say WHY the feature-engineering result the user left behind
+   * is no longer there and is about to be recomputed.
+   */
+  recoveredFromReclaimedArtifact: boolean
 }
 
 export interface DraftArtifact {
   id: string
   runId: string
-  type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+  type: DatasetArtifactStage
   checksum: string
   rowCount: number
   columnCount: number
@@ -65,7 +100,7 @@ export interface SavedDataset {
   qualityScore: number
   lineage: Array<{
     id: string
-    type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+    type: DatasetArtifactStage
     checksum: string
     objectKey: string
   }>
@@ -81,6 +116,10 @@ export interface ValidationCheck {
   measured: number | null
   threshold: number | null
   offenders: string[]
+  /** DS-LAKE-019-T03. A property of the check's NAME (validation_service
+   * .BLOCKING_CHECKS), not a per-result judgment — mirrored, never
+   * re-derived client-side. */
+  severity: 'blocking' | 'advisory'
 }
 
 /** Mirrors apps/python `schemas.preprocess.ValidationReportResponse`
@@ -90,6 +129,9 @@ export interface ValidationReport {
   quality_score: number
   checks: ValidationCheck[]
   failed_checks: string[]
+  /** DS-LAKE-019-T03. Failed checks that did NOT flip `status` to FAIL —
+   * a strict subset of `failed_checks`. */
+  advisory_failures: string[]
   validation_report_key: string
 }
 
@@ -230,6 +272,9 @@ export interface DraftBoxplotResult {
 export interface DraftScatterPoint {
   x: number
   y: number
+  /** DS-LAKE-034. Naive wall-clock time of the reading; absent from older
+   * responses. */
+  t?: string
 }
 
 /**
@@ -289,7 +334,7 @@ export interface DraftCorrelationResult {
 export interface DraftArtifactMetadata {
   id: string
   runId: string
-  type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+  type: DatasetArtifactStage
   parentArtifactId: string | null
   checksum: string
   rowCount: number
@@ -317,8 +362,30 @@ export const datasetDraftService = {
   get: (draftId: string): Promise<ApiResponse<DatasetDraft>> =>
     fetchClient(one(draftId), { method: 'GET' }),
 
+  /**
+   * DS-LAKE-024-T02. Resolve-or-create the edit-mode draft for a saved
+   * Dataset — idempotent on re-entry (200 if an ACTIVE draft already
+   * exists, 201 if one was just minted from the dataset's adopted BRONZE).
+   * Never re-materializes from the source.
+   */
+  resolveOrCreateForDataset: (
+    datasetId: string,
+  ): Promise<ApiResponse<EditDraftResolution>> =>
+    fetchClient(`${base}/for-dataset/${encodeURIComponent(datasetId)}`, {
+      method: 'POST',
+    }),
+
   abandon: (draftId: string): Promise<ApiResponse<DatasetDraft>> =>
     fetchClient(`${one(draftId)}/abandon`, { method: 'POST' }),
+
+  /**
+   * DS-LAKE-014-T04: heartbeat. Bumps the draft's updatedAt while it is
+   * ACTIVE; a no-op once SAVED/ABANDONED. Called by
+   * `useDatasetDraftHeartbeat` — see that hook for the visibility-gated
+   * cadence.
+   */
+  touch: (draftId: string): Promise<ApiResponse<{ touched: boolean }>> =>
+    fetchClient(`${one(draftId)}/touch`, { method: 'POST' }),
 
   /** Materialize the draft's BRONZE artifact. Runs inline; can take minutes. */
   materialize: (
@@ -326,6 +393,23 @@ export const datasetDraftService = {
     body: CreateRawVersionInput,
   ): Promise<ApiResponse<DraftArtifact>> =>
     fetchClient(`${one(draftId)}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * DS-LAKE-018-T06. Re-splits the draft's PRISTINE (never-split) root
+   * BRONZE against a new holdout window, without re-fetching from the
+   * source. `holdout: null` clears a previously-picked holdout — the
+   * server points the draft back at its pristine artifact without calling
+   * Python. Refuses (422) if the draft's resolved root was already split
+   * at fetch time (a legacy artifact from before this task).
+   */
+  resplitHoldout: (
+    draftId: string,
+    body: { holdout: { from: string; to: string } | null },
+  ): Promise<ApiResponse<DraftArtifact>> =>
+    fetchClient(`${one(draftId)}/holdout`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -446,14 +530,23 @@ export const datasetDraftService = {
       { method: 'POST', body: JSON.stringify(body), signal },
     ),
 
+  /** No `tags` here — this leg has always read every column of the artifact,
+   * and adding a projection would turn a tag the draft no longer carries into
+   * a 422. `startTime`/`endTime` are inclusive and applied before paging. */
   rows: (
     draftId: string,
     artifactId: string,
-    params: { offset: number; limit: number },
+    params: {
+      offset: number
+      limit: number
+      startTime?: string
+      endTime?: string
+    },
   ): Promise<ApiResponse<DraftRowsPage>> =>
     fetchClient(
       `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/rows` +
-        `?offset=${params.offset}&limit=${params.limit}`,
+        `?offset=${params.offset}&limit=${params.limit}` +
+        timeQuery(params),
       { method: 'GET' },
     ),
 
@@ -477,6 +570,17 @@ export const datasetDraftService = {
     body: {
       operations: CleaningOperationInput[]
       precision?: Record<string, number>
+      /** DS-LAKE-022-T04..T07. Present ONLY from the reordered wizard: the
+       * feature recipe whose scaling tail runs after these cleaning ops,
+       * committing GOLD (pipelineVersion 2) instead of SILVER. The server
+       * refuses (422) unless `artifactId` was produced by a reordered
+       * FEATURE job (pipelineVersion 2). */
+      scaleRecipe?: {
+        features: FeatureConfig[]
+        selectedColumns?: string[] | null
+        scalers?: Record<string, ScalerMethod>
+        targetY?: string | null
+      }
     },
   ): Promise<ApiResponse<{ jobId: string; status: PreprocessingJobStatus }>> =>
     fetchClient(
@@ -495,6 +599,7 @@ export const datasetDraftService = {
       features: FeatureConfig[]
       selectedColumns?: string[] | null
       scalers?: Record<string, ScalerMethod>
+      targetY?: string | null
     },
   ): Promise<ApiResponse<DraftArtifact>> =>
     fetchClient(
@@ -512,6 +617,11 @@ export const datasetDraftService = {
       features: FeatureConfig[]
       selectedColumns?: string[] | null
       scalers?: Record<string, ScalerMethod>
+      targetY?: string | null
+      /** DS-LAKE-022-T04..T07. `false` = reordered wizard's feature-only
+       * stage (no scaling, no feature_spec.json — commits SILVER). Omitted
+       * = legacy combined write, unchanged. */
+      scale?: boolean
     },
   ): Promise<ApiResponse<{ jobId: string; status: PreprocessingJobStatus }>> =>
     fetchClient(

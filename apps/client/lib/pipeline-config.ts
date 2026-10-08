@@ -32,6 +32,15 @@ import type { CustomDateRange } from '@/store/data-visualize'
 export interface PipelineConfig {
   timeRange: FetchPeriod
   customDateRange: CustomDateRange | null
+  /**
+   * DS-LAKE-018-T01: the raw validation holdout window, selected beside
+   * `customDateRange` at Step 2. Optional and nullable (not just nullable):
+   * absent entirely on every recipe saved before this field existed, and
+   * legitimately null on any recipe that opted out of a holdout. Both
+   * collapse to "no holdout" — a dataset with neither behaves exactly as
+   * today (acceptance criterion). T03 reads this to split BRONZE.
+   */
+  holdoutDateRange?: CustomDateRange | null
   customInterval: CustomInterval | null
   sourceFetchConfigs: Record<string, DataSourceConfig>
   features: FeatureConfig[]

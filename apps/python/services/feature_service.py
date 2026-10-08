@@ -73,39 +73,36 @@ from intergrations.object_store import (
     status_column,
     tag_columns,
 )
-from services.cleaning_service import _median_sorted, _round_to
 from services.formula_service import compile_formula, eval_formula_row
+from softsensor_scaling import (
+    DEFAULT_SCALER,
+    FeatureError,
+    _scale_column,
+    _welford_population_std,
+    feature_column_name,
+    to_model_ready,
+)
 
-DEFAULT_SCALER = "minmax"
-
-
-class FeatureError(ValueError):
-    """Invalid feature config or scaler, safe to surface to the caller."""
+# MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+# DEFAULT_SCALER/FeatureError/_scale_column/_welford_population_std/
+# to_model_ready moved to softsensor_scaling (imported above) so
+# apps/serving can apply the same fitted transform at predict time without
+# importing this module's feature-engineering code (apply_features,
+# select_columns, formula compilation), which serving never runs — see
+# that decision and MODEL-SERVE-002's "Contract boundary" note. Re-imported
+# here under their original names so every existing caller in this file
+# and elsewhere in apps/python (`from services.feature_service import
+# to_model_ready`, etc.) is unchanged.
 
 
 # ── column naming, matching featureColumnName exactly ────────────────────
-
-
-def feature_column_name(cfg: Mapping[str, Any]) -> str:
-    kind = cfg.get("kind")
-    if kind == "lag":
-        return f"{cfg['tag']}__lag{cfg['k']}"
-    if kind == "rolling":
-        return f"{cfg['tag']}__roll{cfg['window']}_{cfg['agg']}"
-    if kind == "ratio":
-        return "__over__".join(cfg["tags"])
-    if kind == "delta":
-        return f"{cfg['tag']}__delta"
-    if kind == "arith":
-        return f"__{cfg['op']}__".join(cfg["tags"])
-    if kind == "log":
-        return f"{cfg['tag']}__log"
-    if kind == "datetime":
-        return f"__dt_{cfg['part']}"
-    if kind == "formula":
-        name = (cfg.get("name") or "").strip()
-        return name or cfg["expr"]
-    raise FeatureError(f"Unknown feature kind {kind!r}")
+#
+# MODEL-SERVE-002-T06: `feature_column_name` moved to
+# softsensor_scaling.features (imported above under its original name, so
+# every caller here and elsewhere in apps/python is unchanged). It moved
+# because `max_replay_lookback` needs it and BOTH are now read by
+# apps/serving to tell a /predict caller how much target history a recipe
+# needs — see that module's own docstring.
 
 
 # ── value/status helpers ──────────────────────────────────────────────────
@@ -388,76 +385,12 @@ def select_columns(df: pd.DataFrame, kept: list[str] | None) -> pd.DataFrame:
 
 
 # ── scaling (toModelReady) ────────────────────────────────────────────────
-
-
-def _welford_population_std(values: list[float]) -> tuple[float, float]:
-    """Mean and POPULATION std (`/n`) via Welford's online algorithm.
-
-    Iterates `values` in the order given — callers MUST pass row order, not
-    a numpy-vectorised reduction, so float results match `toModelReady`'s
-    own row-by-row accumulation bit-for-bit rather than merely numerically.
-    """
-    n = 0
-    mean = 0.0
-    m2 = 0.0
-    for v in values:
-        n += 1
-        d = v - mean
-        mean += d / n
-        m2 += d * (v - mean)
-    std = math.sqrt(m2 / n) if n > 0 else 0.0
-    return mean, std
-
-
-def _scale_column(values: np.ndarray, method: str) -> np.ndarray:
-    """Transform one tag's dense values array (`scaleColumn`/`toModelReady` body).
-
-    Every branch here already ran once for its own float; a caller that
-    determines the whole column should be left untouched (the `robust`,
-    zero-finite-values case) must check for that itself and skip calling
-    this at all — this function unconditionally returns a transformed array.
-    """
-    finite_mask = np.isfinite(values)
-
-    if method == "none":
-        return np.array([_round_to(v, 3) for v in values])
-
-    if method == "minmax":
-        finite = values[finite_mask]
-        if finite.size == 0:
-            lo, span = 0.0, 0.0
-        else:
-            lo = float(finite.min())
-            span = float(finite.max()) - lo
-        return np.array(
-            [0.0 if span == 0 else _round_to(
-                (v - lo) / span, 3) for v in values]
-        )
-
-    if method == "standard":
-        # Row order matters — see _welford_population_std's own docstring.
-        finite_in_order = [float(v) for v in values if np.isfinite(v)]
-        mean, std = _welford_population_std(finite_in_order)
-        return np.array(
-            [0.0 if std == 0 else _round_to(
-                (v - mean) / std, 3) for v in values]
-        )
-
-    if method == "robust":
-        finite_sorted = sorted(float(v) for v in values if np.isfinite(v))
-        k = len(finite_sorted)
-        if k == 0:
-            return values.copy()  # caller: skip entirely, do not force Good
-        med = _median_sorted(finite_sorted)
-        upper = _median_sorted(finite_sorted[math.ceil(k / 2):])
-        lower = _median_sorted(finite_sorted[: math.floor(k / 2)])
-        iqr = upper - lower
-        return np.array(
-            [0.0 if iqr == 0 else _round_to(
-                (v - med) / iqr, 3) for v in values]
-        )
-
-    raise FeatureError(f"Unknown scaler {method!r}")
+#
+# MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+# _welford_population_std, _scale_column and to_model_ready moved to
+# softsensor_scaling (imported above) and are re-exported under their
+# original names, so `assert_target_is_unscaled`/`force_keep_target` below
+# and every external caller of `to_model_ready` are unchanged.
 
 
 def assert_target_is_unscaled(target_y: str | None, scalers: dict[str, str]) -> None:
@@ -489,33 +422,48 @@ def force_keep_target(selected: list[str] | None, target_y: str | None) -> list[
     return selected if target_y in selected else [*selected, target_y]
 
 
-def to_model_ready(
-    df: pd.DataFrame, tags: list[str], scalers: Mapping[str, str]
-) -> pd.DataFrame:
-    """Scale every tag column and force its status to Good (`toModelReady`).
+def drop_bad_feature_rows(
+    df: pd.DataFrame,
+    tags: list[str],
+    *,
+    exclude: str | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """DS-LAKE-023-T05. Row-level exclusion, meant to run BEFORE
+    `to_model_ready` — never after.
 
-    Every FINITE value is scaled regardless of its ORIGINAL status — a Bad
-    cell holding a real number is scaled and marked Good, same as the
-    browser. `robust` is the one exception: a tag with zero finite values is
-    left byte-identical (values AND status), matching the TS `if (k === 0)
-    continue` that skips before the status-forcing loop even runs.
+    `to_model_ready`'s own docstring already states the trap: it scales
+    every FINITE value regardless of its ORIGINAL status and always forces
+    Good afterward, so "a Bad cell holding a real (non-hole) number is
+    silently laundered to Good by scaling." A rolling(60) column with one
+    short sensor dropout in its window produces up to 60 Bad derived cells
+    (`_compute_feature_column`'s own "rolling needs a FULL window" rule);
+    left in place, `to_model_ready` turns every one of them into a scaled,
+    Good-stamped 0.0 that `predict()`/training treat as a real observation
+    with no trace of the substitution. There is no later point this can be
+    caught — once `to_model_ready` has run, the evidence (the Bad status)
+    is gone.
+
+    Drops any row where at least one KEPT tag's OWN status column reads
+    other than `STATUS_GOOD`. `exclude` (normally `target_y`) is skipped
+    deliberately — a non-Good TARGET row is a DIFFERENT failure mode
+    (`train.py`'s `labelled_mask`, D4/DS-LAKE-023-T03) already excluded on
+    the scoring side; checking it again here would double-count the same
+    row under two different reasons, and this function is never even told
+    whether the target is scaled — it has no business deciding its fate.
+    Tags with no status column (a legacy artifact, or a column this frame
+    never carried) are silently skipped, matching `to_model_ready`'s own
+    `if tag not in out.columns: continue`.
     """
-    out = df.copy()
+    mask = pd.Series(True, index=df.index)
     for tag in tags:
-        if tag not in out.columns:
+        if tag == exclude:
             continue
-        method = scalers.get(tag, DEFAULT_SCALER)
-        values = out[tag].to_numpy(dtype="float64")
-
-        if method == "robust" and not np.isfinite(values).any():
-            continue  # column left exactly as-is, status untouched
-
-        scaled = _scale_column(values, method)
-        out[tag] = scaled
-        out[status_column(tag)] = pd.array(
-            np.full(len(out), STATUS_GOOD, dtype="int8"), dtype="int8"
-        )
-    return out
+        status_col = status_column(tag)
+        if status_col not in df.columns:
+            continue
+        mask &= df[status_col] == STATUS_GOOD
+    dropped = int((~mask).sum())
+    return df.loc[mask].reset_index(drop=True), dropped
 
 
 # ── fixture replay (packages/parity-fixtures) ─────────────────────────────
@@ -530,7 +478,10 @@ def apply_fixture_case(
     if engine == "selectColumns":
         return select_columns(frame, config.get("kept"))
     if engine == "toModelReady":
-        return to_model_ready(frame, tag_columns(frame), config.get("scalers", {}))
+        # Fixture replay only checks the frame — the fitted params this
+        # returns are not part of any fixture's expected shape.
+        result, _ = to_model_ready(frame, tag_columns(frame), config.get("scalers", {}))
+        return result
 
     raise NotImplementedError(
         f"Engine {engine!r} is not implemented in feature_service — it "

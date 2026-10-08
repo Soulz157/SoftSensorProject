@@ -177,6 +177,41 @@ def lttb_indices(
     )
 
 
+def systematic_sample(frame: pd.DataFrame, n: int) -> pd.DataFrame:
+    """MODEL-FLOW-014-T02. Evenly-spaced sample of at most `n` rows spanning
+    the frame's FULL span, not its earliest contiguous slice.
+
+    Replaces `frame.head(n)`, which every chart service (`histogram_service`,
+    `boxplot_service`, `scatter_service`, `correlation_matrix_service`) used
+    to apply after its own time-range filter. On time-ordered data `head()`
+    returns only the window's EARLIEST period — a box/histogram/scatter/
+    correlation computed over that describes a narrower, different
+    population than the one the caller asked for, while looking exactly like
+    the real answer. A box plot summarises a DISTRIBUTION; `head()` on
+    sorted-by-time data samples one contiguous period, a different claim
+    wearing the same shape.
+
+    Always includes the frame's own first and last row (when `n >= 2`) so
+    the sample's timestamp bounds equal the frame's — the property
+    MODEL-FLOW-014-V02 asserts directly, since a row-count-only check would
+    pass unchanged against the old `head()` behaviour.
+    """
+    total = len(frame)
+    if total <= n:
+        return frame
+    if n <= 0:
+        return frame.iloc[0:0]
+    if n == 1:
+        return frame.iloc[[0]]
+
+    step = total / n
+    idx = (np.arange(n) * step).astype(np.int64)
+    idx = np.clip(idx, 0, total - 1)
+    idx[-1] = total - 1
+    idx = np.unique(idx)
+    return frame.iloc[idx]
+
+
 @dataclass(frozen=True)
 class GridSampleResult:
     """`indices` are source row positions into the ORIGINAL (x, y) arrays,

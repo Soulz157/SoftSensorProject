@@ -1,16 +1,18 @@
 import { Injectable } from '@nestjs/common';
+import { deriveNodeSummary, type NodeSummary } from '@/lib/node-summary';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
+import { deriveDeployStatuses, overlayDeployStatus } from '@/lib/deploy-status';
 import { writeFile, mkdir } from 'fs/promises';
 import { extname, join } from 'path';
 import type { FastifyRequest } from 'fastify';
 import type {
-  EdgeItemDto,
   GetLogsQueryDto,
   InviteMemberDto,
   UpdateMemberRoleDto,
 } from './dto/workspace.authorized.dto';
 import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
+import { normalizePermissions } from '@/lib/workspace-permission';
 
 @Injectable()
 export class WorkspaceAuthorizedService {
@@ -81,35 +83,8 @@ export class WorkspaceAuthorizedService {
     }
   }
 
-  private deriveNodeSummary(nodes: { data: unknown }[]): {
-    nodeCount: number;
-    alarmCount: number;
-    status: 'normal' | 'warning' | 'alarm' | 'offline';
-  } {
-    const priority: Record<string, number> = {
-      alarm: 3,
-      offline: 2,
-      warning: 1,
-      normal: 0,
-    };
-    const statusMap: Record<
-      number,
-      'normal' | 'warning' | 'alarm' | 'offline'
-    > = { 0: 'normal', 1: 'warning', 2: 'offline', 3: 'alarm' };
-    let worst = 0;
-    let alarmCount = 0;
-    for (const node of nodes) {
-      const data = node.data as Record<string, unknown>;
-      const st = typeof data?.status === 'string' ? data.status : 'normal';
-      if (st !== 'normal') alarmCount++;
-      const p = priority[st] ?? 0;
-      if (p > worst) worst = p;
-    }
-    return {
-      nodeCount: nodes.length,
-      alarmCount,
-      status: statusMap[worst] ?? 'normal',
-    };
+  private deriveNodeSummary(nodes: { data: unknown }[]): NodeSummary {
+    return deriveNodeSummary(nodes);
   }
 
   async getAllWorkspaces(user: Auth.UserPayload) {
@@ -133,13 +108,24 @@ export class WorkspaceAuthorizedService {
         thumbnailUrl: true,
         ownerId: true,
         updatedAt: true,
-        _count: { select: { members: true, models: true } },
+        _count: {
+          select: {
+            members: true,
+            models: true,
+            plans: true,
+            datasets: true,
+          },
+        },
         nodes: { select: { data: true } },
       },
     });
 
-    const data = workspaces.map(({ nodes, ...ws }) => ({
+    const data = workspaces.map(({ nodes, _count, ...ws }) => ({
       ...ws,
+      _count,
+      modelsCount: _count.models,
+      plantsCount: _count.plans,
+      datasetsCount: _count.datasets,
       ...this.deriveNodeSummary(nodes),
     }));
 
@@ -197,11 +183,19 @@ export class WorkspaceAuthorizedService {
       orderBy: { updatedAt: 'desc' },
     });
 
+    // MODEL-SERVE-006-T12. Same derived-deployStatus overlay
+    // getModelsService applies — one batched query, keeping this endpoint's
+    // notion of "is this deployed" consistent with the other model-list
+    // response.
+    const statuses = await deriveDeployStatuses(
+      this.prisma,
+      models.map((m) => m.id),
+    );
     return {
       statusCode: 200,
       message: 'Workspace models fetched successfully',
       type: 'SUCCESS' as const,
-      data: models,
+      data: models.map((m) => overlayDeployStatus(m, statuses[m.id])),
     };
   }
 
@@ -388,7 +382,13 @@ export class WorkspaceAuthorizedService {
 
     const updated = await this.prisma.workspaceMember.update({
       where: { id: memberId },
-      data: { role: dto.role },
+      data: {
+        role: dto.role,
+        permissions: normalizePermissions(
+          dto.role,
+          dto.permissions ?? member.permissions,
+        ),
+      },
       include: {
         user: {
           select: { id: true, firstName: true, lastName: true, email: true },
@@ -401,50 +401,6 @@ export class WorkspaceAuthorizedService {
       message: 'Member role updated',
       type: 'SUCCESS' as const,
       data: updated,
-    };
-  }
-
-  async listEdges(workspaceId: string, userId: string, userRole: string) {
-    await this.assertHasAccess(workspaceId, userId, userRole);
-
-    const edges = await this.prisma.edge.findMany({
-      where: { workspaceId },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    return {
-      statusCode: 200,
-      message: 'Edges fetched successfully',
-      type: 'SUCCESS' as const,
-      data: edges,
-    };
-  }
-
-  async replaceEdges(
-    workspaceId: string,
-    userId: string,
-    userRole: string,
-    edges: EdgeItemDto[],
-  ) {
-    await this.assertHasAccess(workspaceId, userId, userRole);
-
-    await this.prisma.$transaction([
-      this.prisma.edge.deleteMany({ where: { workspaceId } }),
-      this.prisma.edge.createMany({
-        data: edges.map((e) => ({ ...e, workspaceId })),
-      }),
-    ]);
-
-    const result = await this.prisma.edge.findMany({
-      where: { workspaceId },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    return {
-      statusCode: 200,
-      message: 'Edges replaced successfully',
-      type: 'SUCCESS' as const,
-      data: result,
     };
   }
 

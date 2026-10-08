@@ -221,12 +221,8 @@ class DataService:
                 df = await asyncio.to_thread(
                     self._call_pi, chunk, window, cal_basis, summary_type, interval
                 )
-                # print(f"[DEBUG] batch OK window={window}", flush=True)
-                # print(df.to_string(), flush=True)
             except Exception as exc:
                 chunk_error = str(exc) or repr(exc)
-                # print(
-                #     f"[DEBUG] BATCH FAILED window={window}: {chunk_error}", flush=True)
                 # traceback.print_exc()
 
         # tag ที่ยังไม่ได้ข้อมูล: batch พัง หรือ column หายจาก frame ที่สำเร็จ
@@ -275,7 +271,6 @@ class DataService:
         interval_td = parse_interval(interval)
         start = parse_timestamp(body.start_time, "start_time")
         end = parse_timestamp(body.end_time, "end_time")
-        # print(f"fetch:  {start} → {end}, interval={interval_td}")
         if end <= start:
             raise ValueError("end_time must be after start_time.")
 

@@ -27,11 +27,21 @@ import traceback
 from fastapi import APIRouter, Depends, HTTPException
 
 from dependencies import get_object_store
-from intergrations.object_store import ObjectStore, ObjectStoreError
+from intergrations.object_store import (
+    ObjectNotFoundError,
+    ObjectStore,
+    ObjectStoreError,
+)
 from schemas.preprocess import (
+    ArtifactAdoptRequest,
+    ArtifactAdoptResponse,
     ArtifactReclaimRequest,
     ArtifactReclaimResponse,
     ArtifactStatsResponse,
+    CombineForRetrainRequest,
+    CombineForRetrainResponse,
+    DraftRunReclaimRequest,
+    DraftRunReclaimResponse,
     ArtifactPresignRequest,
     ArtifactPresignResponse,
     BoxplotRequest,
@@ -43,32 +53,90 @@ from schemas.preprocess import (
     CleanupResponse,
     ColumnStatsRequest,
     ColumnStatsResponse,
+    FeatureSpecRequest,
+    FeatureSpecResponse,
+    ExportRequest,
+    ExportStatsResponse,
     FeaturesRequest,
     HistogramRequest,
     HistogramResponse,
     MaterializeRequest,
     MetadataRequest,
     MetadataResponse,
+    ModelRunPredictionsRequest,
+    ModelRunPredictionsResponse,
+    RunCvGapResponse,
+    RunPredictionsBatchRequest,
+    RunPredictionsBatchResponse,
+    ModelObjectVerifyRequest,
+    ModelObjectVerifyResponse,
+    RunObjectPresignRequest,
+    RunObjectPresignResponse,
+    PredictionJobUploadPresignRequest,
+    PredictionJobUploadPresignResponse,
+    PredictionJobObjectPresignRequest,
+    PredictionJobObjectPresignResponse,
+    InferenceWindowMaterializeRequest,
+    InferenceWindowMaterializeResponse,
+    InferenceWindowTruthJoinRequest,
+    InferenceWindowTruthJoinResponse,
+    InferenceWindowMetricsSeriesRequest,
+    InferenceWindowMetricsSeriesResponse,
+    InferenceWindowTruthSeriesRequest,
+    InferenceWindowTruthSeriesResponse,
+    InferenceWindowUploadPresignRequest,
+    InferenceWindowUploadPresignResponse,
+    InferenceWindowObjectPresignRequest,
+    InferenceWindowObjectPresignResponse,
+    PredictionLogAppendRequest,
+    PredictionLogAppendResponse,
+    PredictionLogSeriesRequest,
+    PredictionLogSeriesResponse,
     PreviewRequest,
     PreviewResponse,
     CorrelationRequest,
     CorrelationResponse,
+    PassthroughHoldoutForRunRequest,
+    PrepareHoldoutForRunRequest,
+    ReplayHoldoutForRunRequest,
+    ReplayHoldoutRequest,
+    ResplitHoldoutRequest,
+    RunCvFoldsRequest,
+    RunCvFoldsResponse,
+    RunFeatureImportanceRequest,
+    RunFeatureImportanceResponse,
+    RunPermutationImportanceRequest,
+    RunPermutationImportanceResponse,
+    RunLossHistoryRequest,
+    RunLossHistoryResponse,
+    RunManifestRequest,
+    RunManifestResponse,
     RowsRequest,
     RowsResponse,
+    ScaleRequest,
     ScatterRequest,
     ScatterResponse,
+    SplitStatsRequest,
+    SplitStatsResponse,
     TagCatalogRequest,
     TagCatalogResponse,
     ValidateRequest,
     ValidationReportResponse,
 )
-from services import artifact_service
+from services import (
+    artifact_service,
+    ground_truth_service,
+    inference_window_service,
+    prediction_log_service,
+)
 from services.boxplot_service import build_boxplot
 from services.cleaning_service import CleaningError
 from services.correlation_matrix_service import build_correlation_matrix
+from services.export_service import export_artifact_csv
 from services.histogram_service import build_histogram
 from services.preview_service import build_preview
 from services.scatter_service import build_scatter
+from services.split_stats_service import build_split_stats
 
 router = APIRouter(prefix="/v1/preprocess", tags=["Preprocess"])
 
@@ -115,8 +183,23 @@ async def _run(handler, *args):
     except CleaningError as e:
         # Unsupported operation or unknown column — the caller can fix it.
         raise HTTPException(status_code=422, detail=str(e))
+    except ObjectNotFoundError as e:
+        # DS-LAKE-025. The artifact's BYTES ARE GONE — distinct from the
+        # 422 below, which means storage refused an otherwise-valid
+        # operation. Must sit ABOVE that branch: `ObjectNotFoundError`
+        # subclasses `ObjectStoreError`, so the broader `except` would
+        # swallow it if it came first.
+        #
+        # 404 rather than 422 because the caller's request was well-formed
+        # and the remedy is different in kind: nothing about the body can
+        # be corrected, the object has to be re-materialized from the
+        # upstream source. NestJS keys the recovery affordance it shows the
+        # user off this status, so collapsing the two back together would
+        # put a raw MinIO string in front of the user again with no action
+        # attached — the exact failure DS-LAKE-025 was opened for.
+        raise HTTPException(status_code=404, detail=str(e))
     except ObjectStoreError as e:
-        # Missing artifact, or storage refused the read/write.
+        # Storage refused the read/write — transient or misconfigured.
         raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -180,8 +263,10 @@ async def preview_pipeline(
     summary="Histogram/KDE for one or more tags, recomputed under live operations",
     description=(
         "DS-LAKE-005B-D-T01. Same window-then-apply-operations shape as "
-        "/preview — reads a capped head window, applies the operations, and "
-        "returns bug-for-bug parity with the client's own tagDistribution/"
+        "/preview, except the window is a systematic sample spanning its "
+        "full time range (MODEL-FLOW-014-T02), not a head cut of its "
+        "earliest rows. Applies the operations and returns bug-for-bug "
+        "parity with the client's own tagDistribution/"
         "kdeEstimate/densityToCount (lib/data-quality.ts). Writes nothing. "
         "`tags` is REQUIRED (unlike /preview) — the domain is shared across "
         "every overlaid tag, so 'every tag' is never a sane default here."
@@ -200,7 +285,8 @@ async def histogram_pipeline(
     summary="Five-number summary + capped outlier list per tag, recomputed under live operations",
     description=(
         "DS-LAKE-005B-D-T03. Same window-then-apply-operations shape as "
-        "/histogram — reads a capped head window, applies the operations, "
+        "/histogram — a systematic sample spanning the window's full time "
+        "range (MODEL-FLOW-014-T02), not a head cut. Applies the operations "
         "and returns bug-for-bug parity with the client's own "
         "tagBoxplotStats (lib/data-quality.ts). Writes nothing. `tags` is "
         "REQUIRED (unlike /preview) — a box plot with no tags named is "
@@ -216,13 +302,37 @@ async def boxplot_pipeline(
 
 
 @router.post(
+    "/split-stats",
+    response_model=SplitStatsResponse,
+    summary="Both sides of the train/test chronological split, from one read of a committed artifact",
+    description=(
+        "MODEL-FLOW-014-T03. Derives the SAME cut `images/trainer/train.py` "
+        "would make for `split_ratio` — on the LABELLED frame, not row "
+        "count — and returns a per-tag five-number summary for EACH side "
+        "from one read, never two /boxplot calls. `cut_timestamp` is "
+        "ECHOED back; the client never derives a cut itself. `sample_rows` "
+        "bounds the per-side box statistics only, never the cut itself, "
+        "which is always computed over the FULL labelled frame. Tabular "
+        "only — lstm/gru cut on window count via a different rule this "
+        "endpoint does not implement. Writes nothing."
+    ),
+)
+async def split_stats_pipeline(
+    body: SplitStatsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(build_split_stats, store, body)
+
+
+@router.post(
     "/scatter",
     response_model=ScatterResponse,
     summary="Decimated scatter cloud + full-frame regression for two tags",
     description=(
         "DS-LAKE-005B-D-T04. Same window-then-apply-operations shape as "
-        "/histogram and /boxplot — reads a capped head window, applies the "
-        "operations, and returns bug-for-bug parity with the client's own "
+        "/histogram and /boxplot — a systematic sample spanning the "
+        "window's full time range (MODEL-FLOW-014-T02), not a head cut. "
+        "Applies the operations and returns bug-for-bug parity with the client's own "
         "linearRegression (lib/preprocessing.ts) for the coefficients. "
         "Writes nothing. `points` is decimated via 2D grid binning for "
         "plotting only (NOT the /preview LTTB path — a scatter's axes are "
@@ -246,7 +356,9 @@ async def scatter_pipeline(
     summary="Pearson correlation matrix over a server-resolved column list, hard-capped",
     description=(
         "DS-LAKE-005B-D-T05b. Same window-then-apply-operations shape as "
-        "/histogram, /boxplot and /scatter. `tags` is the CANDIDATE "
+        "/histogram, /boxplot and /scatter — a systematic sample spanning "
+        "the window's full time range (MODEL-FLOW-014-T02), not a head "
+        "cut. `tags` is the CANDIDATE "
         "universe; the server resolves it (DS-LAKE-005B-D-T05a: near-"
         "constant filter, then rank by IQR/median or CV) down to at most "
         "`top_k` columns before computing the matrix — 8,000 candidate "
@@ -278,6 +390,26 @@ async def materialize_version(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.materialize, store, body)
+
+
+@router.post(
+    "/resplit-holdout",
+    response_model=ArtifactStatsResponse,
+    summary="Re-split an existing pristine BRONZE against a new holdout window",
+    description=(
+        "DS-LAKE-018-T06: companion to `/materialize`'s own holdout branch, "
+        "used when the holdout is changed AFTER the artifact already exists. "
+        "`source_key` MUST be a PRISTINE (never-split) BRONZE — NestJS "
+        "resolves the draft's root artifact and refuses one that was already "
+        "split, since re-splitting a split result would permanently shed "
+        "rows. Writes a new artifact; the source is never modified in place."
+    ),
+)
+async def resplit_holdout(
+    body: ResplitHoldoutRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.resplit_holdout, store, body)
 
 
 @router.post(
@@ -318,6 +450,134 @@ async def create_features(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.features, store, body)
+
+
+@router.post(
+    "/scale",
+    response_model=ArtifactStatsResponse,
+    summary="Scale a feature-stage artifact and write feature_spec.json",
+    description=(
+        "DS-LAKE-022-T02. The trailing half of the old combined `/features` "
+        "write, split out so a caller can clean BETWEEN feature computation "
+        "and scaling. Reads `source_key` (a feature-stage artifact — "
+        "typically `/features` called with `scale: false`, optionally "
+        "cleaned since), writes `target_key` (the GOLD artifact) — "
+        "toModelReady only. Writes feature_spec.json beside the data; "
+        "`feature_spec_key` in the response is what NestJS persists as "
+        "DatasetArtifact.featureSpecKey."
+    ),
+)
+async def create_scale(
+    body: ScaleRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.scale, store, body)
+
+
+@router.post(
+    "/replay-holdout",
+    response_model=ArtifactStatsResponse,
+    summary="Replay a saved recipe over the raw validation holdout",
+    description=(
+        "DS-LAKE-018-T04. Reads `source_key` (validate_data.parquet — the "
+        "holdout window plus its lead-in), writes `target_key` (the "
+        "model-ready holdout, ready to score). Runs applyFeatures -> "
+        "selectColumns -> toModelReady only — the holdout stays raw, no "
+        "cleaning/imputation step. Scaler params come from `scaling_params` "
+        "and are SUPPLIED, never re-fit. Refuses with 422 when the captured "
+        "lead-in falls short of the recipe's own deepest lag/rolling "
+        "lookback, naming both numbers."
+    ),
+)
+async def replay_holdout(
+    body: ReplayHoldoutRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.replay_holdout, store, body)
+
+
+@router.post(
+    "/replay-holdout-for-run",
+    response_model=ArtifactStatsResponse,
+    summary="Replay a training run's own GOLD recipe over its raw holdout",
+    description=(
+        "DS-LAKE-018-T05. `replay_holdout`, sourced from `feature_spec_key`'s "
+        "own feature_spec.json instead of the caller re-supplying the recipe "
+        "— what claim() (model-run.authorized.service.ts) calls to build the "
+        "container's holdoutDataUrl. Refuses with 422 if the recipe's "
+        "target_y is scaled (no inverse transform recorded)."
+    ),
+)
+async def replay_holdout_for_run(
+    body: ReplayHoldoutForRunRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.replay_holdout_for_run, store, body)
+
+
+@router.post(
+    "/prepare-holdout-for-run",
+    response_model=ArtifactStatsResponse,
+    summary="Scale a training run's already feature-bearing holdout",
+    description=(
+        "DS-LAKE-023-T03. The SILVER-branch counterpart to "
+        "replay-holdout-for-run — for a holdout produced by the reordered "
+        "features-stage split (FeaturesRequest.holdout), which already "
+        "carries its derived columns and has no lead-in rows. Only the "
+        "FITTED scaler transform runs, never re-fit. Refuses with 422 if "
+        "the recipe's target_y is scaled, or if a scaled tag has no "
+        "recorded scalingParams entry (would silently re-fit on the "
+        "holdout's own statistics)."
+    ),
+)
+async def prepare_holdout_for_run(
+    body: PrepareHoldoutForRunRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.prepare_holdout_for_run, store, body)
+
+
+@router.post(
+    "/passthrough-holdout-for-run",
+    response_model=ArtifactStatsResponse,
+    summary="Copy an already model-ready holdout to a run's own prefix",
+    description=(
+        "MODEL-SERVE-015-T04. The THIRD holdout shape — for a retrain-"
+        "augmentation candidate's frozen-eval slice, which is already "
+        "feature-engineered AND scaled (cut straight out of the incumbent's "
+        "own already-scaled FINAL artifact). No transform runs: copies "
+        "source_key to target_key verbatim. Chosen over prepare-holdout-for-"
+        "run by NestJS reading DatasetArtifact.validationAlreadyScaled."
+    ),
+)
+async def passthrough_holdout_for_run(
+    body: PassthroughHoldoutForRunRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.passthrough_holdout_for_run, store, body)
+
+
+@router.post(
+    "/combine-for-retrain",
+    response_model=CombineForRetrainResponse,
+    summary="Merge a base FINAL artifact with a newly selected dataset",
+    description=(
+        "MODEL-SERVE-015-T03. Builds a retrain-augmentation candidate's "
+        "training artifact: the base FINAL's own pre-cut rows, plus the new "
+        "dataset's rows run through the base's exact pinned feature/scaling "
+        "recipe (never re-fit). Also carves out the base's own frozen test "
+        "rows, re-cut against the new dataset's start time, as a "
+        "passthrough holdout — see combine_for_retrain's own docstring for "
+        "the full ordering. Refuses with a 422-shaped ValueError when the "
+        "two datasets disagree on tag columns, when the base's target is "
+        "scaled, or when no uncontaminated frozen-eval window exists."
+    ),
+)
+async def combine_for_retrain(
+    body: CombineForRetrainRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.combine_for_retrain, store, body)
 
 
 @router.post(
@@ -425,6 +685,65 @@ async def read_column_stats(
 
 
 @router.post(
+    "/prediction-log/append",
+    response_model=PredictionLogAppendResponse,
+    summary="Write one sampled /predict request's capped rows",
+    description=(
+        "MODEL-SERVE-005-T01. NestJS calls this once per LOGGED request — "
+        "apps/serving already decided whether to sample this request in "
+        "and capped its rows before this call. Writes ONE Parquet object "
+        "under serving-logs/{modelId}/{modelVersionId}/dt=.../hour=.../ "
+        "and returns its key + checksum for NestJS's own PredictionLog row."
+    ),
+)
+async def append_prediction_log(
+    body: PredictionLogAppendRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(prediction_log_service.append, store, body)
+
+
+@router.post(
+    "/prediction-log/series",
+    response_model=PredictionLogSeriesResponse,
+    summary="Read logged prediction rows for one model version in a time range",
+    description=(
+        "MODEL-SERVE-005. Walks the dt=/hour= partitions "
+        "/prediction-log/append wrote, reading every object whose window "
+        "overlaps [from, to] and filtering to rows actually in range. "
+        "Response is capped and marks `truncated` rather than silently "
+        "returning a partial series as complete."
+    ),
+)
+async def read_prediction_log_series(
+    body: PredictionLogSeriesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(prediction_log_service.series, store, body)
+
+
+@router.post(
+    "/feature-spec",
+    response_model=FeatureSpecResponse,
+    summary="feature_spec.json sidecar for a committed artifact",
+    description=(
+        "DS-LAKE-025-T06. Reads ONLY feature_spec.json — the data object is "
+        "never opened, exactly like /column-stats above. Exists so a display "
+        "surface can read `scalingParams` (what each scaler actually FIT) and "
+        "present engineering units from a model-ready artifact's scaled "
+        "bytes, without unscaling anything: T06 read 6 established that FINAL "
+        "being scaled is load-bearing for training. A missing sidecar is a "
+        "422, same as /column-stats."
+    ),
+)
+async def read_feature_spec(
+    body: FeatureSpecRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.feature_spec, store, body)
+
+
+@router.post(
     "/cleanup",
     response_model=CleanupResponse,
     summary="Delete every object under a tmp prefix",
@@ -465,6 +784,53 @@ async def reclaim_artifact(
 
 
 @router.post(
+    "/models/runs/reclaim",
+    response_model=DraftRunReclaimResponse,
+    summary="Delete one ModelDraft's training-run objects",
+    description=(
+        "MODEL-FLOW-011-T02. Called by ModelDraftCleanupAdminService once "
+        "Postgres has proven the draft eligible (stale ACTIVE past its idle "
+        "window, or ABANDONED with objectsReclaimedAt still null). run_id "
+        "omitted reclaims the whole drafts/{draft_id}/runs/ subtree in one "
+        "call; run_id given reclaims exactly that run, leaving every "
+        "sibling — including any run a Model has adopted by pointer — "
+        "untouched. Idempotent, same as /artifacts/reclaim: a retried call "
+        "on an already-reclaimed prefix returns deleted: 0."
+    ),
+)
+async def reclaim_draft_runs(
+    body: DraftRunReclaimRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.reclaim_draft_runs, store, body)
+
+
+@router.post(
+    "/artifacts/adopt",
+    response_model=ArtifactAdoptResponse,
+    summary="Copy one artifact's objects into a dataset's own prefix",
+    description=(
+        "DS-LAKE-025. Called by saveDraftAsDatasetService for the FINAL it "
+        "is adopting and that FINAL's lineage-root BRONZE, so a saved "
+        "dataset owns its bytes instead of borrowing the draft's. Copies "
+        "data + every sidecar server-side from "
+        "drafts/{draftId}/artifacts/{artifactId}/ to "
+        "{datasetId}/artifacts/{artifactId}/ and returns the new keys. "
+        "The source objects are left in place — removing them is cleanup's "
+        "job, never Save's. Idempotent: objects already at the destination "
+        "are reported, not re-copied, so a retried Save converges. Same "
+        "guard as /artifacts/reclaim — anything that is not a committed "
+        "artifact data key is refused."
+    ),
+)
+async def adopt_artifact(
+    body: ArtifactAdoptRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.adopt_artifact, store, body)
+
+
+@router.post(
     "/artifacts/presign",
     response_model=ArtifactPresignResponse,
     summary="Time-limited read URLs for one committed artifact",
@@ -485,8 +851,6 @@ async def presign_artifact(
     body: ArtifactPresignRequest,
     store: ObjectStore = Depends(get_object_store),
 ):
-    print(
-        f"Presign request for artifact {body}")
     return await _run(artifact_service.presign_artifact, store, body)
 
 
@@ -495,8 +859,11 @@ async def presign_artifact(
     response_model=ModelRunUploadPresignResponse,
     summary="Time-limited write URLs for one training run's outputs",
     description=(
-        "The write half of /artifacts/presign. Refuses any key outside "
-        "models/{modelId}/runs/{runId}/, so a run cannot be talked into "
+        "The write half of /artifacts/presign. Takes exactly one of "
+        "model_id (Save Model has happened) or draft_id (training against "
+        "a wizard ModelDraft, MODEL-FLOW-003-T08) and refuses any key "
+        "outside that owner's own models/{id}/runs/{runId}/ or "
+        "drafts/{id}/runs/{runId}/ root, so a run cannot be talked into "
         "overwriting a dataset artifact — which put_frame's immutability "
         "refusal cannot protect here, because the write happens in another "
         "process. Called at the END of a run rather than at submit: a URL "
@@ -509,3 +876,388 @@ async def presign_model_run_upload(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.presign_model_run_upload, store, body)
+
+
+@router.post(
+    "/models/runs/predictions",
+    response_model=ModelRunPredictionsResponse,
+    summary="Parsed actual/predicted series for one training run's test split",
+    description=(
+        "MODEL-FLOW-004. `predictions.parquet` is exactly "
+        "{timestamp, y_true, y_pred} over the run's TEST split, not the "
+        "wide {timestamp, tag, tag__status, ...} shape /rows assumes, so it "
+        "cannot go through that endpoint. `source_key` is guarded "
+        "structurally (a well-formed drafts/ or models/ run key naming "
+        "predictions.parquet) rather than by an id pair — the caller "
+        "already resolved which run's key this is. Every scalar is computed "
+        "over the FULL frame; there is no decimation branch, so a test "
+        "split over the point cap is refused by name rather than silently "
+        "sampled."
+    ),
+)
+async def run_predictions(
+    body: ModelRunPredictionsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.run_predictions, store, body)
+
+
+@router.post(
+    "/models/runs/cv-gap",
+    response_model=RunCvGapResponse,
+    summary="A retrain candidate's CV-gap series (every fold's test rows)",
+    description=(
+        "MODEL-SERVE-026-T05. Reads cv_gap_predictions.parquet: per fold, "
+        "the candidate configuration's fold-fit prediction and the current "
+        "version's prediction (null before its own cut). Own endpoint "
+        "because the shape is five columns, not predictions.parquet's three."
+    ),
+)
+async def run_cv_gap(
+    body: ModelRunPredictionsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.run_cv_gap, store, body)
+
+
+@router.post(
+    "/models/runs/predictions/batch",
+    response_model=RunPredictionsBatchResponse,
+    summary="Decimated actual/predicted series for N training runs, one call",
+    description=(
+        "MODEL-FLOW-017. Step 4 Model Selection's overlay + small-multiple "
+        "charts need every terminal candidate's actual-vs-predicted series "
+        "at once — this is that batch, decimated with LTTB over the time "
+        "axis so the payload stays bounded regardless of how many rows "
+        "each run's test split holds. `/models/runs/predictions` (above) "
+        "stays the undecimated single-run endpoint Step 5's full-width "
+        "chart uses; this route never replaces it. A run's series that "
+        "cannot be read soft-fails to an `error` on its own item rather "
+        "than failing the whole batch."
+    ),
+)
+async def run_predictions_batch(
+    body: RunPredictionsBatchRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.run_predictions_batch, store, body)
+
+
+@router.post(
+    "/models/runs/loss-history",
+    response_model=RunLossHistoryResponse,
+    summary="A training run's loss_history.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-013-T05/T07. `loss_history.json` is already exactly the "
+        "response shape (extract_loss_history in images/trainer/train.py "
+        "writes it that way on purpose) — this is a read-and-validate, not "
+        "a parse-and-reshape like /models/runs/predictions. `source_key` is "
+        "guarded the same structural way that endpoint guards its own."
+    ),
+)
+async def run_loss_history(
+    body: RunLossHistoryRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_loss_history, store, body)
+
+
+@router.post(
+    "/models/runs/cv-folds",
+    response_model=RunCvFoldsResponse,
+    summary="A training run's cv_folds.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-016-T04/T11. `cv_folds.json` is already exactly the "
+        "response shape (images/trainer/train.py writes it that way on "
+        "purpose) — a read-and-validate, not a parse-and-reshape like "
+        "/models/runs/predictions. `source_key` is guarded the same "
+        "structural way that endpoint guards its own."
+    ),
+)
+async def run_cv_folds(
+    body: RunCvFoldsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_cv_folds, store, body)
+
+
+@router.post(
+    "/models/runs/feature-importance",
+    response_model=RunFeatureImportanceResponse,
+    summary="A training run's feature_importance.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-019-T09. `feature_importance.json` is already exactly "
+        "the response shape (images/trainer/app/importance.py writes it "
+        "that way on purpose) — a read-and-validate, not a "
+        "parse-and-reshape like /models/runs/predictions. `source_key` is "
+        "guarded the same structural way that endpoint guards its own."
+    ),
+)
+async def run_feature_importance(
+    body: RunFeatureImportanceRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_feature_importance, store, body)
+
+
+@router.post(
+    "/models/runs/permutation-importance",
+    response_model=RunPermutationImportanceResponse,
+    summary="A training run's permutation_importance.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-023-T10. `permutation_importance.json` is already "
+        "exactly the response shape "
+        "(images/trainer/app/importance.py's extract_permutation_importance "
+        "writes it that way on purpose) — a read-and-validate, not a "
+        "parse-and-reshape, same discipline as /models/runs/feature-"
+        "importance. `source_key` is guarded the same structural way."
+    ),
+)
+async def run_permutation_importance(
+    body: RunPermutationImportanceRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(
+        artifact_service.get_run_permutation_importance, store, body
+    )
+
+
+@router.post(
+    "/models/runs/manifest",
+    response_model=RunManifestResponse,
+    summary="A training run's framework_versions and model_sha256, from run_manifest.json",
+    description=(
+        "MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. Every other manifest "
+        "field already has a column on ModelTrainingRun (written by "
+        "/complete) — this exists for framework_versions and model_sha256, "
+        "neither of which does. Either field is null for a run trained "
+        "before the trainer image that added it; callers treat that as "
+        "'not recorded', not a failure."
+    ),
+)
+async def run_manifest(
+    body: RunManifestRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_manifest, store, body)
+
+
+@router.post(
+    "/models/runs/verify-object",
+    response_model=ModelObjectVerifyResponse,
+    summary="Existence + checksum of one training-run output object",
+    description=(
+        "MODEL-SERVE-001-T05. Called by promote/rollback BEFORE flipping a "
+        "ModelVersion's stage — a promote that succeeds against a missing "
+        "or altered object turns a deploy into an outage discovered by the "
+        "first request. Separate from /artifacts/presign, which is "
+        "hard-restricted to committed artifact data.parquet keys and "
+        "refuses model.joblib outright."
+    ),
+)
+async def verify_model_object(
+    body: ModelObjectVerifyRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.verify_model_object, store, body)
+
+
+@router.post(
+    "/models/runs/presign-object",
+    response_model=RunObjectPresignResponse,
+    summary="Presign a training-run-scoped object for reading",
+    description=(
+        "MODEL-FLOW-016-T08. Today only validate_ready.parquet, the "
+        "model-ready holdout tryReplayHoldout writes under a run's own "
+        "prefix. Separate from /artifacts/presign, which is hard-restricted "
+        "to committed dataset artifact data.parquet keys and refuses a "
+        "run-scoped object outright — confirmed live (2026-09-01) as the "
+        "cause of every holdoutMetrics null on this system's runs to date, "
+        "not an absent holdout."
+    ),
+)
+async def presign_run_object(
+    body: RunObjectPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_run_object, store, body)
+
+
+@router.post(
+    "/prediction-jobs/presign-upload",
+    response_model=PredictionJobUploadPresignResponse,
+    summary="Time-limited write URLs for one batch prediction job's outputs",
+    description=(
+        "MODEL-SERVE-003. The write half for a batch container's own two "
+        "outputs (output.parquet, batch_manifest.json) — mirrors "
+        "/models/runs/presign-upload one root over "
+        "(predictions/{modelId}/{jobId}/), refusing any key outside that "
+        "job's own root."
+    ),
+)
+async def presign_prediction_job_upload(
+    body: PredictionJobUploadPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_prediction_job_upload, store, body)
+
+
+@router.post(
+    "/prediction-jobs/presign-object",
+    response_model=PredictionJobObjectPresignResponse,
+    summary="Presign a batch prediction job's output for reading",
+    description=(
+        "MODEL-SERVE-003. Today only output.parquet. Deliberately separate "
+        "from /artifacts/presign, which is hard-restricted to committed "
+        "dataset artifact data.parquet keys and would refuse a "
+        "prediction-job-scoped object outright — the same class of mistake "
+        "/models/runs/presign-object was built to fix for run-scoped "
+        "objects one entity over."
+    ),
+)
+async def presign_prediction_job_object(
+    body: PredictionJobObjectPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_prediction_job_object, store, body)
+
+
+@router.post(
+    "/inference-window",
+    response_model=InferenceWindowMaterializeResponse,
+    summary="Materialize one scheduled inference window's scoring input",
+    description=(
+        "MODEL-SERVE-006. Fetch, apply the pinned recipe's features, trim "
+        "to the window's own [windowStart, windowEnd), and drop (never "
+        "impute) any row with a Bad feature cell. Writes a pre-scale "
+        "input.parquet under inference/ — the container applies the "
+        "fitted scaling transform, same as MODEL-SERVE-002/003."
+    ),
+)
+async def materialize_inference_window(
+    body: InferenceWindowMaterializeRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(inference_window_service.materialize_window, store, body)
+
+
+@router.post(
+    "/inference-window/truth-join",
+    response_model=InferenceWindowTruthJoinResponse,
+    summary="Join one window's late-arriving ground truth to its predictions",
+    description=(
+        "MODEL-SERVE-005-T03. Re-fetch the model's TARGET tag on its own, "
+        "much longer lag and pair each lab sample with the nearest "
+        "prediction inside a stated tolerance, writing truth.parquet beside "
+        "that window's predictions. Returns sufficient statistics, never a "
+        "finished metric — NestJS computes r2/RMSE/MAE/SD from them. The PI "
+        "branch establishes event presence before trusting a value: a "
+        "time-weighted summary of a sparse .lab tag returns the held last "
+        "value for every interval, including intervals in which no "
+        "measurement was ever taken."
+    ),
+)
+async def join_inference_window_truth(
+    body: InferenceWindowTruthJoinRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(ground_truth_service.join_window_truth, store, body)
+
+
+@router.post(
+    "/inference-window/truth-series",
+    response_model=InferenceWindowTruthSeriesResponse,
+    summary="Read the joined ground-truth pairs behind a set of windows",
+    description=(
+        "MODEL-SERVE-005-T03, read side. Takes the EXPLICIT truth.parquet "
+        "keys NestJS already holds on InferenceWindowTruth.pairsKey rather "
+        "than listing a prefix — the database is the index here. A key that "
+        "no longer resolves is skipped, so one reclaimed window is a gap in "
+        "the chart rather than a broken range read."
+    ),
+)
+async def read_inference_window_truth_series(
+    body: InferenceWindowTruthSeriesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(ground_truth_service.series, store, body)
+
+
+@router.post(
+    "/inference-window/metrics-series",
+    response_model=InferenceWindowMetricsSeriesResponse,
+    summary="One point per scheduled window, from its own metrics.json",
+    description=(
+        "MODEL-SERVE-011-T12. The scheduled plane's hourly series for the "
+        "Actual-vs-Predict chart. Reads metrics.json, never "
+        "predictions.parquet: the infer container already computed "
+        "predictionMean/Min/Max/Std over the rows it scored, so this is one "
+        "small JSON read per window rather than a Parquet open plus a second "
+        "aggregation that could disagree with the first. Without it a window "
+        "whose lab target has not reported is invisible on that chart, "
+        "because the only other read path is the JOINED pairs."
+    ),
+)
+async def read_inference_window_metrics_series(
+    body: InferenceWindowMetricsSeriesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(ground_truth_service.metrics_series, store, body)
+
+
+@router.post(
+    "/inference-window/presign-upload",
+    response_model=InferenceWindowUploadPresignResponse,
+    summary="Time-limited write URLs for one inference window's own outputs",
+    description=(
+        "MODEL-SERVE-006-T06. The write half for an infer-mode container's "
+        "two outputs (predictions.parquet, metrics.json) — mirrors "
+        "/prediction-jobs/presign-upload one root over "
+        "(inference/{modelId}/{modelVersionId}/dt=.../hour=.../), refusing "
+        "any key outside that window's own root."
+    ),
+)
+async def presign_inference_window_upload(
+    body: InferenceWindowUploadPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_inference_window_upload, store, body)
+
+
+@router.post(
+    "/inference-window/presign-object",
+    response_model=InferenceWindowObjectPresignResponse,
+    summary="Presign an inference window's predictions for reading",
+    description=(
+        "MODEL-SERVE-006-T06. Today only predictions.parquet. Deliberately "
+        "separate from /artifacts/presign, which is hard-restricted to "
+        "committed dataset artifact data.parquet keys and would refuse a "
+        "window-scoped object outright."
+    ),
+)
+async def presign_inference_window_object(
+    body: InferenceWindowObjectPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_inference_window_object, store, body)
+
+
+@router.post(
+    "/export",
+    response_model=ExportStatsResponse,
+    summary="Export a committed artifact as CSV",
+    description=(
+        "DS-LAKE-021. Streams the source artifact's data.parquet into a "
+        "sidecar CSV, row-group by row-group. __status columns are "
+        "dropped; a Bad-status cell exports as an empty field, never the "
+        "raw 0.0 the Parquet stores. DS-LAKE-028: values are inverted back "
+        "to engineering units from `feature_spec_key`'s recorded "
+        "scalingParams (approximate to +/-0.001 * span, the scaler's own "
+        "rounding); a column no inverse can recover refuses the export."
+    ),
+)
+async def export_pipeline(
+    body: ExportRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(export_artifact_csv, store, body)

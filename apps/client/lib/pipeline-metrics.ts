@@ -152,6 +152,22 @@ export function ingestionTrendSeries(
   return series
 }
 
+/** The workspaces a scope covers: all of them for `'all'`, otherwise only the
+ *  one it names — a single workspace's page must not list the user's others. */
+export function workspacesInScope(
+  scope: Scope,
+  workspaces: Workspace[],
+): Workspace[] {
+  if (scope === 'all') return workspaces
+  return workspaces.filter(ws => ws.id === scope)
+}
+
+/** Whether the viewer may open this scope. `workspaces` is what the backend
+ *  returned for them — members only for a user, every workspace for an admin. */
+export function canViewScope(scope: Scope, workspaces: Workspace[]): boolean {
+  return scope === 'all' || workspaces.some(ws => ws.id === scope)
+}
+
 /** One pipeline row per real workspace for the "Pipeline by Workspace" table. */
 export function perWorkspacePipeline(
   workspaces: Workspace[],

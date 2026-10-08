@@ -19,10 +19,19 @@ import { DataSourceModule } from './api/v1/data-source/data-source.module';
 import { DatasetModule } from './api/v1/dataset/dataset.module';
 import { DatasetVersionModule } from './api/v1/dataset-version/dataset-version.module';
 import { DatasetDraftModule } from './api/v1/dataset-draft/dataset-draft.module';
+import { ModelDraftModule } from './api/v1/model-draft/model-draft.module';
 import { FeaturePresetModule } from './api/v1/feature-preset/feature.preset.module';
 import { ArtifactCleanupModule } from './api/v1/artifact-cleanup/artifact-cleanup.module';
+import { ModelDraftCleanupModule } from './api/v1/model-draft-cleanup/model-draft-cleanup.module';
 import { ModelRunModule } from './api/v1/model-run/model-run.module';
 import { TrainningContainerModule } from './api/v1/trainning-container/trainning-container.module';
+import { ModelVersionModule } from './api/v1/model-version/model-version.module';
+import { ModelServingModule } from './api/v1/model-serving/model-serving.module';
+import { PredictionJobModule } from './api/v1/prediction-job/prediction-job.module';
+import { PredictionLogModule } from './api/v1/prediction-log/prediction-log.module';
+import { InferenceWindowModule } from './api/v1/inference-window/inference-window.module';
+import { MetricRegistryModule } from './api/v1/metric-registry/metric-registry.module';
+import { NotificationModule } from './api/v1/notification/notification.module';
 
 @Module({
   imports: [
@@ -60,10 +69,19 @@ import { TrainningContainerModule } from './api/v1/trainning-container/trainning
     DatasetModule,
     DatasetVersionModule,
     DatasetDraftModule,
+    ModelDraftModule,
     FeaturePresetModule,
     ArtifactCleanupModule,
+    ModelDraftCleanupModule,
     ModelRunModule,
     TrainningContainerModule,
+    ModelVersionModule,
+    ModelServingModule,
+    PredictionJobModule,
+    InferenceWindowModule,
+    MetricRegistryModule,
+    NotificationModule,
+    PredictionLogModule,
   ],
   providers: [
     {

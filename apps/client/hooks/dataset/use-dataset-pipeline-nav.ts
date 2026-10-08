@@ -36,7 +36,6 @@ import {
   dwSourceFetchConfigsAtom,
   dwFetchStateAtom,
   dwRawDatasetAtom,
-  dwProcessingSubStepAtom,
   dwCropRangeAtom,
   dwValueCropAtom,
   dwExclusionsAtom,
@@ -52,6 +51,7 @@ import {
   dwFocusedTagAtom,
   dwModeAtom,
   dwValueClipAtom,
+  dwFeatureWarmStateAtom,
 } from '@/store/dataset-studio'
 import {
   mpSelectedSavedSourceIdAtom,
@@ -119,11 +119,9 @@ export interface UseDatasetPipelineNavResult {
   setValueCrop: (crop: ValueCrop) => void
   setValueClip: (clip: ValueClip) => void
   setExclusions: (exclusions: RangeExclusion[]) => void
-  processingSubStep: 1 | 2
-  setProcessingSubStep: (step: 1 | 2) => void
   setConditionalRules: (update: React.SetStateAction<ConditionalRule[]>) => void
   setStatisticalRules: (update: React.SetStateAction<StatisticalRule[]>) => void
-  // Step 3.2 — bulk cleaning
+  // Step 5 — bulk cleaning (DS-LAKE-022-T04..T07, relocated from Step 3.2)
   cleaningTags: string[]
   setCleaningTags: (tags: string[]) => void
   cleaningPipelines: Record<string, TagPipeline>
@@ -182,10 +180,6 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const rawDataset = useAtomValue(dwRawDatasetAtom)
   const setRawDataset = useSetAtom(dwRawDatasetAtom)
 
-  const [processingSubStep, setProcessingSubStepAtom] = useAtom(
-    dwProcessingSubStepAtom,
-  )
-
   const [cropRange, setCropRangeAtom] = useAtom(dwCropRangeAtom)
   const [valueCrop, setValueCropAtom] = useAtom(dwValueCropAtom)
   const [valueClip, setValueClipAtom] = useAtom(dwValueClipAtom)
@@ -208,6 +202,13 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     dwSelectedColumnsAtom,
   )
   const [scalerConfigs, setScalerConfigsAtom] = useAtom(dwScalerConfigsAtom)
+  // DS-LAKE-023: secondary gate for canAdvance case 4 below — disables the
+  // Next BUTTON while Step 4's background warm is in flight. The load-
+  // bearing gate is `useDatasetCleaningScaleCommit`'s own stamp check
+  // (survives every navigation path, including the step indicator, which
+  // never calls this function at all); this one only improves the common
+  // Next-button case by not letting it look clickable mid-warm.
+  const featureWarmState = useAtomValue(dwFeatureWarmStateAtom)
 
   const canAdvance = useCallback(
     (step: number): boolean => {
@@ -231,26 +232,39 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
               statistical: statisticalRules,
             }).rows.length > 0
           )
-        // Step 4 — Feature Engineering: the fully-materialized dataset
-        // (features → precleanse → fill → select) keeps at least one row/column.
+        // Step 4 — Feature Engineering: DS-LAKE-022-T04..T07 reorder —
+        // features run against the raw frame now (cleaning has not
+        // happened yet; it moved to Step 5). Mirrors what Step 4's own
+        // warm (`useDatasetGoldWarm`, `scale: false`) sends server-side:
+        // applyFeatures -> selectColumns, no `cleaningPipelines` in this
+        // gate any more.
         case 4: {
+          if (featureWarmState === 'pending') return false
           const featured = applyFeatures(rawDataset, featureConfigs)
-          const filled = preprocessPipelines(
-            precleanse(featured, {
-              crop: cropRange,
-              valueCrop,
-              valueClip,
-              exclusions,
-              conditional: conditionalRules,
-              statistical: statisticalRules,
-            }),
-            cleaningPipelines,
-          )
-          const selected = selectColumns(filled, selectedColumns)
+          const selected = selectColumns(featured, selectedColumns)
           return selected.rows.length > 0 && selected.tags.length > 0
         }
-        // Step 5 — Review & Save: final step, no further Next.
-        case 5:
+        // Step 5 — Data Cleaning: mirrors Step 5's own local `preprocessed`
+        // gate (step-5-data-cleaning.tsx) — cleaning applied on top of the
+        // FEATURED, pre-cleansed frame keeps at least one row. The server
+        // commit itself (D4) is a separate async gate the step's own
+        // footer handles; this is only the WizardStepIndicator's
+        // clickable-step check.
+        case 5: {
+          const featured = applyFeatures(rawDataset, featureConfigs)
+          const cleansed = precleanse(featured, {
+            crop: cropRange,
+            valueCrop,
+            valueClip,
+            exclusions,
+            conditional: conditionalRules,
+            statistical: statisticalRules,
+          })
+          const filled = preprocessPipelines(cleansed, cleaningPipelines)
+          return filled.rows.length > 0
+        }
+        // Step 6 — Review & Save: final step, no further Next.
+        case 6:
           return false
         default:
           return false
@@ -270,6 +284,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       cleaningPipelines,
       featureConfigs,
       selectedColumns,
+      featureWarmState,
     ],
   )
 
@@ -479,10 +494,14 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     [setSourceFetchConfigsAtom, resetFetch, setHighestUnlocked],
   )
 
+  // DS-LAKE-022-T04..T07: crop/value-crop/value-clip/exclusions/conditional
+  // /statistical rules are all edited from Step 5's SdtaPresetCard/
+  // CutOffSection now (relocated from the old Step 3.2), not Step 3 — relock
+  // to 5, not 3.
   const setCropRange = useCallback(
     (range: CropRange) => {
       setCropRangeAtom(range)
-      setHighestUnlocked(prev => Math.min(prev, 3))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setCropRangeAtom, setHighestUnlocked],
   )
@@ -490,7 +509,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const setValueCrop = useCallback(
     (crop: ValueCrop) => {
       setValueCropAtom(crop)
-      setHighestUnlocked(prev => Math.min(prev, 3))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setValueCropAtom, setHighestUnlocked],
   )
@@ -498,7 +517,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const setValueClip = useCallback(
     (clip: ValueClip) => {
       setValueClipAtom(clip)
-      setHighestUnlocked(prev => Math.min(prev, 3))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setValueClipAtom, setHighestUnlocked],
   )
@@ -506,20 +525,15 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const setExclusions = useCallback(
     (next: RangeExclusion[]) => {
       setExclusionsAtom(next)
-      setHighestUnlocked(prev => Math.min(prev, 3))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setExclusionsAtom, setHighestUnlocked],
-  )
-
-  const setProcessingSubStep = useCallback(
-    (step: 1 | 2) => setProcessingSubStepAtom(step),
-    [setProcessingSubStepAtom],
   )
 
   const setConditionalRules = useCallback(
     (update: React.SetStateAction<ConditionalRule[]>) => {
       setConditionalRulesAtom(update)
-      setHighestUnlocked(prev => Math.min(prev, 3))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setConditionalRulesAtom, setHighestUnlocked],
   )
@@ -527,15 +541,17 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const setStatisticalRules = useCallback(
     (update: React.SetStateAction<StatisticalRule[]>) => {
       setStatisticalRulesAtom(update)
-      setHighestUnlocked(prev => Math.min(prev, 3))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setStatisticalRulesAtom, setHighestUnlocked],
   )
 
+  // Cleaning itself is Step 5 (relocated from the old Step 3.2) — relock to
+  // 5, not 4.
   const setCleaningPipelines = useCallback(
     (update: React.SetStateAction<Record<string, TagPipeline>>) => {
       setCleaningPipelinesAtom(update)
-      setHighestUnlocked(prev => Math.min(prev, 4))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setCleaningPipelinesAtom, setHighestUnlocked],
   )
@@ -543,7 +559,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const setCleaningTags = useCallback(
     (tags: string[]) => {
       setCleaningTagsAtom(tags)
-      setHighestUnlocked(prev => Math.min(prev, 4))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setCleaningTagsAtom, setHighestUnlocked],
   )
@@ -559,7 +575,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
         return next
       })
       setCleanedTagsAtom(prev => Array.from(new Set([...prev, ...tags])))
-      setHighestUnlocked(prev => Math.min(prev, 4))
+      setHighestUnlocked(prev => Math.min(prev, 5))
     },
     [setCleaningPipelinesAtom, setCleanedTagsAtom, setHighestUnlocked],
   )
@@ -652,7 +668,5 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     setSelectedColumns,
     scalerConfigs,
     setScalerConfig,
-    processingSubStep,
-    setProcessingSubStep,
   }
 }

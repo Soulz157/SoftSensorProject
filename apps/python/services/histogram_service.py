@@ -39,6 +39,7 @@ from intergrations.object_store import (
 )
 from schemas.preprocess import HistogramRequest
 from services.cleaning_service import apply_operations
+from services.downsample import systematic_sample
 
 
 def _good_values(frame: pd.DataFrame, tag: str) -> np.ndarray:
@@ -137,7 +138,10 @@ def build_histogram(store: ObjectStore, request: HistogramRequest) -> dict[str, 
         frame = frame[frame[TIMESTAMP_COLUMN] >= pd.Timestamp(request.start_time)]
     if request.end_time is not None:
         frame = frame[frame[TIMESTAMP_COLUMN] <= pd.Timestamp(request.end_time)]
-    frame = frame.head(request.sample_rows).reset_index(drop=True)
+    # MODEL-FLOW-014-T02. Was `frame.head(request.sample_rows)` — see
+    # `systematic_sample`'s own docstring for why that only ever described
+    # the window's earliest contiguous period.
+    frame = systematic_sample(frame, request.sample_rows).reset_index(drop=True)
 
     after = apply_operations(
         frame,

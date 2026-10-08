@@ -10,6 +10,10 @@ import {
   groupByWorkspace,
   sortAlerts,
   EMPTY_FILTERS,
+  ALERT_STATUS_LABEL,
+  ALERT_STATUS_META,
+  ALERT_STATUS_ORDER,
+  monitoringToAlertStatus,
 } from './alerts'
 
 const WS_ID = 'ws-1'
@@ -25,6 +29,7 @@ function workspace(): Workspace {
     updatedAt: '2026-06-29T00:00:00Z',
     _count: { members: 1, models: 2 },
     modelsCount: 2,
+    status: 'normal',
   }
 }
 
@@ -69,15 +74,22 @@ function failedModel(
     workspaceName: 'Repco',
     data: {
       deployStatus: 'error',
+      // classifyDeployStatus never returns 'error' for a disabled schedule
+      // (disabled always reads 'stopped') — true is the only value
+      // consistent with this fixture's own deployStatus.
+      enabled: true,
       prodStatus: 'offline',
       statusDetail: 'R-squared dropped below 0.8',
-      logs: [
-        {
-          level: 'error',
-          message: 'connection timeout to PI database',
-          timestamp: '2026-06-29T10:00:00Z',
-        },
-      ],
+      // MODEL-SERVE-001-T23. The REAL source. This fixture used to carry a
+      // hand-written `logs: [{ level: 'error', ... }]` entry, which made the
+      // old assertion pass against data production never produces — every
+      // appendModelLog call site in the client hardcodes `level: 'info'`.
+      lastFailure: {
+        reason: 'connection timeout to PI database',
+        at: '2026-06-29T10:00:00Z',
+      },
+      editHistory: [],
+      logs: [],
     },
     nodesId: opts.node ? `node-${id}` : null,
     datasetId: null,
@@ -95,6 +107,227 @@ function failedModel(
       : null,
   }
 }
+
+/**
+ * MODEL-SERVE-001-T30. A model that is DISPATCHING FINE by the deploy axis
+ * but whose monitoring axis is raising. Since T26 this is what three
+ * consecutive failed windows look like — `deployStatus` stays 'running'.
+ */
+function monitoringModel(
+  id: string,
+  name: string,
+  monitoring: NonNullable<
+    NonNullable<ModelWithWorkspace['data']>['monitoring']
+  >,
+  over: { deployStatus?: 'running' | 'error' } = {},
+): ModelWithWorkspace {
+  return {
+    id,
+    workspaceId: WS_ID,
+    name,
+    workspaceName: 'Repco',
+    data: {
+      deployStatus: over.deployStatus ?? 'running',
+      enabled: true,
+      prodStatus: 'normal',
+      lastFailure:
+        over.deployStatus === 'error'
+          ? { reason: 'preflight refused', at: '2026-06-29T10:00:00Z' }
+          : null,
+      monitoring,
+      editHistory: [],
+      logs: [],
+    },
+    nodesId: null,
+    datasetId: null,
+    createdAt: '2026-06-29T00:00:00Z',
+    updatedAt: '2026-06-29T12:00:00Z',
+    nodes: null,
+  }
+}
+
+describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => {
+  const base = {
+    workspaces: [workspace()],
+    plantsByWorkspaceId: {
+      [WS_ID]: [plant(PLANT_A, 'Plant 1'), plant(PLANT_B, 'Plant 2')],
+    },
+    nodesByWorkspaceId: { [WS_ID]: [] },
+  }
+
+  /**
+   * THE REGRESSION CASE. Before T30 this model produced NO row at all:
+   * `buildAlerts` saw models only through `failedDeploys`, which keys on
+   * `deployStatus === 'error'`, and T26 stopped three failed windows from
+   * setting that. A dead source was visible on the model detail page and
+   * nowhere else in the product.
+   */
+  it('raises a row for a model whose SOURCE IS DEAD but whose deploy axis reads running', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-dead', 'Furnace Predictor', {
+          status: 'ALERT',
+          reason: 'SOURCE_UNREACHABLE',
+          frozenColumns: [],
+        }),
+      ],
+    })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.status).toBe('alert')
+    // The reason is CARRIED, not inferred: SOURCE_UNREACHABLE sends a reader
+    // to the connector, STALE to the scheduler. A row reading only
+    // "Monitoring Alert" would send them to both.
+    expect(rows[0]!.monitoringReason).toBe('SOURCE_UNREACHABLE')
+    // It must NOT borrow the deploy vocabulary.
+    expect(rows[0]!.status).not.toBe('failed')
+    expect(rows[0]!.failureReason).toBeNull()
+  })
+
+  /**
+   * MODEL-SERVE-012. The OUTPUT-ERROR codes reach this page with no wiring
+   * of their own — `monitoringReason` is filled from `monitoring.reason` and
+   * rendered through the shared `HEALTH_REASON_LABEL`. This test exists to
+   * keep that true: a future predicate that whitelisted reason codes, rather
+   * than statuses, would silence these two without failing anything else.
+   */
+  it('raises a row for a WIDENED RESIDUAL SPREAD, carrying its own reason', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-residual', 'Drifting Error', {
+          status: 'WARN',
+          reason: 'RESIDUAL_SD_WARN',
+          frozenColumns: [],
+        }),
+      ],
+    })
+
+    expect(rows).toHaveLength(1)
+    // MODEL-SERVE-024-D01: a WARN reads Warning, not Alert.
+    expect(rows[0]!.status).toBe('warning')
+    expect(rows[0]!.monitoringReason).toBe('RESIDUAL_SD_WARN')
+    // The model is DISPATCHING fine — this is not the deploy axis.
+    expect(rows[0]!.status).not.toBe('failed')
+    expect(rows[0]!.failureReason).toBeNull()
+  })
+
+  it('carries the 3SD breach distinctly from the 1-2SD warning', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-residual-bad', 'Broken Error', {
+          status: 'ALERT',
+          reason: 'RESIDUAL_SD_CRITICAL',
+          frozenColumns: [],
+        }),
+      ],
+    })
+    expect(rows[0]!.monitoringReason).toBe('RESIDUAL_SD_CRITICAL')
+  })
+
+  it('carries STALE distinctly from SOURCE_UNREACHABLE', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-stale', 'Stale One', {
+          status: 'ALERT',
+          reason: 'STALE',
+          frozenColumns: [],
+        }),
+      ],
+    })
+    expect(rows[0]!.monitoringReason).toBe('STALE')
+  })
+
+  /**
+   * THE DUPLICATE-KEY GUARD. `alerts-group-list.tsx` keys its React children
+   * on `${row.kind}-${row.id}`. A model can be BOTH deploy-failed (a refused
+   * preflight) and monitoring-alerting, and those are two findings with two
+   * different fixes — so they are two rows, and an unsuffixed id would make
+   * React silently drop one of them.
+   */
+  it('emits TWO rows with distinct ids for a model failing on both axes', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel(
+          'm-both',
+          'Doubly Broken',
+          { status: 'ALERT', reason: 'STALE', frozenColumns: [] },
+          { deployStatus: 'error' },
+        ),
+      ],
+    })
+
+    expect(rows).toHaveLength(2)
+    const ids = rows.map(r => r.id)
+    expect(new Set(ids).size).toBe(2)
+    expect(rows.map(r => r.status).sort()).toEqual(['alert', 'failed'])
+  })
+
+  /**
+   * `OFF` on the LIST payload means "no fault, no claim" — never "healthy",
+   * and never an alert either. Raising a row for it would put every
+   * unmonitored model in the workspace on this page.
+   */
+  it('raises nothing for OFF, UNKNOWN or OK', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-off', 'Off', {
+          status: 'OFF',
+          reason: null,
+          frozenColumns: [],
+        }),
+        monitoringModel('m-unknown', 'Unknown', {
+          status: 'UNKNOWN',
+          reason: null,
+          frozenColumns: [],
+        }),
+        monitoringModel('m-ok', 'OK', {
+          status: 'OK',
+          reason: null,
+          frozenColumns: [],
+        }),
+      ],
+    })
+    expect(rows).toHaveLength(0)
+  })
+
+  /** A payload older than T26 carries no `monitoring` key at all. */
+  it('raises nothing when the payload predates the monitoring field', () => {
+    const model = monitoringModel('m-old', 'Legacy', {
+      status: 'ALERT',
+      reason: 'STALE',
+      frozenColumns: [],
+    })
+    delete model.data!.monitoring
+    const rows = buildAlerts({ ...base, models: [model] })
+    expect(rows).toHaveLength(0)
+  })
+
+  /** MODEL-SERVE-024-D01. A monitoring alert and a node alarm are ONE
+   *  status now (Alert), both below a dead deploy. */
+  it('merges a monitoring alert and a node alarm into Alert, below a failed deploy', () => {
+    const rows = buildAlerts({
+      ...base,
+      nodesByWorkspaceId: {
+        [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
+      },
+      models: [
+        failedModel('m-failed', 'Dead Deploy'),
+        monitoringModel('m-mon', 'Stale One', {
+          status: 'ALERT',
+          reason: 'STALE',
+          frozenColumns: [],
+        }),
+      ],
+    })
+    expect(rows.map(r => r.status)).toEqual(['failed', 'alert', 'alert'])
+  })
+})
 
 describe('buildAlerts', () => {
   const base = {
@@ -136,7 +369,7 @@ describe('buildAlerts', () => {
     })
     expect(row!.plantName).toBe('Plant 1')
     expect(formatLocation(row!)).toBe('Repco > Plant 1')
-    expect(row!.typeLabel).toBe('Sensor Alarm')
+    expect(row!.typeLabel).toBe('Sensor Alert')
     expect(row!.typeName).toBe('Sensor')
     expect(row!.modelName).toBeNull()
     expect(row!.detailError).toBeNull()
@@ -159,7 +392,10 @@ describe('buildAlerts', () => {
     expect(row!.typeLabel).toBe('Deploy Failed')
     expect(row!.typeName).toBe('Model')
     expect(row!.detailError).toBe('R-squared dropped below 0.8')
-    expect(row!.errorLogs).toHaveLength(1)
+    // MODEL-SERVE-001-T23: the real failure reason, and the row's timestamp
+    // is the FAILURE time now, not the model's last-edit time.
+    expect(row!.failureReason).toBe('connection timeout to PI database')
+    expect(row!.timestamp).toBe('2026-06-29T10:00:00Z')
   })
 
   it('handles an unlinked failed model (no equipment)', () => {
@@ -197,7 +433,7 @@ describe('buildAlerts', () => {
       },
       models: [failedModel('m1', 'Failed Model')],
     })
-    expect(rows.map(r => r.status)).toEqual(['failed', 'alarm', 'warning'])
+    expect(rows.map(r => r.status)).toEqual(['failed', 'alert', 'warning'])
   })
 })
 
@@ -284,12 +520,17 @@ describe('timestamp derivation', () => {
     expect(row!.timestamp).toBe('2026-06-29T10:00:00Z')
   })
 
-  it('falls back to model.updatedAt when there are no error logs', () => {
+  it('falls back to model.updatedAt when no failure reason is recorded', () => {
     const modelNoLogs: ModelWithWorkspace = {
       ...failedModel('m2', 'No Logs Model'),
       data: {
         deployStatus: 'error',
+        enabled: true,
         prodStatus: 'offline',
+        // MODEL-SERVE-001-T23: no FAILED row in the recent-terminal sample
+        // the list payload is derived from.
+        lastFailure: null,
+        editHistory: [],
         logs: [],
       },
     }
@@ -356,6 +597,7 @@ describe('groupByWorkspace', () => {
       updatedAt: '2026-06-29T00:00:00Z',
       _count: { members: 1, models: 0 },
       modelsCount: 0,
+      status: 'normal',
     }
   }
 
@@ -398,7 +640,7 @@ describe('groupByWorkspace', () => {
     // even though 'Alpha' < 'Zebra' would also win alphabetically — the
     // severity ordering must be the primary key, not just alphabetical luck.
     expect(groups[0]!.workspaceName).toBe('Alpha Plant')
-    expect(groups[0]!.rows.map(r => r.status)).toEqual(['alarm', 'warning'])
+    expect(groups[0]!.rows.map(r => r.status)).toEqual(['alert', 'warning'])
     expect(groups[1]!.workspaceName).toBe('Zebra Plant')
   })
 
@@ -418,5 +660,68 @@ describe('groupByWorkspace', () => {
       'Alpha Plant',
       'Zebra Plant',
     ])
+  })
+})
+
+/** MODEL-SERVE-024 — one status vocabulary and one detail format. */
+describe('MODEL-SERVE-024 status vocabulary', () => {
+  const base = {
+    workspaces: [workspace()],
+    plantsByWorkspaceId: { [WS_ID]: [plant(PLANT_A, 'Plant 1')] },
+    nodesByWorkspaceId: { [WS_ID]: [] },
+  }
+  const mon = (status: 'ALERT' | 'WARN' | 'FROZEN', reason: string) =>
+    monitoringModel('m', 'Model', {
+      status,
+      reason,
+      frozenColumns: [],
+    } as never)
+
+  it('maps monitoring ALERT to Alert, WARN and FROZEN to Warning', () => {
+    expect(monitoringToAlertStatus('ALERT')).toBe('alert')
+    expect(monitoringToAlertStatus('WARN')).toBe('warning')
+    expect(monitoringToAlertStatus('FROZEN')).toBe('warning')
+    expect(monitoringToAlertStatus('OK')).toBeNull()
+    expect(monitoringToAlertStatus(undefined)).toBeNull()
+  })
+
+  it('reads input drift warn as Warning and drift critical as Alert', () => {
+    const warn = buildAlerts({ ...base, models: [mon('WARN', 'DRIFT_WARN')] })
+    const crit = buildAlerts({
+      ...base,
+      models: [mon('ALERT', 'DRIFT_CRITICAL')],
+    })
+    expect(warn[0]!.status).toBe('warning')
+    expect(crit[0]!.status).toBe('alert')
+  })
+
+  it('writes every row detail as `Source: reason`', () => {
+    const rows = buildAlerts({
+      ...base,
+      nodesByWorkspaceId: {
+        [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
+      },
+      models: [failedModel('m-f', 'Dead Deploy'), mon('ALERT', 'STALE')],
+    })
+    const byStatus = (st: string, kind: string) =>
+      rows.find(r => r.status === st && r.kind === kind)!.detail
+    expect(byStatus('alert', 'model')).toBe('Monitoring: No inference window')
+    expect(byStatus('alert', 'node')).toBe('Sensor: Alert')
+    expect(byStatus('failed', 'model')).toBe(
+      'Deploy: Source check refused at start',
+    )
+  })
+
+  it('has four statuses, Abnormal only for Alert and Deploy Failed', () => {
+    expect(ALERT_STATUS_ORDER).toEqual([
+      'failed',
+      'alert',
+      'offline',
+      'warning',
+    ])
+    expect(
+      ALERT_STATUS_ORDER.filter(s => ALERT_STATUS_META[s].abnormal),
+    ).toEqual(['failed', 'alert'])
+    expect(ALERT_STATUS_LABEL.alert).toBe('Alert')
   })
 })

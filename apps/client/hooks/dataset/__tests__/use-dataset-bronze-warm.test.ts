@@ -11,6 +11,7 @@ import {
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
   dwDraftSyncStateAtom,
+  dwBronzeWarmStateAtom,
 } from '@/store/dataset-studio'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
 
@@ -128,5 +129,51 @@ describe('useDatasetBronzeWarm (DS-LAKE-005B-B-T01)', () => {
 
     expect(datasetDraftService.create).toHaveBeenCalledTimes(1)
     expect(datasetDraftService.materialize).toHaveBeenCalledTimes(1)
+  })
+
+  describe('dwBronzeWarmStateAtom (DS-LAKE-015-T01)', () => {
+    it('goes idle -> materializing -> ready on success', async () => {
+      vi.mocked(datasetDraftService.create).mockResolvedValue({
+        data: { id: 'draft-1' },
+      } as never)
+      vi.mocked(datasetDraftService.materialize).mockResolvedValue({
+        data: { id: 'artifact-1' },
+      } as never)
+
+      const { result, store } = renderWithStore()
+      expect(store.get(dwBronzeWarmStateAtom)).toBe('idle')
+
+      act(() => {
+        result.current(['TI-101'])
+      })
+      // Set synchronously, before the async chain resolves.
+      expect(store.get(dwBronzeWarmStateAtom)).toBe('materializing')
+
+      await waitFor(() =>
+        expect(store.get(dwBronzeWarmStateAtom)).toBe('ready'),
+      )
+    })
+
+    it('goes materializing -> failed on a swallowed error, without touching dwDraftSyncStateAtom', async () => {
+      vi.mocked(datasetDraftService.create).mockResolvedValue({
+        data: { id: 'draft-1' },
+      } as never)
+      vi.mocked(datasetDraftService.materialize).mockRejectedValue(
+        new Error('source unreachable'),
+      )
+
+      const { result, store } = renderWithStore()
+
+      act(() => {
+        result.current(['TI-101'])
+      })
+      expect(store.get(dwBronzeWarmStateAtom)).toBe('materializing')
+
+      await waitFor(() =>
+        expect(store.get(dwBronzeWarmStateAtom)).toBe('failed'),
+      )
+      // AC4: a failed background warm must not drive the sync-state banner.
+      expect(store.get(dwDraftSyncStateAtom)).toEqual({ status: 'idle' })
+    })
   })
 })

@@ -11,9 +11,18 @@ vi.mock('jotai', () => ({
   useAtomValue: vi.fn(),
 }))
 
-vi.mock('@/store/workspace', () => ({
+// `usePlantsData` reads TWO atoms — it waits on `workspacesLoadingAtom`
+// before treating an empty workspace list as "none" — so the mock has to
+// carry both or the hook throws on the missing export.
+//
+// `vi.hoisted` because `vi.mock`'s factory is hoisted above these
+// declarations; a plain `const` would be in its TDZ when the factory runs.
+const atoms = vi.hoisted(() => ({
   workspacesAtom: Symbol('workspacesAtom'),
+  workspacesLoadingAtom: Symbol('workspacesLoadingAtom'),
 }))
+
+vi.mock('@/store/workspace', () => atoms)
 
 import { getNodes } from '@/services/canvas'
 import { useAtomValue } from 'jotai'
@@ -60,9 +69,18 @@ const mockNodes: CanvasNode[] = [
   },
 ]
 
+/** Answers PER ATOM: one blanket return value would hand the workspace
+ *  array back for `workspacesLoadingAtom` too, and a non-empty array is
+ *  truthy — the hook would read "still loading" forever and never fetch. */
+function stubAtoms(workspaces: unknown, loading = false) {
+  vi.mocked(useAtomValue).mockImplementation((atom: unknown) =>
+    atom === atoms.workspacesLoadingAtom ? loading : workspaces,
+  )
+}
+
 describe('usePlantsData', () => {
   beforeEach(() => {
-    vi.mocked(useAtomValue).mockReturnValue(mockWorkspaces)
+    stubAtoms(mockWorkspaces)
   })
 
   it('returns loading=true initially', () => {
@@ -83,7 +101,7 @@ describe('usePlantsData', () => {
   })
 
   it('returns empty nodesByWorkspace when no workspaces', async () => {
-    vi.mocked(useAtomValue).mockReturnValue([])
+    stubAtoms([])
     const { result } = renderHook(() => usePlantsData())
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.nodesByWorkspace).toEqual({})

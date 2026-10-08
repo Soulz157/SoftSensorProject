@@ -8,32 +8,32 @@ vi.mock('@/services/canvas', () => ({
 
 vi.mock('jotai', async () => {
   const actual = await vi.importActual<typeof import('jotai')>('jotai')
-  return {
-    ...actual,
-    useAtomValue: vi.fn(() => [
-      {
-        id: 'ws1',
-        name: 'Zone A',
-        status: 'alarm',
-        alarmCount: 1,
-        nodeCount: 2,
-      },
-      {
-        id: 'ws2',
-        name: 'Zone B',
-        status: 'normal',
-        alarmCount: 0,
-        nodeCount: 1,
-      },
-    ]),
-  }
+  return { ...actual, useAtomValue: vi.fn() }
 })
 
 import { getNodes } from '@/services/canvas'
+import { useAtomValue } from 'jotai'
+import { workspacesAtom, workspacesLoadingAtom } from '@/store/workspace'
+
+const WORKSPACES = [
+  { id: 'ws1', name: 'Zone A', status: 'alarm', alarmCount: 1, nodeCount: 2 },
+  { id: 'ws2', name: 'Zone B', status: 'normal', alarmCount: 0, nodeCount: 1 },
+]
 
 describe('useDashboardData', () => {
   beforeEach(() => {
     vi.mocked(getNodes).mockResolvedValue([])
+    // ANSWERS PER ATOM. The hook reads two of them, and a blanket return
+    // handed the workspace ARRAY back for `workspacesLoadingAtom` too — a
+    // non-empty array is truthy, so the hook read "still loading" and
+    // returned before fetching anything.
+    vi.mocked(useAtomValue).mockImplementation((atom: unknown) =>
+      atom === workspacesLoadingAtom
+        ? false
+        : atom === workspacesAtom
+          ? WORKSPACES
+          : undefined,
+    )
   })
 
   it('calls getNodes for each workspace', async () => {

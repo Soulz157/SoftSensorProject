@@ -15,11 +15,15 @@ import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { DatasetVersionAuthorizedService } from './dataset-version.authorized.service';
 import {
+  BoxplotRequestDto,
   CorrelationRequestDto,
   CreateRawVersionDto,
+  HistogramRequestDto,
   ListRowsDto,
   PreviewVersionDto,
   PromoteVersionStatusDto,
+  ScatterRequestDto,
+  SplitStatsRequestDto,
   StartCleanJobDto,
   TagCatalogDto,
 } from './dto/dataset-version.authorized.dto';
@@ -149,6 +153,29 @@ export class DatasetVersionAuthorizedController {
     return this.sendRowsResult(reply, result);
   }
 
+  @Get('/:id/artifacts/:artifactId/validation-rows')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Read a page of an artifact's run's validation holdout rows",
+    description:
+      'Compare view (train vs. validation). JSON only — no `format=arrow` ' +
+      'branch, unlike `/rows`. 404s when the run has no holdout, or when one ' +
+      'was recorded but its sidecar is gone from storage.',
+  })
+  async listArtifactValidationRowsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Query() query: ListRowsDto,
+  ) {
+    return this.service.getArtifactValidationRowsService(
+      user,
+      id,
+      artifactId,
+      query,
+    );
+  }
+
   @Get('/:id/versions/:versionId/rows')
   @HttpCode(200)
   @ApiOperation({
@@ -255,6 +282,42 @@ export class DatasetVersionAuthorizedController {
     return this.service.getArtifactColumnStatsService(user, id, artifactId);
   }
 
+  @Get('/:id/artifacts/:artifactId/feature-spec')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "The artifact's feature_spec.json sidecar",
+    description:
+      'DS-LAKE-025-T06. Serves `scalingParams` — what each scaler actually ' +
+      'fit — so a display surface can present engineering units from a ' +
+      'model-ready artifact without unscaling it. 404s when the artifact ' +
+      'produces no spec (e.g. BRONZE) or the sidecar is gone from storage.',
+  })
+  async getArtifactFeatureSpecController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getArtifactFeatureSpecService(user, id, artifactId);
+  }
+
+  @Get('/:id/artifacts/:artifactId/holdout')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Raw validation holdout window, if this dataset has one',
+    description:
+      'Resolves the BRONZE sibling of the given artifact (by runId, same ' +
+      'lookup training claim() uses) and returns its holdout window, row ' +
+      'count, and missing rate. `data.holdout` is null — not a 404 — when ' +
+      'the dataset has no holdout or the artifact predates this field.',
+  })
+  async getArtifactHoldoutController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getArtifactHoldoutService(user, id, artifactId);
+  }
+
   @Post('/:id/artifacts/:artifactId/correlation')
   @HttpCode(200)
   @ApiOperation({
@@ -280,6 +343,174 @@ export class DatasetVersionAuthorizedController {
       artifactId,
       body,
     );
+  }
+
+  @Post('/:id/artifacts/:artifactId/histogram')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Per-tag histogram and KDE over a committed artifact',
+    description:
+      'Saved-dataset leg of the draft endpoint, added so edit mode can read ' +
+      'the BRONZE adopted at Save (DS-LAKE-017-T01). The draft leg cannot: ' +
+      "that artifact's `draftId` belongs to the draft that originally " +
+      'created it, not to the fresh draft an edit session opens, so a ' +
+      '`where: { id, draftId }` lookup misses it entirely. Read-only. ' +
+      '`operations` is always empty here, same as /correlation above — a ' +
+      'committed artifact is immutable and carries its cleaning baked in.',
+  })
+  async getArtifactHistogramController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: HistogramRequestDto,
+  ) {
+    return this.service.getArtifactHistogramService(user, id, artifactId, body);
+  }
+
+  @Post('/:id/artifacts/:artifactId/boxplot')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Per-tag box plot over a committed artifact',
+    description:
+      'Saved-dataset leg of the draft endpoint, added so edit mode can read ' +
+      'the BRONZE adopted at Save (DS-LAKE-017-T01). The draft leg cannot: ' +
+      "that artifact's `draftId` belongs to the draft that originally " +
+      'created it, not to the fresh draft an edit session opens, so a ' +
+      '`where: { id, draftId }` lookup misses it entirely. Read-only. ' +
+      '`operations` is always empty here, same as /correlation above — a ' +
+      'committed artifact is immutable and carries its cleaning baked in.',
+  })
+  async getArtifactBoxplotController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: BoxplotRequestDto,
+  ) {
+    return this.service.getArtifactBoxplotService(user, id, artifactId, body);
+  }
+
+  @Post('/:id/artifacts/:artifactId/split-stats')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Both sides of the train/test chronological split, from one read of a committed artifact',
+    description:
+      'MODEL-FLOW-014-T04. Derives the SAME cut images/trainer/train.py ' +
+      'would make for `splitRatio` — on the labelled frame, not row count ' +
+      '— and returns a per-tag five-number summary for EACH side from one ' +
+      'read, never two /boxplot calls. `cutTimestamp` is echoed back; the ' +
+      'client never derives a cut itself. Read-only; `objectKey` is always ' +
+      'resolved off the artifact row, never from the request.',
+  })
+  async getArtifactSplitStatsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: SplitStatsRequestDto,
+  ) {
+    return this.service.getArtifactSplitStatsService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/validation-correlation')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      "Pearson correlation matrix over the run's validation holdout, hard-capped",
+    description:
+      'Compare-view twin of /correlation, reading `validate_data.parquet` ' +
+      'via the same run-sibling lookup /validation-rows and /holdout use, ' +
+      "instead of the artifact's own object. `tags` is the candidate " +
+      'universe; the server resolves it down to at most `topK` columns and ' +
+      'echoes the resolved list back. 404s when the run has no holdout, or ' +
+      'one was recorded but its sidecar is gone from storage.',
+  })
+  async getArtifactValidationCorrelationController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: CorrelationRequestDto,
+  ) {
+    return this.service.getArtifactValidationCorrelationService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/validation-histogram')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Per-tag histogram and KDE over the run's validation holdout",
+    description:
+      'Compare-view twin of /histogram, reading `validate_data.parquet` ' +
+      'via the same run-sibling lookup /validation-rows and /holdout use, ' +
+      "instead of the artifact's own object. 404s when the run has no " +
+      'holdout, or one was recorded but its sidecar is gone from storage.',
+  })
+  async getArtifactValidationHistogramController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: HistogramRequestDto,
+  ) {
+    return this.service.getArtifactValidationHistogramService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/validation-boxplot')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Per-tag box plot over the run's validation holdout",
+    description:
+      'Compare-view twin of /boxplot, reading `validate_data.parquet` via ' +
+      'the same run-sibling lookup /validation-rows and /holdout use, ' +
+      "instead of the artifact's own object. 404s when the run has no " +
+      'holdout, or one was recorded but its sidecar is gone from storage.',
+  })
+  async getArtifactValidationBoxplotController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: BoxplotRequestDto,
+  ) {
+    return this.service.getArtifactValidationBoxplotService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/scatter')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Per-tag scatter plot over a committed artifact',
+    description:
+      'Saved-dataset leg of the draft endpoint, added so edit mode can read ' +
+      'the BRONZE adopted at Save (DS-LAKE-017-T01). The draft leg cannot: ' +
+      "that artifact's `draftId` belongs to the draft that originally " +
+      'created it, not to the fresh draft an edit session opens, so a ' +
+      '`where: { id, draftId }` lookup misses it entirely. Read-only. ' +
+      '`operations` is always empty here, same as /correlation above — a ' +
+      'committed artifact is immutable and carries its cleaning baked in.',
+  })
+  async getArtifactScatterController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: ScatterRequestDto,
+  ) {
+    return this.service.getArtifactScatterService(user, id, artifactId, body);
   }
 
   @Post('/:id/versions/:versionId/preview')
@@ -314,6 +545,37 @@ export class DatasetVersionAuthorizedController {
     @Body() body: StartCleanJobDto,
   ) {
     return this.service.startCleanJobService(user, id, versionId, body);
+  }
+
+  @Post('/:id/export')
+  @HttpCode(202)
+  @ApiOperation({
+    summary: 'Start an export job (202 + jobId)',
+    description:
+      'Returns immediately with a job id; poll `GET /:id/jobs/:jobId` for ' +
+      "progress. Exports the dataset's FINAL artifact only.",
+  })
+  async startExportController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.service.startExportService(user, id);
+  }
+
+  @Get('/:id/export/:artifactId/download')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Presigned download link for a completed export artifact',
+    description:
+      'Presigns fresh on every call — the link expires, so this must not ' +
+      'be cached from job-completion time.',
+  })
+  async getExportDownloadController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getExportDownloadService(user, id, artifactId);
   }
 
   @Get('/:id/jobs/:jobId')

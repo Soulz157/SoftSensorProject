@@ -14,17 +14,42 @@ import pandas as pd
 import pytest
 
 from intergrations.object_store import (
+    COLUMN_STATS_FILENAME,
+    DATA_FILENAME,
+    DATA_FILENAME_BY_TYPE,
     STATUS_BAD,
     STATUS_GOOD,
     STATUS_QUESTIONABLE,
     STATUS_SUFFIX,
+    RETENTION_PERMANENT,
+    RETENTION_REFERENCED,
+    RETENTION_SWEEPABLE,
+    RETENTION_TAG_KEY,
     TMP_LIFECYCLE_EXPIRY_DAYS,
     TMP_LIFECYCLE_RULE_ID,
+    TMP_LIFECYCLE_TAG_KEY,
+    TMP_LIFECYCLE_TAG_VALUE,
+    ObjectNotFoundError,
     ObjectStore,
     ObjectStoreError,
+    artifact_key,
+    artifact_prefix,
     assert_frame_shape,
+    class_for_key,
     assert_tags_are_storable,
+    draft_run_key,
+    draft_run_prefix,
+    draft_runs_prefix,
+    is_committed_artifact_key,
+    is_draft_run_key,
+    is_draft_run_prefix,
+    is_model_run_key,
+    manifest_key,
+    MANIFEST_FILENAME,
     missing_pct,
+    model_run_key,
+    sidecar_key,
+    split_data_key,
     tag_columns,
     tmp_key,
     tmp_prefix,
@@ -143,6 +168,215 @@ def test_status_codes_are_distinct() -> None:
     assert len({STATUS_GOOD, STATUS_BAD, STATUS_QUESTIONABLE}) == 3
 
 
+# ── stage-suffixed data filenames (DS-LAKE-016) ─────────────────────────
+
+
+def test_artifact_key_defaults_to_legacy_name_when_type_omitted() -> None:
+    """Every existing caller keeps compiling and keeps producing the OLD
+    name until explicitly updated — the widening's whole premise."""
+    assert artifact_key("ds1", "a1") == "ds1/artifacts/a1/data.parquet"
+
+
+def test_artifact_key_is_stage_suffixed_for_bronze_silver_gold() -> None:
+    assert artifact_key("ds1", "a1", "BRONZE") == "ds1/artifacts/a1/data_bronze.parquet"
+    assert artifact_key("ds1", "a1", "SILVER") == "ds1/artifacts/a1/data_silver.parquet"
+    assert artifact_key("ds1", "a1", "GOLD") == "ds1/artifacts/a1/data_gold.parquet"
+
+
+def test_artifact_key_final_falls_back_to_legacy_name() -> None:
+    """FINAL never gets a file of its own — DATA_FILENAME_BY_TYPE has no
+    FINAL entry, and this must not raise for an unknown/absent type."""
+    assert artifact_key("ds1", "a1", "FINAL") == artifact_key("ds1", "a1")
+
+
+def test_split_data_key_recognises_every_accepted_filename() -> None:
+    for filename in (DATA_FILENAME, *DATA_FILENAME_BY_TYPE.values()):
+        key = f"ds1/artifacts/a1/{filename}"
+        assert split_data_key(key) == ("ds1/artifacts/a1/", filename)
+
+
+def test_split_data_key_rejects_a_non_data_key() -> None:
+    assert split_data_key("ds1/artifacts/a1/manifest.json") is None
+    assert split_data_key("ds1/tmp/job1/1.parquet") is None
+
+
+def test_sidecar_key_resolves_to_the_same_location_for_every_accepted_data_filename() -> (
+    None
+):
+    """DS-LAKE-016-T05's own acceptance criterion, literally: sidecars must
+    not depend on WHICH spelling the data file carries."""
+    expected = "ds1/artifacts/a1/manifest.json"
+    for filename in (DATA_FILENAME, *DATA_FILENAME_BY_TYPE.values()):
+        data_key = f"ds1/artifacts/a1/{filename}"
+        assert sidecar_key(data_key, "manifest.json") == expected
+        assert sidecar_key(data_key, "manifest.json") == manifest_key("ds1", "a1")
+
+
+def test_sidecar_key_falls_back_to_a_dotted_suffix_for_a_non_artifact_key() -> None:
+    """Legacy/tmp keys are not in the artifact layout at all — must still
+    get a manifest, not silently none, per the function's own doc comment."""
+    assert (
+        sidecar_key("ds1/tmp/job1/1.parquet", "manifest.json")
+        == "ds1/tmp/job1/1.parquet.manifest.json"
+    )
+
+
+def test_is_committed_artifact_key_accepts_legacy_and_every_stage_suffix() -> None:
+    for filename in (DATA_FILENAME, *DATA_FILENAME_BY_TYPE.values()):
+        assert is_committed_artifact_key(f"ds1/artifacts/a1/{filename}")
+
+
+def test_is_committed_artifact_key_rejects_tmp_and_sidecar_keys() -> None:
+    assert not is_committed_artifact_key("ds1/tmp/job1/1.parquet")
+    assert not is_committed_artifact_key("ds1/artifacts/a1/manifest.json")
+    assert not is_committed_artifact_key("ds1/v1.parquet")  # legacy version key
+
+
+def test_export_key_reclaims_only_its_own_artifact_directory() -> None:
+    """DS-LAKE-021-T04 regression. An EXPORT used to derive its key via
+    `sidecar_key(source_key, EXPORT_CSV_FILENAME)` — landing INSIDE the
+    SOURCE artifact's own directory. Reclaiming it then would have deleted
+    the source's own data.parquet too. An EXPORT now owns its own
+    artifact-id-keyed key, same as every other committed type —
+    `split_data_key`'s derived prefix (what `reclaim_artifact` deletes)
+    must stay scoped to ONLY the export's own directory, never a
+    different artifact's."""
+    export_key = "ds1/artifacts/export-1/export.csv"
+    source_prefix = "ds1/artifacts/final-1/"  # a DIFFERENT artifact
+
+    assert is_committed_artifact_key(export_key)
+    prefix, filename = split_data_key(export_key)
+    assert filename == "export.csv"
+    assert prefix == "ds1/artifacts/export-1/"
+    # The hazard this test exists to catch: the derived prefix must never
+    # equal a different artifact's own directory.
+    assert prefix != source_prefix
+
+
+# ── model-run key guard (MODEL-FLOW-000-T09) ────────────────────────────────
+
+
+def test_is_model_run_key_accepts_well_formed_keys() -> None:
+    assert is_model_run_key(model_run_key("m1", "r1", "model.joblib"))
+    assert is_model_run_key("models/m1/runs/r1/model.joblib")
+
+
+def test_is_model_run_key_rejects_traversal_and_malformed_segments() -> None:
+    """Structural, not substring: startswith('models/') and '/runs/' in key
+    used to accept 'models/../../x/runs/y/z' — this is the regression that
+    guard exists to close."""
+    assert not is_model_run_key("models/../../x/runs/r1/model.joblib")
+    assert not is_model_run_key("models/../runs/r1/model.joblib")
+    assert not is_model_run_key("models/m1/runs/../r1/model.joblib")
+    assert not is_model_run_key("models//runs/r1/model.joblib")
+    assert not is_model_run_key("models/m1/runs/r1/sub/model.joblib")
+    assert not is_model_run_key("models/m1/notruns/r1/model.joblib")
+    assert not is_model_run_key("models/m1/runs//model.joblib")
+    assert not is_model_run_key("not-models/m1/runs/r1/model.joblib")
+
+
+def test_is_draft_run_key_accepts_well_formed_keys() -> None:
+    assert is_draft_run_key(draft_run_key("d1", "r1", "model.joblib"))
+    assert is_draft_run_key("drafts/d1/runs/r1/model.joblib")
+
+
+def test_is_draft_run_key_rejects_traversal_and_malformed_segments() -> None:
+    """Same structural predicate as is_model_run_key, rooted at drafts/ —
+    see that function's own regression test for what this closes."""
+    assert not is_draft_run_key("drafts/../../x/runs/r1/model.joblib")
+    assert not is_draft_run_key("drafts/../runs/r1/model.joblib")
+    assert not is_draft_run_key("drafts/d1/runs/../r1/model.joblib")
+    assert not is_draft_run_key("drafts//runs/r1/model.joblib")
+    assert not is_draft_run_key("drafts/d1/runs/r1/sub/model.joblib")
+    assert not is_draft_run_key("drafts/d1/notruns/r1/model.joblib")
+    assert not is_draft_run_key("drafts/d1/runs//model.joblib")
+    assert not is_draft_run_key("not-drafts/d1/runs/r1/model.joblib")
+    # Cross-root: a model-shaped key must not satisfy the draft predicate,
+    # and vice versa — the two roots are never interchangeable.
+    assert not is_draft_run_key("models/m1/runs/r1/model.joblib")
+    assert not is_model_run_key("drafts/d1/runs/r1/model.joblib")
+
+
+def test_is_draft_run_prefix_accepts_both_a_run_prefix_and_a_drafts_subtree() -> None:
+    """MODEL-FLOW-011-T02. Unlike is_draft_run_key (filename-terminated,
+    exactly 4 segments), this accepts either the 3-segment run prefix or the
+    2-segment whole-subtree prefix — both directory-terminated."""
+    assert is_draft_run_prefix(draft_run_prefix("d1", "r1"))
+    assert is_draft_run_prefix("drafts/d1/runs/r1/")
+    assert is_draft_run_prefix(draft_runs_prefix("d1"))
+    assert is_draft_run_prefix("drafts/d1/runs/")
+
+
+def test_is_draft_run_prefix_rejects_a_bare_draft_prefix() -> None:
+    """The hazard this predicate exists to prevent: drafts/ is a shared root
+    for ModelDraft run objects AND DatasetDraft artifact objects. A bare
+    drafts/{draft_id}/ prefix reaches BOTH — this must never validate."""
+    assert not is_draft_run_prefix("drafts/d1/")
+    assert not is_draft_run_prefix("drafts/d1")
+
+
+def test_is_draft_run_prefix_rejects_traversal_missing_slash_and_wrong_root() -> None:
+    assert not is_draft_run_prefix("drafts/../runs/r1/")
+    assert not is_draft_run_prefix("drafts/d1/runs/../")
+    assert not is_draft_run_prefix("drafts/d1/runs/r1")  # no trailing slash
+    assert not is_draft_run_prefix("drafts/d1/notruns/r1/")
+    assert not is_draft_run_prefix("drafts//runs/r1/")
+    assert not is_draft_run_prefix("drafts/d1/runs//")
+    assert not is_draft_run_prefix("models/m1/runs/r1/")
+    assert not is_draft_run_prefix("drafts/d1/artifacts/a1/")  # DatasetDraft shape
+
+
+# ── retention classes (MODEL-SERVE-007-T03) ──────────────────────────────
+
+
+def test_shared_drafts_root_resolves_to_two_different_classes() -> None:
+    """V02. `drafts/` is shared by a model RUN output and a dataset DRAFT
+    artifact, and they belong to different retention classes. A resolver
+    dispatching on the first path segment sends both to the same class and
+    still passes any test that checks only one of them, so both are asserted
+    here in one test — they are the same assertion."""
+    run = draft_run_key("d1", "r1", "model.joblib")
+    artifact = "d1/artifacts/a1/data_gold.parquet"
+
+    assert class_for_key(run) == RETENTION_REFERENCED
+    assert class_for_key("drafts/d1/artifacts/a1/data_gold.parquet") == (
+        RETENTION_SWEEPABLE
+    )
+    assert class_for_key(artifact) == RETENTION_SWEEPABLE
+    assert class_for_key(run) != class_for_key(
+        "drafts/d1/artifacts/a1/data_gold.parquet"
+    )
+
+
+def test_rootless_legacy_dataset_key_resolves_to_the_dataset_class() -> None:
+    """V03. `{datasetId}/{versionId}.parquet` — the pre-DS-LAKE-003 layout,
+    still read and never movable. It has NO named root at all, so this is
+    the case a first-segment resolver gets wrong by classing every dataset
+    object on whatever its UUID happens to be."""
+    assert class_for_key(version_key("ds-1", "v-1")) == RETENTION_SWEEPABLE
+    assert class_for_key(
+        artifact_key("ds-1", "art-1", DATA_FILENAME)
+    ) == RETENTION_SWEEPABLE
+    assert class_for_key(
+        tmp_key("ds-1", "job-1", 1)) == RETENTION_SWEEPABLE
+
+
+def test_inference_and_serving_logs_are_permanent() -> None:
+    """The two operational records that are never reclaimed. `inference/`
+    matters most: 31 such objects already existed when this feature landed."""
+    assert class_for_key(
+        "inference/m1/v1/dt=2026-09-12/hour=09/input.parquet"
+    ) == RETENTION_PERMANENT
+    assert class_for_key(
+        "serving-logs/m1/v1/dt=2026-09-12/hour=09/abc.parquet"
+    ) == RETENTION_PERMANENT
+
+
+def test_model_run_outputs_are_referenced() -> None:
+    assert class_for_key(
+        model_run_key("m1", "r1", "model.joblib")) == RETENTION_REFERENCED
+
+
 # ── live MinIO ───────────────────────────────────────────────────────────
 
 
@@ -194,6 +428,142 @@ def test_tmp_intermediates_may_be_overwritten(store: ObjectStore) -> None:
     store.put_frame(df, key, overwrite=True)
 
     assert store.delete_prefix(tmp_prefix("pytest-object-store", "job-1")) == 1
+
+
+def test_stage_suffixed_write_round_trips_data_and_sidecar(
+    store: ObjectStore,
+) -> None:
+    """DS-LAKE-016-T05/V01: write one real artifact per stage against real
+    MinIO, confirm the object name is actually stage-suffixed, then read the
+    data AND its manifest sidecar back through the derived key — the whole
+    point of naming the stage into the file is that a reader can still find
+    everything beside it."""
+    df = good_frame()
+    dataset_id = "pytest-object-store"
+
+    for artifact_type, filename in DATA_FILENAME_BY_TYPE.items():
+        artifact_id = f"stage-{artifact_type.lower()}"
+        key = artifact_key(dataset_id, artifact_id, artifact_type)
+        assert key == f"{dataset_id}/artifacts/{artifact_id}/{filename}"
+
+        store.put_frame(df, key, overwrite=True)
+        manifest = sidecar_key(key, "manifest.json")
+        assert manifest == manifest_key(dataset_id, artifact_id)
+        store.put_json(manifest, {"stage": artifact_type})
+
+        back = store.get_frame(key)
+        assert back.equals(df)
+        assert store.get_json(manifest) == {"stage": artifact_type}
+
+    store.delete_prefix(f"{dataset_id}/artifacts/")
+
+
+def test_reclaim_a_real_stage_suffixed_artifact_deletes_a_non_zero_count(
+    store: ObjectStore,
+) -> None:
+    """DS-LAKE-016-T05/V02: the live counterpart of the RecordingStore-based
+    unit test in test_artifact_service.py — a prefix bug here reports
+    success and deletes nothing, so `deleted > 0` plus a real `exists()`
+    check is asserted, not just "no error"."""
+    df = good_frame()
+    dataset_id = "pytest-object-store"
+    artifact_id = "reclaim-gold"
+    key = artifact_key(dataset_id, artifact_id, "GOLD")
+
+    store.put_frame(df, key, overwrite=True)
+    prefix, _ = split_data_key(key)
+    assert prefix == f"{dataset_id}/artifacts/{artifact_id}/"
+
+    deleted = store.delete_prefix(prefix)
+
+    assert deleted > 0
+    assert not store.exists(key)
+
+
+def test_reclaim_one_draft_run_leaves_its_sibling_run_readable(
+    store: ObjectStore,
+) -> None:
+    """MODEL-FLOW-011-T05, proved by deletion rather than by assertion that a
+    mocked call was never made. Two run prefixes under one draft; reclaim
+    ONE by {draft_id, run_id}, then assert the survivor — standing in for an
+    adopted run's objects, which the sweep must never even name — is still
+    readable AFTER the tick that reclaimed its sibling. A mock-based Nest
+    spec can show "postToPython was never called with it"; only a real
+    delete against the survivor's neighbour can show the delete itself is
+    correctly scoped to just the one prefix."""
+    df = good_frame()
+    draft_id = "pytest-object-store-draft-t05"
+    reclaimed_run = "run-reclaimed"
+    surviving_run = "run-adopted"
+
+    reclaimed_key = draft_run_key(draft_id, reclaimed_run, "model.joblib")
+    surviving_key = draft_run_key(draft_id, surviving_run, "model.joblib")
+    store.put_frame(df, reclaimed_key, overwrite=True)
+    store.put_frame(df, surviving_key, overwrite=True)
+
+    prefix = draft_run_prefix(draft_id, reclaimed_run)
+    assert is_draft_run_prefix(prefix)
+
+    deleted = store.delete_prefix(prefix)
+
+    assert deleted > 0
+    assert not store.exists(reclaimed_key)
+    assert store.exists(surviving_key)
+
+    store.delete_prefix(draft_runs_prefix(draft_id))
+
+
+def test_reclaim_draft_runs_subtree_removes_every_run_including_an_orphan(
+    store: ObjectStore,
+) -> None:
+    """MODEL-FLOW-011-T02: the subtree-delete branch, used whenever no run on
+    a draft is adopted — also the one shape that reaches a run prefix whose
+    ModelTrainingRun row is already gone (an orphan the row-driven per-run
+    branch could never name). Two run prefixes, no Postgres row assumed for
+    either; one subtree call must remove both."""
+    df = good_frame()
+    draft_id = "pytest-object-store-draft-t02-subtree"
+    run_a = draft_run_key(draft_id, "run-a", "model.joblib")
+    run_b = draft_run_key(draft_id, "run-b", "metrics.json")
+    store.put_frame(df, run_a, overwrite=True)
+    store.put_json(run_b, {"rmse": 1.0})
+
+    subtree = draft_runs_prefix(draft_id)
+    assert is_draft_run_prefix(subtree)
+
+    deleted = store.delete_prefix(subtree)
+
+    assert deleted == 2
+    assert not store.exists(run_a)
+    assert not store.exists(run_b)
+
+
+def test_pre_existing_legacy_named_artifact_still_reads_end_to_end(
+    store: ObjectStore,
+) -> None:
+    """DS-LAKE-016-V03: the WIDENING claim, tested rather than asserted. A
+    real object written the OLD way (no artifact_type — every artifact
+    committed before this feature) must still round-trip data + sidecar +
+    reclaim identically after the change. Pre-existing objects can never be
+    renamed (findings), so this path must never regress."""
+    df = good_frame()
+    dataset_id = "pytest-object-store"
+    artifact_id = "legacy-artifact"
+    key = artifact_key(dataset_id, artifact_id)  # no type -> legacy data.parquet
+    assert key == f"{dataset_id}/artifacts/{artifact_id}/data.parquet"
+
+    store.put_frame(df, key, overwrite=True)
+    manifest = sidecar_key(key, "manifest.json")
+    store.put_json(manifest, {"legacy": True})
+
+    assert is_committed_artifact_key(key)
+    back = store.get_frame(key)
+    assert back.equals(df)
+    assert store.get_json(manifest) == {"legacy": True}
+
+    prefix, _ = split_data_key(key)
+    assert store.delete_prefix(prefix) > 0
+    assert not store.exists(key)
 
 
 def test_get_frame_slice_windows_rows(store: ObjectStore) -> None:
@@ -311,7 +681,15 @@ def test_get_frame_column_projection_excludes_the_other_tag(
 def test_tmp_writes_are_tagged_for_lifecycle_expiry(store: ObjectStore) -> None:
     """A tmp/ write must carry the tag `ensure_tmp_lifecycle_rule`'s bucket
     rule matches on — a committed artifact write must NOT, or the bucket
-    rule would expire real data."""
+    rule would expire real data.
+
+    MODEL-SERVE-007-T02 widened what else may be on these objects: every
+    write now also carries a `retention` class tag. The assertions below are
+    deliberately about the LIFECYCLE key only — the two tags are separate
+    (the tmp rule filters on `lifecycle=tmp`, which is narrower than the
+    SWEEPABLE class both these keys belong to), and pinning the whole tag set
+    here would break again the next time any orthogonal tag is added.
+    """
     df = good_frame()
     tmp = tmp_key("pytest-object-store", "job-lifecycle", 1)
     committed = "pytest-object-store/artifacts/art-1/data.parquet"
@@ -319,11 +697,111 @@ def test_tmp_writes_are_tagged_for_lifecycle_expiry(store: ObjectStore) -> None:
     store.put_frame(df, tmp, overwrite=True)
     store.put_frame(df, committed, overwrite=True)
 
-    tmp_tags = store._client.get_object_tags(store.bucket, tmp)
-    committed_tags = store._client.get_object_tags(store.bucket, committed)
+    tmp_tags = dict(store._client.get_object_tags(store.bucket, tmp) or {})
+    committed_tags = dict(
+        store._client.get_object_tags(store.bucket, committed) or {}
+    )
 
-    assert tmp_tags is not None and dict(tmp_tags) == {"lifecycle": "tmp"}
-    assert not committed_tags
+    assert tmp_tags.get(TMP_LIFECYCLE_TAG_KEY) == TMP_LIFECYCLE_TAG_VALUE
+    assert TMP_LIFECYCLE_TAG_KEY not in committed_tags
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_put_json_tags_its_sidecar_with_a_retention_class(
+    store: ObjectStore,
+) -> None:
+    """V04. `put_json` calls `put_object` DIRECTLY instead of going through
+    `put_object_stream`, so a tag added only to the shared PUT path leaves
+    every JSON sidecar — run_manifest.json, metrics.json, feature_spec.json —
+    untagged while every Parquet-writing test still passes. This test is the
+    only thing standing between that and a silently half-tagged store."""
+    key = "pytest-object-store/artifacts/art-1/manifest.json"
+    store.put_json(key, {"hello": "world"})
+
+    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    assert tags.get(RETENTION_TAG_KEY) == RETENTION_SWEEPABLE
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_tag_retention_labels_an_object_the_server_never_wrote(
+    store: ObjectStore,
+) -> None:
+    """The presigned-upload half of MODEL-SERVE-007-T02. A trainer or
+    infer-mode container PUTs straight to MinIO with a presigned URL, so the
+    object exists untagged; `tag_retention` is how the first server-side
+    touch afterwards gives it its class. Stands in for that here by writing
+    the object, stripping its tags, and re-tagging."""
+    key = "pytest-object-store/runs/r1/predictions.parquet"
+    store.put_frame(good_frame(), key, overwrite=True)
+    store._client.delete_object_tags(store.bucket, key)
+    assert not dict(store._client.get_object_tags(store.bucket, key) or {})
+
+    assert store.tag_retention(key) is True
+    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    # The LITERAL class, not `class_for_key(key)` — asserting against the same
+    # function the implementation calls would pass even if `tag_retention`
+    # wrote the wrong class, which is the only thing this test exists to catch.
+    assert tags.get(RETENTION_TAG_KEY) == RETENTION_SWEEPABLE
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_tag_retention_labels_an_inference_object_permanent(
+    store: ObjectStore,
+) -> None:
+    """The class where a wrong label is most expensive: `inference/` is never
+    reclaimed, and an object mislabelled SWEEPABLE here is one a tag-filtered
+    lifecycle rule would delete. Written under the real root rather than a
+    pytest prefix, because the root IS what is under test."""
+    key = (
+        "inference/pytest-model/pytest-version/"
+        "dt=2026-09-16/hour=00/predictions.parquet"
+    )
+    store.put_frame(good_frame(), key, overwrite=True)
+    store._client.delete_object_tags(store.bucket, key)
+
+    assert store.tag_retention(key) is True
+    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    assert tags.get(RETENTION_TAG_KEY) == RETENTION_PERMANENT
+
+    store.delete_prefix("inference/pytest-model/")
+
+
+def test_copy_prefix_tags_the_object_it_mints(store: ObjectStore) -> None:
+    """`copy_prefix` is a THIRD write path: `copy_object` creates a new object
+    without going through `put_object_stream`, and it carries the SOURCE's
+    tags — so a legacy untagged source would otherwise produce an untagged
+    object written after this feature shipped. DS-LAKE-025's Save Dataset copy
+    is an active caller, so this is a live path, not a latent one."""
+    src = "pytest-object-store/src/artifacts/a1/data.parquet"
+    dst_prefix = "pytest-object-store/dst/artifacts/a1/"
+    store.put_frame(good_frame(), src, overwrite=True)
+    store._client.delete_object_tags(store.bucket, src)
+
+    copied = store.copy_prefix("pytest-object-store/src/artifacts/a1/", dst_prefix)
+    assert copied == [f"{dst_prefix}data.parquet"]
+
+    tags = dict(store._client.get_object_tags(store.bucket, copied[0]) or {})
+    assert tags.get(RETENTION_TAG_KEY) == RETENTION_SWEEPABLE
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_tag_retention_refuses_a_tmp_key_rather_than_clobber_it(
+    store: ObjectStore,
+) -> None:
+    """`set_object_tags` REPLACES the whole tag set, so pointing this method
+    at a tmp object would drop `lifecycle=tmp` and quietly remove it from the
+    expiry rule's reach. No presigned upload lands under tmp/, so refusing is
+    free; losing the lifecycle tag would not be."""
+    key = tmp_key("pytest-object-store", "job-1", 1)
+    store.put_frame(good_frame(), key, overwrite=True)
+
+    assert store.tag_retention(key) is False
+    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    assert tags.get(TMP_LIFECYCLE_TAG_KEY) == TMP_LIFECYCLE_TAG_VALUE
 
     store.delete_prefix("pytest-object-store/")
 
@@ -341,3 +819,107 @@ def test_ensure_tmp_lifecycle_rule_is_idempotent(store: ObjectStore) -> None:
     assert len(matching) == 1
     assert matching[0].expiration.days == TMP_LIFECYCLE_EXPIRY_DAYS
     assert len(second.rules) == len(first.rules)
+
+
+# ── DS-LAKE-025: copy_prefix + the typed missing-object error ────────────────
+#
+# Save Dataset copies a draft's committed artifact into the dataset's own
+# prefix so a saved dataset never depends on a `drafts/` object it does not
+# own. Two saved datasets were found with their draft objects already gone —
+# DatasetArtifact rows live, `objectReclaimedAt` null, MinIO answering
+# NoSuchKey — which is the failure these tests pin closed.
+
+
+def test_missing_object_raises_the_typed_subclass(store: ObjectStore) -> None:
+    """A NoSuchKey is distinguishable, and still an ObjectStoreError.
+
+    The subclass is what lets `routers/preprocess._run` answer 404 for "the
+    bytes are gone" while keeping 422 for "storage refused the read" — two
+    failures with different remedies that used to be one 400 carrying a raw
+    MinIO string.
+    """
+    missing = "pytest-object-store/definitely-absent/data.parquet"
+
+    with pytest.raises(ObjectNotFoundError) as excinfo:
+        store.get_object_bytes(missing)
+
+    assert isinstance(excinfo.value, ObjectStoreError)
+    # Message text is unchanged from before the split, on purpose.
+    assert str(excinfo.value) == f"Could not read '{missing}': NoSuchKey"
+
+
+def test_copy_prefix_moves_data_and_every_sidecar(store: ObjectStore) -> None:
+    src = "pytest-object-store/src-artifact/"
+    dst = "pytest-object-store/dst-artifact/"
+    store.put_frame(good_frame(), f"{src}{DATA_FILENAME}", overwrite=True)
+    store.put_json(f"{src}{MANIFEST_FILENAME}", {"n": 1})
+    store.put_json(f"{src}{COLUMN_STATS_FILENAME}", {"TI-101": {}})
+
+    copied = store.copy_prefix(src, dst)
+
+    # Sidecars travel too: readers derive their keys FROM the data key, so a
+    # copy that moved only the parquet would repoint the row at a data file
+    # whose sidecars still 404.
+    assert sorted(copied) == [
+        f"{dst}{COLUMN_STATS_FILENAME}",
+        f"{dst}{DATA_FILENAME}",
+        f"{dst}{MANIFEST_FILENAME}",
+    ]
+    assert store.get_frame(f"{dst}{DATA_FILENAME}").equals(good_frame())
+    assert store.get_json(f"{dst}{MANIFEST_FILENAME}") == {"n": 1}
+    # Byte-identical, not re-encoded — the artifact row's recorded checksum
+    # has to keep matching the object it now points at.
+    assert store.checksum_of(f"{dst}{DATA_FILENAME}") == store.checksum_of(
+        f"{src}{DATA_FILENAME}"
+    )
+    # The source is left alone: removing it is cleanup's job, never Save's.
+    assert store.exists(f"{src}{DATA_FILENAME}")
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_copy_prefix_is_idempotent(store: ObjectStore) -> None:
+    """A retried Save converges instead of failing on the second attempt."""
+    src = "pytest-object-store/src-idem/"
+    dst = "pytest-object-store/dst-idem/"
+    store.put_frame(good_frame(), f"{src}{DATA_FILENAME}", overwrite=True)
+
+    first = store.copy_prefix(src, dst)
+    second = store.copy_prefix(src, dst)
+
+    assert first == second == [f"{dst}{DATA_FILENAME}"]
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_copy_prefix_onto_itself_is_a_listing(store: ObjectStore) -> None:
+    """An already-dataset-owned artifact degenerates to a no-op.
+
+    `adopt_artifact` relies on this instead of branching: every object
+    already exists at its own destination, so nothing is copied and the call
+    reduces to reporting what is there.
+    """
+    prefix = artifact_prefix("pytest-object-store", "self-adopt")
+    store.put_frame(good_frame(), f"{prefix}{DATA_FILENAME}", overwrite=True)
+
+    assert store.copy_prefix(prefix, prefix) == [f"{prefix}{DATA_FILENAME}"]
+    assert store.exists(f"{prefix}{DATA_FILENAME}")
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_copy_prefix_refuses_prefixes_without_a_trailing_slash() -> None:
+    """Guards the relative-name split.
+
+    Without the trailing slash the `src_key[len(src_prefix):]` split cuts a
+    filename FRAGMENT — the same shape of defect DS-LAKE-016-T02 fixed in
+    `reclaim_artifact`, where a stage-suffixed key left `.../data_` behind
+    and silently matched nothing. Refusing loudly beats copying to a
+    plausible-looking wrong key.
+    """
+    s = ObjectStore.__new__(ObjectStore)  # no transport needed to hit the guard
+
+    with pytest.raises(ValueError, match="trailing slash|directory-style"):
+        ObjectStore.copy_prefix(s, "a/b", "c/d/")
+    with pytest.raises(ValueError, match="trailing slash|directory-style"):
+        ObjectStore.copy_prefix(s, "a/b/", "c/d")

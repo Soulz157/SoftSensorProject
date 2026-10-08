@@ -36,14 +36,21 @@ export interface DatasetValidationState {
  * `useDatasetGoldWarm`) if ready, else SILVER (Step 3.2's clean job) —
  * same fallback order `useDatasetGoldWarm` itself documents.
  *
- * Gated on ARTIFACT PRESENCE, not wizard mode. `use-dataset-edit-hydration.ts`
- * never sets `dwDraftIdAtom`/`dwDraftArtifactIdAtom`/`dwDraftGoldArtifactIdAtom`
- * (confirmed by grep — edit mode hydrates the dataset directly, not through
- * a draft), so a gate artifact is simply absent there and `status` falls out
- * to `unavailable` automatically. Deliberately NOT branching on
- * `mode === 'edit'` — a second, redundant condition would drift from the
- * real one the day edit-mode hydration starts setting draft atoms too
- * (plausibly DS-LAKE-009's job, not this one's).
+ * Gated on ARTIFACT PRESENCE, not wizard mode — deliberately not branching on
+ * `mode === 'edit'`, so a second, redundant condition can't drift from the
+ * real one.
+ *
+ * DS-LAKE-024-T03 gave edit mode a real draft: `use-dataset-edit-hydration.ts`
+ * now sets `dwDraftIdAtom`/`dwDraftArtifactIdAtom` there too (the shared
+ * borrowed-root BRONZE, or whatever Step 5's clean chain has advanced it to —
+ * `dwDraftGoldArtifactIdAtom` stays edit mode's own separate write from
+ * Step 4's warm, per that hook's doc comment). This hook's `unavailable`
+ * fallback is CORRECTLY unreachable in edit mode as of T03; the stale claim
+ * this comment used to make (that edit mode never touches these atoms at
+ * all) was corrected by DS-LAKE-024-T06, which also had to scope
+ * `step-6-review-save.tsx`'s `goldNotReady` guard to `mode === 'create'`
+ * for the same reason — that guard blocked Save in edit mode otherwise,
+ * see its own doc comment.
  *
  * `unavailable` and `pending` are kept distinct on purpose: `unavailable`
  * means the gate does not apply (nothing to validate yet — Save is

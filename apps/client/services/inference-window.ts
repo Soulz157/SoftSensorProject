@@ -1,0 +1,674 @@
+import { fetchClient } from '@/lib/fetcher'
+
+/**
+ * MODEL-SERVE-006. Schedule/status/backfill/retry — the JWT-facing half of
+ * the inference-window feature (container callbacks are server-internal
+ * and have no client caller). Lives under `authorized/model/:modelId`,
+ * matching `model-version`/`model-monitoring`'s own prefix.
+ */
+
+interface ApiResponse<T> {
+  data: T
+  statusCode: number
+  message: string
+  type: string
+}
+
+/**
+ * MODEL-SERVE-006-T09. The wizard's five deploy-step guardrails, under
+ * their own names (store/model-pipeline.ts's mpAutoRetrainAtom/
+ * mpRetrainWarnSdAtom/mpRetrainCriticalSdAtom/mpDriftMonitorAtom/
+ * mpDriftMonitorAtom) — this is the ONE place they now persist.
+ */
+/**
+ * MODEL-SERVE-013-T03. One data source as the schedule surface sees it.
+ * Resolved SERVER-SIDE: `DataSource` rows are owned per user, so a name
+ * looked up in the browser reads "unknown" for any source a teammate
+ * created. `name`/`type` are null only when `status` is 'missing' — the
+ * bound id no longer has a row.
+ */
+export interface ScheduleSourceRef {
+  id: string
+  name: string | null
+  type: string | null
+  status: string
+}
+
+export interface InferenceSchedule {
+  enabled: boolean
+  cadenceMinutes: number | null
+  lagMinutes: number | null
+  sourceId: string | null
+  /** Null when the model was never deployed — `sourceId` is required on the
+   *  row, so no row means no binding has ever existed. */
+  currentSource: ScheduleSourceRef | null
+  /** The pinned PRODUCTION version's dataset's sources, in the dataset's own
+   *  order. Empty when nothing is in production. */
+  sourceCandidates: ScheduleSourceRef[]
+  autoRetrain: boolean
+  warnSd: number
+  criticalSd: number
+  driftMonitor: boolean
+  /**
+   * MODEL-SERVE-001-T28. Operational health thresholds. API-settable and read
+   * back by `getSchedule`, but with no editor yet — the wizard deliberately
+   * does not own them (they are runtime tuning, not creation-time choices).
+   */
+  missingPctWarn: number
+  missingPctAlert: number
+  skipStreakAlert: number
+  frozenWindows: number
+  frozenTolerancePct: number
+}
+
+/** MODEL-SERVE-001-T09. `reason` already redacted server-side
+ *  (`lib/redact-urls.ts`) — never re-sanitize on this side, and never
+ *  render a raw one from any OTHER source. */
+export interface InferenceWindowFailureNote {
+  windowStart: string
+  reason: string | null
+}
+
+export interface InferenceStatus {
+  enabled: boolean
+  cadenceMinutes: number | null
+  lastSucceededAt: string | null
+  lastTerminalAt: string | null
+  gapCount: number
+  staleness: 'OK' | 'STALE'
+  failing: boolean
+  /** Latest FAILED window, if any — the reason `error` means what it says. */
+  lastFailure: InferenceWindowFailureNote | null
+  /** Latest SKIPPED window, if any — NOT an error (a threshold message,
+   *  e.g. below INFERENCE_MIN_ROWS). Render distinctly from `lastFailure`;
+   *  never let a status word imply the wrong one caused it. */
+  lastSkipped: InferenceWindowFailureNote | null
+  deployStatus: 'stopped' | 'running' | 'error' | 'initializing'
+  /**
+   * MODEL-SERVE-001-T21. A SEPARATE axis from `deployStatus` above, never
+   * collapsed into it — a model can be `running` (operationally up) while
+   * its inputs drift, and a `stopped` model has no reading at all (`OFF`).
+   * `thresholds` is this schedule's OWN warnSd/criticalSd — since
+   * MODEL-SERVE-028 these band the residual-SD ratio only (drift is PSI,
+   * thresholded server-side by env). Null only when there is no schedule.
+   */
+  health: {
+    status: 'OFF' | 'UNKNOWN' | 'OK' | 'WARN' | 'CRITICAL' | 'ALERT' | 'FROZEN'
+    /**
+     * MODEL-SERVE-001-T26. Why ALERT carries a code: it collapses faults with
+     * OPPOSITE ACTIONS. SOURCE_UNREACHABLE/STALE send a reader to the
+     * connector or the scheduler; a drift WARN/CRITICAL sends them to the
+     * process or to a retrain. Null for every non-ALERT status.
+     */
+    reason:
+      | 'SOURCE_UNREACHABLE'
+      | 'STALE'
+      | 'NO_PREDICTIONS'
+      | 'BAD_DATA'
+      | 'SENSOR_FROZEN'
+      /** MODEL-SERVE-028. Input drift, PSI only. */
+      | 'DRIFT_CRITICAL'
+      | 'DRIFT_WARN'
+      /** MODEL-SERVE-012. The OUTPUT-ERROR codes: the model's own residual
+       *  spread has widened against the error its run was accepted with.
+       *  Separate from DRIFT_*, which is a claim about the INPUTS — these
+       *  can fire with perfectly stationary inputs and send a reader to the
+       *  model rather than to the plant. */
+      | 'RESIDUAL_SD_CRITICAL'
+      | 'RESIDUAL_SD_WARN'
+      | null
+    /** T29. Which instruments have stopped moving. Rides every status, not
+     *  just FROZEN — a higher-precedence fault outranks the band without
+     *  making the tags un-stuck. */
+    frozenColumns: string[]
+    /**
+     * MODEL-SERVE-012. BOTH HALVES of the output-error comparison, beside
+     * the verdict rather than folded into it: the pooled live residual
+     * spread, the reference SD from the model's own run, their ratio, and
+     * the pair count behind them.
+     *
+     * Rides every status. `status: 'UNKNOWN'` with null figures is the
+     * honest reading for a model whose lab has not reported enough joined
+     * pairs yet — which is every model on this deployment as of
+     * 2026-09-17 — and must never be rendered as a zero.
+     */
+    residualSd: {
+      status: 'UNKNOWN' | 'OK' | 'WARN' | 'ALERT'
+      liveSd: number | null
+      ratio: number | null
+      baselineSd: number | null
+      n: number
+    }
+    /** MODEL-SERVE-009-T03. Per-column "unchanged since" — EVIDENCE beside
+     *  the badge, never a second detector: MODEL-SERVE-001-T29 still
+     *  decides which columns are frozen, by its own three-window pooled
+     *  range. A badged column missing from this list has an UNKNOWN
+     *  duration (no per-tag row yet) and must not render as just-changed.
+     *  Optional so a backend predating it does not break the parse. */
+    frozenSince?: Array<{
+      column: string
+      lastChangedAt: string | null
+      flatMinutes: number | null
+    }>
+    thresholds: {
+      warnSd: number
+      criticalSd: number
+    } | null
+  }
+}
+
+export interface InferenceWindow {
+  id: string
+  modelId: string
+  modelVersionId: string
+  windowStart: string
+  windowEnd: string
+  status:
+    | 'PENDING'
+    | 'RUNNING'
+    | 'SUCCEEDED'
+    | 'FAILED'
+    | 'SKIPPED'
+    | 'CANCELED'
+  inputRows: number | null
+  missingPct: number | null
+  failureReason: string | null
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+}
+
+/** MODEL-SERVE-001-T10. One line of the container's own stdout. `message`
+ *  arrives already URL-redacted — see `inferenceWindowService.logs`. */
+export interface WindowLogLine {
+  id: string
+  level: 'info' | 'warn' | 'error'
+  message: string
+  createdAt: string
+}
+
+/**
+ * MODEL-SERVE-001-T10. The window's own facts, carried alongside its log
+ * lines so that ZERO lines is still explainable.
+ *
+ * A container that reaches `claim` always writes at least one line
+ * (`images/trainer/app/pipelines/infer.py` logs "Window claimed." before
+ * it downloads anything), so an empty `lines` is never "the container
+ * chose to print nothing" — it means no container ever got that far. Which
+ * of the four reasons applies is read off `status` plus these fields, and
+ * `imageDigest` is null for any window that never ran one.
+ */
+export interface WindowLogContext {
+  id: string
+  status:
+    | 'PENDING'
+    | 'RUNNING'
+    | 'SUCCEEDED'
+    | 'FAILED'
+    | 'SKIPPED'
+    | 'CANCELED'
+  windowStart: string
+  windowEnd: string
+  inputRows: number | null
+  missingPct: number | null
+  imageDigest: string | null
+  /** The discriminator for "did a container actually run". NOT
+   *  `imageDigest` — verified live: windows exist with a containerId and a
+   *  startedAt whose imageDigest is still null. */
+  containerId: string | null
+  failureReason: string | null
+  attempts: number
+  startedAt: string | null
+  finishedAt: string | null
+}
+
+/**
+ * MODEL-SERVE-001-T10. The two records that PRECEDE the container, so the
+ * view can answer "from the moment Deploy was pressed" rather than only
+ * "what the container printed". `deployedAt`/`deployedBy` are stamped on
+ * the schedule's OFF→ON edge only; the promote fields belong to the
+ * version this window is pinned to. Every field is nullable — a model
+ * deployed before the stamp existed, or whose promoter was deleted, still
+ * has readable logs.
+ */
+export interface WindowProvenance {
+  deployedAt: string | null
+  deployedBy: string | null
+  version: number | null
+  stage: string | null
+  promotedAt: string | null
+  promotedBy: string | null
+  /** Set only when the promote crossed the r2 floor with an override. */
+  promotionOverrideReason: string | null
+}
+
+export interface WindowLogs {
+  window: WindowLogContext
+  provenance: WindowProvenance
+  lines: WindowLogLine[]
+  /** True when older lines were dropped to stay under the read cap. */
+  truncated: boolean
+  /** How many earlier lines were dropped — 0 when `truncated` is false. */
+  omittedCount: number
+}
+
+/**
+ * MODEL-SERVE-005-T03. One joined (lab sample -> nearest prediction) pair.
+ * `residual = predicted - actual`, the same convention
+ * `lib/model-evaluation.ts` uses, so this can feed `EvalPoint` directly.
+ */
+export interface LiveErrorPoint {
+  timestamp: string
+  predicted: number
+  actual: number
+  residual: number
+}
+
+export interface LiveErrorMetrics {
+  r2: number
+  rmse: number
+  mae: number
+  sd: number
+  bias: number
+  n: number
+}
+
+/** One model version's own error. A range can hold two versions (a
+ *  shadow evaluation), and two versions can predict DIFFERENT targets —
+ *  so each group carries the target it was actually scored against. */
+export interface LiveErrorVersion {
+  modelVersionId: string
+  /** Non-null by construction, unlike `LiveErrorWindow.targetColumn`: a
+   *  group only exists once a window under it carried pairs, and a join
+   *  that produced pairs necessarily resolved its target first. */
+  targetColumn: string
+  metrics: LiveErrorMetrics | null
+  pairedRows: number
+  windows: number
+}
+
+export interface LiveErrorCoverage {
+  windowsInRange: number
+  /** T11. A FOURTH empty cause: these windows ran, fetched, and were
+   *  deliberately not scored (too few usable rows — a real terminal status,
+   *  never a failure). Disjoint from `windowsInRange`, which counts
+   *  SUCCEEDED only — so an all-SKIPPED range must not read like "the
+   *  scheduler never ran here". */
+  windowsSkipped: number
+  windowsJoined: number
+  /** DISJOINT from `windowsFailed` — a window whose join failed is not a
+   *  window waiting on the lab, so the two never count the same window. */
+  windowsAwaitingTruth: number
+  truthRows: number
+  pairedRows: number
+  /** Windows the sweeper could not ask about at all — a broken source or an
+   *  unresolvable target — as distinct from windows the lab has simply not
+   *  reported on yet. Both show zero pairs; only one is a problem. */
+  windowsFailed: number
+  /** MAX, not a mean — a mean hides the one window whose sensor stopped,
+   *  which is exactly what this number exists to surface. */
+  maxMissingPct: number | null
+  /** MODEL-SERVE-001-T18. This model's own `InferenceSchedule.truthLagMinutes`
+   *  — null when the model has no schedule at all (the wait has no meaning
+   *  without one). */
+  truthLagMinutes: number | null
+  /** The earliest time the NEXT truth check happens for a window in range
+   *  that has not joined yet — null when nothing is awaiting (every window
+   *  already joined or failed, or there is no schedule). Turns an
+   *  indefinite "the join runs again" into a checkable one. */
+  earliestEligibleAt: string | null
+  /** MODEL-SERVE-008-T01. Windows whose truth lag has ALREADY EXPIRED with
+   *  no measurement — a SUBSET of `windowsAwaitingTruth`, never a second
+   *  count of the same windows. Distinct from `windowsFailed`: the sweeper
+   *  reached the source here, the lab simply never reported. This is the
+   *  state that must not read as "keep waiting" — at a once-a-day lab
+   *  against an hourly schedule most windows end here, permanently. */
+  windowsLapsedTruth: number
+  /** MODEL-SERVE-008-T04. Predictions PRODUCED in this range, as distinct
+   *  from `pairedRows` (those that found a lab partner). The two differ by
+   *  roughly the ratio of the lab's reporting rate to the scoring cadence —
+   *  about 24x on a once-a-day target scored hourly — so showing only the
+   *  paired count invites a reader to conclude the model barely ran. */
+  predictionRows: number
+  /** MODEL-SERVE-008-T04. This model's `InferenceSchedule.cadenceMinutes`
+   *  — how often it scores. Null when the model has no schedule, where the
+   *  question has no answer rather than a default one. Paired with
+   *  `truthLagMinutes` it lets the strip state two RATES, not two counts. */
+  cadenceMinutes: number | null
+}
+
+export interface LiveErrorWindow {
+  windowStart: string
+  /** Null only on a window whose join FAILED before the target could be
+   *  resolved; any window carrying pairs has one. */
+  targetColumn: string | null
+  modelVersionId: string
+  truthRows: number
+  pairedRows: number
+  n: number
+  missingPct: number | null
+  joinedThrough: string
+  /** Set only when the join itself failed. */
+  failureReason: string | null
+}
+
+/**
+ * MODEL-SERVE-009-T05. The target tag's LAST REPORTED value.
+ *
+ * The target is fetched on every scheduled window — it sits in the
+ * schedule's `baseTags` beside the features — so a number comes back every
+ * interval. Almost none of those intervals contain an actual lab EVENT: PI
+ * holds a sparse `.lab` tag's last value between samples, and the truth
+ * join's EventWeighted Count probe is what tells the two apart (measured:
+ * zero real events across every joined window).
+ *
+ * So this is the lab's last MEASUREMENT, carried forward — not a series of
+ * measurements. It must never feed a residual, an SD band or an R2:
+ * `lastMeasuredAt` is when the number was actually observed, and
+ * `heldForMinutes` is how long it has read the same since.
+ */
+export interface TargetHeldValue {
+  tag: string
+  value: number | null
+  /** When the lab last reported a DIFFERENT number. */
+  lastMeasuredAt: string | null
+  /** When the fetch last returned it at all — held or not. */
+  lastSeenAt: string | null
+  heldForMinutes: number | null
+}
+
+export interface LiveErrorResult {
+  points: LiveErrorPoint[]
+  truncated: boolean
+  /** Null when nothing has joined, AND null when the range mixes versions
+   *  (read `versions` then) — never a zero standing in for absence. */
+  metrics: LiveErrorMetrics | null
+  mixedVersions: boolean
+  versions: LiveErrorVersion[]
+  /** The target any window in range knows about, including windows that
+   *  joined nothing — so the label survives while a model waits for its
+   *  first lab sample. Null only when no window knows it yet. */
+  targetColumn: string | null
+  coverage: LiveErrorCoverage
+  /** MODEL-SERVE-009-T05. Null until a scheduled fetch has recorded the
+   *  target. Never a pair — see `TargetHeldValue`. */
+  targetHeld: TargetHeldValue | null
+  windows: LiveErrorWindow[]
+}
+
+function base(modelId: string) {
+  return `/api/v1/authorized/model/${modelId}`
+}
+
+/**
+ * MODEL-SERVE-009-T04. One tag's CURRENT state as of the last scheduled
+ * fetch — the authoritative record, as distinct from the Input Data tab's
+ * previous approach of scanning sampled `/predict` rows in the browser.
+ *
+ * `lastStatus` is the FETCH PATH's arrival health (0 Good / 1 Bad / 2
+ * Questionable), NOT PI's own good/questionable/substituted flag, which
+ * arrives only on `/input-status`' live snapshot. The two answer different
+ * questions and decisions.arrival_health_and_pi_quality_are_two_fields
+ * keeps them in separate fields on purpose.
+ */
+export interface TagObservation {
+  tag: string
+  lastValue: number | null
+  lastStatus: number | null
+  /** The last fetch that returned this tag AT ALL — advances even when the
+   *  value is unchanged, and even when the cell was Bad. */
+  lastSeenAt: string | null
+  /** The last fetch whose value DIFFERED. `lastSeenAt` minus this is how
+   *  long the tag has been flat, measured rather than inferred. */
+  lastChangedAt: string | null
+  /** SUCCEEDED / FAILED / SKIPPED — how the last fetch went. A failed fetch
+   *  records itself here without moving either timestamp, so an outage is
+   *  distinguishable from a freeze. */
+  lastFetchOutcome: string | null
+  /** Null means UNKNOWN (a timestamp is missing), never "changed just now". */
+  flatMinutes: number | null
+}
+
+/**
+ * MODEL-SERVE-011-T07. The live half of a Run Predict, discriminated rather
+ * than `number | null`: every failure is a legitimate state of a working
+ * system (a quiet source, a tag reporting Bad, a model never promoted) and
+ * each sends a reader somewhere different, so the UI must be able to say
+ * WHICH — never a shared "no point this time".
+ */
+export type LiveScoreOutcome =
+  | { ok: true; predicted: number; at: string }
+  | { ok: false; reason: string }
+
+export interface RunNowResult {
+  windowId: string
+  windowStart: string
+  windowEnd: string
+  status: string
+  /** False when the latest window had already run — the live score still
+   *  happened, so this is not a failure. */
+  dispatched: boolean
+  live: LiveScoreOutcome
+  /** The server's own wording. Success answers two ways (202 queued, 200
+   *  already ran) and only this distinguishes them. */
+  message: string
+}
+
+/** MODEL-SERVE-011-T12. One SCHEDULED window, summarised by the figures its
+ *  own metrics.json already carries — never recomputed client-side. */
+export interface ScheduledPoint {
+  windowStart: string
+  windowEnd: string
+  rowCount: number
+  mean: number
+  min: number
+  max: number
+  std: number
+  /** Pinned at window creation; two adjacent points can come from different
+   *  versions when a promote landed mid-range. */
+  modelVersionId: string | null
+}
+
+export interface ScheduledSeriesResult {
+  points: ScheduledPoint[]
+  /** SUCCEEDED windows found in range — the denominator for `missing`. */
+  windows: number
+  /** Windows whose metrics object did not resolve: a gap in the chart, not
+   *  a failed read. */
+  missing: number
+}
+
+/** One Run Predict press that produced a score. `at` is the scored source
+ *  row's time (the chart x position), not when the button was pressed. */
+export interface ManualPredictionPoint {
+  at: string
+  predicted: number
+  modelVersionId: string
+}
+
+export const inferenceWindowService = {
+  /** The operator's own Run Predict scores in a range, for the Actual vs
+   *  Predict chart. */
+  async manualPredictions(
+    modelId: string,
+    from: string,
+    to: string,
+    signal?: AbortSignal,
+  ): Promise<{ points: ManualPredictionPoint[] }> {
+    const query = new URLSearchParams({ from, to })
+    const res: ApiResponse<{ points: ManualPredictionPoint[] }> =
+      await fetchClient(
+        `${base(modelId)}/inference/manual-predictions?${query.toString()}`,
+        { signal },
+      )
+    return res.data
+  },
+
+  /** MODEL-SERVE-009-T04. Never goes blank during a PI outage — unlike
+   *  `/input-status`, which is a live snapshot and blanks by design. */
+  async getTagObservations(modelId: string): Promise<TagObservation[]> {
+    const res: ApiResponse<{ tags: TagObservation[] }> = await fetchClient(
+      `${base(modelId)}/inference/tag-observations`,
+    )
+    return res.data.tags
+  },
+
+  async getSchedule(modelId: string): Promise<InferenceSchedule> {
+    const res: ApiResponse<InferenceSchedule> = await fetchClient(
+      `${base(modelId)}/inference/schedule`,
+    )
+    return res.data
+  },
+
+  /** Enable/update or disable a model's schedule. Omitted fields keep
+   *  their current persisted value (server-side merge, not a replace). */
+  async putSchedule(
+    modelId: string,
+    dto: {
+      enabled: boolean
+      cadenceMinutes?: number
+      lagMinutes?: number
+      sourceId?: string
+      autoRetrain?: boolean
+      warnSd?: number
+      criticalSd?: number
+      driftMonitor?: boolean
+    },
+  ): Promise<Partial<InferenceSchedule>> {
+    const res: ApiResponse<Partial<InferenceSchedule>> = await fetchClient(
+      `${base(modelId)}/inference/schedule`,
+      { method: 'PUT', body: JSON.stringify(dto) },
+    )
+    return res.data
+  },
+
+  async getStatus(
+    modelId: string,
+    signal?: AbortSignal,
+  ): Promise<InferenceStatus> {
+    const res: ApiResponse<InferenceStatus> = await fetchClient(
+      `${base(modelId)}/inference/status`,
+      { signal },
+    )
+    return res.data
+  },
+
+  async listWindows(
+    modelId: string,
+    params?: { status?: string; from?: string; to?: string },
+  ): Promise<InferenceWindow[]> {
+    const query = new URLSearchParams()
+    if (params?.status) query.set('status', params.status)
+    if (params?.from) query.set('from', params.from)
+    if (params?.to) query.set('to', params.to)
+    const qs = query.toString()
+    const res: ApiResponse<InferenceWindow[]> = await fetchClient(
+      `${base(modelId)}/inference/windows${qs ? `?${qs}` : ''}`,
+    )
+    return res.data
+  },
+
+  async backfill(
+    modelId: string,
+    dto: { from: string; to: string },
+  ): Promise<{ requested: number; inserted: number }> {
+    const res: ApiResponse<{ requested: number; inserted: number }> =
+      await fetchClient(`${base(modelId)}/inference/backfill`, {
+        method: 'POST',
+        body: JSON.stringify(dto),
+      })
+    return res.data
+  },
+
+  /**
+   * MODEL-SERVE-011-T04. Run the latest fully-elapsed window NOW instead of
+   * waiting for the scheduler's next tick.
+   *
+   * `message` is returned ALONGSIDE the data, not dropped: the server
+   * answers two different ways on success — 202 when it queued a run, 200
+   * when the latest window had already run — and only its own wording tells
+   * a reader which happened. `dispatched` is the machine-readable half of
+   * the same fact.
+   */
+  async runNow(modelId: string): Promise<RunNowResult> {
+    const res: ApiResponse<Omit<RunNowResult, 'message'>> = await fetchClient(
+      `${base(modelId)}/inference/run-now`,
+      { method: 'POST' },
+    )
+    return { ...res.data, message: res.message }
+  },
+
+  async retryWindow(modelId: string, windowId: string): Promise<void> {
+    await fetchClient(`${base(modelId)}/inference/windows/${windowId}/retry`, {
+      method: 'POST',
+    })
+  },
+
+  /**
+   * MODEL-SERVE-001-T10. One window's container stdout, with the window's
+   * own facts attached so a zero-line window can still say WHY.
+   *
+   * `windowId` accepts the literal `'latest'`. That is what keeps
+   * `models/views`' Console peek and `models/[id]`'s Logs tab on ONE
+   * endpoint — the peek holds a Model and has no window id to send, and a
+   * second endpoint is exactly the divergence T09 had to close for
+   * deployStatus one screen over.
+   *
+   * `lines` are the NEWEST 500, oldest-first for display, already
+   * URL-redacted server-side (`lib/redact-urls.ts`) — never re-sanitize
+   * here, and never render a log line from any other source.
+   */
+  async logs(
+    modelId: string,
+    windowId: string,
+    signal?: AbortSignal,
+  ): Promise<WindowLogs> {
+    const res: ApiResponse<WindowLogs> = await fetchClient(
+      `${base(modelId)}/inference/windows/${windowId}/logs`,
+      { signal },
+    )
+    return res.data
+  },
+
+  /**
+   * MODEL-SERVE-011-T12. The SCHEDULED plane's own hourly series — one
+   * point per SUCCEEDED window, read from that window's metrics.json.
+   *
+   * Separate from `truth` below because it answers a narrower question:
+   * "what did the model predict", with no actual required. `truth` can only
+   * report windows the lab has reported on, which on a daily-sampled target
+   * is almost none of them — so without this the whole scheduled plane is
+   * invisible on the chart.
+   */
+  async scheduledSeries(
+    modelId: string,
+    from: string,
+    to: string,
+    signal?: AbortSignal,
+  ): Promise<ScheduledSeriesResult> {
+    const query = new URLSearchParams({ from, to })
+    const res: ApiResponse<ScheduledSeriesResult> = await fetchClient(
+      `${base(modelId)}/inference/scheduled-series?${query.toString()}`,
+      { signal },
+    )
+    return res.data
+  },
+
+  /**
+   * MODEL-SERVE-005-T03. Live error over joined ground truth, plus the
+   * coverage that makes it readable. `metrics` is NULL when no lab result
+   * has been joined in the range — never zeros, because "the lab has not
+   * reported yet" and "an error of zero" must not render the same way.
+   */
+  async truth(
+    modelId: string,
+    from: string,
+    to: string,
+  ): Promise<LiveErrorResult> {
+    const query = new URLSearchParams({ from, to })
+    const res: ApiResponse<LiveErrorResult> = await fetchClient(
+      `${base(modelId)}/inference/truth?${query.toString()}`,
+    )
+    return res.data
+  },
+}

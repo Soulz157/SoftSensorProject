@@ -37,7 +37,19 @@ interface Props {
   features: FeatureConfig[]
   onAdd: (cfg: FeatureConfig) => void
   onRemove: (id: string) => void
-  onRename: (id: string, name: string) => void
+  /**
+   * Patches a created (formula) feature in place. Name and equation are
+   * edited in one draft and arrive in one patch — an equation-only edit
+   * carries the unchanged name rather than sending nothing.
+   */
+  onUpdate: (id: string, patch: FormulaPatch) => void
+}
+
+export interface FormulaPatch {
+  name: string
+  display: string
+  expr: string
+  vars: Record<string, string>
 }
 
 type Mode = 'formula' | 'builder'
@@ -74,7 +86,7 @@ export function CreationPanel({
   features,
   onAdd,
   onRemove,
-  onRename,
+  onUpdate,
 }: Props) {
   const [mode, setMode] = useState<Mode>('formula')
   const [formula, setFormula] = useState('')
@@ -85,6 +97,9 @@ export function CreationPanel({
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  // Seeded from `display` (real column names), never `expr` (alias form) —
+  // aliases would tokenize as unknown columns and refuse every edit.
+  const [draftExpr, setDraftExpr] = useState('')
 
   const takenNames = useMemo(() => {
     const m = new Map<string, string>()
@@ -105,17 +120,57 @@ export function CreationPanel({
     return null
   }, [editingId, draftName, takenNames])
 
+  // Same pipeline the add path runs, on the edit draft: real column names →
+  // aliases → validate. `sourceColumns` stays `raw.tags` so an edit can no
+  // more reference an unfetched tag (or another created feature) than an add
+  // can.
+  const draftTokens = useMemo(
+    () => tokenizeColumns(draftExpr, sourceColumns),
+    [draftExpr, sourceColumns],
+  )
+  const exprError = useMemo(() => {
+    if (!editingId) return null
+    if (!draftExpr.trim()) return 'Equation is required'
+    const base = validateFormula(
+      draftTokens.aliasExpr,
+      draftTokens.vars,
+      sourceColumns,
+    )
+    if (base.ok) return null
+    if (draftTokens.unknownTokens.length)
+      return `Unknown column(s): ${draftTokens.unknownTokens.join(', ')}`
+    return base.error
+  }, [editingId, draftExpr, draftTokens, sourceColumns])
+
   const startEdit = (f: FeatureConfig) => {
     setEditingId(f.id)
     setDraft(f.kind === 'formula' ? (f.name ?? '') : featureColumnName(f))
+    // Pre-`display` features (older recipes) rebuild their readable form from
+    // the alias map rather than opening an empty, instantly-invalid textarea.
+    setDraftExpr(
+      f.kind === 'formula'
+        ? (f.display ??
+            Object.entries(f.vars).reduce(
+              (acc, [alias, col]) =>
+                acc.replace(new RegExp(`\\b${alias}\\b`, 'g'), col),
+              f.expr,
+            ))
+        : '',
+    )
   }
   const cancelEdit = () => {
     setEditingId(null)
     setDraft('')
+    setDraftExpr('')
   }
   const commitEdit = () => {
-    if (!editingId || renameError) return
-    onRename(editingId, draftName)
+    if (!editingId || renameError || exprError) return
+    onUpdate(editingId, {
+      name: draftName,
+      display: draftExpr.trim(),
+      expr: draftTokens.aliasExpr,
+      vars: draftTokens.vars,
+    })
     cancelEdit()
   }
 
@@ -424,7 +479,10 @@ export function CreationPanel({
               return (
                 <li
                   key={f.id}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
+                  className={cn(
+                    'flex justify-between gap-2 rounded-lg border border-border px-3 py-2',
+                    isEditing ? 'items-start' : 'items-center',
+                  )}
                 >
                   {isEditing ? (
                     <div className="min-w-0 flex-1 space-y-1">
@@ -455,6 +513,25 @@ export function CreationPanel({
                           → {draftName}
                         </p>
                       ) : null}
+                      <Textarea
+                        value={draftExpr}
+                        onChange={e => setDraftExpr(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Escape') {
+                            e.preventDefault()
+                            cancelEdit()
+                          }
+                        }}
+                        className="min-h-16 font-mono text-xs"
+                        spellCheck={false}
+                        aria-label={`Edit equation for ${colName}`}
+                        aria-invalid={Boolean(exprError)}
+                      />
+                      {exprError && (
+                        <p className="text-[11px] text-destructive">
+                          {exprError}
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <div className="min-w-0">
@@ -477,8 +554,8 @@ export function CreationPanel({
                           variant="ghost"
                           className="h-7 w-7 text-primary"
                           onClick={commitEdit}
-                          disabled={Boolean(renameError)}
-                          aria-label={`Save name for ${colName}`}
+                          disabled={Boolean(renameError || exprError)}
+                          aria-label={`Save changes to ${colName}`}
                         >
                           <Check className="h-3.5 w-3.5" />
                         </Button>
@@ -487,7 +564,7 @@ export function CreationPanel({
                           variant="ghost"
                           className="h-7 w-7 text-muted-foreground"
                           onClick={cancelEdit}
-                          aria-label={`Cancel renaming ${colName}`}
+                          aria-label={`Cancel editing ${colName}`}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -499,7 +576,7 @@ export function CreationPanel({
                           variant="ghost"
                           className="h-7 w-7 text-muted-foreground hover:text-foreground"
                           onClick={() => startEdit(f)}
-                          aria-label={`Rename ${colName}`}
+                          aria-label={`Edit ${colName}`}
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>

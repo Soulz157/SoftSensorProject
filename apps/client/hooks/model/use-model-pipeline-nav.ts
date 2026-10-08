@@ -4,6 +4,7 @@ import { useModels } from '@/hooks/workspace/use-models'
 import type { SavedDataset } from '@/store/datasets'
 import {
   MP_TOTAL_STEPS,
+  mpAcceptanceCriteriaAtom,
   mpCurrentStepAtom,
   mpHighestUnlockedAtom,
   mpNameAtom,
@@ -18,20 +19,27 @@ import {
   mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
+  mpPerAlgorithmHyperparamsAtom,
   mpTrainStateAtom,
   mpCreatedModelIdAtom,
   mpSelectedMetricsAtom,
   mpLossFunctionAtom,
   mpTrainTestSplitAtom,
+  mpSeedAtom,
+  mpNSplitsAtom,
   mpAutoRetrainAtom,
   mpRetrainWarnSdAtom,
   mpRetrainCriticalSdAtom,
   mpDriftMonitorAtom,
-  mpDriftThresholdPctAtom,
+  mpServerDraftIdAtom,
   type Algorithm,
   type HyperparamValue,
 } from '@/store/model-pipeline'
-import { defaultHyperparams } from '@/lib/training-config'
+import type { AcceptanceCriterion } from '@/lib/acceptance-criteria'
+import {
+  DEFAULT_LOSS_FUNCTION,
+  defaultHyperparams,
+} from '@/lib/training-config'
 
 export interface UsePipelineNavResult {
   currentStep: number
@@ -44,40 +52,49 @@ export interface UsePipelineNavResult {
   findBestParams: boolean
   targetVariables: string[]
   hyperparameters: Record<string, HyperparamValue>
+  /** MODEL-FLOW-022-T02. Non-primary algorithms' values — see
+   * `mpPerAlgorithmHyperparamsAtom`'s own doc comment for why the primary's
+   * values never appear here. */
+  perAlgorithmHyperparameters: Partial<
+    Record<Algorithm, Record<string, HyperparamValue>>
+  >
   lossFunction: string
   trainTestSplit: number
+  /** MODEL-FLOW-014-T07. `undefined` means the user has not chosen one —
+   * the server generates its own when omitted. */
+  seed: number | undefined
+  /** MODEL-FLOW-016-T10. `undefined` means Cross-Validation is off — see
+   * `mpNSplitsAtom`'s own doc comment for the full contract. */
+  nSplits: number | undefined
+  /** MODEL-FLOW-019-T07. Advisory thresholds, committed on Apply like
+   * `seed`/`nSplits` above — `useRunConfigDraft` writes the underlying
+   * atom directly, so no setter is exposed here (same as those two). */
+  acceptanceCriteria: AcceptanceCriterion[]
   autoRetrain: boolean
   warnSd: number
   criticalSd: number
   driftMonitor: boolean
-  driftThresholdPct: number
   goTo: (step: number) => void
   next: () => void
   back: () => void
   canAdvance: (step: number) => boolean
   setSelectedDataset: (dataset: SavedDataset | null) => void
-  setAlgorithm: (algorithm: Algorithm) => void
-  setAlgorithms: (algorithms: Algorithm[]) => void
-  setFindBestModel: (on: boolean) => void
-  setFindBestParams: (on: boolean) => void
-  setTargetVariable: (tag: string[]) => void
-  setHyperparameter: (key: string, value: HyperparamValue) => void
-  setLossFunction: (loss: string) => void
-  setTrainTestSplit: (split: number) => void
   setAutoRetrain: (on: boolean) => void
   setWarnSd: (sd: number) => void
   setCriticalSd: (sd: number) => void
   setDriftMonitor: (on: boolean) => void
-  setDriftThresholdPct: (pct: number) => void
-  setFetchTagOverride: (tag: string) => void
   resetPipeline: () => void
 }
 
 /**
- * Wizard navigation + cascade invalidation for the lean 3-step Create Model
- * flow: 1 Select Dataset (+ metadata) · 2 Training Configuration · 3 Results.
- * All ETL (data source, tags, raw fetch, cleansing) now lives in Data Studio —
- * this hook only tracks which `Dataset` was picked and the training config.
+ * Wizard navigation + cascade invalidation for the 6-step Create Model flow
+ * (MODEL-FLOW-013 renumbering — was 5 steps before Model Selection was
+ * inserted): 1 Select Dataset (+ metadata) · 2 Dataset Review
+ * (MODEL-FLOW-010) · 3 Training Configuration · 4 Model Selection
+ * (MODEL-FLOW-013) · 5 Evaluation · 6 Save Model. All ETL (data source,
+ * tags, raw fetch, cleansing) now lives in Data Studio — this hook only
+ * tracks which `Dataset` was picked, review having no config of its own,
+ * and the training config.
  */
 export function useModelPipelineNav(): UsePipelineNavResult {
   const [currentStep, setCurrentStep] = useAtom(mpCurrentStepAtom)
@@ -107,19 +124,24 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const [findBestParams, setFindBestParamsAtom] = useAtom(mpFindBestParamsAtom)
   const [targetVariables, setTargetVariableAtom] = useAtom(mpTargetVariableAtom)
   const [hyperparameters, setHyperparametersAtom] = useAtom(mpHyperparamsAtom)
+  const [perAlgorithmHyperparameters, setPerAlgorithmHyperparametersAtom] =
+    useAtom(mpPerAlgorithmHyperparamsAtom)
   const [lossFunction, setLossFunctionAtom] = useAtom(mpLossFunctionAtom)
   const [trainTestSplit, setTrainTestSplitAtom] = useAtom(mpTrainTestSplitAtom)
+  const [seed, setSeedAtom] = useAtom(mpSeedAtom)
+  const [nSplits, setNSplitsAtom] = useAtom(mpNSplitsAtom)
+  const [acceptanceCriteria, setAcceptanceCriteriaAtom] = useAtom(
+    mpAcceptanceCriteriaAtom,
+  )
   const [autoRetrain, setAutoRetrainAtom] = useAtom(mpAutoRetrainAtom)
   const [warnSd, setWarnSdAtom] = useAtom(mpRetrainWarnSdAtom)
   const [criticalSd, setCriticalSdAtom] = useAtom(mpRetrainCriticalSdAtom)
   const [driftMonitor, setDriftMonitorAtom] = useAtom(mpDriftMonitorAtom)
-  const [driftThresholdPct, setDriftThresholdPctAtom] = useAtom(
-    mpDriftThresholdPctAtom,
-  )
   const trainState = useAtomValue(mpTrainStateAtom)
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCreatedModelId = useSetAtom(mpCreatedModelIdAtom)
   const setSelectedMetrics = useSetAtom(mpSelectedMetricsAtom)
+  const setServerDraftId = useSetAtom(mpServerDraftIdAtom)
 
   const resetTraining = useCallback(() => {
     setTrainState({ status: 'idle', progress: 0 })
@@ -138,11 +160,26 @@ export function useModelPipelineNav(): UsePipelineNavResult {
             selectedDataset !== null
           )
         case 2:
-          return trainState.status === 'done'
+          // Dataset Review configures nothing of its own — it only requires
+          // that Step 1's own gate (dataset selected, above) already passed.
+          return selectedDataset !== null
         case 3:
-          // Results reached ⇒ may proceed to the Deploy step.
-          return true
+          return trainState.status === 'done'
         case 4:
+          // Model Selection (MODEL-FLOW-013): same gate as case 3 by
+          // design — canAdvance(3) already required trainState 'done' to
+          // REACH this step, and re-checking it here is what stops a user
+          // who went back and retriggered a training/sweep that then
+          // FAILED from advancing past a step that's now showing a failed
+          // run. What differs candidate-by-candidate (a sweep vs. a single
+          // run, a selection vs. the metric's default) is Step 4's own
+          // content, not this gate.
+          return trainState.status === 'done'
+        case 5:
+          // Evaluation — configures nothing of its own, same as the old
+          // (pre-MODEL-FLOW-013) case 4.
+          return true
+        case 6:
           return false
         default:
           return false
@@ -195,115 +232,19 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     ],
   )
 
-  // Switching algorithm resets hyperparameters to that algorithm's clean
-  // defaults so the persisted record never accumulates keys from prior picks.
-  const setAlgorithm = useCallback(
-    (value: Algorithm) => {
-      setAlgorithmAtom(value)
-      setHyperparametersAtom(defaultHyperparams(value))
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [
-      setAlgorithmAtom,
-      setHyperparametersAtom,
-      resetTraining,
-      setHighestUnlocked,
-    ],
-  )
+  // MODEL-FLOW-014-T08: the per-field relock setters that used to live here
+  // (setAlgorithm, setAlgorithms, setFindBestModel, setFindBestParams,
+  // setFetchTagOverride, setTargetVariable, setHyperparameter,
+  // setLossFunction, setTrainTestSplit, setSeed) are gone — Step 3 now
+  // edits a local draft (`useRunConfigDraft`) and commits all nine fields
+  // in one Apply via `useCommitRunConfig`, which performs the same
+  // resetTraining + relock this file used to duplicate nine times.
+  // `setAlgorithmAtom`/`setAlgorithmsAtom`/etc above stay: `resetPipeline`
+  // below still writes them directly, and their VALUES (`algorithm`,
+  // `algorithms`, …) are still read off this hook by `useRunConfigDraft`
+  // as the committed snapshot.
 
-  // Multi-algorithm select (max 3). Keep the primary (index 0) + its clean
-  // hyperparameters in sync so the manual grid always reflects algorithms[0].
-  const setAlgorithms = useCallback(
-    (next: Algorithm[]) => {
-      const capped = next.slice(0, 3)
-      setAlgorithmsAtom(capped)
-      const primary = capped[0] ?? 'ols'
-      setAlgorithmAtom(primary)
-      setHyperparametersAtom(defaultHyperparams(primary))
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [
-      setAlgorithmsAtom,
-      setAlgorithmAtom,
-      setHyperparametersAtom,
-      resetTraining,
-      setHighestUnlocked,
-    ],
-  )
-
-  const setFindBestModel = useCallback(
-    (on: boolean) => {
-      setFindBestModelAtom(on)
-      // Step B requires Step A — turning A off cascades B off.
-      if (!on) setFindBestParamsAtom(false)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [
-      setFindBestModelAtom,
-      setFindBestParamsAtom,
-      resetTraining,
-      setHighestUnlocked,
-    ],
-  )
-
-  const setFindBestParams = useCallback(
-    (on: boolean) => {
-      setFindBestParamsAtom(on)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [setFindBestParamsAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setFetchTagOverride = useCallback(
-    (tag: string) => {
-      setTargetVariableAtom([tag])
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [setTargetVariableAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setTargetVariable = useCallback(
-    (tags: string[]) => {
-      setTargetVariableAtom(tags)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [setTargetVariableAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setHyperparameter = useCallback(
-    (key: string, value: HyperparamValue) => {
-      setHyperparametersAtom(prev => ({ ...prev, [key]: value }))
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [setHyperparametersAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setLossFunction = useCallback(
-    (loss: string) => {
-      setLossFunctionAtom(loss)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [setLossFunctionAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setTrainTestSplit = useCallback(
-    (split: number) => {
-      setTrainTestSplitAtom(split)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
-    },
-    [setTrainTestSplitAtom, resetTraining, setHighestUnlocked],
-  )
-
-  // Deploy step (Step 4) — last step, so no `highestUnlocked` relock.
+  // Deploy step (Step 6) — last step, so no `highestUnlocked` relock.
   const setAutoRetrain = useCallback(
     (on: boolean) => setAutoRetrainAtom(on),
     [setAutoRetrainAtom],
@@ -321,14 +262,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     (on: boolean) => setDriftMonitorAtom(on),
     [setDriftMonitorAtom],
   )
-  const setDriftThresholdPct = useCallback(
-    (pct: number) =>
-      setDriftThresholdPctAtom(
-        Number.isNaN(pct) ? 0 : Math.min(100, Math.max(0, pct)),
-      ),
-    [setDriftThresholdPctAtom],
-  )
-
   const resetPipeline = useCallback(() => {
     setSelectedDatasetAtom(null)
     setAlgorithmAtom('ols')
@@ -337,8 +270,20 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setFindBestParamsAtom(false)
     setTargetVariableAtom([])
     setHyperparametersAtom(defaultHyperparams('ols'))
-    setLossFunctionAtom('rmse')
+    setPerAlgorithmHyperparametersAtom({})
+    // MODEL-FLOW-019-T37. The comment that stood here described a divergence
+    // and then reproduced it: it said 'rmse' diverged from the atom's own
+    // default and resetWizardAtom's 'mse', then set 'rmse' anyway — leaving a
+    // reader unable to tell whether a fix had been reverted or the note was
+    // simply backwards. The divergence was real, and is now closed the other
+    // way: 'mse' was never a `LOSS_OPTIONS` member and rendered an empty
+    // control, so both store sites moved to 'rmse' and this one reads the
+    // shared constant rather than a third copy of the literal.
+    setLossFunctionAtom(DEFAULT_LOSS_FUNCTION)
     setTrainTestSplitAtom(80)
+    setSeedAtom(undefined)
+    setNSplitsAtom(undefined)
+    setAcceptanceCriteriaAtom([])
     setTrainState({ status: 'idle', progress: 0 })
     setCreatedModelId('')
     setSelectedMetrics(['r2', 'rmse', 'sd'])
@@ -346,9 +291,12 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setWarnSdAtom(1.5)
     setCriticalSdAtom(3.0)
     setDriftMonitorAtom(false)
-    setDriftThresholdPctAtom(10)
     setHighestUnlocked(1)
     setCurrentStep(1)
+    // Server-side ModelDraft id — fires on every workspace/plant change
+    // (use-create-model.ts), so a draft keyed to the OLD workspace must
+    // not survive; the next meaningful edit creates a fresh one.
+    setServerDraftId(null)
   }, [
     setSelectedDatasetAtom,
     setAlgorithmAtom,
@@ -357,8 +305,12 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setFindBestParamsAtom,
     setTargetVariableAtom,
     setHyperparametersAtom,
+    setPerAlgorithmHyperparametersAtom,
     setLossFunctionAtom,
     setTrainTestSplitAtom,
+    setSeedAtom,
+    setNSplitsAtom,
+    setAcceptanceCriteriaAtom,
     setTrainState,
     setCreatedModelId,
     setSelectedMetrics,
@@ -366,9 +318,9 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setWarnSdAtom,
     setCriticalSdAtom,
     setDriftMonitorAtom,
-    setDriftThresholdPctAtom,
     setHighestUnlocked,
     setCurrentStep,
+    setServerDraftId,
   ])
 
   return {
@@ -382,32 +334,25 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     findBestParams,
     targetVariables,
     hyperparameters,
+    perAlgorithmHyperparameters,
     lossFunction,
     trainTestSplit,
+    seed,
+    nSplits,
+    acceptanceCriteria,
     autoRetrain,
     warnSd,
     criticalSd,
     driftMonitor,
-    driftThresholdPct,
     goTo,
     next,
     back,
     canAdvance,
     setSelectedDataset,
-    setAlgorithm,
-    setAlgorithms,
-    setFindBestModel,
-    setFindBestParams,
-    setTargetVariable,
-    setHyperparameter,
-    setLossFunction,
-    setTrainTestSplit,
     setAutoRetrain,
     setWarnSd,
     setCriticalSd,
     setDriftMonitor,
-    setDriftThresholdPct,
-    setFetchTagOverride,
     resetPipeline,
   }
 }

@@ -16,6 +16,7 @@ import { Users } from '@/common/decorators/user.decorator';
 import { DatasetDraftAuthorizedService } from './dataset-draft.authorized.service';
 import {
   CreateDraftDto,
+  ResplitDraftHoldoutDto,
   SaveDraftAsDatasetDto,
 } from './dto/dataset-draft.authorized.dto';
 import {
@@ -75,6 +76,24 @@ export class DatasetDraftAuthorizedController {
     return this.service.getDraftService(user, id);
   }
 
+  @Post('/for-dataset/:datasetId')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Resolve or create the edit-mode draft for a saved dataset',
+    description:
+      'DS-LAKE-024. Idempotent: returns the existing ACTIVE draft for this ' +
+      'dataset if one exists, otherwise creates one seeded from the ' +
+      "dataset's adopted lineage-root BRONZE — never a fresh source fetch. " +
+      '200 either way; the response does not distinguish resolved from ' +
+      'created, since a re-entrant caller should not need to.',
+  })
+  async resolveOrCreateEditDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('datasetId') datasetId: string,
+  ) {
+    return this.service.resolveOrCreateEditDraftService(user, datasetId);
+  }
+
   @Post('/:id/abandon')
   @HttpCode(200)
   @ApiOperation({
@@ -88,6 +107,23 @@ export class DatasetDraftAuthorizedController {
     @Param('id') id: string,
   ) {
     return this.service.abandonDraftService(user, id);
+  }
+
+  @Post('/:id/touch')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Heartbeat: keep an ACTIVE draft from idling out (DS-LAKE-014)',
+    description:
+      'Bumps updatedAt on an ACTIVE draft. No-op on a SAVED/ABANDONED one. ' +
+      'The wizard calls this periodically while the tab is visibly open so ' +
+      "DS-LAKE-014's ACTIVE-draft idle sweep measures real absence (tab " +
+      'closed/backgrounded), not silence (user reading, issuing no writes).',
+  })
+  async touchDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.service.touchDraftService(user, id);
   }
 
   @Post('/:id/artifacts')
@@ -104,6 +140,32 @@ export class DatasetDraftAuthorizedController {
     @Body() body: CreateRawVersionDto,
   ) {
     return this.service.materializeDraftArtifactService(user, id, body);
+  }
+
+  @Post('/:id/holdout')
+  @HttpCode(201)
+  @ApiOperation({
+    summary:
+      'Re-split the draft holdout against its pristine BRONZE (legacy — unreachable from the wizard)',
+    description:
+      'DS-LAKE-018-T06. Re-splits the existing artifact rather than ' +
+      're-fetching. As of DS-LAKE-023, no wizard UI calls this route — ' +
+      'every holdout, in both create and edit mode, is now cut at the ' +
+      'features stage instead, which the same recipe carries a ' +
+      '`holdout` field for. Retained for API compatibility only. ' +
+      "Always reads the draft's pristine (never-split) root; refuses 422 " +
+      'if that root was already split at fetch time — a state no wizard ' +
+      'call can produce any more, since `POST /:id/artifacts` no longer ' +
+      'sends a holdout either. `holdout: null` clears the holdout by ' +
+      'pointing the draft back at its pristine artifact, without calling ' +
+      'Python.',
+  })
+  async resplitDraftHoldoutController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: ResplitDraftHoldoutDto,
+  ) {
+    return this.service.resplitDraftHoldoutService(user, id, body);
   }
 
   @Post('/:id/artifacts/:artifactId/features')

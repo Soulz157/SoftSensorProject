@@ -9,14 +9,12 @@ import {
   dsStatusFilterAtom,
 } from '@/store/data-sources'
 import { toast } from 'sonner'
-import {
-  initDatasetWizardAtom,
-  initDatasetWizardForEditAtom,
-} from '@/store/dataset-studio'
+import { initDatasetWizardAtom } from '@/store/dataset-studio'
 import type { SavedDataset } from '@/store/datasets'
 import { useDataSources } from '@/hooks/use-data-sources'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { useDatasets } from '@/hooks/dataset/use-datasets'
+import { useDatasetEditNavigation } from '@/hooks/dataset/use-dataset-edit-navigation'
 
 /** A single connected data source, as returned by `useDataSources`. */
 export type StudioSource = ReturnType<typeof useDataSources>['sources'][number]
@@ -46,7 +44,7 @@ export function useDataStudio() {
   const [typeFilter, setTypeFilter] = useAtom(dsTypeFilterAtom)
   const [statusFilter, setStatusFilter] = useAtom(dsStatusFilterAtom)
   const initDatasetWizard = useSetAtom(initDatasetWizardAtom)
-  const initDatasetWizardForEdit = useSetAtom(initDatasetWizardForEditAtom)
+  const openDatasetForEdit = useDatasetEditNavigation()
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingSource, setEditingSource] = useState<StudioSource | null>(null)
@@ -108,24 +106,12 @@ export function useDataStudio() {
 
   /**
    * Re-open a saved dataset in the wizard to edit ONLY its preprocessing
-   * pipeline. Resolves the recipe's source ids to full source objects, hydrates
-   * every `dw*` atom, and lands on Step 3. Legacy recipes (no `baseTags`) still
-   * open but rebuild from the final tag list — warn the user it may differ.
+   * pipeline; lands on Step 3. The seed-and-navigate itself lives in
+   * `useDatasetEditNavigation` so the model wizard's Dataset Review step
+   * (MODEL-FLOW-010-T07) reaches the wizard by the same route.
    */
-  const handleDatasetEdit = (dataset: SavedDataset) => {
-    const sources = dataset.sourceIds
-      .map(id => allSources.find(s => s.id === id))
-      .filter((s): s is StudioSource => s !== undefined)
-
-    if (!dataset.pipelineConfig.baseTags) {
-      toast.warning(
-        'Legacy dataset: original tags unavailable, recipe may differ',
-      )
-    }
-
-    initDatasetWizardForEdit({ dataset, sources })
-    router.push('/data-studio/create')
-  }
+  const handleDatasetEdit = (dataset: SavedDataset) =>
+    openDatasetForEdit(dataset, allSources)
 
   /** Clone a dataset (same sources + recipe) under a "<name> (copy)" name. */
   const handleDatasetDuplicate = async (dataset: SavedDataset) => {

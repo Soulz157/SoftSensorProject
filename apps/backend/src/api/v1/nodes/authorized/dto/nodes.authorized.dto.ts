@@ -1,7 +1,7 @@
 import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 
-export const NodeTypeEnum = z.enum(['machine', 'sensor', 'controller']);
+export const NodeTypeEnum = z.enum(['reactor', 'machine', 'sensor']);
 export const NodeStatusEnum = z.enum(['normal', 'warning', 'alarm', 'offline']);
 
 export const NodeDataSchema = z.object({

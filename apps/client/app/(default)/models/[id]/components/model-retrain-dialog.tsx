@@ -1,7 +1,7 @@
 'use client'
 
-import { useState } from 'react'
-import { Sparkles, Wand2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { AlertTriangle, Sparkles, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -9,82 +9,437 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { DEFAULT_RETRAIN_CONFIG, type RetrainConfig } from '@/lib/retrain'
+import { Checkbox } from '@/components/ui/checkbox'
+import type { RetrainCriterion } from '@/lib/acceptance-criteria'
+import { RetrainCriteriaPicker } from './retrain-criteria'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import type { RetrainIncumbent } from '@/services/model-retrain'
+import type { CandidateInput } from '@/services/model-draft'
 import type { AIModel } from '@/types'
 import { CustomFinetuneForm } from './custom-finetune-form'
+import { RetrainMonitoringContext } from './retrain-monitoring-context'
+import { cn } from '@/lib/utils'
+import { splitPercentFrom } from '@/lib/retrain-finetune'
+import type { HyperparamValue } from '@/store/model-pipeline'
+import {
+  RetrainBaseDataset,
+  RetrainDataStrategy,
+  retrainUsesNewData,
+  type RetrainDataStrategy as RetrainDataStrategyValue,
+} from './retrain-data-strategy'
+
+export interface StartRetrainOptions {
+  /** MODEL-SERVE-019. Always sent now — a retrain always ingests new data.
+   *  Was optional (server defaulted an absent value to 'KEEP_EXISTING'). */
+  strategy: RetrainDataStrategyValue
+  additionalDatasetVersionId?: string
+  /** Both or neither — the server refuses a half-open window. ISO-8601. */
+  newValidationFrom?: string
+  newValidationTo?: string
+  /** Custom Finetune's own train ratio (0.5–0.95). Omitted = the current
+   *  version's ratio, reused server-side (Auto Finetune never sends one). */
+  trainTestSplit?: number
+  /** MODEL-SERVE-026-T05. Folds for the cross-validation of the gap; New
+   *  data only. Omitted = none. */
+  cvFolds?: number
+  /** MODEL-SERVE-026-T06. Custom Finetune only; false skips the B refit. */
+  refitCurrentSettings?: boolean
+  /** MODEL-SERVE-026-T07. Criteria chosen before starting; New data only. */
+  acceptanceCriteria?: RetrainCriterion[]
+}
 
 export function ModelRetrainDialog({
   open,
   onClose,
   model,
+  incumbent,
+  loading,
   isRetraining,
-  mode,
-  onAuto,
-  onCustom,
+  error,
+  resumed,
+  onStart,
 }: {
   open: boolean
   onClose: () => void
   model: AIModel
+  /** Null while loading, or when the model has no PRODUCTION version —
+   *  either way there is nothing to retrain against yet. */
+  incumbent: RetrainIncumbent | null
+  /** True while the incumbent is still being fetched. Distinct from
+   *  `incumbent === null`, which is a FACT (no PRODUCTION version) — see
+   *  the pre-flight note below. */
+  loading: boolean
   isRetraining: boolean
-  mode: 'auto' | 'custom' | null
-  onAuto: () => void
-  onCustom: (config: RetrainConfig) => void
+  error: string | null
+  /**
+   * MODEL-SERVE-017. Present when the operator has just come back from the
+   * Data Studio wizard, having built a dataset for this retrain — restores
+   * the strategy they chose and preselects what they made. Null on a normal
+   * open.
+   */
+  resumed?: {
+    strategy: 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
+    datasetId: string | null
+    versionId: string | null
+  } | null
+  onStart: (
+    candidates?: CandidateInput[],
+    options?: StartRetrainOptions,
+  ) => void
 }) {
-  const [config, setConfig] = useState<RetrainConfig>(DEFAULT_RETRAIN_CONFIG)
+  const [hyperparameters, setHyperparameters] = useState<Record<
+    string,
+    HyperparamValue
+  > | null>(null)
+  // Custom Finetune's train share, in percent. Null until the operator
+  // touches it, so it follows the current version's own ratio — which
+  // arrives after this dialog mounts — instead of freezing the default.
+  const [trainSplitChoice, setTrainSplitChoice] = useState<number | null>(null)
+  const trainSplit =
+    trainSplitChoice ?? splitPercentFrom(incumbent?.trainTestSplit ?? null)
+  // MODEL-SERVE-019. Defaults to 'AUGMENT_DATA' — 'KEEP_EXISTING' is no
+  // longer offered (D01). Reset whenever the dialog (re)opens for a
+  // different model — a strategy chosen for one model must never leak into
+  // the next dialog open.
+  const [dataStrategy, setDataStrategy] = useState<RetrainDataStrategyValue>(
+    resumed?.strategy ?? 'AUGMENT_DATA',
+  )
+  // Null until the operator has filled in BOTH bounds; the strategy
+  // component owns that rule so a half-typed range never reaches here.
+  const [validationWindow, setValidationWindow] = useState<{
+    from: string
+    to: string
+  } | null>(null)
+  const [additionalDatasetVersionId, setAdditionalDatasetVersionId] = useState<
+    string | null
+  >(resumed?.versionId ?? null)
+  // New data only + a version that ends before the current version's cut:
+  // no validation window can exist in it, so Start can never enable.
+  const [windowImpossible, setWindowImpossible] = useState(false)
+  // MODEL-SERVE-026-T05. null = no cross-validation (the default).
+  const [cvFolds, setCvFolds] = useState<number | null>(null)
+  // MODEL-SERVE-026-T06. Default ON — the B refit is what lets the tab say
+  // whether a change came from the data or from the settings.
+  const [refitCurrentSettings, setRefitCurrentSettings] = useState(true)
+  // MODEL-SERVE-026-T07. Which offered criteria the operator ticked. Both
+  // unticked by default — nothing here recommends one.
+  const [criteria, setCriteria] = useState<RetrainCriterion[]>([])
+
+  // MODEL-SERVE-017. The dialog is remounted by the return navigation, so the
+  // initial state above is normally enough. This re-seeds it for the case
+  // where it is not — arriving while the component is already mounted —
+  // keyed on the resumed values so it never fights the operator's own later
+  // edits within one visit.
+  useEffect(() => {
+    if (!resumed) return
+    setDataStrategy(resumed.strategy)
+    setAdditionalDatasetVersionId(resumed.versionId ?? null)
+  }, [resumed?.strategy, resumed?.versionId])
+
+  // MODEL-SERVE-017/019. Forwards whichever new-data strategy was chosen
+  // rather than a hardcoded AUGMENT_DATA, so NEW_DATA_ONLY cannot silently
+  // submit as an augmentation and train on rows the operator asked to leave
+  // out. `strategy` is now ALWAYS present (MODEL-SERVE-019 — the server no
+  // longer defaults an absent value); `additionalDatasetVersionId` still
+  // gates the whole object, since Start stays disabled without one anyway
+  // (`augmentIncomplete` below) and there is nothing valid to submit yet.
+  const startOptions: StartRetrainOptions | undefined =
+    additionalDatasetVersionId
+      ? {
+          strategy: dataStrategy,
+          additionalDatasetVersionId,
+          // Spread so the keys are ABSENT rather than explicitly undefined
+          // when no window was chosen — the trigger schema is .strict() and
+          // both-or-neither.
+          ...(validationWindow
+            ? {
+                newValidationFrom: validationWindow.from,
+                newValidationTo: validationWindow.to,
+              }
+            : {}),
+          // MODEL-SERVE-026-T05. Absent unless asked for, and only for New
+          // data only — the server refuses it anywhere else.
+          ...(dataStrategy === 'NEW_DATA_ONLY' && cvFolds !== null
+            ? { cvFolds }
+            : {}),
+          // MODEL-SERVE-026-T07. Only New data only has the shared window
+          // both versions are scored on — the one population a criterion
+          // may read.
+          ...(dataStrategy === 'NEW_DATA_ONLY' && criteria.length > 0
+            ? { acceptanceCriteria: criteria }
+            : {}),
+        }
+      : undefined
+
+  // MODEL-SERVE-014-T08. A model with no PRODUCTION version 404s the trigger
+  // — refused BEFORE the user submits, matching triggerRetrainService's own
+  // precondition, rather than surfacing it only as a failed request.
+  //
+  // CORRECTED: this used to be a bare `incumbent === null`, which asserted
+  // "no PRODUCTION version" for THREE different states — the real one, a
+  // still-in-flight fetch, and any failed read (a 404 from a route the
+  // running server had not registered, a 403, a dropped request). A model
+  // with a promoted version was told to promote one, and the actual error
+  // was hidden by this same banner's own `!noIncumbent` guard below. Only
+  // a settled, error-free read is allowed to make that claim now.
+  const noIncumbent = !loading && error === null && incumbent === null
+  const disabled = isRetraining || loading || incumbent === null
+  // AUGMENT_DATA chosen but no version picked yet — a retrain still trains
+  // nothing without one. MODEL-SERVE-021-D02: NEW_DATA_ONLY also needs the
+  // validation window — it replaces the training data outright and carves no
+  // frozen slice any more, so that window is the ONLY way left to compare
+  // the two versions, and the DTO refuses the trigger outright without one.
+  const augmentIncomplete =
+    retrainUsesNewData(dataStrategy) &&
+    (!additionalDatasetVersionId ||
+      (dataStrategy === 'NEW_DATA_ONLY' && !validationWindow))
+  // Names the SPECIFIC missing piece rather than a generic sentence: for New
+  // data only, dataset/version can both be chosen and Start is still
+  // disabled on the window alone, which "choose a dataset and version" would
+  // describe wrongly.
+  const startBlockedReason = !additionalDatasetVersionId
+    ? 'Choose a dataset and version above to start a retrain.'
+    : dataStrategy === 'NEW_DATA_ONLY' && windowImpossible
+      ? 'This version has no data after the current version’s test start — choose a later dataset to start a retrain.'
+      : 'Set the validation window above to start a retrain.'
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isRetraining && onClose()}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
+      {/* Two vertical grid rows — header, then body — at a DEFINITE height.
+          `h-[90vh]`, not `max-h-`: Radix's scroll viewport is `height: 100%`,
+          and a percentage against an indefinite height resolves to nothing,
+          so the dialog grew with its content instead of scrolling. That is
+          why expanding "Explore this data" or switching to Custom Finetune
+          pushed the tail off-screen with no way to reach it.
+          `minmax(0,1fr)` on the body row is the other half: a grid row's
+          default `auto` minimum refuses to shrink below content, which would
+          hand the scroll container an unbounded height again. */}
+      <DialogContent className="grid h-[90vh] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-6xl">
+        <DialogHeader className="border-b border-border p-6 pb-4">
           <DialogTitle>Retrain {model.name}</DialogTitle>
         </DialogHeader>
 
-        <Tabs defaultValue="auto" className="flex w-full flex-col">
-          <TabsList className="flex h-10 w-full flex-row items-center rounded-md bg-muted p-1">
-            <TabsTrigger value="auto" className="flex-1">
-              Auto Finetune
-            </TabsTrigger>
-            <TabsTrigger value="custom" className="flex-1">
-              Custom Finetune
-            </TabsTrigger>
-          </TabsList>
+        <ScrollArea className="min-h-0">
+          {/* Landscape: decisions on the left, read-only context on the
+              right (base dataset + drift/PSI). Stacks below `md`. The right
+              column exists only once an incumbent does — with none, there is
+              no base dataset or monitoring to show, and an empty 17rem track
+              would just squeeze the left. */}
+          {/* `min-h-0` on this grid and its columns, not just `min-w-0`: a
+              grid item's default `min-height: auto` refuses to shrink below
+              its content, which is the same trap the body row above solves
+              with `minmax(0,1fr)`. */}
+          <div
+            className={cn(
+              'grid min-h-0 gap-6 p-6',
+              incumbent !== null && 'md:grid-cols-[minmax(0,1fr)_17rem]',
+            )}
+          >
+            <div className="min-h-0 min-w-0 space-y-4">
+              {loading && (
+                <p className="text-xs text-muted-foreground">
+                  Checking the current production version…
+                </p>
+              )}
 
-          <TabsContent value="auto" className="space-y-4 pt-4">
-            <p className="text-sm text-muted-foreground">
-              Automatically selects the best regression model and
-              hyperparameters via cross-validation. No configuration needed.
-            </p>
-            <Button
-              className="w-full gap-2"
-              onClick={onAuto}
-              disabled={isRetraining}
-            >
-              <Sparkles className="h-4 w-4" />
-              {isRetraining && mode === 'auto'
-                ? 'Retraining…'
-                : 'Start Auto Finetune'}
-            </Button>
-          </TabsContent>
+              {noIncumbent && (
+                <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+                  <AlertTriangle
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0"
+                  />
+                  This model has no PRODUCTION version yet — promote a version
+                  before retraining. A retrain improves on what is live.
+                </div>
+              )}
 
-          <TabsContent value="custom" className="space-y-4 pt-4">
-            <CustomFinetuneForm
-              config={config}
-              onChange={setConfig}
-              disabled={isRetraining}
-            />
-            <Button
-              className="w-full gap-2"
-              onClick={() => onCustom(config)}
-              disabled={isRetraining}
-            >
-              <Wand2 className="h-4 w-4" />
-              {isRetraining && mode === 'custom'
-                ? 'Retraining…'
-                : 'Start Custom Finetune'}
-            </Button>
-          </TabsContent>
-        </Tabs>
+              {error && (
+                <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs font-medium text-destructive">
+                  <AlertTriangle
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0"
+                  />
+                  {error}
+                </div>
+              )}
+
+              {incumbent !== null && (
+                <RetrainDataStrategy
+                  workspaceId={model.workspaceId}
+                  modelId={model.id}
+                  incumbent={incumbent}
+                  strategy={dataStrategy}
+                  onStrategyChange={setDataStrategy}
+                  additionalDatasetVersionId={additionalDatasetVersionId}
+                  onValidationWindowChange={setValidationWindow}
+                  onWindowImpossibleChange={setWindowImpossible}
+                  onAdditionalDatasetVersionChange={
+                    setAdditionalDatasetVersionId
+                  }
+                  initialDatasetId={resumed?.datasetId ?? null}
+                  disabled={disabled}
+                />
+              )}
+
+              {/* MODEL-SERVE-026-T05. Cross-validation of the GAP: each
+                  candidate also refits on k expanding folds and is scored
+                  beside the current version per fold. New data only — under
+                  Existing + new most training rows are the current version's
+                  own, so it cannot be scored fairly on those folds. */}
+              {dataStrategy === 'NEW_DATA_ONLY' && (
+                <div className="space-y-1.5">
+                  <p className="text-sm font-medium text-foreground">
+                    Cross-validation
+                  </p>
+                  <Select
+                    value={cvFolds === null ? 'off' : String(cvFolds)}
+                    onValueChange={value =>
+                      setCvFolds(value === 'off' ? null : Number(value))
+                    }
+                    disabled={disabled}
+                  >
+                    <SelectTrigger className="h-9 w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">Off</SelectItem>
+                      {[2, 3, 4, 5].map(k => (
+                        <SelectItem key={k} value={String(k)}>
+                          {k} folds
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {cvFolds === null
+                      ? 'Shows whether the new version’s lead holds across time, fold by fold. Off: no extra training.'
+                      : `Each candidate trains ${cvFolds} more times, so the retrain takes roughly ${cvFolds + 1}× as long. Refused before it starts if the new data has too few distinct target values (10 per fold) for ${cvFolds} folds.`}
+                  </p>
+                </div>
+              )}
+
+              {/* MODEL-SERVE-026-T07. Chosen BEFORE the retrain; the tab
+                  states each verdict with both readings. Offered set comes
+                  from the engine, never a list written here. */}
+              {dataStrategy === 'NEW_DATA_ONLY' && (
+                <RetrainCriteriaPicker
+                  value={criteria}
+                  onChange={setCriteria}
+                  disabled={disabled}
+                />
+              )}
+
+              <Tabs defaultValue="auto" className="flex w-full flex-col">
+                <TabsList className="flex h-10 w-full flex-row items-center rounded-md bg-muted p-1">
+                  <TabsTrigger value="auto" className="flex-1">
+                    Auto Finetune
+                  </TabsTrigger>
+                  <TabsTrigger value="custom" className="flex-1">
+                    Custom Finetune
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="auto" className="space-y-4 pt-4">
+                  <p className="text-sm text-muted-foreground">
+                    Searches the current production algorithm&apos;s own curated
+                    hyperparameter shortlist and keeps the best result by RMSE.
+                    No configuration needed. The first fit is always the current
+                    version&apos;s own settings on the new data, so the result
+                    can show what the data changed and what the settings
+                    changed.
+                  </p>
+                  <Button
+                    className="w-full gap-2"
+                    onClick={() => {
+                      onStart(undefined, startOptions)
+                      onClose()
+                    }}
+                    disabled={disabled || augmentIncomplete}
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    {isRetraining ? 'Retraining…' : 'Start Auto Finetune'}
+                  </Button>
+                  {/* MODEL-SERVE-019-T02. Explains WHY Start is disabled
+                      instead of leaving a greyed-out button unexplained. */}
+                  {augmentIncomplete && !disabled && (
+                    <p className="text-xs text-muted-foreground">
+                      {startBlockedReason}
+                    </p>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="custom" className="space-y-4 pt-4">
+                  <CustomFinetuneForm
+                    algorithm={incumbent?.algorithm ?? null}
+                    incumbentHyperparameters={
+                      incumbent?.hyperparameters ?? null
+                    }
+                    hyperparameters={hyperparameters}
+                    onChange={setHyperparameters}
+                    trainSplit={trainSplit}
+                    onTrainSplitChange={setTrainSplitChoice}
+                    disabled={disabled}
+                    modelId={model.id}
+                  />
+                  {/* MODEL-SERVE-026-T06. On by default, cost stated. */}
+                  <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                    <Checkbox
+                      checked={refitCurrentSettings}
+                      onCheckedChange={v => setRefitCurrentSettings(v === true)}
+                      disabled={disabled}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      Also refit the current version&apos;s own settings on the
+                      new data — one more fit, so the result can show what the
+                      data changed and what your settings changed.
+                    </span>
+                  </label>
+                  <Button
+                    className="w-full gap-2"
+                    onClick={() => {
+                      if (!incumbent || !hyperparameters || !startOptions)
+                        return
+                      onStart(
+                        [{ algorithm: incumbent.algorithm, hyperparameters }],
+                        {
+                          ...startOptions,
+                          trainTestSplit: trainSplit / 100,
+                          refitCurrentSettings,
+                        },
+                      )
+                      onClose()
+                    }}
+                    disabled={disabled || augmentIncomplete || !hyperparameters}
+                  >
+                    <Wand2 className="h-4 w-4" />
+                    {isRetraining ? 'Retraining…' : 'Start Custom Finetune'}
+                  </Button>
+                  {augmentIncomplete && !disabled && (
+                    <p className="text-xs text-muted-foreground">
+                      {startBlockedReason}
+                    </p>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </div>
+
+            {incumbent !== null && (
+              <aside className="min-h-0 min-w-0 space-y-4">
+                <RetrainBaseDataset incumbent={incumbent} />
+                <RetrainMonitoringContext model={model} />
+              </aside>
+            )}
+          </div>
+        </ScrollArea>
       </DialogContent>
     </Dialog>
   )

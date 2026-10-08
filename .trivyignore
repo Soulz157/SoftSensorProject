@@ -1,0 +1,41 @@
+# Time-boxed Trivy exceptions for the image-build hard gate
+# (.github/workflows/_build-image.yml). Every entry here MUST carry an
+# expiry date and a reason; an exception with neither is scope creep on
+# the next audit.
+#
+# MODEL-SERVE-002-T01. All 4 entries below were found live, scanning the
+# built apps/serving/Dockerfile image locally with the exact command CI's
+# hard gate runs (severity HIGH,CRITICAL, ignore-unfixed) — not guessed.
+
+# pip's OWN vendored copy (pip/_vendor/msgpack, from pip/_vendor/vendor.txt),
+# not an application dependency — this repo's code never imports msgpack.
+# Only exercised inside pip's own internals during `pip install`, never at
+# request-serving runtime. Confirmed unfixable from this side: pip 26.2.1
+# (the latest release as of this check) still vendors msgpack 1.1.2.
+# Re-check when a newer pip vendors a newer msgpack. Expires 2027-03-01.
+GHSA-6v7p-g79w-8964
+
+# Same story as msgpack above — pip's own vendored setuptools (also from
+# pip/_vendor/vendor.txt), not the setuptools apps/serving/Dockerfile
+# installs via `pip install --upgrade setuptools` (that one, 84.x+, is
+# unaffected — confirmed via `pip list` in the built image). Unreachable
+# from any served request path. Expires 2027-03-01.
+CVE-2025-47273
+
+# lightgbm is pinned to 4.5.0 to MATCH images/trainer/requirements.txt
+# exactly (apps/serving/requirements.txt's own comment; CLAUDE.md: never
+# bump these independently) — apps/serving unpickles model.joblib objects
+# the trainer image wrote, and an unverified cross-version pickle
+# roundtrip is a bigger risk than this CVE's actual exposure here: it is
+# an RCE via a MALICIOUS model file, and every model this process loads
+# is checksum-verified against a value the backend read from Postgres,
+# not attacker-supplied. Real fix is bumping lightgbm in BOTH images
+# together and re-verifying the pickle roundtrip — separate, larger work,
+# not this Dockerfile/CI task. Expires 2026-12-01 — revisit even if no
+# owner has picked it up by then.
+CVE-2024-43598
+
+# Same reasoning and same constraint as lightgbm above: pyarrow is pinned
+# to 17.0.0 to match images/trainer/requirements.txt exactly. Expires
+# 2026-12-01.
+CVE-2026-25087

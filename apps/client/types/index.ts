@@ -1,3 +1,4 @@
+import type { NodeStatus } from '@/store/status-colors'
 export interface UserProfile {
   id: string
   email: string
@@ -36,16 +37,104 @@ export interface ModelLog {
   timestamp: string
 }
 
+export interface ModelEditHistoryEntry {
+  by: string
+  at: string
+  fields: string[]
+}
+
 export interface AIModel {
   id: string
   workspaceId: string
   name: string
   data: {
     deployStatus: 'stopped' | 'running' | 'error' | 'initializing'
+    /** MODEL-SERVE-001-T19. The setting the operator owns, separate from
+     *  `deployStatus` (derived from it) — a Start/Stop control must bind to
+     *  THIS, never to `deployStatus`, or an enabled-but-failing model has no
+     *  way to offer Stop. See apps/backend/src/lib/deploy-status.ts's
+     *  `DeployState`. */
+    enabled: boolean
     prodStatus: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
+    /**
+     * MODEL-SERVE-001-T23. The most recent FAILED InferenceWindow's own
+     * reason, already URL-redacted server-side, derived onto every LIST
+     * payload by `deriveDeployStatuses`/`overlayDeployStatus` (see
+     * apps/backend/src/lib/deploy-status.ts's `DeployState.lastFailure`).
+     *
+     * This is the REAL deploy-failure source. Distinct from `statusDetail`
+     * below, which is a manually operator-typed note explaining a `frozen`
+     * prodStatus — not a failure cause. Absent whenever the model's recent
+     * terminal windows hold no FAILED row, and on any payload older than
+     * this field.
+     */
+    lastFailure?: { reason: string | null; at: string } | null
+    /**
+     * MODEL-SERVE-001-T30. The MONITORING axis, carried onto every LIST
+     * payload by `deriveDeployStatuses`/`overlayDeployStatus` alongside
+     * `deployStatus` — so the Alerts page stays a pure function over the
+     * models list instead of N per-model status requests.
+     *
+     * LIVENESS ONLY on this path, and that is not a temporary gap:
+     * `deriveDeployStatuses` hardcodes `driftMonitor: false`,
+     * `driftStatus: null`, `missingPct: null` and `frozenColumns: []`
+     * (apps/backend/src/lib/deploy-status.ts:318-346), because drift needs a
+     * per-model baseline read and frozen needs a per-window `featureStats`
+     * select — the exact per-model cost the batched derivation exists to
+     * avoid. Only `consecutiveFailures`, `staleness` and `hasEverSucceeded`
+     * carry real signal here.
+     *
+     * CONSEQUENCE, and the whole reason this doc comment is long: `OFF` here
+     * means "no fault, no claim" — NEVER "healthy". Do not render it as a
+     * drift verdict, and do not treat its absence as a clean bill of health.
+     * The detail page's own `getStatus` read is what makes a drift claim.
+     *
+     * Optional because any payload older than T26 simply does not carry it.
+     */
+    monitoring?: {
+      status:
+        | 'OFF'
+        | 'UNKNOWN'
+        | 'OK'
+        | 'WARN'
+        | 'CRITICAL'
+        | 'ALERT'
+        | 'FROZEN'
+      reason:
+        | 'SOURCE_UNREACHABLE'
+        | 'STALE'
+        | 'NO_PREDICTIONS'
+        | 'BAD_DATA'
+        | 'SENSOR_FROZEN'
+        | 'DRIFT_CRITICAL'
+        | 'DRIFT_WARN'
+        /** MODEL-SERVE-012. The output-error codes — see the same union in
+         *  `services/inference-window.ts` for why they are not DRIFT_*. */
+        | 'RESIDUAL_SD_CRITICAL'
+        | 'RESIDUAL_SD_WARN'
+        | null
+      frozenColumns: string[]
+      /** MODEL-SERVE-009-T03. SINCE WHEN each badged column last changed —
+       *  evidence beside the badge, never a second detector.
+       *  MODEL-SERVE-001-T29 still decides WHICH columns are frozen. A
+       *  badged column with no entry here is UNKNOWN duration (no per-tag
+       *  row yet), which must not render as "just changed": T27's rule is
+       *  that UNKNOWN never folds into a confident value. Optional so a
+       *  backend that predates this field does not make the whole health
+       *  object fail to parse. */
+      frozenSince?: Array<{
+        column: string
+        lastChangedAt: string | null
+        flatMinutes: number | null
+      }>
+    } | null
     statusDetail?: string
     deployedBy?: string
     deployedAt?: string
+    lastEditedBy?: string
+    lastEditedAt?: string
+    lastEditedFields?: string[]
+    editHistory: ModelEditHistoryEntry[]
     logs: ModelLog[]
     /** Wizard data-source/tags/processing config (Model.data.config). */
     config?: import('@/lib/model-config').ModelConfig
@@ -70,7 +159,11 @@ export interface WorkspacePlant {
   color?: string
   description?: string
   nodeCount?: number
+  /** MODEL-SERVE-024-D05: ALARM nodes only (it counted every non-normal node
+   * before). Warning/offline nodes are in the two fields below. */
   alarmCount?: number
+  warningCount?: number
+  offlineCount?: number
   status?: 'normal' | 'warning' | 'alarm' | 'offline'
   createdAt: string
   updatedAt: string
@@ -89,11 +182,29 @@ export interface Workspace {
   _count: {
     members: number
     models: number
+    plans?: number
+    datasets?: number
   }
-  modelsCount: number
+  /**
+   * Relation counts from the workspace list payload. `null`/`undefined` means
+   * the payload did not supply the count — render it as unknown, never as 0.
+   */
+  modelsCount?: number | null
+  plantsCount?: number | null
+  datasetsCount?: number | null
   nodeCount?: number
+  /** MODEL-SERVE-024-D05: ALARM nodes only (it counted every non-normal node
+   * before). Warning/offline nodes are in the two fields below. */
   alarmCount?: number
-  status?: 'normal' | 'warning' | 'alarm' | 'offline'
+  warningCount?: number
+  offlineCount?: number
+  /**
+   * Operating state, derived server-side by `deriveNodeSummary`. REQUIRED: an
+   * absent status is read as `abnormal` by `toBinaryStatus`, which would paint
+   * a false alarm. Every path that puts a Workspace into `workspacesAtom` must
+   * supply it — see services/workspace.ts:createWorkspace.
+   */
+  status: NodeStatus
 }
 
 export interface WorkspaceIconProps {
@@ -235,10 +346,15 @@ export interface AdminUser {
 
 export type WorkspaceRole = 'OWNER' | 'VIEWER' | 'STAFF'
 
+/** Read-only feature grants an OWNER can give a VIEWER. Always empty for
+ *  OWNER and STAFF, who already have both. */
+export type WorkspacePermission = 'MONITORING_VIEW' | 'NOTIFICATIONS_VIEW'
+
 export interface WorkspaceMember {
   id: string
   userId: string
   role: WorkspaceRole
+  permissions: WorkspacePermission[]
   createdAt: string
   user: {
     id: string
@@ -248,17 +364,115 @@ export interface WorkspaceMember {
   }
 }
 
+// MODEL-SERVE-022. Wire shapes match the backend's own literals
+// (apps/backend/src/lib/notification-events.ts, prisma schema enums) —
+// keep in sync rather than widening to `string`.
+export type NotificationChannelKind = 'TEAMS_WORKFLOW' | 'EMAIL'
+export type NotificationSeverity = 'INFO' | 'WARNING' | 'CRITICAL'
+export type NotificationDeliveryStatus =
+  | 'PENDING'
+  | 'SENDING'
+  | 'SENT'
+  | 'FAILED'
+export type NotificationAxis = 'DEPLOY' | 'MONITORING'
+
+export interface NotificationChannel {
+  id: string
+  kind: NotificationChannelKind
+  name: string
+  enabled: boolean
+  minSeverity: NotificationSeverity
+  events: string[]
+  cooldownMinutes: number
+  /** MODEL-SERVE-022-D-FOCUS. Models this channel sends for (allow-list). */
+  focusModelIds: string[]
+  recipientUserIds: string[]
+  /** The stored Teams URL is never returned in full after save — only
+   *  whether one is configured (TEAMS_WORKFLOW channels only). */
+  hasTarget: boolean
+}
+
+export interface NotificationDelivery {
+  id: string
+  channelId: string
+  modelId: string | null
+  axis: NotificationAxis | null
+  event: string
+  severity: NotificationSeverity
+  status: NotificationDeliveryStatus
+  attempts: number
+  lastError: string | null
+  sentAt: string | null
+  createdAt: string
+  payload: { title: string; bodyText: string; modelUrl: string }
+}
+
+// MODEL-SERVE-022-T07/T08. One row from the navbar bell's feed
+// (GET authorized/notifications) — the SAME NotificationEvent row Teams/
+// e-mail deliveries reference (D10), never a client-side derivation.
+export interface NotificationEventItem {
+  id: string
+  modelId: string
+  modelName: string
+  axis: NotificationAxis | null
+  kind: string
+  severity: NotificationSeverity
+  /** The five-word vocabulary (normal/warning/alert/offline/frozen),
+   *  server-computed (D09) — null for a discrete event with no axis
+   *  reading. */
+  fromStatus: string | null
+  toStatus: string | null
+  /** Raw HealthReason code — label it client-side via the SHARED
+   *  HEALTH_REASON_LABEL map (lib/health-status-style.ts), never a second
+   *  copy (D02). */
+  reason: string | null
+  createdAt: string
+  unread: boolean
+}
+
+export interface AdminWorkspaceOwner {
+  id: string
+  firstName: string | null
+  lastName: string | null
+  email: string
+}
+
 export interface AdminWorkspace {
   id: string
   name: string
   color: string
   icon: string
   createdAt: string
-  owner: {
-    id: string
-    firstName: string | null
-    lastName: string | null
-    email: string
-  }
+  updatedAt: string
+  owner: AdminWorkspaceOwner
   _count: { models: number }
+  /** Counts and the equipment roll-up ride the admin list. Optional only so
+   *  a client that outruns the backend renders "—", never a fake 0. */
+  modelsCount?: number
+  plantsCount?: number
+  datasetsCount?: number
+  nodeCount?: number
+  alarmCount?: number
+  warningCount?: number
+  offlineCount?: number
+  status?: 'normal' | 'warning' | 'alarm' | 'offline'
+}
+
+/** `GET /admin/workspace/summary` — the whole platform, never one page. */
+export interface AdminWorkspaceSummary {
+  total: number
+  models: number
+  /** How many workspaces are in alarm; `attention` lists only the worst few. */
+  attentionTotal: number
+  /** Workspaces whose equipment is in ALARM, worst first, capped. Equipment
+   *  only: the admin API does not know model-level status. */
+  attention: {
+    id: string
+    name: string
+    owner: AdminWorkspaceOwner
+    status: 'alarm'
+    alarmCount: number
+    warningCount: number
+    offlineCount: number
+  }[]
 }
