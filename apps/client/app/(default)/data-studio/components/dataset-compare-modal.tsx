@@ -603,7 +603,8 @@ function mergeByTime(
     labels.push(row.t)
     const point = { t: i, __t: row.t } as SeriesPoint
     for (const tag of tags) {
-      point[row.side === 'train' ? tag : tag + VAL_SUFFIX] = row.src[tag]
+      point[row.side === 'train' ? tag : tag + VAL_SUFFIX] =
+        row.src[tag] ?? null
     }
     if (boundaryIndex === null && row.side === 'val') boundaryIndex = i
     points.push(point)
@@ -711,8 +712,11 @@ function buildTimeTicks(
     return { ticks, labelAt, step: 0 }
   }
 
-  const first = labels[visible[0].t]!
-  const last = labels[visible[visible.length - 1].t]!
+  const head = visible[0]
+  const tail = visible[visible.length - 1]
+  if (!head || !tail) return { ticks, labelAt, step: 0 }
+  const first = labels[head.t]
+  const last = labels[tail.t]
   if (!isNum(first) || !isNum(last)) return { ticks, labelAt, step: 0 }
 
   const step = stepFor(last - first, unit)
