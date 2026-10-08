@@ -59,6 +59,35 @@ describe('LandingHero', () => {
     expect(setTheme).toHaveBeenCalledWith('light')
   })
 
+  it('names the model as text under the chip', () => {
+    render(<LandingHero layout="tags" />)
+    expect(screen.getByText('XGBoost v4')).toBeTruthy()
+  })
+
+  it('has no KPI section or scroll cue unless asked', () => {
+    const { container } = render(<LandingHero layout="tags" />)
+    expect(container.querySelector('#landing-kpis')).toBeNull()
+    expect(screen.queryByRole('link', { name: 'See how it works' })).toBeNull()
+  })
+
+  it('cues a scroll down to the sensor-vs-lab section', () => {
+    const { container } = render(<LandingHero layout="tags" kpis />)
+    expect(
+      screen
+        .getByRole('link', { name: 'See how it works' })
+        .getAttribute('href'),
+    ).toBe('#landing-kpis')
+    const section = container.querySelector('#landing-kpis')
+    expect(section?.querySelectorAll('li')).toHaveLength(4)
+    expect(screen.getByText('24')).toBeTruthy()
+  })
+
+  it('shows the 24-hour sensor-vs-lab timeline above the tiles', () => {
+    render(<LandingHero layout="tags" kpis />)
+    expect(screen.getByRole('figure')).toBeTruthy()
+    expect(screen.getByText('Last 24 hours')).toBeTruthy()
+  })
+
   it('can turn the aura off', () => {
     const { container } = render(<LandingHero layout="tags" aura={false} />)
     const auras = [...container.querySelectorAll('div[aria-hidden]')].filter(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_TRACE,
+  actualValue,
   labSamplesBetween,
   pointerPull,
   toPath,
@@ -60,5 +61,19 @@ describe('signal trace', () => {
       ]),
     ).toBe('M0.0 1.0 L2.0 3.0')
     expect(toPath([])).toBe('')
+  })
+
+  it('every lab sample sits on the actual line', () => {
+    for (const s of labSamplesBetween(-200, 600, 36)) {
+      expect(actualValue(s.p, 36)).toBeCloseTo(s.actual, 10)
+    }
+  })
+
+  it('keeps the actual line within the lab error band of the prediction', () => {
+    const band = 0.15 * DEFAULT_TRACE.amplitude
+    for (let p = 0; p < 400; p += 3.7) {
+      const err = actualValue(p, 36) - traceValue(p)
+      expect(Math.abs(err)).toBeLessThanOrEqual(band + 1e-9)
+    }
   })
 })

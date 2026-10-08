@@ -72,6 +72,7 @@ export function AuthShell({
           {homeLink('absolute top-5 left-6 z-10 md:top-8 md:left-10')}
           <SignalTrace
             variant="chart"
+            actual
             className="absolute inset-x-0 top-12 bottom-0 md:inset-0"
           />
         </aside>
@@ -94,6 +95,7 @@ export function AuthShell({
       <div className="relative w-full max-w-sm">
         <SignalTrace
           variant="line"
+          actual
           className="pointer-events-none absolute top-0 left-1/2 h-56 w-screen -translate-x-1/2 -translate-y-1/2"
         />
         <section className="relative space-y-6 rounded-xl bg-card p-6 ring-1 ring-foreground/10 sm:p-8">

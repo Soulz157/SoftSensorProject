@@ -59,10 +59,32 @@ export function labSamplesBetween(
   const out: { p: number; actual: number }[] = []
   for (let k = Math.ceil(from / every); k * every <= to; k++) {
     const p = k * every
-    const offset = (hash01(shape.seed + 99, k) * 2 - 1) * 0.15 * shape.amplitude
-    out.push({ p, actual: traceValue(p, shape) + offset })
+    out.push({ p, actual: traceValue(p, shape) + labOffset(k, shape) })
   }
   return out
+}
+
+/** Lab minus predicted for the k-th lab sample. */
+function labOffset(k: number, shape: TraceShape): number {
+  return (hash01(shape.seed + 99, k) * 2 - 1) * 0.15 * shape.amplitude
+}
+
+/**
+ * The actual (process) value at position p, for drawing an Actual line: the
+ * prediction plus an error that eases from one lab sample's error to the
+ * next, so every sample from `labSamplesBetween` sits exactly on it.
+ */
+export function actualValue(
+  p: number,
+  every: number,
+  shape: TraceShape = DEFAULT_TRACE,
+): number {
+  const u = p / every
+  const k = Math.floor(u)
+  const a = labOffset(k, shape)
+  const b = labOffset(k + 1, shape)
+  const ease = (1 - Math.cos(Math.PI * (u - k))) / 2
+  return traceValue(p, shape) + a + (b - a) * ease
 }
 
 /**

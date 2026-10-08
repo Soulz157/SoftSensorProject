@@ -621,6 +621,8 @@ Used in: auth shell, landing header, app sidebar and admin sidebar. Don't recolo
 | `line`  | Landing, auth `card` layout | No grid; bends gently toward the pointer. `readout` + `model` add a fit panel; `labHover` shows lab vs predicted vs error on a diamond |
 
 - Colours: line `--primary`, diamonds `--foreground`, grid `--border`. Never status colours.
+- Landing-only options (`line`): `leadIn` (px) draws a wire from the model chip's right edge that bends into the live line; `hourly` draws the prediction dashed (`6 4`, dashes travel with the data) with a dot per "hour" — `LAB_EVERY / 6` samples apart, so every lab diamond falls on every 6th dot (lab every 6 h).
+- `actual` (auth pages, both variants): a solid Actual line (`--foreground` at 75%) that passes through every lab diamond (`actualValue` in `lib/signal-trace.ts`; illustrative between samples), with the prediction dashed. The `chart` variant adds an "— Actual · - - Predicted" legend top-right on md+.
 - Draws by mutating SVG attributes in a `requestAnimationFrame` loop — no React re-render per frame.
 - `prefers-reduced-motion`: drawn once, no drift, no pull. Hover readouts still work (they answer the user).
 
@@ -644,7 +646,11 @@ Copy: English, sentence case, buttons name the action ("Sign in", "Send reset li
 ### 13.4 Landing page (`/`, signed out)
 
 - **Full screen:** `AppLayout` renders only `children` when `pathname === '/'` and the session is `unauthenticated` — no sidebar, search or system-health badge for guests. Signed-in users are unchanged.
-- `components/landing/landing-hero.tsx`, `layout="tags"` (current): copy left; input tags → model → prediction line right (`components/landing/tag-feed.tsx`). `layout="line"` is the alternative (line across the lower third). Both are kept in the preview at `/design-preview/landing`.
+- `components/landing/landing-hero.tsx`, `layout="tags"` (current): copy left; input tags → model → prediction line right (`components/landing/tag-feed.tsx`). `layout="line"` is the alternative (line across the lower third).
+- **Story:** "Lab values, every hour." — the soft sensor predicts hourly; the lab samples every 6 hours. Keep the hero, KPI section and `lib/landing-demo.ts` constants (`DEMO_PREDICTIONS_PER_DAY`, `DEMO_LAB_MINUTES`) telling the same numbers.
+- **Model chip** (`components/landing/model-node.tsx`, chosen 2026-10-08): a microchip whose four left pins are the four tags (each connector lands on its own pin; hovering a tag lights its pin and the chip border `--primary`), name badge `XGBoost v4` underneath, output via `SignalTrace leadIn` + `hourly`.
+- **Sensor-vs-lab section** (`LandingHero kpis`, `components/landing/kpi-section.tsx`, chosen 2026-10-08): below the full-screen hero, reached by scrolling or the static "See how it works ⌄" cue at the hero's foot (`#landing-kpis`). A "Last 24 hours" chart (`day-timeline.tsx`: Actual solid `--foreground`/75, Prediction dashed `--primary` with a dot per hour, lab diamonds every 6 h sitting on Actual, error tick to Prediction, pulsing "now" dot) above four tiles in `grid-cols-2 md:grid-cols-4`: Predictions a day (with a live "Now" value + sparkline), Fit (R²), Typical error (RMSE), Input drift. Value weight 600, mono, no status colours. The Actual curve between lab samples is illustrative (`actualOnDay`).
+- The aura lives inside the hero's `min-h-svh` box, so its rest point doesn't drift down the taller page.
 - **Hero type exception:** the landing headline may use `clamp(2.25rem, 4.5vw, 3.5rem)` at weight 600 (still never 700). DESIGN.md's 2rem Display cap applies inside the app; this page is outside it.
 - **Demo data rule:** every number and name on the landing comes from `lib/landing-demo.ts` and is illustrative — mock tags `TEMP-01`, `FLOW-02`, `PRESS-03`, `RATIO-04`, target `RVP-DEMO`. Never a real PI tag or model name; `components/landing/__tests__/landing-hero.test.tsx` fails on a `XX000.PV`-style tag.
 - **Drift on the landing** reuses the in-app Drift badge exactly (`MONITORING_STATUS_CLASS` / `MONITORING_STATUS_LABEL` from `lib/drift-status-style.ts`) with the backend's PSI cutoffs (WARN ≥ 0.10, CRITICAL ≥ 0.25). This is the existing monitoring-drift carve-out from the status-colour reservation, not a new use of status colour.
@@ -669,6 +675,7 @@ Copy: English, sentence case, buttons name the action ("Sign in", "Send reset li
 ### 13.7 Motion on public pages
 
 - One continuous motion per page (the signal trace; the aura only follows the user). No entrance animations, no hover lift.
+- **Documented exception (user-chosen 2026-10-08):** the landing's sensor-vs-lab section below the fold also ticks once a second (`hooks/landing/use-demo-tick.ts`) — the timeline's "now" clock, the first tile's live value and sparkline — and its "now" dot pulses (`motion-safe:animate-ping`). It is out of view while the hero's trace is on screen, so only one motion reads at a time. Still no entrance animations or count-ups.
 - Every animation has a `prefers-reduced-motion` path, and loops stop when there's nothing to move.
 
 ---

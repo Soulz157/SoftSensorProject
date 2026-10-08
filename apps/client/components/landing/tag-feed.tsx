@@ -16,6 +16,7 @@ import {
   MONITORING_STATUS_LABEL,
 } from '@/lib/drift-status-style'
 import { SignalTrace } from '@/components/auth/signal-trace'
+import { LEAD_IN, ModelNode, PIN_OFFSETS } from './model-node'
 
 const HEADER_H = 28
 const ROW_H = 60
@@ -127,7 +128,8 @@ export function TagFeed() {
         >
           {DEMO_TAGS.map((t, i) => {
             const y = ROW_H * i + ROW_H / 2
-            const mid = BODY_H / 2
+            // Each tag lands on its own pin of the model chip.
+            const mid = BODY_H / 2 + (PIN_OFFSETS[i] ?? 0)
             return (
               <path
                 key={t.name}
@@ -145,12 +147,12 @@ export function TagFeed() {
         {/* Phones: a strip under the table. sm+: beside the connectors
             (sm:mt-7 = HEADER_H, sm:h-[240px] = BODY_H). */}
         <div className="relative mt-3 h-24 sm:mt-7 sm:h-[240px]">
-          <div className="absolute top-1/2 left-0 z-10 -translate-y-1/2 rounded-md bg-card px-2 py-1 font-mono text-xs ring-1 ring-foreground/10">
-            {m.algorithm} {m.version}
-          </div>
+          <ModelNode model={m} active={active} step={step} />
           <SignalTrace
             variant="line"
             labHover
+            leadIn={LEAD_IN}
+            hourly
             className="absolute inset-y-0 right-0 left-[5.5rem]"
           />
         </div>

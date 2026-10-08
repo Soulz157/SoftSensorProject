@@ -41,9 +41,10 @@ export default function LandingPage() {
   }
 
   // Signed out: the full-screen landing (AppLayout drops its shell on `/`
-  // for guests). Direction C chosen 2026-10-07.
+  // for guests). Direction C chosen 2026-10-07; live sensor-vs-lab section
+  // below it chosen 2026-10-08.
   if (status !== 'authenticated') {
-    return <LandingHero layout="tags" />
+    return <LandingHero layout="tags" kpis />
   }
 
   // Signed in: the create form is only for someone with NO workspaces. Until

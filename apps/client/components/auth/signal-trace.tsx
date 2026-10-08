@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { signed, type DemoModel } from '@/lib/landing-demo'
 import {
   DEFAULT_TRACE,
+  actualValue,
   labSamplesBetween,
   pointerPull,
   toPath,
@@ -21,6 +22,15 @@ const STEP_PX = 4
 // Headroom so the chart reads as a calm trend, not a full-height swing.
 const CHART_PAD = 0.28
 const LINE_PAD = 0.15
+/** How far into the box a lead-in wire meets the line. */
+const LEAD_SPAN = 40
+/** `hourly`: dashed prediction (same as the KPI chart). */
+const DASH = '6 4'
+const DASH_PERIOD = 10
+/** `hourly`: a lab sample is every 6 hours, so an hour is a sixth of that. */
+const HOUR_EVERY = LAB_EVERY / 6
+/** Enough dots for a ~1700px-wide line at HOUR_EVERY * PX_PER_SAMPLE apart. */
+const HOUR_DOT_POOL = 48
 
 /**
  * The one moving thing on the auth pages: a soft-sensor prediction drifting
@@ -42,6 +52,9 @@ export function SignalTrace({
   tag = 'RVP-DEMO',
   unit = 'kPa',
   shape = DEFAULT_TRACE,
+  leadIn = 0,
+  hourly = false,
+  actual = false,
 }: {
   variant?: 'line' | 'chart'
   /** `line` only: show the latest predicted value in mono at bottom-right
@@ -56,10 +69,22 @@ export function SignalTrace({
   tag?: string
   unit?: string
   shape?: TraceShape
+  /** `line` only: px left of the box where a wire starts at mid-height and
+   *  bends into the live line (the landing model chip's output pin). */
+  leadIn?: number
+  /** `line` only: draw the prediction dashed with a dot per hourly
+   *  prediction — the landing KPI chart's language. */
+  hourly?: boolean
+  /** Draw the actual value as a solid line (lab samples sit on it) and the
+   *  prediction dashed, with a small legend on the chart — the auth pages. */
+  actual?: boolean
 }) {
   const boxRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const pathRef = useRef<SVGPathElement>(null)
+  const leadRef = useRef<SVGPathElement>(null)
+  const hourDotsRef = useRef<SVGGElement>(null)
+  const actualRef = useRef<SVGPathElement>(null)
   const diamondsRef = useRef<SVGGElement>(null)
   const crossRef = useRef<SVGGElement>(null)
   const dotRef = useRef<SVGCircleElement>(null)
@@ -84,6 +109,7 @@ export function SignalTrace({
     let pointer: { x: number; y: number } | null = null
     let pullStrength = 0
     const isLine = variant === 'line'
+    const lead = isLine && leadIn > 0 ? leadRef.current : null
     // The model panel sits in the bottom-right (md+); keep the line above it.
     let reserveBottom = 0
     const yOf = (v: number) =>
@@ -108,12 +134,64 @@ export function SignalTrace({
       const pull = (x: number, y: number) =>
         pullStrength > 0.001 ? pullStrength * pointerPull(x, y, pointer) : 0
 
+      // With a lead-in wire, the line proper starts LEAD_SPAN px in; the
+      // wire covers the rest so a fast-moving value never makes it kink.
+      const startX = lead ? LEAD_SPAN : 0
       const pts: { x: number; y: number }[] = []
-      for (let x = 0; x <= width + STEP_PX; x += STEP_PX) {
+      for (let x = startX; x <= width + STEP_PX; x += STEP_PX) {
         const y = yOf(traceValue(offset + x / PX_PER_SAMPLE, shape))
         pts.push({ x, y: y + pull(x, y) })
       }
       path.setAttribute('d', toPath(pts))
+      if (hourly || actual) {
+        // Dashes ride with the data as it drifts left, not fixed to the box.
+        path.setAttribute(
+          'stroke-dashoffset',
+          ((offset * PX_PER_SAMPLE) % DASH_PERIOD).toFixed(1),
+        )
+      }
+      const actualPath = actualRef.current
+      if (actual && actualPath) {
+        const truth: { x: number; y: number }[] = []
+        for (let x = startX; x <= width + STEP_PX; x += STEP_PX) {
+          const p = offset + x / PX_PER_SAMPLE
+          const y = yOf(actualValue(p, LAB_EVERY, shape))
+          // Same pull as the prediction here, so the two bend together.
+          truth.push({ x, y: y + pull(x, yOf(traceValue(p, shape))) })
+        }
+        actualPath.setAttribute('d', toPath(truth))
+      }
+      const hourDots = hourDotsRef.current
+      if (hourly && hourDots) {
+        // A dot per hourly prediction, HOUR_EVERY samples apart, so each lab
+        // sample (every LAB_EVERY = 6 hours) falls on a dot.
+        const first = Math.ceil((offset + startX / PX_PER_SAMPLE) / HOUR_EVERY)
+        const dots = hourDots.children
+        for (let i = 0; i < dots.length; i++) {
+          const dot = dots[i] as SVGCircleElement
+          const p = (first + i) * HOUR_EVERY
+          const x = (p - offset) * PX_PER_SAMPLE
+          if (x > width) {
+            dot.setAttribute('visibility', 'hidden')
+            continue
+          }
+          const y = yOf(traceValue(p, shape))
+          dot.setAttribute('visibility', 'visible')
+          dot.setAttribute('cx', x.toFixed(1))
+          dot.setAttribute('cy', (y + pull(x, y)).toFixed(1))
+        }
+      }
+      const [p0, p1] = pts
+      if (lead && p0 && p1) {
+        // Leaves the pin flat, meets the line along its own slope.
+        const slope = (p1.y - p0.y) / (p1.x - p0.x)
+        const d = (leadIn + p0.x) / 2
+        const mid = height / 2
+        lead.setAttribute(
+          'd',
+          `M${-leadIn} ${mid.toFixed(1)} C${(-leadIn + d).toFixed(1)} ${mid.toFixed(1)} ${(p0.x - d).toFixed(1)} ${(p0.y - slope * d).toFixed(1)} ${p0.x.toFixed(1)} ${p0.y.toFixed(1)}`,
+        )
+      }
 
       const samples = labSamplesBetween(
         offset,
@@ -126,7 +204,8 @@ export function SignalTrace({
       for (let i = 0; i < nodes.length; i++) {
         const node = nodes[i] as SVGRectElement
         const s = samples[i]
-        if (!s) {
+        // No lab marks over the lead-in wire: the line isn't drawn there.
+        if (!s || (lead && (s.p - offset) * PX_PER_SAMPLE < LEAD_SPAN)) {
           node.setAttribute('visibility', 'hidden')
           continue
         }
@@ -255,7 +334,7 @@ export function SignalTrace({
       moveTarget.removeEventListener('pointermove', onMove as EventListener)
       leaveTarget.removeEventListener('pointerleave', onLeave)
     }
-  }, [variant, readout, model, labHover, unit, shape])
+  }, [variant, readout, model, labHover, unit, shape, leadIn, hourly, actual])
 
   return (
     <div ref={boxRef} className={cn('relative', className)} aria-hidden>
@@ -267,14 +346,48 @@ export function SignalTrace({
             <line x1="0" x2="100%" y1="70%" y2="70%" />
           </g>
         )}
+        {actual && (
+          <path
+            ref={actualRef}
+            fill="none"
+            stroke="var(--foreground)"
+            strokeOpacity={0.75}
+            strokeWidth={variant === 'chart' ? 1.75 : 1.5}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+        )}
+        {variant === 'line' && leadIn > 0 && (
+          <path
+            ref={leadRef}
+            fill="none"
+            stroke="var(--primary)"
+            strokeWidth={1.5}
+            strokeLinecap="round"
+            strokeDasharray={hourly ? DASH : undefined}
+          />
+        )}
         <path
           ref={pathRef}
           fill="none"
           stroke="var(--primary)"
-          strokeWidth={variant === 'chart' ? 2 : 1.5}
+          strokeDasharray={hourly || actual ? DASH : undefined}
+          strokeWidth={variant === 'chart' ? 2 : hourly || actual ? 1.75 : 1.5}
           strokeLinejoin="round"
           strokeLinecap="round"
         />
+        {hourly && (
+          <g
+            ref={hourDotsRef}
+            fill="var(--primary)"
+            stroke="var(--background)"
+            strokeWidth="1.5"
+          >
+            {Array.from({ length: HOUR_DOT_POOL }, (_, i) => (
+              <circle key={i} r="2.5" visibility="hidden" />
+            ))}
+          </g>
+        )}
         <g ref={diamondsRef} fill="var(--foreground)" fillOpacity="0.85">
           {Array.from({ length: DIAMOND_POOL }, (_, i) => (
             <rect
@@ -308,6 +421,18 @@ export function SignalTrace({
           </g>
         )}
       </svg>
+      {actual && variant === 'chart' && (
+        <div className="absolute top-8 right-10 hidden items-center gap-4 text-xs text-muted-foreground md:flex">
+          <span className="flex items-center gap-1.5">
+            <span className="h-0.5 w-4 rounded-full bg-foreground/75" />
+            Actual
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-4 border-t-2 border-dashed border-primary" />
+            Predicted
+          </span>
+        </div>
+      )}
       {labHover && (
         <div
           ref={tipRef}
