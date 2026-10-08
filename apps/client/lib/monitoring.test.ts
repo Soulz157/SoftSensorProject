@@ -12,6 +12,9 @@ import {
   mergeScheduledPredictions,
   residualDensityNote,
   windowStats,
+  formatWallClockFull,
+  parseServerTimestamp,
+  pickTimeFormat,
 } from './monitoring'
 import type { LiveOverlayRow } from '@/lib/monitoring'
 import { buildFitRows } from '@/lib/model-metrics'
@@ -782,4 +785,69 @@ describe('mergeManualPredictions (Run Predict presses)', () => {
     const rows = [{ t: 1, timestamp: 'a' }]
     expect(mergeManualPredictions(rows, [])).toBe(rows)
   })
+})
+
+/**
+ * The backend's zone-less timestamps are Bangkok local time, pinned to UTC on
+ * parse only so a point lands at the same x everywhere. Labels must therefore
+ * read the stored wall-clock — a local-zone `format` showed a Bangkok viewer
+ * 00:46 as 07:46. Every case below passes under any TZ (the suite is also run
+ * with TZ=Asia/Bangkok and TZ=America/Los_Angeles).
+ */
+describe('wall-clock labels (tooltip time of day)', () => {
+  const at = (ts: string) => parseServerTimestamp(ts)
+
+  it('a tooltip names the exact stored time, not the axis’ date-only form', () => {
+    expect(formatWallClockFull(at('2026-02-08 17:30:00'))).toBe(
+      'Feb 8, 2026 17:30',
+    )
+    expect(formatWallClockFull(at('2026-02-08 18:00:00'))).toBe(
+      'Feb 8, 2026 18:00',
+    )
+  })
+
+  it('reads the stored time whatever zone the viewer is in', () => {
+    // 00:46 stored must never become 07:46 (Bangkok) or 16:46 the day before
+    // (Los Angeles).
+    expect(formatWallClockFull(at('2026-02-08 00:46:00'))).toBe(
+      'Feb 8, 2026 00:46',
+    )
+  })
+
+  it('shows seconds only when the point has some', () => {
+    expect(formatWallClockFull(at('2026-02-08 17:30:15'))).toBe(
+      'Feb 8, 2026 17:30:15',
+    )
+    expect(formatWallClockFull(at('2026-02-08 17:30:00'))).toBe(
+      'Feb 8, 2026 17:30',
+    )
+  })
+
+  it('pads minutes and keeps midnight and the year boundary exact', () => {
+    expect(formatWallClockFull(at('2026-01-01 00:05:00'))).toBe(
+      'Jan 1, 2026 00:05',
+    )
+    expect(formatWallClockFull(at('2025-12-31 23:59:00'))).toBe(
+      'Dec 31, 2025 23:59',
+    )
+  })
+
+  const DAY = 24 * 60 * 60 * 1000
+  const HOUR = 60 * 60 * 1000
+  const MIN = 60 * 1000
+  const t = at('2026-02-08 17:30:00')
+
+  it.each([
+    [3 * 365 * DAY, '2026'],
+    [90 * DAY, 'Feb 2026'],
+    [5 * DAY, 'Feb 8'],
+    [6 * HOUR, 'Feb 8 17:30'],
+    [30 * MIN, '17:30'],
+    [60_000, '17:30:00'],
+  ])(
+    'axis ticks at a %d ms span read "%s", from the stored wall-clock',
+    (span, expected) => {
+      expect(pickTimeFormat(span)(t)).toBe(expected)
+    },
+  )
 })

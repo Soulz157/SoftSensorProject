@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { pickTimeFormat } from '@/lib/monitoring'
+import { formatWallClockFull, pickTimeFormat } from '@/lib/monitoring'
 import { buildOofSeries, foldColor, foldKey } from '@/lib/cv-oof'
 import type {
   CvFoldRecord,
@@ -88,7 +88,7 @@ export function CvOofChart({ item, folds, height = 220 }: Props) {
             tickFormatter={v => Number(v).toFixed(1)}
           />
           <Tooltip
-            labelFormatter={v => tickFormatter(Number(v))}
+            labelFormatter={v => formatWallClockFull(Number(v))}
             formatter={(value, name) => [
               typeof value === 'number' ? value.toFixed(3) : String(value),
               name,

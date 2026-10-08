@@ -5,7 +5,6 @@
  * picks an adaptive time-axis formatter. Single source of truth for the
  * monitoring math; the page/components stay thin.
  */
-import { format } from 'date-fns'
 import type { EvalPoint } from '@/lib/model-evaluation'
 
 /** One row per timestamp for the recharts monitoring charts. */
@@ -119,20 +118,76 @@ export function windowStats(points: EvalPoint[]): WindowStats {
   return { rmse: round(rmse), sd: round(Math.sqrt(variance)) }
 }
 
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+]
+
+const two = (n: number) => String(n).padStart(2, '0')
+
+/**
+ * The wall-clock parts of a timestamp `parseServerTimestamp` produced.
+ *
+ * The backend's zone-less timestamps are Bangkok local time
+ * (`frame_service.py`: PI data is `tz_convert("Asia/Bangkok")` then
+ * `tz_localize(None)`), and `parseServerTimestamp` pins them to UTC purely so
+ * a point lands at the same x in every browser. That makes the UTC fields of
+ * the parsed instant EXACTLY the stored wall-clock — and the viewer's local
+ * fields something else (a Bangkok browser read 00:46 as 07:46). Labels
+ * therefore read the UTC fields directly, never a local-zone `format`.
+ */
+function wallClock(t: number) {
+  const d = new Date(t)
+  return {
+    year: d.getUTCFullYear(),
+    month: MONTHS[d.getUTCMonth()]!,
+    day: d.getUTCDate(),
+    hh: two(d.getUTCHours()),
+    mm: two(d.getUTCMinutes()),
+    ss: two(d.getUTCSeconds()),
+    hasSeconds: d.getUTCSeconds() !== 0,
+  }
+}
+
+/**
+ * Full date and time for a tooltip — "Feb 8, 2026 17:30". Never the adaptive
+ * axis form: once the visible span passes two days the axis drops the time of
+ * day, and a tooltip's whole job is to name the exact point. Seconds appear
+ * only when the point has some, so a minute-grained series reads "17:30", not
+ * "17:30:00".
+ */
+export function formatWallClockFull(t: number): string {
+  const w = wallClock(t)
+  const time = `${w.hh}:${w.mm}${w.hasSeconds ? `:${w.ss}` : ''}`
+  return `${w.month} ${w.day}, ${w.year} ${time}`
+}
+
 /**
  * Adaptive X-axis tick formatter keyed off the visible time span, so labels
  * scale from years/months (fully out) → days/hours → minutes/seconds (deep
- * zoom), per the monitoring spec.
+ * zoom), per the monitoring spec. Reads the stored wall-clock (see
+ * `wallClock`), so a tick names the same time the data was recorded at.
  */
 export function pickTimeFormat(spanMs: number): (t: number) => string {
-  let pattern: string
-  if (spanMs > 730 * DAY) pattern = 'yyyy'
-  else if (spanMs > 60 * DAY) pattern = 'MMM yyyy'
-  else if (spanMs > 2 * DAY) pattern = 'MMM d'
-  else if (spanMs > 2 * HOUR) pattern = 'MMM d HH:mm'
-  else if (spanMs > 2 * MINUTE) pattern = 'HH:mm'
-  else pattern = 'HH:mm:ss'
-  return (t: number) => format(t, pattern)
+  return (t: number) => {
+    const w = wallClock(t)
+    if (spanMs > 730 * DAY) return String(w.year)
+    if (spanMs > 60 * DAY) return `${w.month} ${w.year}`
+    if (spanMs > 2 * DAY) return `${w.month} ${w.day}`
+    if (spanMs > 2 * HOUR) return `${w.month} ${w.day} ${w.hh}:${w.mm}`
+    if (spanMs > 2 * MINUTE) return `${w.hh}:${w.mm}`
+    return `${w.hh}:${w.mm}:${w.ss}`
+  }
 }
 
 function round(n: number): number {

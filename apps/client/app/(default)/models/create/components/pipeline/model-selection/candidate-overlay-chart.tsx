@@ -10,7 +10,11 @@ import {
   YAxis,
 } from 'recharts'
 import { Button } from '@/components/ui/button'
-import { parseServerTimestamp, pickTimeFormat } from '@/lib/monitoring'
+import {
+  formatWallClockFull,
+  parseServerTimestamp,
+  pickTimeFormat,
+} from '@/lib/monitoring'
 import {
   populationTitle,
   populationLabel,
@@ -329,7 +333,7 @@ export function CandidateOverlayChart({
           />
           <Tooltip
             contentStyle={{ fontSize: 11 }}
-            labelFormatter={v => tickFormatter(Number(v))}
+            labelFormatter={v => formatWallClockFull(Number(v))}
             formatter={(value: unknown, name: unknown) => [
               typeof value === 'number' ? value.toFixed(4) : '—',
               seriesLabels.get(String(name)) ?? String(name),

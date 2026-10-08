@@ -194,11 +194,7 @@ export function ResidualChart({ rows, sd, tickFormatter, compareName }: Props) {
         />
         <Tooltip
           content={
-            <EvaluationTooltip
-              variant="residual"
-              compareName={compareName}
-              formatLabel={tickFormatter}
-            />
+            <EvaluationTooltip variant="residual" compareName={compareName} />
           }
         />
 

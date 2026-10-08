@@ -111,11 +111,7 @@ export function ActualVsPredictedChart({
         />
         <Tooltip
           content={
-            <EvaluationTooltip
-              variant="fit"
-              compareName={compareName}
-              formatLabel={tickFormatter}
-            />
+            <EvaluationTooltip variant="fit" compareName={compareName} />
           }
         />
 

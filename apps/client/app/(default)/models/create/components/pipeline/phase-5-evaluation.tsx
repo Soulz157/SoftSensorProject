@@ -239,9 +239,13 @@ export function Phase5Evaluation({ nav }: Props) {
         </p>
       )}
 
-      <Tabs value={tab} onValueChange={v => setTab(v as EvaluationTab)}>
+      <Tabs
+        value={tab}
+        onValueChange={v => setTab(v as EvaluationTab)}
+        className="flex w-full flex-col"
+      >
         {/* Toolbar: population switch + metric selector */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
+  <div className="flex w-full flex-wrap items-center justify-between gap-2">
           <TabsList>
             <TabsTrigger value="own">{ownLabel}</TabsTrigger>
             <TabsTrigger value="holdout">Validation holdout</TabsTrigger>
@@ -274,14 +278,14 @@ export function Phase5Evaluation({ nav }: Props) {
           </DropdownMenu>
         </div>
 
-        <TabsContent value="own" className="pt-4">
+        <TabsContent value="own" className="w-full pt-4">
           <EvaluationPopulationPanel
             evaluation={own}
             visibleMetrics={visible}
             cvFolds={run.cvFolds}
           />
         </TabsContent>
-        <TabsContent value="holdout" className="pt-4">
+        <TabsContent value="holdout" className="w-full pt-4">
           <EvaluationPopulationPanel
             evaluation={holdout}
             visibleMetrics={visible}
