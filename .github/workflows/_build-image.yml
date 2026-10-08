@@ -158,7 +158,7 @@ jobs:
 
             - name: Attest build provenance (SLSA)
               if: inputs.push
-              uses: actions/attest-build-provenance@v2 # TODO: pin to commit SHA
+              uses: actions/attest-build-provenance@v4 # TODO: pin to commit SHA
               with:
                   subject-name: ${{ inputs.namespace }}/${{ inputs.image }}
                   subject-digest: ${{ steps.build.outputs.digest }}
