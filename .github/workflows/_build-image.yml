@@ -71,7 +71,7 @@ jobs:
 
             - name: Log in to registry
               if: inputs.push
-              uses: docker/login-action@v3 # TODO: pin to commit SHA
+              uses: docker/login-action@v4 # TODO: pin to commit SHA
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
