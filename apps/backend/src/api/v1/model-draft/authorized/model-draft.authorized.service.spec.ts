@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { AppException } from '@softsensor/common';
 import { PrismaTypes } from '@softsensor/prisma';
 import { ModelDraftAuthorizedService } from './model-draft.authorized.service';

@@ -21,39 +21,44 @@ export interface UseDraftSelectionResult {
 export function useDraftSelection(
   draftId: string | null,
 ): UseDraftSelectionResult {
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  // Settled result tagged with the request it answers. `loading` is DERIVED
+  // from a key mismatch rather than set synchronously in the effect; the
+  // last result stays visible while a reload is in flight, as before.
+  const [settled, setSettled] = useState<{
+    key: string
+    selectedRunId: string | null
+  } | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
 
+  const requestKey = draftId ? JSON.stringify([draftId, reloadKey]) : null
+  // No draft: drop the last selection during render, not in the effect.
+  if (requestKey === null && settled !== null) setSettled(null)
+
   useEffect(() => {
-    if (!draftId) {
-      setSelectedRunId(null)
-      setLoading(false)
-      return
-    }
+    if (!requestKey || !draftId) return
 
     let ignore = false
-    setLoading(true)
-
-    void (async () => {
-      try {
-        const res = await modelDraftService.get(draftId)
-        if (ignore) return
-        setSelectedRunId(res.data.selectedRunId)
-      } catch {
-        if (ignore) return
-        setSelectedRunId(null)
-      } finally {
-        if (!ignore) setLoading(false)
-      }
-    })()
+    modelDraftService.get(draftId).then(
+      res => {
+        if (!ignore) {
+          setSettled({ key: requestKey, selectedRunId: res.data.selectedRunId })
+        }
+      },
+      () => {
+        if (!ignore) setSettled({ key: requestKey, selectedRunId: null })
+      },
+    )
 
     return () => {
       ignore = true
     }
-  }, [draftId, reloadKey])
+  }, [requestKey, draftId])
 
   const refetch = useCallback(() => setReloadKey(k => k + 1), [])
 
-  return { selectedRunId, loading, refetch }
+  return {
+    selectedRunId: settled?.selectedRunId ?? null,
+    loading: requestKey !== null && settled?.key !== requestKey,
+    refetch,
+  }
 }

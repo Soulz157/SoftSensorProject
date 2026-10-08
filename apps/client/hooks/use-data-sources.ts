@@ -11,19 +11,25 @@ export function useDataSources() {
   const [sources, setSources] = useState<SavedDataSource[]>([])
   const [loading, setLoading] = useState(true)
 
+  // Sets state only after the request settles, so the mount effect can
+  // call it.
+  const fetchSources = useCallback(
+    () =>
+      dataSourceService
+        .list()
+        .then(res => setSources(res.data ?? []))
+        .finally(() => setLoading(false)),
+    [],
+  )
+
   const refetch = useCallback(async () => {
     setLoading(true)
-    try {
-      const res = await dataSourceService.list()
-      setSources(res.data ?? [])
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+    await fetchSources()
+  }, [fetchSources])
 
   useEffect(() => {
-    void refetch()
-  }, [refetch])
+    void fetchSources()
+  }, [fetchSources])
 
   const createSource = async (
     input: CreateDataSourceInput,

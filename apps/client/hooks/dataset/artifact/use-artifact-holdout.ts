@@ -24,46 +24,56 @@ export function useArtifactHoldout(
   datasetId: string | null,
   artifactId: string | null,
 ) {
-  const [holdout, setHoldout] = useState<ArtifactHoldout | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [missing, setMissing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` and the
+  // reset-to-null on a new request are DERIVED from a key mismatch rather
+  // than set synchronously at the top of the effect.
+  const [settled, setSettled] = useState<{
+    key: string
+    holdout: ArtifactHoldout | null
+    missing: boolean
+    error: string | null
+  } | null>(null)
   const tokenRef = useRef(0)
+  const requestKey =
+    datasetId && artifactId ? JSON.stringify([datasetId, artifactId]) : null
 
   useEffect(() => {
     const token = ++tokenRef.current
-    setHoldout(null)
-    setMissing(false)
-    setError(null)
+    if (!requestKey || !datasetId || !artifactId) return
 
-    if (!datasetId || !artifactId) {
-      setLoading(false)
-      return
-    }
-
-    setLoading(true)
     void (async () => {
       try {
         const res = await datasetArtifactService.holdout(datasetId, artifactId)
         if (tokenRef.current !== token) return
-        setHoldout(res.data.holdout)
-        setLoading(false)
+        setSettled({
+          key: requestKey,
+          holdout: res.data.holdout,
+          missing: false,
+          error: null,
+        })
       } catch (err) {
         if (tokenRef.current !== token) return
         const status = (err as { statusCode?: number })?.statusCode
-        if (status === 404) {
-          setMissing(true)
-        } else {
-          setError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load validation holdout',
-          )
-        }
-        setLoading(false)
+        setSettled({
+          key: requestKey,
+          holdout: null,
+          missing: status === 404,
+          error:
+            status === 404
+              ? null
+              : err instanceof Error
+                ? err.message
+                : 'Failed to load validation holdout',
+        })
       }
     })()
-  }, [datasetId, artifactId])
+  }, [requestKey, datasetId, artifactId])
 
-  return { holdout, loading, missing, error }
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    holdout: current?.holdout ?? null,
+    loading: requestKey !== null && current === null,
+    missing: current?.missing ?? false,
+    error: current?.error ?? null,
+  }
 }

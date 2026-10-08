@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- jest mocks are `any` by design */
 import { NotFoundException } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
@@ -7,6 +8,15 @@ import * as tuningGrid from '@/lib/tuning-grid';
 
 jest.mock('@/lib/python-preprocess-client');
 jest.mock('@/lib/tuning-grid');
+
+/** Ctor deps 3 + 4. Inert: both are fire-and-forget side effects these
+ *  specs do not assert on. */
+const makeAutoScore = () => ({
+  autoScoreRunsService: jest.fn().mockResolvedValue(undefined),
+});
+const makeNotifications = () => ({
+  enqueueDiscrete: jest.fn().mockResolvedValue(undefined),
+});
 
 const mockedGetRunLossHistory = pythonClient.getRunLossHistory as jest.Mock;
 const mockedTuningCandidatesFor = tuningGrid.tuningCandidatesFor as jest.Mock;
@@ -290,6 +300,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -332,6 +344,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -374,6 +388,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         makePrisma() as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -410,6 +426,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -448,6 +466,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -481,6 +501,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -522,6 +544,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -548,6 +572,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await expect(
@@ -577,6 +603,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -607,6 +635,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -621,6 +651,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -641,6 +673,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -671,6 +705,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -708,6 +744,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -740,6 +778,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -788,6 +828,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -874,6 +916,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
         makeRunLaunch({
           launchDraftRun: jest.fn().mockResolvedValue({ id: 'run-tune-1' }),
         }) as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -925,6 +969,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
         makeRunLaunch({
           launchDraftRun: jest.fn().mockResolvedValue({ id: 'run-tune-1' }),
         }) as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -952,6 +998,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -988,6 +1036,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -1026,6 +1076,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-3', 'job-1');
@@ -1104,6 +1156,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -1134,6 +1188,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch({ launchDraftRun }) as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.createJob(
@@ -1170,6 +1226,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch({ launchDraftRun }) as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -1205,6 +1263,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-2', 'job-1');
@@ -1234,6 +1294,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
         makeRunLaunch({
           launchDraftRun: jest.fn().mockResolvedValue({ id: 'run-2' }),
         }) as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-1', 'job-1');
@@ -1253,6 +1315,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await expect(
@@ -1267,6 +1331,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await expect(
@@ -1283,6 +1349,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       const result = await service.retryJobService(
@@ -1337,6 +1405,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       const result = await service.getJobService(
@@ -1371,6 +1441,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       const result = await service.getJobService(
@@ -1407,6 +1479,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       const result = await service.getJobService(
@@ -1444,6 +1518,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       const result = await service.getJobService(
@@ -1502,6 +1578,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
       return { prisma, service };
     }
@@ -1726,6 +1804,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await expect(
@@ -1746,6 +1826,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await expect(
@@ -1769,6 +1851,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await expect(
@@ -1791,6 +1875,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.selectCandidateService(
@@ -1824,6 +1910,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.selectCandidateService(
@@ -1854,6 +1942,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.selectCandidateService(
@@ -1960,6 +2050,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-2', 'job-m1');
@@ -1995,6 +2087,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-2', 'job-m1');
@@ -2011,6 +2105,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-2', 'job-m1');
@@ -2026,6 +2122,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-2', 'job-m1');
@@ -2048,6 +2146,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
 
       await service.advanceJobForRun('run-2', 'job-m1');
@@ -2074,6 +2174,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const service = new ModelCandidateJobAuthorizedService(
         prisma as never,
         makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
       );
       return { prisma, service };
     }

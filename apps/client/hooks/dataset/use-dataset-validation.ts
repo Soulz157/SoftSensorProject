@@ -78,15 +78,25 @@ export function useDatasetValidation(): DatasetValidationState {
   const goldArtifactId = useAtomValue(dwDraftGoldArtifactIdAtom)
   const gateArtifactId = goldArtifactId ?? silverArtifactId
 
-  const [report, setReport] = useState<ValidationReport | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers; `revalidate` bumps
+  // the nonce, so a re-run is just a new key. The cleared report/error on a
+  // new run are DERIVED from the key mismatch, not set in the effect body.
+  const [settled, setSettled] = useState<{
+    key: string
+    report: ValidationReport | null
+    error: string | null
+  } | null>(null)
+  const [nonce, setNonce] = useState(0)
   const tokenRef = useRef(0)
 
-  const run = useCallback(() => {
+  const requestKey =
+    draftId && gateArtifactId
+      ? JSON.stringify([draftId, gateArtifactId, nonce])
+      : null
+
+  useEffect(() => {
     const token = ++tokenRef.current
-    setReport(null)
-    setError(null)
-    if (!draftId || !gateArtifactId) return
+    if (!requestKey || !draftId || !gateArtifactId) return
 
     void (async () => {
       try {
@@ -95,23 +105,27 @@ export function useDatasetValidation(): DatasetValidationState {
           gateArtifactId,
           {},
         )
-        if (tokenRef.current === token) setReport(res.data)
+        if (tokenRef.current === token) {
+          setSettled({ key: requestKey, report: res.data, error: null })
+        }
       } catch (err) {
         if (tokenRef.current === token) {
-          setError(
-            err instanceof Error ? err.message : 'Validation failed to run',
-          )
+          setSettled({
+            key: requestKey,
+            report: null,
+            error:
+              err instanceof Error ? err.message : 'Validation failed to run',
+          })
         }
       }
     })()
-  }, [draftId, gateArtifactId])
+  }, [requestKey, draftId, gateArtifactId])
 
-  useEffect(() => {
-    run()
-    // Re-run only when the gate artifact itself changes — `run`'s identity
-    // already changes exactly when draftId/gateArtifactId do.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftId, gateArtifactId])
+  const run = useCallback(() => setNonce(n => n + 1), [])
+
+  const current = settled?.key === requestKey ? settled : null
+  const report = current?.report ?? null
+  const error = current?.error ?? null
 
   const status: DatasetValidationStatus = !gateArtifactId
     ? 'unavailable'

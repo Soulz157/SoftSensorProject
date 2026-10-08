@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { ListFilter, Plus, Sigma } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
@@ -37,9 +37,9 @@ export function TagStatsSidebar({
   const [multiSelectOn, setMultiSelectOn] = useState(false)
   const isMultiActive = canMultiSelect && multiSelectOn
 
-  useEffect(() => {
-    if (!canMultiSelect) setMultiSelectOn(false)
-  }, [canMultiSelect])
+  // Turned off the moment multi-select stops being possible — during render,
+  // not one painted frame later in an effect.
+  if (!canMultiSelect && multiSelectOn) setMultiSelectOn(false)
 
   const footerRows: TagStatRow[] =
     mode === 'multi'

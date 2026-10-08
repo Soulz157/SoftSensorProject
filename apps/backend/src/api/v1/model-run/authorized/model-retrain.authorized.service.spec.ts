@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { ModelRetrainAuthorizedService } from './model-retrain.authorized.service';
 import * as pythonClient from '@/lib/python-client';
 import { TriggerRetrainSchema } from './dto/model-retrain.authorized.dto';

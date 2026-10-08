@@ -21,38 +21,54 @@ export function useDatasetConfig(
   datasetId: string | null,
   enabled: boolean,
 ): UseDatasetConfigResult {
-  const [pipelineConfig, setPipelineConfig] = useState<PipelineConfig | null>(
-    null,
-  )
-  const [datasetName, setDatasetName] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` and the
+  // cleared error on a new request are DERIVED from a key mismatch rather
+  // than set synchronously in the effect. The last loaded config survives a
+  // failed or disabled load, as before.
+  const [settled, setSettled] = useState<{
+    key: string
+    pipelineConfig: PipelineConfig | null
+    datasetName: string | null
+    error: string | null
+  } | null>(null)
+
+  const requestKey = enabled && datasetId ? datasetId : null
 
   useEffect(() => {
-    if (!enabled || !datasetId) return
+    if (!requestKey) return
 
     let active = true
-    setLoading(true)
-    setError(null)
-    datasetService
-      .get(datasetId)
-      .then(res => {
+    datasetService.get(requestKey).then(
+      res => {
         if (!active) return
-        setPipelineConfig(res.data.pipelineConfig)
-        setDatasetName(res.data.name)
-      })
-      .catch(() => {
+        setSettled({
+          key: requestKey,
+          pipelineConfig: res.data.pipelineConfig,
+          datasetName: res.data.name,
+          error: null,
+        })
+      },
+      () => {
         if (!active) return
-        setError('Failed to load dataset pipeline configuration.')
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
+        setSettled(prev => ({
+          key: requestKey,
+          pipelineConfig: prev?.pipelineConfig ?? null,
+          datasetName: prev?.datasetName ?? null,
+          error: 'Failed to load dataset pipeline configuration.',
+        }))
+      },
+    )
 
     return () => {
       active = false
     }
-  }, [datasetId, enabled])
+  }, [requestKey])
 
-  return { pipelineConfig, datasetName, loading, error }
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    pipelineConfig: settled?.pipelineConfig ?? null,
+    datasetName: settled?.datasetName ?? null,
+    loading: requestKey !== null && current === null,
+    error: current?.error ?? null,
+  }
 }

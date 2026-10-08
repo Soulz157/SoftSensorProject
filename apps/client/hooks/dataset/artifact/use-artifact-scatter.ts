@@ -33,29 +33,31 @@ export function useArtifactScatter(
   /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
   timeWindow?: TimeWindow | null,
 ): ArtifactScatterState {
-  const [scatter, setScatter] = useState<DraftScatterResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` and the
+  // reset-to-null on a new request are DERIVED from a key mismatch rather
+  // than set synchronously at the top of the effect.
+  // Keying on the request also means a stale result from a previous (x, y)
+  // pair can never be shown against a new one — the same reset discipline
+  // `useDatasetArtifactMetadata` states for itself.
+  const [settled, setSettled] = useState<{
+    key: string
+    scatter: DraftScatterResult | null
+    error: string | null
+  } | null>(null)
   const tokenRef = useRef(0)
   // Primitives, not the object: a `TimeWindow` is a fresh identity per render.
   const startTime = timeWindow?.startTime
   const endTime = timeWindow?.endTime
+  const requestKey =
+    datasetId && artifactId && xTag && yTag
+      ? JSON.stringify([datasetId, artifactId, xTag, yTag, startTime, endTime])
+      : null
 
   useEffect(() => {
-    // Cleared at the start of every run so a stale result from a previous
-    // (x, y) pair can never be shown against a new one — the same reset
-    // discipline `useDatasetArtifactMetadata` states for itself.
     const token = ++tokenRef.current
-    setScatter(null)
-    setError(null)
-
-    if (!datasetId || !artifactId || !xTag || !yTag) {
-      setLoading(false)
-      return
-    }
+    if (!requestKey || !datasetId || !artifactId || !xTag || !yTag) return
 
     const ac = new AbortController()
-    setLoading(true)
 
     datasetArtifactService
       .scatter(
@@ -71,20 +73,27 @@ export function useArtifactScatter(
       )
       .then(res => {
         if (tokenRef.current !== token) return
-        setScatter(res.data)
-        setLoading(false)
+        setSettled({ key: requestKey, scatter: res.data, error: null })
       })
       .catch((err: unknown) => {
         if (tokenRef.current !== token) return
         // An abort is a supersede, not a failure — surfacing it would flash
         // an error every time the user flips an axis.
         if ((err as Error)?.name === 'AbortError') return
-        setError(err instanceof Error ? err.message : 'Failed to load scatter')
-        setLoading(false)
+        setSettled({
+          key: requestKey,
+          scatter: null,
+          error: err instanceof Error ? err.message : 'Failed to load scatter',
+        })
       })
 
     return () => ac.abort()
-  }, [datasetId, artifactId, xTag, yTag, startTime, endTime])
+  }, [requestKey, datasetId, artifactId, xTag, yTag, startTime, endTime])
 
-  return { scatter, loading, error }
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    scatter: current?.scatter ?? null,
+    loading: requestKey !== null && current === null,
+    error: current?.error ?? null,
+  }
 }

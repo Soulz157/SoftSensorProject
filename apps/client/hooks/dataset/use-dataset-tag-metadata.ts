@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { dwSelectedSourcesAtom } from '@/store/dataset-studio'
 import { dataSourceService, type TagMetaItem } from '@/services/data-sources'
@@ -60,6 +60,8 @@ function toMeta(item: TagMetaItem): TagMeta {
   }
 }
 
+const EMPTY_PAGES: Map<string, PageResult> = new Map()
+
 interface Result {
   metaByTag: Map<string, TagMeta>
   tagsBySource: Map<string, string[]>
@@ -85,17 +87,25 @@ export function useDatasetTagMetadata(
   enabled = true,
 ): Result {
   const sources = useAtomValue(dwSelectedSourcesAtom)
-  const [pages, setPages] = useState<Map<string, PageResult>>(new Map())
 
   const [pageBySource, setPageBySource] = useState<Map<string, number>>(
     new Map(),
   )
 
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Last settled fetch, tagged with the request it answers. `loading`, the
+  // cleared error on a new request and the empty result when disabled are
+  // DERIVED from it during render, never set synchronously in the effect.
+  const [settled, setSettled] = useState<{
+    key: string
+    pages: Map<string, PageResult>
+    error: string | null
+  } | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
 
-  const cache = useRef(new Map<string, PageResult>())
+  // Per-instance page cache, held in state (never replaced) so render can
+  // read it. Keys carry `pageSize`, so a page of one size is never served
+  // for another even before the clear below runs.
+  const [cache] = useState(() => new Map<string, PageResult>())
 
   const ids = useMemo(
     () => sources.filter(s => s.type === 'aveva').map(s => s.id),
@@ -103,12 +113,19 @@ export function useDatasetTagMetadata(
   )
 
   const idsKey = JSON.stringify(ids)
-  useEffect(() => {
-    cache.current.clear()
-    setPageBySource(new Map())
-  }, [nameFilter, pageSize])
 
-  useEffect(() => {
+  // Page positions reset on a new filter/size and drop sources that left the
+  // selection — adjusted during render (React's "storing information from
+  // previous renders" pattern), not in an effect.
+  const resetKey = `${nameFilter}|${pageSize}`
+  const [prevResetKey, setPrevResetKey] = useState(resetKey)
+  if (prevResetKey !== resetKey) {
+    setPrevResetKey(resetKey)
+    setPageBySource(new Map())
+  }
+  const [prevIdsKey, setPrevIdsKey] = useState(idsKey)
+  if (prevIdsKey !== idsKey) {
+    setPrevIdsKey(idsKey)
     setPageBySource(prev => {
       const next = new Map<string, number>()
       for (const id of ids) {
@@ -117,49 +134,35 @@ export function useDatasetTagMetadata(
       }
       return next.size === prev.size ? prev : next
     })
-  }, [idsKey])
-
-  const wantKey = ids
-    .map(id => `${id}::${nameFilter}::${pageBySource.get(id) ?? 1}`)
-    .join('|')
+  }
 
   useEffect(() => {
-    if (!enabled || ids.length === 0) {
-      setPages(new Map())
-      setError(null)
-      setLoading(false)
-      return
-    }
-    if (ids.length === 0) {
-      setPages(new Map())
-      setError(null)
-      setLoading(false)
-      return
-    }
+    cache.clear()
+  }, [cache, nameFilter, pageSize])
 
-    const wanted = ids.map(id => ({
-      id,
-      page: pageBySource.get(id) ?? 1,
-      key: `${id}::${nameFilter}::${pageBySource.get(id) ?? 1}`,
-    }))
+  const wanted = useMemo(
+    () =>
+      ids.map(id => {
+        const page = pageBySource.get(id) ?? 1
+        return { id, page, key: `${id}::${nameFilter}::${pageSize}::${page}` }
+      }),
+    [ids, pageBySource, nameFilter, pageSize],
+  )
+  const wantKey = wanted.map(w => w.key).join('|')
+  // `reloadNonce` is part of the request, so Refresh re-runs the effect after
+  // clearing the cache instead of waiting on a fetch that never starts.
+  const requestKey = JSON.stringify([wantKey, reloadNonce])
+  const active = enabled && ids.length > 0
+  const allCached = active && wanted.every(w => cache.has(w.key))
 
-    const missing = wanted.filter(w => !cache.current.has(w.key))
-    if (missing.length === 0) {
-      setPages(new Map(wanted.map(w => [w.id, cache.current.get(w.key)!])))
-      setError(null)
-      setLoading(false)
-      return
-    }
+  useEffect(() => {
+    if (!active) return
+    const missing = wanted.filter(w => !cache.has(w.key))
+    if (missing.length === 0) return
 
     const ctrl = new AbortController()
-    setLoading(true)
-    setError(null)
 
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-
-    Promise.allSettled(
+    void Promise.allSettled(
       missing.map(w =>
         dataSourceService.metadata(
           w.id,
@@ -167,46 +170,57 @@ export function useDatasetTagMetadata(
           { signal: ctrl.signal },
         ),
       ),
-    )
-      .then(results => {
-        // console.log('metadata results', results)
-        if (ctrl.signal.aborted) return
-        const failed: string[] = []
+    ).then(results => {
+      if (ctrl.signal.aborted) return
+      const failed: string[] = []
 
-        results.forEach((r, i) => {
-          const w = missing[i]
-          if (!w) return
-          if (r.status === 'rejected') {
-            failed.push(w.id)
-            return
-          }
-          const d = r.value.data
-          cache.current.set(w.key, {
-            tags: d.tags,
-            hasNext: d.hasNext === true,
-          })
+      results.forEach((r, i) => {
+        const w = missing[i]
+        if (!w) return
+        if (r.status === 'rejected') {
+          failed.push(w.id)
+          return
+        }
+        const d = r.value.data
+        cache.set(w.key, {
+          tags: d.tags,
+          hasNext: d.hasNext === true,
         })
+      })
 
-        setPages(
-          new Map(
-            wanted
-              .map(w => [w.id, cache.current.get(w.key)] as const)
-              .filter((e): e is [string, PageResult] => e[1] !== undefined),
-          ),
-        )
-        setError(
-          failed.length
-            ? `Metadata unavailable for ${failed.length}/${ids.length} source(s).`
-            : null,
-        )
+      setSettled({
+        key: requestKey,
+        pages: new Map(
+          wanted
+            .map(w => [w.id, cache.get(w.key)] as const)
+            .filter((e): e is [string, PageResult] => e[1] !== undefined),
+        ),
+        error: failed.length
+          ? `Metadata unavailable for ${failed.length}/${wanted.length} source(s).`
+          : null,
       })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false)
-      })
+    })
 
     // cancelled flag เดิมปิดแค่ setState — request ยังค้างใน threadpool
     return () => ctrl.abort()
-  }, [wantKey, idsKey, nameFilter, pageSize])
+  }, [active, wanted, requestKey, cache, nameFilter, pageSize])
+
+  // Fully cached: read straight from the cache, no request in flight.
+  // Otherwise the last settled pages stay on screen while the next loads,
+  // exactly as before; disabled shows nothing.
+  const pages = useMemo(
+    () =>
+      !active
+        ? EMPTY_PAGES
+        : allCached
+          ? new Map(wanted.map(w => [w.id, cache.get(w.key)!] as const))
+          : (settled?.pages ?? EMPTY_PAGES),
+    // `settled` stands in for cache writes: every write is followed by one.
+    [active, allCached, wanted, cache, settled],
+  )
+  const settledHere = settled?.key === requestKey ? settled : null
+  const loading = active && !allCached && settledHere === null
+  const error = active && !allCached ? (settledHere?.error ?? null) : null
 
   const { metaByTag, tagsBySource, hasNextBySource } = useMemo(() => {
     const meta = new Map<string, TagMeta>()
@@ -230,9 +244,9 @@ export function useDatasetTagMetadata(
   )
 
   const refetch = useCallback(() => {
-    for (const key of [...cache.current.keys()]) cache.current.delete(key)
+    cache.clear()
     setReloadNonce(n => n + 1)
-  }, [wantKey, idsKey, nameFilter, pageSize, enabled, reloadNonce])
+  }, [cache])
 
   return {
     metaByTag,

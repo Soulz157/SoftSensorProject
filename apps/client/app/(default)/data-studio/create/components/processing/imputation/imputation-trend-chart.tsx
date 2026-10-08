@@ -134,14 +134,17 @@ export function ImputationTrendChart({
   const dataKey = rows.length
     ? `${rows.length}|${rows[0]!.timestamp}|${rows[rows.length - 1]!.timestamp}`
     : '0'
-  useEffect(() => {
-    setZoomWindow(null)
-  }, [dataKey])
-
   // เปลี่ยน tag ที่ isolate = ข้อมูลคนละชุด window เดิมไม่มีความหมาย
-  useEffect(() => {
+  // Both resets adjust during render (React's "storing information from
+  // previous renders" pattern), not in an effect.
+  const [zoomSource, setZoomSource] = useState({ dataKey, isolatedTag })
+  if (
+    zoomSource.dataKey !== dataKey ||
+    zoomSource.isolatedTag !== isolatedTag
+  ) {
+    setZoomSource({ dataKey, isolatedTag })
     setZoomWindow(null)
-  }, [isolatedTag])
+  }
 
   const zoomBy = (factor: number) => {
     setZoomWindow(prev => {

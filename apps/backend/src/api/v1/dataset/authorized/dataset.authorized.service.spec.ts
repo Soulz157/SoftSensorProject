@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { DatasetAuthorizedService } from './dataset.authorized.service';
 
 const USER = { id: 'user-1', role: 'USER' } as Auth.UserPayload;
@@ -75,10 +76,7 @@ describe('DatasetAuthorizedService — workspace-wide read access', () => {
   const memberScope = {
     workspace: {
       deletedAt: null,
-      OR: [
-        { ownerId: 'user-1' },
-        { members: { some: { userId: 'user-1' } } },
-      ],
+      OR: [{ ownerId: 'user-1' }, { members: { some: { userId: 'user-1' } } }],
     },
   };
 
@@ -93,7 +91,7 @@ describe('DatasetAuthorizedService — workspace-wide read access', () => {
     expect(where).not.toHaveProperty('createdById');
   });
 
-  it('list returns teammates\' datasets in the requested workspace', async () => {
+  it("list returns teammates' datasets in the requested workspace", async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const service = new DatasetAuthorizedService({
       dataset: { findMany },

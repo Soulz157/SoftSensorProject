@@ -1,8 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { AuthAdminService } from './auth.admin.service';
-import { OAuthLoginRequestDto } from './dto/auth.admin.dto';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be declared before any imports that reference them
@@ -53,56 +51,6 @@ function buildPrismaMock() {
   };
 }
 
-function buildUser(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 'user-id-1',
-    email: 'user@example.com',
-    firstName: 'Jane',
-    lastName: 'Doe',
-    password: null,
-    company: null,
-    role: 'USER',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...overrides,
-  };
-}
-
-function buildGraphProfile(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 'graph-user-id-1',
-    mail: 'user@example.com',
-    userPrincipalName: 'user@example.com',
-    givenName: 'Jane',
-    surname: 'Doe',
-    displayName: 'Jane Doe',
-    ...overrides,
-  };
-}
-
-function mockGraphResponse(
-  ok: boolean,
-  payload: Record<string, unknown> | null = null,
-) {
-  return {
-    ok,
-    status: ok ? 200 : 401,
-    json: jest.fn().mockResolvedValue(payload),
-  };
-}
-
-function buildDto(
-  overrides: Partial<OAuthLoginRequestDto> = {},
-): OAuthLoginRequestDto {
-  return {
-    provider: 'microsoft',
-    providerAccountId: 'graph-user-id-1',
-    email: 'user@example.com',
-    accessToken: 'ms-access-token',
-    ...overrides,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -130,12 +78,6 @@ describe('AuthAdminService', () => {
       .compile();
 
     service = module.get<AuthAdminService>(AuthAdminService);
-
-    fetchSpy = jest
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(
-        mockGraphResponse(true, buildGraphProfile()) as unknown as Response,
-      );
   });
 
   afterEach(() => {

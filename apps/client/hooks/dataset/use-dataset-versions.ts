@@ -21,50 +21,74 @@ import {
  */
 export function useDatasetVersions(datasetId: string | null) {
   const [versions, setVersions] = useState<DatasetVersion[]>([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(() => !!datasetId)
   const [error, setError] = useState<string | null>(null)
 
-  const load = useCallback(
+  // A new dataset starts loading (or, with none, empties) from the first
+  // render that sees it — adjusted during render, not in the effect below.
+  const [prevDatasetId, setPrevDatasetId] = useState(datasetId)
+  if (prevDatasetId !== datasetId) {
+    setPrevDatasetId(datasetId)
+    setLoading(!!datasetId)
+    setError(null)
+    if (!datasetId) setVersions([])
+  }
+
+  // Sets state only after the await, so the mount/key effect can call it.
+  const fetchVersions = useCallback(
     async (signal?: AbortSignal) => {
-      if (!datasetId) {
-        setVersions([])
-        return
-      }
-      setLoading(true)
-      setError(null)
-      try {
-        const res = await datasetVersionService.list(datasetId)
-        if (signal?.aborted) return
-        // Newest first: a dataset's most recent version is what an operator
-        // is nearly always looking for, and an augmented retrain's output is
-        // by definition the newest row.
-        setVersions(
-          [...(res.data ?? [])].sort(
-            (a, b) => b.versionNumber - a.versionNumber,
-          ),
+      if (!datasetId) return
+      // Promise callbacks rather than try/catch: every setState here must run
+      // after the request settles, never synchronously inside the effect.
+      await datasetVersionService
+        .list(datasetId)
+        .then(
+          res => {
+            if (signal?.aborted) return
+            // Newest first: a dataset's most recent version is what an
+            // operator is nearly always looking for, and an augmented
+            // retrain's output is by definition the newest row.
+            setVersions(
+              [...(res.data ?? [])].sort(
+                (a, b) => b.versionNumber - a.versionNumber,
+              ),
+            )
+          },
+          (err: unknown) => {
+            if (signal?.aborted) return
+            // Surfaced, never swallowed — an empty list and a failed fetch
+            // must not look identical to the operator.
+            setError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load dataset versions',
+            )
+            setVersions([])
+          },
         )
-      } catch (err) {
-        if (signal?.aborted) return
-        // Surfaced, never swallowed — an empty list and a failed fetch must
-        // not look identical to the operator.
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Failed to load dataset versions',
-        )
-        setVersions([])
-      } finally {
-        if (!signal?.aborted) setLoading(false)
-      }
+        .finally(() => {
+          if (!signal?.aborted) setLoading(false)
+        })
     },
     [datasetId],
   )
 
+  const refetch = useCallback(
+    async (signal?: AbortSignal) => {
+      if (datasetId) {
+        setLoading(true)
+        setError(null)
+      }
+      await fetchVersions(signal)
+    },
+    [datasetId, fetchVersions],
+  )
+
   useEffect(() => {
     const controller = new AbortController()
-    void load(controller.signal)
+    void fetchVersions(controller.signal)
     return () => controller.abort()
-  }, [load])
+  }, [fetchVersions])
 
-  return { versions, loading, error, refetch: load }
+  return { versions, loading, error, refetch }
 }

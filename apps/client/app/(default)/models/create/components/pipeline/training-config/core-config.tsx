@@ -378,9 +378,12 @@ function CvControl({
   )
   const [kText, setKText] = useState(String(nSplits ?? N_SPLITS_DEFAULT))
 
-  useEffect(() => {
+  // Re-sync from the committed value during render, not in an effect.
+  const [syncedNSplits, setSyncedNSplits] = useState(nSplits)
+  if (syncedNSplits !== nSplits) {
+    setSyncedNSplits(nSplits)
     if (nSplits !== undefined) setKText(String(nSplits))
-  }, [nSplits])
+  }
 
   const commitK = (raw: string) => {
     const n = Number(raw)

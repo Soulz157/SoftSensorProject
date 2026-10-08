@@ -61,6 +61,7 @@ function buildPrisma(model: Record<string, unknown> = MODEL_ROW) {
     model: {
       findUnique: jest.fn().mockResolvedValue(model),
       findFirst: jest.fn().mockResolvedValue(null), // no name collision
+      findMany: jest.fn().mockResolvedValue([]),
       update: jest
         .fn()
         .mockImplementation(({ data }: { data: Record<string, unknown> }) =>

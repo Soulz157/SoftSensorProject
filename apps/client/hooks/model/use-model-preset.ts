@@ -29,9 +29,21 @@ export interface UseModelPresetResult {
   applyPreset: (sourceModelId: string) => void
 }
 
+const EMPTY_MODELS: AIModel[] = []
+
 export function useModelPreset(workspaceId: string): UseModelPresetResult {
-  const [models, setModels] = useState<AIModel[]>([])
-  const [loading, setLoading] = useState(false)
+  // Settled result tagged with the request it answers. `loading` is DERIVED
+  // from a key mismatch rather than set synchronously in the effect; the
+  // last result stays visible while a reload is in flight, as before.
+  const [settled, setSettled] = useState<{
+    key: string
+    models: AIModel[]
+  } | null>(null)
+  const requestKey = workspaceId || null
+  // No workspace: drop the last list during render, not in the effect.
+  if (requestKey === null && settled !== null) setSettled(null)
+  const models = settled?.models ?? EMPTY_MODELS
+  const loading = requestKey !== null && settled?.key !== requestKey
 
   const setName = useSetAtom(mpNameAtom)
   const setDescription = useSetAtom(mpDescriptionAtom)
@@ -46,26 +58,20 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
   const setSelectedMetrics = useSetAtom(mpSelectedMetricsAtom)
 
   useEffect(() => {
-    if (!workspaceId) {
-      setModels([])
-      return
-    }
+    if (!requestKey) return
     let ignore = false
-    setLoading(true)
-    getModels(workspaceId)
-      .then(data => {
-        if (!ignore) setModels(data)
-      })
-      .catch(() => {
-        if (!ignore) setModels([])
-      })
-      .finally(() => {
-        if (!ignore) setLoading(false)
-      })
+    getModels(requestKey).then(
+      data => {
+        if (!ignore) setSettled({ key: requestKey, models: data })
+      },
+      () => {
+        if (!ignore) setSettled({ key: requestKey, models: [] })
+      },
+    )
     return () => {
       ignore = true
     }
-  }, [workspaceId])
+  }, [requestKey])
 
   const applyPreset = useCallback(
     (sourceModelId: string) => {

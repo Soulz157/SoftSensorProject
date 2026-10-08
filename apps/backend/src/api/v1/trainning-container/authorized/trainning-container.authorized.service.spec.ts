@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { TrainningContainerAuthorizedService } from './trainning-container.authorized.service';
 
 /**

@@ -8,8 +8,16 @@ export function useDatasets(workspaceId?: string) {
   const [datasets, setDatasets] = useState<SavedDataset[]>([])
   const [loading, setLoading] = useState(true)
 
-  const refetch = useCallback(async () => {
+  // A new workspace is loading from the first render that sees it —
+  // adjusted during render, not in the effect below.
+  const [prevWorkspaceId, setPrevWorkspaceId] = useState(workspaceId)
+  if (prevWorkspaceId !== workspaceId) {
+    setPrevWorkspaceId(workspaceId)
     setLoading(true)
+  }
+
+  // Sets state only after the await, so the mount/key effect can call it.
+  const fetchDatasets = useCallback(async () => {
     try {
       const res = await datasetService.list(workspaceId)
       setDatasets(res.data ?? [])
@@ -18,9 +26,14 @@ export function useDatasets(workspaceId?: string) {
     }
   }, [workspaceId])
 
+  const refetch = useCallback(async () => {
+    setLoading(true)
+    await fetchDatasets()
+  }, [fetchDatasets])
+
   useEffect(() => {
-    void refetch()
-  }, [refetch])
+    void fetchDatasets()
+  }, [fetchDatasets])
 
   const createDataset = async (
     input: CreateDatasetInput,

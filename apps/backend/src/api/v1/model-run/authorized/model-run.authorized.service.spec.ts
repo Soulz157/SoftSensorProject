@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { ModelRunAuthorizedService } from './model-run.authorized.service';
 import * as pythonClient from '@/lib/python-preprocess-client';
 

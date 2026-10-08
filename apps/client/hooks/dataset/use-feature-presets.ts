@@ -47,41 +47,57 @@ export function useFeaturePresets(
   const [presets, setPresets] = useState<PresetSummary[]>([])
   const [currentImport, setCurrentImport] =
     useState<PresetImportSummary | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(() => !!workspaceId)
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const refetch = useCallback(async () => {
-    // No workspace yet (the wizard seeds it a tick later) — not an error state,
-    // just nothing to ask for.
+  // No workspace yet (the wizard seeds it a tick later) — not an error state,
+  // just nothing to ask for. Cleared during render when the workspace
+  // changes, rather than synchronously inside the effect's fetch.
+  const [prevWorkspaceId, setPrevWorkspaceId] = useState(workspaceId)
+  if (prevWorkspaceId !== workspaceId) {
+    setPrevWorkspaceId(workspaceId)
+    setLoading(!!workspaceId)
     if (!workspaceId) {
       setPresets([])
       setCurrentImport(null)
-      return
     }
+  }
 
-    setLoading(true)
-    try {
-      const res = await featurePresetService.list(workspaceId)
-      setPresets(res.data?.presets ?? [])
-      setCurrentImport(res.data?.import ?? null)
-      setError(null)
-    } catch (e) {
-      // Surfaced rather than swallowed: an empty picker with no explanation
-      // reads as "this workspace has no presets", which may be false.
-      setError(
-        e instanceof Error ? e.message : 'Could not load feature presets',
+  // Sets state only after the await, so the mount/key effect can call it.
+  const fetchPresets = useCallback(async () => {
+    if (!workspaceId) return
+    // Promise callbacks rather than try/catch: every setState here must run
+    // after the request settles, never synchronously inside the effect.
+    await featurePresetService
+      .list(workspaceId)
+      .then(
+        res => {
+          setPresets(res.data?.presets ?? [])
+          setCurrentImport(res.data?.import ?? null)
+          setError(null)
+        },
+        (e: unknown) => {
+          // Surfaced rather than swallowed: an empty picker with no explanation
+          // reads as "this workspace has no presets", which may be false.
+          setError(
+            e instanceof Error ? e.message : 'Could not load feature presets',
+          )
+          setPresets([])
+          setCurrentImport(null)
+        },
       )
-      setPresets([])
-      setCurrentImport(null)
-    } finally {
-      setLoading(false)
-    }
+      .finally(() => setLoading(false))
   }, [workspaceId])
 
+  const refetch = useCallback(async () => {
+    if (workspaceId) setLoading(true)
+    await fetchPresets()
+  }, [workspaceId, fetchPresets])
+
   useEffect(() => {
-    void refetch()
-  }, [refetch])
+    void fetchPresets()
+  }, [fetchPresets])
 
   const importWorkbook = useCallback(
     async (file: File): Promise<PresetSummary[]> => {

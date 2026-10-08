@@ -46,11 +46,18 @@ export function useDatasetExport(
   // rendered per page"). Without this reset, a Download button left in
   // `ready` state from dataset A would still render — and still point at
   // dataset A's export artifact id — after switching to dataset B.
-  useEffect(() => {
-    cancelledRef.current = true
+  // The state reset happens during render (React's "storing information
+  // from previous renders" pattern); only the in-flight poll's cancel flag,
+  // a ref, is flipped in the effect.
+  const [prevDatasetId, setPrevDatasetId] = useState(datasetId)
+  if (prevDatasetId !== datasetId) {
+    setPrevDatasetId(datasetId)
     setStatus('idle')
     setError(null)
     setArtifactId(null)
+  }
+  useEffect(() => {
+    cancelledRef.current = true
   }, [datasetId])
 
   const start = useCallback(async () => {

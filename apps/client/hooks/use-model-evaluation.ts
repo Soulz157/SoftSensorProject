@@ -77,10 +77,14 @@ export function useModelEvaluation(
 
   // Lab data is per-model: reset both buffers when the model changes (but keep
   // them across a range switch — the tag/measurement set is unchanged).
-  useEffect(() => {
+  // Adjusted during render (React's "storing information from previous
+  // renders" pattern), not in an effect.
+  const [prevModelId, setPrevModelId] = useState(model.id)
+  if (prevModelId !== model.id) {
+    setPrevModelId(model.id)
     setDraftLab([])
     setAppliedLab([])
-  }, [model.id])
+  }
 
   const points = useMemo(
     () => alignLabToPredictions(preds, appliedLab, toleranceMs),
@@ -130,10 +134,23 @@ export function useModelEvaluation(
   const [isGenerating, setIsGenerating] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Reset stale analysis when the evaluated model, range, or applied data shifts.
-  useEffect(() => {
+  // Reset stale analysis when the evaluated model, range, or applied data
+  // shifts — state during render, the pending timer (a ref) in the effect.
+  const [prevAnalysisInputs, setPrevAnalysisInputs] = useState({
+    modelId: model.id,
+    range,
+    appliedLab,
+  })
+  if (
+    prevAnalysisInputs.modelId !== model.id ||
+    prevAnalysisInputs.range !== range ||
+    prevAnalysisInputs.appliedLab !== appliedLab
+  ) {
+    setPrevAnalysisInputs({ modelId: model.id, range, appliedLab })
     setAnalysis(null)
     setIsGenerating(false)
+  }
+  useEffect(() => {
     if (timer.current) clearTimeout(timer.current)
   }, [model.id, range, appliedLab])
 

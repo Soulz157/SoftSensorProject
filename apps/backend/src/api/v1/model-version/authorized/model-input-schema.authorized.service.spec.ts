@@ -146,7 +146,7 @@ describe('ModelInputSchemaAuthorizedService.getInputSchemaService', () => {
     const prisma = buildPrisma({
       productionVersion: {
         ...PRODUCTION_VERSION,
-        metrics: { rmse: Number.NaN, r2: 'high', mae: 0.2 } as unknown,
+        metrics: { rmse: Number.NaN, r2: 'high', mae: 0.2 },
       },
     });
     const service = buildService(prisma);

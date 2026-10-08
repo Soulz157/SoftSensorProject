@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { InferenceWindowAuthorizedService } from './inference-window.authorized.service';
 import {
   inferenceWindowTruthSeries,
@@ -1244,13 +1245,14 @@ function buildTruthPrisma(
     truth: { n: number; failureReason: string | null } | null;
   }> = [],
 ) {
-  return buildPrisma({
+  const tagObservation = { findUnique: jest.fn().mockResolvedValue(null) };
+  const prisma = buildPrisma({
     inferenceWindowTruth: { findMany: jest.fn().mockResolvedValue(rows) },
     // MODEL-SERVE-009-T05. `getTruthService` reads the TARGET's own per-tag
     // row to publish its held value. Null by default — a model whose
     // scheduled fetch has not run yet — so `targetHeld` comes back null
     // rather than the mock throwing and hiding the real behaviour.
-    tagObservation: { findUnique: jest.fn().mockResolvedValue(null) },
+    tagObservation,
     inferenceWindow: {
       findUniqueOrThrow: jest.fn(),
       update: jest.fn().mockResolvedValue({}),
@@ -1268,6 +1270,9 @@ function buildTruthPrisma(
         ),
     },
   });
+  // Spread back out so the return type carries `tagObservation` — buildPrisma
+  // takes its overrides as Record<string, unknown> and drops their types.
+  return { ...prisma, tagObservation };
 }
 
 describe('InferenceWindowAuthorizedService.getTruthService (MODEL-SERVE-005-T03)', () => {

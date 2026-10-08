@@ -35,9 +35,14 @@ export function useArtifactBoxplot(
   /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
   timeWindow?: TimeWindow | null,
 ): ArtifactBoxplotState {
-  const [boxplot, setBoxplot] = useState<DraftBoxplotResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Settled result tagged with the request it answers. `loading` and the
+  // reset-to-null on a new request are DERIVED from a key mismatch rather
+  // than set synchronously at the top of the effect.
+  const [settled, setSettled] = useState<{
+    key: string
+    boxplot: DraftBoxplotResult | null
+    error: string | null
+  } | null>(null)
   const tokenRef = useRef(0)
 
   // `tags` is a fresh array identity every render — key the effect on the
@@ -47,18 +52,23 @@ export function useArtifactBoxplot(
   const startTime = timeWindow?.startTime
   const endTime = timeWindow?.endTime
 
+  const requestKey =
+    datasetId && artifactId && tagsKey
+      ? JSON.stringify([
+          datasetId,
+          artifactId,
+          tagsKey,
+          sampleRows,
+          startTime,
+          endTime,
+        ])
+      : null
+
   useEffect(() => {
     const token = ++tokenRef.current
-    setBoxplot(null)
-    setError(null)
-
-    if (!datasetId || !artifactId || !tagsKey) {
-      setLoading(false)
-      return
-    }
+    if (!requestKey || !datasetId || !artifactId) return
 
     const ac = new AbortController()
-    setLoading(true)
 
     datasetArtifactService
       .boxplot(
@@ -74,18 +84,33 @@ export function useArtifactBoxplot(
       )
       .then(res => {
         if (tokenRef.current !== token) return
-        setBoxplot(res.data)
-        setLoading(false)
+        setSettled({ key: requestKey, boxplot: res.data, error: null })
       })
       .catch((err: unknown) => {
         if (tokenRef.current !== token) return
         if ((err as Error)?.name === 'AbortError') return
-        setError(err instanceof Error ? err.message : 'Failed to load boxplot')
-        setLoading(false)
+        setSettled({
+          key: requestKey,
+          boxplot: null,
+          error: err instanceof Error ? err.message : 'Failed to load boxplot',
+        })
       })
 
     return () => ac.abort()
-  }, [datasetId, artifactId, tagsKey, sampleRows, startTime, endTime])
+  }, [
+    requestKey,
+    datasetId,
+    artifactId,
+    tagsKey,
+    sampleRows,
+    startTime,
+    endTime,
+  ])
 
-  return { boxplot: boxplot, loading, error }
+  const current = settled?.key === requestKey ? settled : null
+  return {
+    boxplot: current?.boxplot ?? null,
+    loading: requestKey !== null && current === null,
+    error: current?.error ?? null,
+  }
 }

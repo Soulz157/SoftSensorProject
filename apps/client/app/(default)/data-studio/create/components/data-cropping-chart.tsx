@@ -104,7 +104,6 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))
 }
 
-
 interface DragSelection {
   startIdx: number
   endIdx: number
@@ -153,10 +152,15 @@ export function DataCroppingChart({
   const showClip = !!onValueClipChange
   const canClip = showClip && !!tag
 
-  useEffect(() => {
-    if (cropMode === 'clip' && !canClip) setCropMode('crop')
-    else if (cropMode === 'exclude' && !canExclude) setCropMode('crop')
-  }, [cropMode, canClip, canExclude])
+  // A mode whose control has gone away falls back to 'crop' — adjusted
+  // during render (React's "storing information from previous renders"
+  // pattern) rather than painting one frame of the dead mode first.
+  if (
+    (cropMode === 'clip' && !canClip) ||
+    (cropMode === 'exclude' && !canExclude)
+  ) {
+    setCropMode('crop')
+  }
 
   const clipSource = clipBasis ?? rawDataset
   const clipBasisIsApprox = !clipBasis
@@ -199,7 +203,12 @@ export function DataCroppingChart({
   }, [cropRange, indexByTs, lastIdx])
 
   const [range01, setRange01] = useState<[number, number]>(committed)
-  useEffect(() => setRange01(committed), [committed])
+  // Snap back to a newly committed range — same adjust-during-render pattern.
+  const [range01Source, setRange01Source] = useState(committed)
+  if (range01Source !== committed) {
+    setRange01Source(committed)
+    setRange01(committed)
+  }
 
   const [pending, setPending] = useState<PendingAction | null>(null)
 

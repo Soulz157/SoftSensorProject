@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- jest mocks are `any` by design */
 import { Logger } from '@nestjs/common';
 import { ModelDraftCleanupAdminService } from './model-draft-cleanup.admin.service';
 import { postToPython } from '@/lib/python-client';

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import { Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -123,11 +123,15 @@ export function ValidationHoldoutSection({
   // showing a stale draft the atom no longer holds. This effect only
   // syncs LOCAL draft state from the atom; it never writes the atom back,
   // so hydration/reset cannot itself schedule the parent's warm — only
-  // `applyHoldout`/`clearHoldout` (real user actions) do that.
-  useEffect(() => {
+  // `applyHoldout`/`clearHoldout` (real user actions) do that. Adjusted
+  // during render (React's "storing information from previous renders"
+  // pattern) rather than in an effect.
+  const [draftSource, setDraftSource] = useState(holdoutRange)
+  if (draftSource !== holdoutRange) {
+    setDraftSource(holdoutRange)
     setDraftFrom(holdoutRange?.from ?? '')
     setDraftTo(holdoutRange?.to ?? '')
-  }, [holdoutRange])
+  }
 
   const guard = describeHoldoutSelection({
     fetchRange: { from: fetchFrom, to: fetchTo },

@@ -130,7 +130,13 @@ export function RetrainDataStrategy({
   )
   const [source, setSource] = useState<RetrainNewDataSource>('EXISTING_DATASET')
   const [versions, setVersions] = useState<DatasetVersion[]>([])
-  const [versionsLoading, setVersionsLoading] = useState(false)
+  // Which dataset `versions` was last loaded for; `versionsLoading` is
+  // DERIVED from a mismatch rather than set synchronously in the effect.
+  const [versionsLoadedFor, setVersionsLoadedFor] = useState<string | null>(
+    null,
+  )
+  const versionsLoading =
+    !!selectedDatasetId && versionsLoadedFor !== selectedDatasetId
   const [validationWindowEnabled, setValidationWindowEnabled] = useState(false)
   // Held as naive `yyyy-MM-ddTHH:mm` wall-clock stamps and converted to
   // ISO-8601 only on the way out (`stampToIso`) — never through a Date, which
@@ -144,15 +150,14 @@ export function RetrainDataStrategy({
     // to reset when `selectedDatasetId` is null.
     if (!selectedDatasetId) return
     let ignore = false
-    setVersionsLoading(true)
-    void (async () => {
-      try {
-        const res = await datasetVersionService.list(selectedDatasetId)
+    void datasetVersionService
+      .list(selectedDatasetId)
+      .then(res => {
         if (!ignore) setVersions(res.data ?? [])
-      } finally {
-        if (!ignore) setVersionsLoading(false)
-      }
-    })()
+      })
+      .finally(() => {
+        if (!ignore) setVersionsLoadedFor(selectedDatasetId)
+      })
     return () => {
       ignore = true
     }

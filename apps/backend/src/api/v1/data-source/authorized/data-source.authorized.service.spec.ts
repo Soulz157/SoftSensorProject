@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { dataSourceAccessWhere } from '@/lib/data-source-access';
 import { DataSourceAuthorizedService } from './data-source.authorized.service';
 

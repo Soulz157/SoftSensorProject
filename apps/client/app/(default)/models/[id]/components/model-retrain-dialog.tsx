@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { AlertTriangle, Sparkles, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -137,12 +137,19 @@ export function ModelRetrainDialog({
   // initial state above is normally enough. This re-seeds it for the case
   // where it is not — arriving while the component is already mounted —
   // keyed on the resumed values so it never fights the operator's own later
-  // edits within one visit.
-  useEffect(() => {
-    if (!resumed) return
-    setDataStrategy(resumed.strategy)
-    setAdditionalDatasetVersionId(resumed.versionId ?? null)
-  }, [resumed?.strategy, resumed?.versionId])
+  // edits within one visit. Adjusted during render (React's "storing
+  // information from previous renders" pattern), not in an effect.
+  const resumedKey = resumed
+    ? JSON.stringify([resumed.strategy, resumed.versionId ?? null])
+    : null
+  const [seededResumeKey, setSeededResumeKey] = useState<string | null>(null)
+  if (seededResumeKey !== resumedKey) {
+    setSeededResumeKey(resumedKey)
+    if (resumed) {
+      setDataStrategy(resumed.strategy)
+      setAdditionalDatasetVersionId(resumed.versionId ?? null)
+    }
+  }
 
   // MODEL-SERVE-017/019. Forwards whichever new-data strategy was chosen
   // rather than a hardcoded AUGMENT_DATA, so NEW_DATA_ONLY cannot silently

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Box, LineChart } from 'lucide-react'
 import {
   Select,
@@ -15,14 +15,10 @@ import { ModelEvaluation } from './components/model-evaluation'
 
 export default function ModelEvaluationPage() {
   const { models, loading } = useAllModels()
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-
-  useEffect(() => {
-    const first = models?.[0]
-    if (!selectedId && first) {
-      setSelectedId(first.id)
-    }
-  }, [models, selectedId])
+  const [pickedId, setSelectedId] = useState<string | null>(null)
+  // Defaults to the first model until the user picks one — derived, not
+  // written back from an effect.
+  const selectedId = pickedId ?? models?.[0]?.id ?? null
 
   const selected = models?.find(m => m.id === selectedId) ?? null
 

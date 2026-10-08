@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/unbound-method -- expect(mock.method) never calls it */
 import { Test, TestingModule } from '@nestjs/testing';
 import { WorkspaceAdminController } from './workspace.admin.controller';
 import { WorkspaceAdminService } from './workspace.admin.service';
