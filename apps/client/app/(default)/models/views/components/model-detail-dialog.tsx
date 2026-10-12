@@ -121,7 +121,7 @@ export function ModelDetailDialog({ model, open, onClose }: Props) {
   const PIcon = ps.icon
 
   const recentLogs = [...(model.data?.logs ?? [])].reverse().slice(0, 5)
-  const nodeName = model.nodes
+  const equipmentName = model.nodes
     ? ((model.nodes.data as { name?: string }).name ?? '—')
     : '—'
   const plantName = model.nodes?.plan?.name ?? '—'
@@ -193,7 +193,7 @@ export function ModelDetailDialog({ model, open, onClose }: Props) {
                 Assigned To
               </p>
               <p className="font-medium text-foreground">{plantName}</p>
-              <p className="text-xs text-muted-foreground">{nodeName}</p>
+              <p className="text-xs text-muted-foreground">{equipmentName}</p>
             </div>
 
             {hasError && (

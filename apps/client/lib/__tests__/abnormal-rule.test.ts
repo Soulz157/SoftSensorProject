@@ -3,7 +3,7 @@ import {
   countBinary,
   deriveBinaryStatus,
   isAbnormal,
-  isNodeAbnormal,
+  isEquipmentAbnormal,
   toBinaryStatus,
 } from '@/lib/overview-status'
 import { isModelAbnormal } from '@/lib/model-status'
@@ -61,7 +61,7 @@ describe('plant roll-up with model faults', () => {
 
   it('folds a node whose model is abnormal into Abnormal', () => {
     const withModel = new Set(['a'])
-    expect(isNodeAbnormal(nodes[0]!, withModel)).toBe(true)
+    expect(isEquipmentAbnormal(nodes[0]!, withModel)).toBe(true)
     expect(countBinary(nodes, withModel)).toEqual({ normal: 1, abnormal: 2 })
   })
 

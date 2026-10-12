@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { usePlantsData } from '@/hooks/plants/use-plants-data'
 import { useAllModels } from '@/hooks/use-all-models'
 import {
-  abnormalModelCountByNodeId,
+  abnormalModelCountByEquipmentId,
   abnormalModelCountByWorkspace,
 } from '@/lib/model-status'
 
@@ -26,7 +26,8 @@ export default function PlantsPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const wsFromUrl = searchParams.get('ws')
-  const { workspaces, nodesByWorkspace, loading, error } = usePlantsData()
+  const { workspaces, equipmentListByWorkspace, loading, error } =
+    usePlantsData()
   const { models } = useAllModels()
   const { alerts, loading: alertsLoading } = useAlerts()
 
@@ -38,28 +39,28 @@ export default function PlantsPage() {
     () => (models ? abnormalModelCountByWorkspace(models) : {}),
     [models],
   )
-  const failedByNodeId = useMemo(
-    () => (models ? abnormalModelCountByNodeId(models) : {}),
+  const failedByEquipmentId = useMemo(
+    () => (models ? abnormalModelCountByEquipmentId(models) : {}),
     [models],
   )
 
-  const abnormalNodeIds = useMemo(() => {
+  const abnormalEquipmentIds = useMemo(() => {
     const ids = new Set<string>()
     for (const a of alerts) {
       // Only an equipment ALERT is Abnormal — a warning or offline node is
       // listed on the Alerts page but stays Normal here (MODEL-SERVE-024-D02).
       if (a.kind === 'node' && a.status === 'alert') ids.add(a.id)
     }
-    for (const nodeId of Object.keys(failedByNodeId)) {
-      ids.add(nodeId)
+    for (const equipmentId of Object.keys(failedByEquipmentId)) {
+      ids.add(equipmentId)
     }
     return ids
-  }, [alerts, failedByNodeId])
+  }, [alerts, failedByEquipmentId])
 
   // roll up จาก nodes ที่ reconcile แล้ว — dot ใหญ่ + StatusIcon บน tower
   // อ่านจาก workspace.status ไม่ใช่จาก nodeStatuses จึงต้องคำนวณใหม่ด้วย
   //
-  // Reads raw `nodesByWorkspace` directly (not a reconciled copy) — the map
+  // Reads raw `equipmentListByWorkspace` directly (not a reconciled copy) — the map
   // and detail panel already read `node.data.status` themselves
   // (overview-map.tsx, overview-detail-panel.tsx), so a per-node
   // `{...n, status}` copy was dead weight nothing consumed, and its
@@ -67,12 +68,13 @@ export default function PlantsPage() {
   const workspacesReconciled = useMemo(
     () =>
       workspaces.map(ws => {
-        const nodes = nodesByWorkspace[ws.id] ?? []
-        const hasAlarm = nodes.some(
-          n => n.data.status === 'alarm' || abnormalNodeIds.has(n.id),
+        const equipmentList = equipmentListByWorkspace[ws.id] ?? []
+        const hasAlarm = equipmentList.some(
+          n => n.data.status === 'alarm' || abnormalEquipmentIds.has(n.id),
         )
         const allOffline =
-          nodes.length > 0 && nodes.every(n => n.data.status === 'offline')
+          equipmentList.length > 0 &&
+          equipmentList.every(n => n.data.status === 'offline')
         const status: 'alarm' | 'offline' | 'normal' | 'warning' = hasAlarm
           ? 'alarm'
           : allOffline
@@ -81,7 +83,7 @@ export default function PlantsPage() {
 
         return { ...ws, status }
       }),
-    [workspaces, nodesByWorkspace, abnormalNodeIds],
+    [workspaces, equipmentListByWorkspace, abnormalEquipmentIds],
   )
 
   const {
@@ -97,10 +99,14 @@ export default function PlantsPage() {
     selectedId,
     setSelectedId,
     selectedWorkspace,
-    selectedNodes,
+    selectedEquipmentList,
     panelRef,
     handleDismiss,
-  } = useWorkspaceSelection(workspacesReconciled, nodesByWorkspace, wsFromUrl)
+  } = useWorkspaceSelection(
+    workspacesReconciled,
+    equipmentListByWorkspace,
+    wsFromUrl,
+  )
 
   const selectWorkspace = (id: string | null) => {
     setSelectedId(id)
@@ -160,7 +166,7 @@ export default function PlantsPage() {
 
         <PlantsMap
           workspaces={workspacesReconciled}
-          nodesByWorkspace={nodesByWorkspace}
+          equipmentListByWorkspace={equipmentListByWorkspace}
           selectedWorkspaceId={selectedId}
           onWorkspaceClick={id =>
             selectWorkspace(id === selectedId ? null : id)
@@ -168,8 +174,8 @@ export default function PlantsPage() {
           onWorkspaceDoubleClick={id => router.push(`/plants/${id}`)}
           highlightedIds={highlightedIds}
           failedDeploysByWorkspace={failedDeploysByWorkspace}
-          failedByNodeId={failedByNodeId}
-          abnormalNodeIds={abnormalNodeIds}
+          failedByEquipmentId={failedByEquipmentId}
+          abnormalEquipmentIds={abnormalEquipmentIds}
         />
       </div>
 
@@ -190,11 +196,12 @@ export default function PlantsPage() {
           >
             <OverviewDetailPanel
               workspace={selectedWorkspace}
-              nodes={selectedNodes}
+              equipmentList={selectedEquipmentList}
               onClose={dismiss}
               onViewWorkspace={id => router.push(`/plants/${id}`)}
               onViewAlerts={() => router.push('/alerts')}
               onOpenSettings={id => router.push(`/workspaces/${id}/settings`)}
+              onViewDataManagement={id => router.push(`/analytics/${id}`)}
             />
           </div>
         </>

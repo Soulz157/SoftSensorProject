@@ -21,7 +21,7 @@ const TIPS: Tip[] = [
   {
     icon: Circle,
     title: 'Status Dots',
-    body: 'The colored dot next to a workspace name reflects its highest-severity node status: green (Normal), amber (Warning), red (Alarm), gray (Offline).',
+    body: 'The colored dot next to a workspace name reflects its highest-severity equipment status: green (Normal), amber (Warning), red (Alarm), gray (Offline).',
   },
 ]
 

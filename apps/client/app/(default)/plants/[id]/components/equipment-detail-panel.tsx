@@ -30,7 +30,7 @@ import type { CanvasNode } from '@/services/canvas'
 import type { WorkspacePlant } from '@/types'
 import type { NodeStatus } from '../../../../../store/status-colors'
 
-const NODE_PRIORITY: Record<NodeStatus, number> = {
+const EQUIPMENT_PRIORITY: Record<NodeStatus, number> = {
   alarm: 0,
   warning: 1,
   offline: 2,
@@ -83,16 +83,16 @@ const STATUS_ICON = {
   offline: Siren,
 } satisfies Record<NodeStatus, typeof CheckCircle2>
 
-interface NodeDetailPanelProps {
+interface EquipmentDetailPanelProps {
   viewMode: 'plants' | 'equipment'
-  node: CanvasNode | null
+  equipment: CanvasNode | null
   plan: WorkspacePlant | null
-  planNodes?: CanvasNode[]
+  planEquipmentList?: CanvasNode[]
   workspaceId: string | null
   onDrillDown?: (planId: string) => void
-  onEditClick?: (node: CanvasNode) => void
+  onEditClick?: (equipment: CanvasNode) => void
   /** Called after the user confirms. MODEL-SERVE-025-D02. */
-  onDeleteClick?: (node: CanvasNode) => void
+  onDeleteClick?: (equipment: CanvasNode) => void
   onClose: () => void
 }
 
@@ -146,17 +146,17 @@ function PanelHeader({
   )
 }
 
-export function NodeDetailPanel({
+export function EquipmentDetailPanel({
   viewMode,
-  node,
+  equipment,
   plan,
-  planNodes,
+  planEquipmentList,
   workspaceId,
   onDrillDown,
   onEditClick,
   onDeleteClick,
   onClose,
-}: NodeDetailPanelProps) {
+}: EquipmentDetailPanelProps) {
   if (viewMode === 'plants') {
     if (!plan) return null
 
@@ -198,7 +198,7 @@ export function NodeDetailPanel({
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="rounded-md bg-muted/30 p-3">
-                <p className="text-xs text-muted-foreground">Total Nodes</p>
+                <p className="text-xs text-muted-foreground">Total Equipment</p>
                 <p className="text-lg font-bold text-foreground">
                   {plan.nodeCount ?? 0}
                 </p>
@@ -212,17 +212,17 @@ export function NodeDetailPanel({
             </div>
           </div>
 
-          {planNodes && planNodes.length > 0 && workspaceId && (
+          {planEquipmentList && planEquipmentList.length > 0 && workspaceId && (
             <div className="border-b border-border/50 px-4 py-4">
               <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Equipment
               </div>
               <div className="space-y-0.5">
-                {[...planNodes]
+                {[...planEquipmentList]
                   .sort(
                     (a, b) =>
-                      (NODE_PRIORITY[a.data.status] ?? 3) -
-                      (NODE_PRIORITY[b.data.status] ?? 3),
+                      (EQUIPMENT_PRIORITY[a.data.status] ?? 3) -
+                      (EQUIPMENT_PRIORITY[b.data.status] ?? 3),
                   )
                   .slice(0, MAX_PREVIEW)
                   .map(n => {
@@ -265,13 +265,13 @@ export function NodeDetailPanel({
                     )
                   })}
               </div>
-              {planNodes.length > MAX_PREVIEW && (
+              {planEquipmentList.length > MAX_PREVIEW && (
                 <button
                   type="button"
                   onClick={() => onDrillDown?.(plan.id)}
                   className="mt-2 flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
                 >
-                  View all {planNodes.length} equipment
+                  View all {planEquipmentList.length} equipment
                   <ArrowRight className="h-3 w-3" />
                 </button>
               )}
@@ -299,9 +299,9 @@ export function NodeDetailPanel({
     )
   }
 
-  if (!node) return null
+  if (!equipment) return null
 
-  const status = node.data.status as NodeStatus
+  const status = equipment.data.status as NodeStatus
   const StatusIcon = STATUS_ICON[status]
 
   return (
@@ -316,10 +316,10 @@ export function NodeDetailPanel({
                 Equipment Inspector
               </div>
               <div className="truncate text-base font-bold text-foreground">
-                {node.data.name}
+                {equipment.data.name}
               </div>
               <div className="text-xs capitalize text-muted-foreground">
-                {node.data.type} Node
+                {equipment.data.type} Node
               </div>
             </>
           }
@@ -348,7 +348,7 @@ export function NodeDetailPanel({
                 isAbnormal(status) && 'animate-pulse',
               )}
             />
-            Semantic status from live node data
+            Semantic status from live equipment data
           </div>
         </div>
       </div>
@@ -360,15 +360,15 @@ export function NodeDetailPanel({
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-md bg-muted/30 p-3">
-              <p className="text-xs text-muted-foreground">AI Models</p>
+              <p className="text-xs text-muted-foreground">Models</p>
               <p className="text-lg font-bold text-foreground">
-                {node.models.length}
+                {equipment.models.length}
               </p>
             </div>
             <div className="rounded-md bg-muted/30 p-3">
-              <p className="text-xs text-muted-foreground">Node Type</p>
+              <p className="text-xs text-muted-foreground">Equipment Type</p>
               <p className="truncate text-sm font-semibold capitalize text-foreground">
-                {node.data.type}
+                {equipment.data.type}
               </p>
             </div>
           </div>
@@ -377,15 +377,15 @@ export function NodeDetailPanel({
         <div className="border-b border-border/50 px-4 py-4">
           <div className="mb-3 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             <Activity className="h-3.5 w-3.5" />
-            AI Models
+            Models
           </div>
-          {node.models.length === 0 ? (
+          {equipment.models.length === 0 ? (
             <p className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
               No models assigned
             </p>
           ) : (
             <div className="space-y-1">
-              {node.models.map(model => {
+              {equipment.models.map(model => {
                 const deploy =
                   (model.data?.deployStatus as string | undefined) ?? null
                 return (
@@ -428,7 +428,7 @@ export function NodeDetailPanel({
             Last Updated
           </div>
           <div className="text-xs text-muted-foreground">
-            {formatDate(node.updatedAt)}
+            {formatDate(equipment.updatedAt)}
           </div>
         </div>
       </div>
@@ -442,7 +442,7 @@ export function NodeDetailPanel({
               <Button
                 className="flex-1 gap-1.5"
                 size="sm"
-                onClick={() => onEditClick(node)}
+                onClick={() => onEditClick(equipment)}
               >
                 <Pencil className="h-3.5 w-3.5" />
                 Edit
@@ -459,7 +459,7 @@ export function NodeDetailPanel({
                 <AlertDialogContent>
                   <AlertDialogHeader>
                     <AlertDialogTitle>
-                      Delete &ldquo;{node.data.name}&rdquo;?
+                      Delete &ldquo;{equipment.data.name}&rdquo;?
                     </AlertDialogTitle>
                     <AlertDialogDescription>
                       This equipment is removed from its plant. Models placed on
@@ -469,7 +469,7 @@ export function NodeDetailPanel({
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction
-                      onClick={() => onDeleteClick(node)}
+                      onClick={() => onDeleteClick(equipment)}
                       className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                     >
                       Delete

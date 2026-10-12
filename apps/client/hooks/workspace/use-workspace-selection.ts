@@ -4,7 +4,7 @@ import { CanvasNode } from '@/services/canvas'
 
 export function useWorkspaceSelection(
   workspaces: Workspace[],
-  nodesByWorkspace: Record<string, CanvasNode[]>,
+  equipmentListByWorkspace: Record<string, CanvasNode[]>,
   initialSelectedId?: string | null,
 ) {
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -41,13 +41,15 @@ export function useWorkspaceSelection(
     [workspaces, selectedId],
   )
 
-  const selectedNodes = selectedId ? (nodesByWorkspace[selectedId] ?? []) : []
+  const selectedEquipmentList = selectedId
+    ? (equipmentListByWorkspace[selectedId] ?? [])
+    : []
 
   return {
     selectedId,
     setSelectedId,
     selectedWorkspace,
-    selectedNodes,
+    selectedEquipmentList,
     panelRef,
     handleDismiss,
   }

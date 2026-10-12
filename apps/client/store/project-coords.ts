@@ -20,8 +20,8 @@ export function getZoneOffset(index: number): { x: number; y: number } {
 }
 
 export function projectToIso(
-  nodeX: number,
-  nodeY: number,
+  equipmentX: number,
+  equipmentY: number,
   minX: number,
   maxX: number,
   minY: number,
@@ -31,8 +31,8 @@ export function projectToIso(
   viewportCenterX: number,
   viewportCenterY: number,
 ): IsoPoint {
-  const normX = normalizeCoord(nodeX, minX, maxX)
-  const normY = normalizeCoord(nodeY, minY, maxY)
+  const normX = normalizeCoord(equipmentX, minX, maxX)
+  const normY = normalizeCoord(equipmentY, minY, maxY)
   const scaledX = normX * 200 + zoneOffsetX
   const scaledY = normY * 100 + zoneOffsetY
   const isoX = (scaledX - scaledY) * Math.cos(Math.PI / 6)

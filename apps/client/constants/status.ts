@@ -1,17 +1,17 @@
-export const NODE_STATUS_PRIORITY: Record<string, number> = {
+export const EQUIPMENT_STATUS_PRIORITY: Record<string, number> = {
   alarm: 0,
   warning: 1,
   normal: 2,
   offline: 3,
 }
-export const NODE_DOT: Record<string, string> = {
+export const EQUIPMENT_DOT: Record<string, string> = {
   alarm: 'bg-destructive',
   warning: 'bg-amber-500',
   offline: 'bg-zinc-400',
   normal: 'bg-green-500',
 }
 
-export const NODE_BADGE: Record<string, string> = {
+export const EQUIPMENT_BADGE: Record<string, string> = {
   alarm: 'text-destructive',
   warning: 'text-amber-700 dark:text-amber-400',
   offline: 'text-muted-foreground',

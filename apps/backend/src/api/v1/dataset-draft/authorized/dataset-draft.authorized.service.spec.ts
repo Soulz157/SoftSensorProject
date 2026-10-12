@@ -35,6 +35,13 @@ const USER: Auth.UserPayload = {
   role: 'MEMBER',
 } as Auth.UserPayload;
 
+// What `datasetManageSelect` adds to a dataset row: the caller (USER) is the
+// creator, so existing edit-path tests keep exercising the creator route.
+const MANAGE_FACTS = {
+  createdById: 'user-1',
+  workspace: { ownerId: 'ws-owner', members: [] as { role: string }[] },
+};
+
 const DRAFT = {
   id: 'draft-1',
   name: null,
@@ -1585,7 +1592,10 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
       async function saveRejectingWith(err: Error) {
         const prisma = chainedPrisma();
         prisma.datasetDraft.findFirst.mockResolvedValue(EDIT_DRAFT);
-        prisma.dataset.findFirst.mockResolvedValue({ id: 'dataset-1' });
+        prisma.dataset.findFirst.mockResolvedValue({
+          id: 'dataset-1',
+          ...MANAGE_FACTS,
+        });
         prisma._tx.datasetVersion.create.mockRejectedValueOnce(err);
         post.mockResolvedValueOnce(VALIDATION_REPORT);
         const { service } = makeService(prisma);
@@ -1636,7 +1646,10 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
     it('resolves the existing Dataset via update, not create — versionNumber increments off the prior version', async () => {
       const prisma = chainedPrisma();
       prisma.datasetDraft.findFirst.mockResolvedValue(EDIT_DRAFT);
-      prisma.dataset.findFirst.mockResolvedValue({ id: 'dataset-1' });
+      prisma.dataset.findFirst.mockResolvedValue({
+        id: 'dataset-1',
+        ...MANAGE_FACTS,
+      });
       prisma._tx.datasetVersion.findFirst.mockResolvedValue({
         versionNumber: 1,
       });
@@ -1665,7 +1678,10 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
     it("skips adopting the lineage-root BRONZE — only the FINAL is copied, the borrowed root's objectKey pointer is left untouched", async () => {
       const prisma = chainedPrisma();
       prisma.datasetDraft.findFirst.mockResolvedValue(EDIT_DRAFT);
-      prisma.dataset.findFirst.mockResolvedValue({ id: 'dataset-1' });
+      prisma.dataset.findFirst.mockResolvedValue({
+        id: 'dataset-1',
+        ...MANAGE_FACTS,
+      });
       post.mockResolvedValueOnce(VALIDATION_REPORT);
       const { service } = makeService(prisma);
 
@@ -1713,10 +1729,33 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
+    it('403s an edit-save by a VIEWER who did not create the dataset, before calling Python or opening a transaction', async () => {
+      const prisma = chainedPrisma();
+      prisma.datasetDraft.findFirst.mockResolvedValue(EDIT_DRAFT);
+      prisma.dataset.findFirst.mockResolvedValue({
+        id: 'dataset-1',
+        createdById: 'someone-else',
+        workspace: { ownerId: 'ws-owner', members: [{ role: 'VIEWER' }] },
+      });
+      const { service } = makeService(prisma);
+
+      await expect(
+        service.saveDraftAsDatasetService(USER, 'draft-1', {
+          name: 'ds',
+        } as never),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(post).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
     it('maps a concurrent edit-save collision (P2002 on datasetId+versionNumber) to a 409, not a raw Prisma error', async () => {
       const prisma = chainedPrisma();
       prisma.datasetDraft.findFirst.mockResolvedValue(EDIT_DRAFT);
-      prisma.dataset.findFirst.mockResolvedValue({ id: 'dataset-1' });
+      prisma.dataset.findFirst.mockResolvedValue({
+        id: 'dataset-1',
+        ...MANAGE_FACTS,
+      });
       prisma._tx.datasetVersion.create.mockRejectedValueOnce(
         uniqueViolationError(),
       );
@@ -2744,6 +2783,7 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
     name: 'My Dataset',
     workspaceId: 'ws-1',
     sourceIds: ['src-allowed'],
+    ...MANAGE_FACTS,
   };
 
   const ROOT_BRONZE = {
@@ -2837,6 +2877,10 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
         updateMany: jest.fn(),
       },
     });
+    prisma.dataset.findFirst.mockResolvedValue({
+      id: 'dataset-1',
+      ...MANAGE_FACTS,
+    });
     const { service } = makeService(prisma);
 
     const result = await service.resolveOrCreateEditDraftService(
@@ -2870,6 +2914,10 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
         updateMany: jest.fn(),
       },
       datasetArtifact: { findFirst: rootFindFirst },
+    });
+    prisma.dataset.findFirst.mockResolvedValue({
+      id: 'dataset-1',
+      ...MANAGE_FACTS,
     });
     const { service } = makeService(prisma);
 
@@ -2909,11 +2957,10 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
       'dataset-1',
     );
 
-    // Ownership-scoped by createdById, per getDatasetService's own read —
-    // never a workspace-membership check, since this caller must OWN the
-    // dataset being edited.
+    // Access is gated by `assertCanManageDataset` first; the load itself is
+    // then keyed by id alone.
     expect(prisma.dataset.findFirst).toHaveBeenCalledWith({
-      where: { id: 'dataset-1', createdById: USER.id },
+      where: { id: 'dataset-1' },
       select: { id: true, name: true, workspaceId: true, sourceIds: true },
     });
 
@@ -2993,7 +3040,7 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
     expect(result.data.rootValidationRowCount).toBe(250);
   });
 
-  it('404s when the dataset does not exist or is not owned by the caller, without touching any artifact', async () => {
+  it('404s when the dataset does not exist or is outside the caller workspace, without touching any artifact', async () => {
     const prisma = buildPrisma({
       datasetDraft: { findFirst: jest.fn().mockResolvedValue(null) },
     });
@@ -3004,6 +3051,49 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
       service.resolveOrCreateEditDraftService(USER, 'not-mine'),
     ).rejects.toThrow(AppException);
     expect(prisma.datasetArtifact.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('lets a STAFF member who did not create the dataset open its edit draft', async () => {
+    const prisma = buildPrisma({
+      datasetDraft: {
+        findFirst: jest.fn().mockResolvedValue({
+          ...DRAFT,
+          editingDatasetId: 'dataset-1',
+          status: 'ACTIVE',
+        }),
+      },
+    });
+    prisma.dataset.findFirst.mockResolvedValue({
+      id: 'dataset-1',
+      createdById: 'someone-else',
+      workspace: { ownerId: 'ws-owner', members: [{ role: 'STAFF' }] },
+    });
+    const { service } = makeService(prisma);
+
+    // Must not throw at the access gate. The reuse branch may fail further
+    // down on this thin fixture; only a 403/404 AppException is a regression.
+    await service
+      .resolveOrCreateEditDraftService(USER, 'dataset-1')
+      .catch((e: unknown) => {
+        expect(e).not.toMatchObject({ statusCode: 403 });
+        expect(e).not.toMatchObject({ statusCode: 404 });
+      });
+  });
+
+  it('403s a VIEWER who did not create the dataset BEFORE the existing-draft reuse branch', async () => {
+    const draftFindFirst = jest.fn();
+    const prisma = buildPrisma({ datasetDraft: { findFirst: draftFindFirst } });
+    prisma.dataset.findFirst.mockResolvedValue({
+      id: 'dataset-1',
+      createdById: 'someone-else',
+      workspace: { ownerId: 'ws-owner', members: [{ role: 'VIEWER' }] },
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.resolveOrCreateEditDraftService(USER, 'dataset-1'),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(draftFindFirst).not.toHaveBeenCalled();
   });
 
   it('422s when the dataset has no readable (non-reclaimed) root BRONZE, without creating a draft', async () => {
@@ -3164,6 +3254,10 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
         },
         datasetArtifact: { findFirst },
       });
+      prisma.dataset.findFirst.mockResolvedValue({
+        id: 'dataset-1',
+        ...MANAGE_FACTS,
+      });
       const { service } = makeService(prisma);
 
       const result = await service.resolveOrCreateEditDraftService(
@@ -3196,6 +3290,10 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
         datasetArtifact: {
           findFirst: artifactFindFirstBy({ 'shared-bronze-1': LIVE_ROOT }),
         },
+      });
+      prisma.dataset.findFirst.mockResolvedValue({
+        id: 'dataset-1',
+        ...MANAGE_FACTS,
       });
       const { service } = makeService(prisma);
 
@@ -3231,6 +3329,10 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
           updateMany: jest.fn(),
         },
         datasetArtifact: { findFirst },
+      });
+      prisma.dataset.findFirst.mockResolvedValue({
+        id: 'dataset-1',
+        ...MANAGE_FACTS,
       });
       const { service } = makeService(prisma);
 

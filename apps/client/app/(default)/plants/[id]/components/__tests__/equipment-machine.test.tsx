@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
-import { MachineNode } from '../machine-node'
+import { EquipmentMachine } from '../equipment-machine'
 
-describe('MachineNode SVG picker', () => {
+describe('EquipmentMachine SVG picker', () => {
   const base = {
     label: 'TEST-01',
     isoX: 100,
@@ -14,7 +14,12 @@ describe('MachineNode SVG picker', () => {
   it('sensor type → renders SensorSvg (antenna path present)', () => {
     const { container } = render(
       <svg>
-        <MachineNode {...base} type="sensor" icon={undefined} status="normal" />
+        <EquipmentMachine
+          {...base}
+          type="sensor"
+          icon={undefined}
+          status="normal"
+        />
       </svg>,
     )
     // SensorSvg has a unique arc path for signal rings
@@ -25,7 +30,7 @@ describe('MachineNode SVG picker', () => {
   it('reactor type → renders ReactorSvg (domed vessel arc present)', () => {
     const { container } = render(
       <svg>
-        <MachineNode
+        <EquipmentMachine
           {...base}
           type="reactor"
           icon={undefined}
@@ -39,7 +44,12 @@ describe('MachineNode SVG picker', () => {
   it('machine type + icon=arm → renders RobotArmSvg (lines for gripper present)', () => {
     const { container } = render(
       <svg>
-        <MachineNode {...base} type="machine" icon="arm" status="warning" />
+        <EquipmentMachine
+          {...base}
+          type="machine"
+          icon="arm"
+          status="warning"
+        />
       </svg>,
     )
     const lines = container.querySelectorAll('line')
@@ -49,7 +59,12 @@ describe('MachineNode SVG picker', () => {
   it('machine type + no icon → renders CncMachineSvg (polygon tool bit present)', () => {
     const { container } = render(
       <svg>
-        <MachineNode {...base} type="machine" icon={undefined} status="alarm" />
+        <EquipmentMachine
+          {...base}
+          type="machine"
+          icon={undefined}
+          status="alarm"
+        />
       </svg>,
     )
     expect(container.querySelector('polygon')).not.toBeNull()
@@ -61,7 +76,7 @@ describe('MachineNode SVG picker', () => {
   it('renders label text in view mode', () => {
     const { getByText } = render(
       <svg>
-        <MachineNode
+        <EquipmentMachine
           {...base}
           isViewMode
           type="sensor"
@@ -76,7 +91,12 @@ describe('MachineNode SVG picker', () => {
   it('draws no HUD label outside view mode', () => {
     const { queryByText } = render(
       <svg>
-        <MachineNode {...base} type="sensor" icon={undefined} status="normal" />
+        <EquipmentMachine
+          {...base}
+          type="sensor"
+          icon={undefined}
+          status="normal"
+        />
       </svg>,
     )
     expect(queryByText('TEST-01')).toBeNull()
@@ -85,7 +105,7 @@ describe('MachineNode SVG picker', () => {
   it('selected node renders with larger font weight on label', () => {
     const { container } = render(
       <svg>
-        <MachineNode
+        <EquipmentMachine
           {...base}
           selected
           type="sensor"

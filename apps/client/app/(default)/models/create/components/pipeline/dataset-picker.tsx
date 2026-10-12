@@ -1,8 +1,9 @@
 'use client'
 
 import { useMemo, useRef, useState } from 'react'
-import { Layers, Search, X } from 'lucide-react'
+import { Layers, Plus, Search, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Select,
   SelectContent,
@@ -27,6 +28,8 @@ interface Props {
   workspaceId: string
   selectedDataset: SavedDataset | null
   onSelectDataset: (dataset: SavedDataset) => void
+  /** MODEL-FLOW-032. Omitted (edit mode), no Create action is offered. */
+  onCreateDataset?: () => void
 }
 
 /**
@@ -43,6 +46,7 @@ export function DatasetPicker({
   workspaceId,
   selectedDataset,
   onSelectDataset,
+  onCreateDataset,
 }: Props) {
   const { datasets, loading } = useDatasets(workspaceId || undefined)
   const [query, setQuery] = useState('')
@@ -138,14 +142,32 @@ export function DatasetPicker({
 
   return (
     <div className="space-y-3">
-      <div>
-        <h2 className="text-sm font-medium text-foreground">
-          Select a dataset
-        </h2>
-        <p className="text-xs text-muted-foreground">
-          Train on a curated dataset built in Data Studio — no need to reconnect
-          or re-clean data.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-medium text-foreground">
+            Select a dataset
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            Train on a curated dataset built in Data Studio — no need to
+            reconnect or re-clean data.
+          </p>
+        </div>
+        {onCreateDataset && (
+          // Disabled rather than hidden without a workspace: the dataset is
+          // created INTO this workspace, and the empty state below already
+          // says to pick one first.
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!workspaceId}
+            onClick={onCreateDataset}
+            className="shrink-0 gap-1.5"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Create dataset
+          </Button>
+        )}
       </div>
 
       {/* State (a): no workspace — the search row stays mounted (disabled)
@@ -267,6 +289,15 @@ export function DatasetPicker({
           <p className="text-xs text-muted-foreground">
             No datasets yet in this workspace — create one in Data Studio first.
           </p>
+          {onCreateDataset && (
+            <button
+              type="button"
+              onClick={onCreateDataset}
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              Create a dataset
+            </button>
+          )}
         </div>
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-xl bg-muted/30 py-8 text-center ring-1 ring-border">

@@ -9,6 +9,10 @@ import {
 } from '@/lib/python-client';
 import { artifactKey, PIPELINE_VERSION_REORDERED } from '@/lib/artifact-keys';
 import { buildSourceBlock } from '@/lib/source-block';
+import {
+  canManageDatasetRow,
+  datasetManageSelect,
+} from '@/lib/dataset-manage-access';
 import { PreprocessingJobService } from '../../dataset-version/authorized/preprocessing-job.service';
 import { LoaderJobService } from '../../loader/loader-job.service';
 import {
@@ -129,6 +133,54 @@ export class DatasetDraftAuthorizedService {
     return draft;
   }
 
+  /**
+   * Gate for editing an EXISTING dataset (opening its edit draft, committing
+   * an edit-save). Same rule as `DatasetAuthorizedService.update/delete`
+   * (`canManageDataset`): the creator, the workspace creator, or a workspace
+   * OWNER/STAFF. 404 for a caller who cannot read the dataset's workspace,
+   * 403 for a member who can read it but may not change it.
+   *
+   * Duplicated per service on purpose (see `workspace-permission.ts`); only
+   * the pure predicate and select fragment are shared.
+   */
+  private async assertCanManageDataset(
+    datasetId: string,
+    user: Auth.UserPayload,
+  ) {
+    const row = await this.prisma.dataset.findFirst({
+      where: {
+        id: datasetId,
+        workspace: {
+          deletedAt: null,
+          ...(user.role === 'ADMIN'
+            ? {}
+            : {
+                OR: [
+                  { ownerId: user.id },
+                  { members: { some: { userId: user.id } } },
+                ],
+              }),
+        },
+      },
+      select: { id: true, ...datasetManageSelect(user.id) },
+    });
+    if (!row) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset not found',
+        type: 'ERROR',
+      });
+    }
+    if (!canManageDatasetRow(row, user.id)) {
+      throw new AppException({
+        statusCode: 403,
+        message:
+          'Only the dataset creator or workspace owners and staff can edit this dataset',
+        type: 'ERROR',
+      });
+    }
+  }
+
   // ── draft lifecycle ──────────────────────────────────────────────────────
 
   async createDraftService(user: Auth.UserPayload, dto: CreateDraftDto) {
@@ -230,6 +282,13 @@ export class DatasetDraftAuthorizedService {
     user: Auth.UserPayload,
     datasetId: string,
   ) {
+    // FIRST, before the reuse branch below: that branch used to hand back any
+    // ACTIVE edit draft with no access check at all. Creator or workspace
+    // OWNER/STAFF only. One ACTIVE edit draft exists per dataset (partial
+    // unique index), so a second editor RESUMES the first's draft rather
+    // than being locked out — a lock could strand a dataset until cleanup.
+    await this.assertCanManageDataset(datasetId, user);
+
     const existing = await this.prisma.datasetDraft.findFirst({
       where: { editingDatasetId: datasetId, status: 'ACTIVE' },
     });
@@ -265,12 +324,9 @@ export class DatasetDraftAuthorizedService {
       };
     }
 
-    // Ownership-scoped the same way `getDatasetService` scopes a read —
-    // `createdById`, not workspace membership (drafts use workspace
-    // membership because no Dataset exists yet to check ownership through;
-    // here one already does).
+    // Access was already enforced by `assertCanManageDataset` above.
     const dataset = await this.prisma.dataset.findFirst({
-      where: { id: datasetId, createdById: user.id },
+      where: { id: datasetId },
       select: { id: true, name: true, workspaceId: true, sourceIds: true },
     });
     if (!dataset) {
@@ -1355,6 +1411,9 @@ export class DatasetDraftAuthorizedService {
           type: 'ERROR',
         });
       }
+      // Draft access is workspace-wide (a VIEWER passes `assertDraftAccess`);
+      // committing over an existing dataset needs the manage rule.
+      await this.assertCanManageDataset(draft.editingDatasetId!, user);
     }
 
     const finalArtifact = await this.prisma.datasetArtifact.findFirst({

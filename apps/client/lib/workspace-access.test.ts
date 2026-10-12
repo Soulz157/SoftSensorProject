@@ -3,6 +3,7 @@ import {
   grantedPermissionLabels,
   isMonitoringDenied,
   memberCan,
+  roleCanManageDatasets,
   toPermissionPayload,
 } from './workspace-access'
 
@@ -102,5 +103,15 @@ describe('isMonitoringDenied', () => {
         member: { role: 'STAFF', permissions: [] },
       }),
     ).toBe(false)
+  })
+})
+
+describe('roleCanManageDatasets', () => {
+  it.each(['OWNER', 'STAFF'] as const)('is true for %s', role => {
+    expect(roleCanManageDatasets(role)).toBe(true)
+  })
+
+  it('is false for VIEWER', () => {
+    expect(roleCanManageDatasets('VIEWER')).toBe(false)
   })
 })

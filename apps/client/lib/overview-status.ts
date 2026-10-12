@@ -11,10 +11,10 @@ export const STATUS_META: Record<NodeStatus, { label: string; color: string }> =
     normal: { label: 'Normal', color: '#22c55e' },
   }
 
-export function deriveStatus(nodes: CanvasNode[]): NodeStatus {
-  if (nodes.some(n => n.data.status === 'alarm')) return 'alarm'
-  if (nodes.some(n => n.data.status === 'offline')) return 'offline'
-  if (nodes.some(n => n.data.status === 'warning')) return 'warning'
+export function deriveStatus(equipmentList: CanvasNode[]): NodeStatus {
+  if (equipmentList.some(n => n.data.status === 'alarm')) return 'alarm'
+  if (equipmentList.some(n => n.data.status === 'offline')) return 'offline'
+  if (equipmentList.some(n => n.data.status === 'warning')) return 'warning'
   return 'normal'
 }
 
@@ -70,35 +70,38 @@ export const BINARY_STATUS_META: Record<
 /**
  * Whether one piece of equipment is Abnormal: its own status is an alert, OR a
  * model placed on it is abnormal (failed deploy / monitoring ALERT —
- * `abnormalModelCountByNodeId` in lib/model-status.ts builds that set).
+ * `abnormalModelCountByEquipmentId` in lib/model-status.ts builds that set).
  */
-export function isNodeAbnormal(
-  node: CanvasNode,
-  abnormalModelNodeIds?: ReadonlySet<string>,
+export function isEquipmentAbnormal(
+  equipment: CanvasNode,
+  abnormalModelEquipmentIds?: ReadonlySet<string>,
 ): boolean {
   return (
-    isAbnormal(node.data.status) || Boolean(abnormalModelNodeIds?.has(node.id))
+    isAbnormal(equipment.data.status) ||
+    Boolean(abnormalModelEquipmentIds?.has(equipment.id))
   )
 }
 
 export function deriveBinaryStatus(
-  nodes: CanvasNode[],
-  abnormalModelNodeIds?: ReadonlySet<string>,
+  equipmentList: CanvasNode[],
+  abnormalModelEquipmentIds?: ReadonlySet<string>,
 ): BinaryStatus {
-  return nodes.some(n => isNodeAbnormal(n, abnormalModelNodeIds))
+  return equipmentList.some(n =>
+    isEquipmentAbnormal(n, abnormalModelEquipmentIds),
+  )
     ? 'abnormal'
     : 'normal'
 }
 
 export function countBinary(
-  nodes: CanvasNode[],
-  abnormalModelNodeIds?: ReadonlySet<string>,
+  equipmentList: CanvasNode[],
+  abnormalModelEquipmentIds?: ReadonlySet<string>,
 ): Record<BinaryStatus, number> {
   let abnormal = 0
-  for (const n of nodes) {
-    if (isNodeAbnormal(n, abnormalModelNodeIds)) abnormal++
+  for (const n of equipmentList) {
+    if (isEquipmentAbnormal(n, abnormalModelEquipmentIds)) abnormal++
   }
-  return { normal: nodes.length - abnormal, abnormal }
+  return { normal: equipmentList.length - abnormal, abnormal }
 }
 
 const SEVERITY_ORDER: Record<NodeStatus, number> = {
@@ -108,8 +111,8 @@ const SEVERITY_ORDER: Record<NodeStatus, number> = {
   normal: 0,
 }
 
-export function equipmentAlerts(nodes: CanvasNode[]): CanvasNode[] {
-  return nodes
+export function equipmentAlerts(equipmentList: CanvasNode[]): CanvasNode[] {
+  return equipmentList
     .filter(n => n.data.status !== 'normal')
     .sort(
       (a, b) =>
@@ -118,8 +121,8 @@ export function equipmentAlerts(nodes: CanvasNode[]): CanvasNode[] {
     )
 }
 
-export function countNodesByStatus(
-  nodes: CanvasNode[],
+export function countEquipmentByStatus(
+  equipmentList: CanvasNode[],
 ): Record<NodeStatus, number> {
   const counts: Record<NodeStatus, number> = {
     alarm: 0,
@@ -127,7 +130,7 @@ export function countNodesByStatus(
     offline: 0,
     normal: 0,
   }
-  for (const n of nodes) {
+  for (const n of equipmentList) {
     const s = n.data.status as NodeStatus
     if (s in counts) counts[s]++
   }
@@ -143,12 +146,16 @@ export interface SystemStatusSummary {
 }
 
 export function deriveSystemStatus(
-  nodesByWorkspace: Record<string, CanvasNode[]>,
+  equipmentListByWorkspace: Record<string, CanvasNode[]>,
 ): SystemStatusSummary {
-  const allNodes = Object.values(nodesByWorkspace).flat()
-  const totalAlarms = allNodes.filter(n => n.data.status === 'alarm').length
-  const totalWarnings = allNodes.filter(n => n.data.status === 'warning').length
-  const hasOffline = allNodes.some(n => n.data.status === 'offline')
+  const allEquipmentList = Object.values(equipmentListByWorkspace).flat()
+  const totalAlarms = allEquipmentList.filter(
+    n => n.data.status === 'alarm',
+  ).length
+  const totalWarnings = allEquipmentList.filter(
+    n => n.data.status === 'warning',
+  ).length
+  const hasOffline = allEquipmentList.some(n => n.data.status === 'offline')
   const overallStatus: NodeStatus =
     totalAlarms > 0
       ? 'alarm'

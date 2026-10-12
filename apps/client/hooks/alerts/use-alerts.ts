@@ -17,7 +17,7 @@ export function useAlerts(): UseAlertsResult {
   const { workspaces, loading: wsLoading } = useWorkspaces()
   const {
     plantsByWorkspaceId,
-    nodesByWorkspaceId,
+    equipmentListByWorkspaceId,
     loading: hierarchyLoading,
     isFetching: hierarchyFetching,
     error: hierarchyError,
@@ -35,11 +35,11 @@ export function useAlerts(): UseAlertsResult {
     () =>
       buildAlerts({
         workspaces,
-        nodesByWorkspaceId,
+        equipmentListByWorkspaceId,
         plantsByWorkspaceId,
         models: models ?? [],
       }),
-    [workspaces, nodesByWorkspaceId, plantsByWorkspaceId, models],
+    [workspaces, equipmentListByWorkspaceId, plantsByWorkspaceId, models],
   )
 
   const refetch = useCallback(() => {

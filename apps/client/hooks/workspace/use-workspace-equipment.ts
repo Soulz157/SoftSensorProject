@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import { getNodes, type CanvasNode } from '@/services/canvas'
 
 type State = {
-  nodes: CanvasNode[] | null
+  equipmentList: CanvasNode[] | null
   loading: boolean
   error: string | null
 }
@@ -17,25 +17,25 @@ type Action =
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'FETCH_START':
-      return { nodes: null, loading: true, error: null }
+      return { equipmentList: null, loading: true, error: null }
     case 'FETCH_SUCCESS':
-      return { nodes: action.nodes, loading: false, error: null }
+      return { equipmentList: action.nodes, loading: false, error: null }
     case 'FETCH_ERROR':
       return { ...state, loading: false, error: action.message }
   }
 }
 
-const initialState: State = { nodes: null, loading: true, error: null }
+const initialState: State = { equipmentList: null, loading: true, error: null }
 
-export function useWorkspaceNodes(workspaceId: string) {
+export function useWorkspaceEquipment(workspaceId: string) {
   const [state, dispatch] = useReducer(reducer, initialState)
 
-  const fetchNodes = useCallback(async () => {
+  const fetchEquipmentList = useCallback(async () => {
     if (!workspaceId) return
     dispatch({ type: 'FETCH_START' })
     try {
-      const nodes = await getNodes(workspaceId)
-      dispatch({ type: 'FETCH_SUCCESS', nodes })
+      const equipmentList = await getNodes(workspaceId)
+      dispatch({ type: 'FETCH_SUCCESS', nodes: equipmentList })
     } catch {
       const message = 'Failed to load equipment'
       dispatch({ type: 'FETCH_ERROR', message })
@@ -44,8 +44,8 @@ export function useWorkspaceNodes(workspaceId: string) {
   }, [workspaceId])
 
   useEffect(() => {
-    fetchNodes()
-  }, [fetchNodes])
+    fetchEquipmentList()
+  }, [fetchEquipmentList])
 
-  return { ...state, refetch: fetchNodes }
+  return { ...state, refetch: fetchEquipmentList }
 }

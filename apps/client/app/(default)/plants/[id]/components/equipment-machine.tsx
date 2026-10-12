@@ -8,7 +8,7 @@ import { ReactorSvg } from './machines/reactor'
 import { type NodeStatus } from '../../../../../store/status-colors'
 import { cn } from '@/lib/utils'
 
-interface MachineNodeProps {
+interface EquipmentMachineProps {
   type: 'reactor' | 'machine' | 'sensor'
   icon: string | undefined
   status: NodeStatus
@@ -21,7 +21,7 @@ interface MachineNodeProps {
 }
 
 function pickMachineSvg(
-  type: MachineNodeProps['type'],
+  type: EquipmentMachineProps['type'],
   icon: string | undefined,
   status: NodeStatus,
   selected: boolean,
@@ -50,7 +50,7 @@ const STATUS_HEX: Record<NodeStatus, string> = {
   offline: '#94a3b8',
 }
 
-export function MachineNode({
+export function EquipmentMachine({
   type,
   icon,
   status,
@@ -60,7 +60,7 @@ export function MachineNode({
   selected,
   onClick,
   isViewMode = false,
-}: MachineNodeProps) {
+}: EquipmentMachineProps) {
   const isAlarm = status === 'alarm'
   const shadowColor = STATUS_SHADOW[status] || STATUS_SHADOW.offline
 
@@ -149,7 +149,7 @@ export function MachineNode({
       <g
         className={cn(
           'transition-all duration-300 group-hover:-translate-y-2',
-          isAlarm && 'anim-alarm-node',
+          isAlarm && 'anim-alarm-equipment',
           selected && 'drop-shadow-[0_0_20px_rgba(59,130,246,0.8)]',
         )}
         style={

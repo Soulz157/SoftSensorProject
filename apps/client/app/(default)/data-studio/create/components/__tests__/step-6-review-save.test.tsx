@@ -378,6 +378,65 @@ describe('Step6ReviewSave — feature preset provenance', () => {
     expect(sessionStorage.getItem('softsensor.retrain-handoff')).toBeNull()
   })
 
+  // MODEL-FLOW-032. Create Model Step 1 → Data Studio → back.
+  const MODEL_CREATE_KEY = 'softsensor.model-create-handoff'
+  const STEP_ONE = JSON.stringify({
+    name: 'Boiler efficiency',
+    description: '',
+    workspaceId: 'ws-1',
+    plantId: 'plant-1',
+    nodeId: 'node-1',
+  })
+
+  it('returns to Create Model with the new dataset when Step 1 sent the user here', async () => {
+    sessionStorage.clear()
+    sessionStorage.setItem(MODEL_CREATE_KEY, STEP_ONE)
+    createDataset.mockResolvedValue(saved('artifact-1'))
+
+    await clickSave()
+
+    await waitFor(() =>
+      expect(pushMock).toHaveBeenCalledWith('/models/create?newDatasetId=ds-1'),
+    )
+    // Peeked, not consumed: the model wizard reads Step 1 back out of it.
+    expect(sessionStorage.getItem(MODEL_CREATE_KEY)).toBe(STEP_ONE)
+  })
+
+  it('lets a waiting retrain win over a Create Model trip', async () => {
+    sessionStorage.clear()
+    sessionStorage.setItem(MODEL_CREATE_KEY, STEP_ONE)
+    sessionStorage.setItem(
+      'softsensor.retrain-handoff',
+      JSON.stringify({
+        modelId: 'model-9',
+        strategy: 'NEW_DATA_ONLY',
+        returnTo: '/models/model-9',
+      }),
+    )
+    createDataset.mockResolvedValue(saved('artifact-1'))
+
+    await clickSave()
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalled())
+    expect(pushMock.mock.calls.at(-1)![0]).toContain('/models/model-9')
+  })
+
+  it('never sends an edit-save to Create Model', async () => {
+    sessionStorage.clear()
+    sessionStorage.setItem(MODEL_CREATE_KEY, STEP_ONE)
+    store.set(dwModeAtom, 'edit')
+    updateDataset.mockResolvedValue(saved('artifact-1'))
+
+    render(
+      <Provider store={store}>
+        <Step6ReviewSave nav={nav} />
+      </Provider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }))
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/data-studio'))
+  })
+
   it('goes to Data Studio as usual when no retrain is waiting', async () => {
     sessionStorage.clear()
     createDataset.mockResolvedValue(saved('artifact-1'))

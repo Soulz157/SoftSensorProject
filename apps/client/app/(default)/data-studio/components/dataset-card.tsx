@@ -58,8 +58,9 @@ export function DatasetCard({
   onRename,
   onDelete,
 }: Props) {
-  // Edit/rename/delete are creator-only server-side; a teammate's dataset is
-  // view + duplicate. `undefined` (not from the API) means our own.
+  // Edit/rename/delete are server-side limited to the creator and workspace
+  // OWNER/STAFF; otherwise a teammate's dataset is view + duplicate.
+  // `undefined` (not from the API) means our own.
   const canManage = d.canManage !== false
   // Real artifact footer, not a synthetic reconstruction (DS-LAKE-013) — the
   // card and its own detail sheet must report the same span for the same

@@ -4304,6 +4304,68 @@
         "V01: PASSED — formatter and tooltip tests under three timezones; full client regression under two, no new failures vs a clean HEAD.",
         "V02: NOT DONE — a look in a real browser (the Chrome extension was not connected)."
       ]
+    },
+    {
+      "id": "MODEL-FLOW-032",
+      "title": "Create dataset from Create Model Step 1, returning with it selected",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-FLOW-010"
+      ],
+      "description": "User request 2026-10-12: add Create Dataset to Create Model Step 1's Select a dataset section. The button opens Data Studio's existing Create Dataset dialog with the model's workspace pre-filled and locked, seeds the Data Studio wizard the same way Data Studio does, and after Save returns to /models/create?newDatasetId=... with Step 1 (name, description, workspace, plant, node) restored and the new dataset selected.",
+      "userDecisions": [
+        "BEHAVIOR (2026-10-12): full round trip chosen. Offered and declined: open Data Studio in a new tab plus a Refresh button; a plain link that drops Step 1 input."
+      ],
+      "findings": [
+        "Create mode resets the wizard on mount (useModelWizardMode) and no ModelDraft exists at Step 1, so the Step 1 form travels in sessionStorage (lib/model-create-handoff.ts, mirroring lib/retrain-handoff.ts); the dataset id rides back as a query param.",
+        "Save Model persistence boundary unchanged: nothing here writes a Model or ModelDraft row.",
+        "Stale-intent guards: Step 6 honors the intent only in create mode and only after a waiting retrain handoff; Data Studio's own Create Dataset entry and any plain /models/create visit clear it."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-032-T01",
+          "title": "lib/model-create-handoff.ts (remember/peek/consume/clear + return URL)",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T02",
+          "title": "hooks/dataset/use-model-create-dataset-handoff.ts seeds the dw* wizard and navigates",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T03",
+          "title": "DatasetPicker Create dataset button + empty-state CTA; Phase1Details wires the dialog (create mode only)",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T04",
+          "title": "CreateDatasetDialog: optional defaultWorkspaceId + lockWorkspace",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T05",
+          "title": "Step 6 Save returns to /models/create?newDatasetId=; useModelWizardMode restores Step 1 and selects the dataset",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T06",
+          "title": "Live browser round trip",
+          "status": "pending",
+          "detail": "Not run: Chrome extension was not connected on 2026-10-12."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Create dataset is visible on Step 1 in create mode, disabled with no workspace, absent in edit mode",
+        "After Save in Data Studio the user lands on Step 1 with their inputs restored and the new dataset selected",
+        "A retrain handoff, an edit-save, or a dataset started from Data Studio is never redirected to Create Model"
+      ],
+      "verification": [
+        "vitest: lib/__tests__/model-create-handoff.test.ts (5), hooks/model/__tests__/use-model-wizard-mode-dataset-return.test.tsx (6), pipeline/__tests__/dataset-picker-create.test.tsx (4), step-6-review-save.test.tsx (+3) — all pass",
+        "tsc --noEmit clean; full client suite 25 failures identical on clean HEAD (pre-existing, 9 unrelated files)",
+        "PENDING: live round trip in the browser"
+      ]
     }
   ],
   "global_definition_of_done": [

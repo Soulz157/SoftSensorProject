@@ -96,15 +96,15 @@ describe('usePlantsData', () => {
     const { result } = renderHook(() => usePlantsData())
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.workspaces).toHaveLength(2)
-    expect(result.current.nodesByWorkspace['ws-1']).toHaveLength(1)
-    expect(result.current.nodesByWorkspace['ws-2']).toHaveLength(1)
+    expect(result.current.equipmentListByWorkspace['ws-1']).toHaveLength(1)
+    expect(result.current.equipmentListByWorkspace['ws-2']).toHaveLength(1)
   })
 
-  it('returns empty nodesByWorkspace when no workspaces', async () => {
+  it('returns empty equipmentListByWorkspace when no workspaces', async () => {
     stubAtoms([])
     const { result } = renderHook(() => usePlantsData())
     await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.nodesByWorkspace).toEqual({})
+    expect(result.current.equipmentListByWorkspace).toEqual({})
   })
 
   it('sets error when fetch fails', async () => {

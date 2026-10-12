@@ -93,7 +93,7 @@ interface PlantNameBadgeProps {
   cx: number
   cy: number
   status: NodeStatus
-  nodeStatuses?: NodeStatus[]
+  equipmentStatuses?: NodeStatus[]
   name: string
   isDark: boolean
   squash?: number
@@ -103,7 +103,7 @@ export function PlantNameBadge({
   cx,
   cy,
   status,
-  nodeStatuses,
+  equipmentStatuses,
   name,
   isDark,
   squash = DEFAULT_SQUASH,
@@ -113,14 +113,14 @@ export function PlantNameBadge({
   const StatusIcon = bin === 'abnormal' ? AlertCircle : CheckCircle2
   const sk = SKIN[status === 'offline' ? 'offline' : bin]
 
-  const sortedStatuses = nodeStatuses
-    ? [...nodeStatuses]
+  const sortedStatuses = equipmentStatuses
+    ? [...equipmentStatuses]
         .sort((a, b) => STATUS_PRIORITY[a] - STATUS_PRIORITY[b])
         .slice(0, MAX_DOTS)
     : []
   const extraDots =
-    nodeStatuses && nodeStatuses.length > MAX_DOTS
-      ? nodeStatuses.length - MAX_DOTS
+    equipmentStatuses && equipmentStatuses.length > MAX_DOTS
+      ? equipmentStatuses.length - MAX_DOTS
       : 0
 
   const displayName = name.length > 12 ? `${name.slice(0, 11)}…` : name
@@ -219,9 +219,9 @@ export function PlantNameBadge({
 interface PlantTowerProps {
   cx: number
   cy: number
-  nodeCount: number
+  equipmentCount: number
   status: NodeStatus
-  nodeStatuses?: NodeStatus[]
+  equipmentStatuses?: NodeStatus[]
   workspaceColor: string
   name: string
   selected: boolean
@@ -238,9 +238,9 @@ interface PlantTowerProps {
 export function PlantTower({
   cx,
   cy,
-  nodeCount,
+  equipmentCount,
   status,
-  nodeStatuses,
+  equipmentStatuses,
   workspaceColor,
   name,
   selected,
@@ -264,7 +264,7 @@ export function PlantTower({
   const sk = SKIN[isOffline ? 'offline' : bin]
 
   /* nodeCount → height scale (footprint คงที่) */
-  const hs = Math.max(0.82, Math.min(0.82 + nodeCount * 0.022, 1.3))
+  const hs = Math.max(0.82, Math.min(0.82 + equipmentCount * 0.022, 1.3))
   const LW = 0.9
 
   /* ── projection ── */
@@ -1225,7 +1225,7 @@ export function PlantTower({
       className="cursor-pointer motion-safe:transition-transform motion-safe:hover:-translate-y-1"
       tabIndex={0}
       role="button"
-      aria-label={`${name} plant — status: ${status}, ${nodeCount} nodes`}
+      aria-label={`${name} plant — status: ${status}, ${equipmentCount} nodes`}
       onFocus={() => setIsFocused(true)}
       onBlur={() => setIsFocused(false)}
       onMouseEnter={onMouseEnter}
@@ -1275,7 +1275,7 @@ export function PlantTower({
           cx={cx}
           cy={cy}
           status={status}
-          nodeStatuses={nodeStatuses}
+          equipmentStatuses={equipmentStatuses}
           name={name}
           isDark={isDark}
           squash={squash}

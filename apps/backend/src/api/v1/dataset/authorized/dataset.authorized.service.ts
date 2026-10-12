@@ -6,59 +6,66 @@ import type {
   UpdateDatasetDto,
 } from './dto/dataset.authorized.dto';
 import { Prisma } from 'node_modules/@softsensor/prisma/dist/src/generated/client/client';
+import {
+  canManageDatasetRow,
+  datasetManageSelect,
+} from '@/lib/dataset-manage-access';
 
-const datasetSelect = {
-  id: true,
-  name: true,
-  description: true,
-  workspaceId: true,
-  sourceIds: true,
-  tags: true,
-  pipelineConfig: true,
-  fileUrl: true,
-  rowCount: true,
-  missingPct: true,
-  currentVersionId: true,
-  /**
-   * The BRONZE artifact the wizard hydrates rows from (DS-LAKE-004).
-   *
-   * Both pointers ship during the transition: `currentVersionId` is the only
-   * one legacy datasets have, and the client cannot choose a branch without
-   * seeing both.
-   */
-  currentArtifactId: true,
-  // The pointer above is stage-polymorphic: `createRaw` points it at a
-  // BRONZE artifact, Save-Dataset repoints it at FINAL, and a post-save
-  // preprocessing job can repoint it again. The client cannot label what
-  // it is showing (raw vs. already-processed) without knowing the stage,
-  // so the type ships alongside the id rather than requiring a second
-  // round trip to look it up.
-  currentArtifact: {
-    select: { type: true },
-  },
-  // DS-LAKE-017-T03: the lineage-root BRONZE, if DS-LAKE-017-T01/T02 has
-  // adopted one AND its bytes have not been reclaimed. `currentArtifactId`
-  // above stays FINAL-only (ONE POINTER, NOT TWO — see T01) so the client
-  // needs this separate field to know whether edit-mode hydration has raw
-  // rows available at all, without a second round trip. `take: 1` is
-  // defensive, not load-bearing: exactly one row can ever match, since a
-  // dataset has one lineage-root per current version and T01/T02 only ever
-  // adopt that one.
-  artifacts: {
-    where: { type: 'BRONZE', objectReclaimedAt: null },
-    select: { id: true },
-    take: 1,
-  },
-  createdAt: true,
-  updatedAt: true,
-  createdById: true,
-  createdBy: {
-    select: { firstName: true, lastName: true },
-  },
-} satisfies Prisma.DatasetSelect;
+// A function of the caller: `canManage` needs the caller's own member row.
+const datasetSelect = (userId: string) =>
+  ({
+    id: true,
+    name: true,
+    description: true,
+    workspaceId: true,
+    sourceIds: true,
+    tags: true,
+    pipelineConfig: true,
+    fileUrl: true,
+    rowCount: true,
+    missingPct: true,
+    currentVersionId: true,
+    /**
+     * The BRONZE artifact the wizard hydrates rows from (DS-LAKE-004).
+     *
+     * Both pointers ship during the transition: `currentVersionId` is the only
+     * one legacy datasets have, and the client cannot choose a branch without
+     * seeing both.
+     */
+    currentArtifactId: true,
+    // The pointer above is stage-polymorphic: `createRaw` points it at a
+    // BRONZE artifact, Save-Dataset repoints it at FINAL, and a post-save
+    // preprocessing job can repoint it again. The client cannot label what
+    // it is showing (raw vs. already-processed) without knowing the stage,
+    // so the type ships alongside the id rather than requiring a second
+    // round trip to look it up.
+    currentArtifact: {
+      select: { type: true },
+    },
+    // DS-LAKE-017-T03: the lineage-root BRONZE, if DS-LAKE-017-T01/T02 has
+    // adopted one AND its bytes have not been reclaimed. `currentArtifactId`
+    // above stays FINAL-only (ONE POINTER, NOT TWO — see T01) so the client
+    // needs this separate field to know whether edit-mode hydration has raw
+    // rows available at all, without a second round trip. `take: 1` is
+    // defensive, not load-bearing: exactly one row can ever match, since a
+    // dataset has one lineage-root per current version and T01/T02 only ever
+    // adopt that one.
+    artifacts: {
+      where: { type: 'BRONZE', objectReclaimedAt: null },
+      select: { id: true },
+      take: 1,
+    },
+    createdAt: true,
+    updatedAt: true,
+    // `createdById` + the workspace owner + the caller's member row.
+    ...datasetManageSelect(userId),
+    createdBy: {
+      select: { firstName: true, lastName: true },
+    },
+  }) satisfies Prisma.DatasetSelect;
 
 type DatasetResponsePayload = Prisma.DatasetGetPayload<{
-  select: typeof datasetSelect;
+  select: ReturnType<typeof datasetSelect>;
 }>;
 
 /**
@@ -117,10 +124,10 @@ export class DatasetAuthorizedService {
         [item.createdBy.firstName, item.createdBy.lastName]
           .filter(Boolean)
           .join(' ') || 'Unknown',
-      // Reads are workspace-wide; update/rename/delete stay with the creator
-      // (see `updateDatasetService`/`deleteDatasetService`). Sent so the card
-      // can hide actions a teammate would only get a 404 from.
-      canManage: item.createdById === userId,
+      // Reads are workspace-wide; update/rename/delete belong to the creator
+      // and to workspace OWNER/STAFF (`canManageDataset`). Sent so the card
+      // can hide actions the caller would only get a 403 from.
+      canManage: canManageDatasetRow(item, userId),
     };
   }
 
@@ -172,13 +179,41 @@ export class DatasetAuthorizedService {
     }
   }
 
+  /**
+   * Gate for every dataset WRITE (and the dependents preview that feeds the
+   * delete dialog). 404 for a caller who cannot even read the dataset —
+   * confirming it exists would be a leak — and 403 for a workspace member who
+   * can read it but may not change it (a VIEWER who did not create it).
+   */
+  private async assertCanManageDataset(user: Auth.UserPayload, id: string) {
+    const row = await this.prisma.dataset.findFirst({
+      where: { id, ...this.workspaceReadWhere(user) },
+      select: { id: true, ...datasetManageSelect(user.id) },
+    });
+    if (!row) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset not found',
+        type: 'ERROR',
+      });
+    }
+    if (!canManageDatasetRow(row, user.id)) {
+      throw new AppException({
+        statusCode: 403,
+        message:
+          'Only the dataset creator or workspace owners and staff can change this dataset',
+        type: 'ERROR',
+      });
+    }
+  }
+
   async listDatasetService(user: Auth.UserPayload, workspaceId?: string) {
     const items = await this.prisma.dataset.findMany({
       where: {
         ...this.workspaceReadWhere(user),
         ...(workspaceId && { workspaceId }),
       },
-      select: datasetSelect,
+      select: datasetSelect(user.id),
       orderBy: { createdAt: 'desc' },
     });
     return {
@@ -192,7 +227,7 @@ export class DatasetAuthorizedService {
   async getDatasetService(user: Auth.UserPayload, id: string) {
     const item = await this.prisma.dataset.findFirst({
       where: { id, ...this.workspaceReadWhere(user) },
-      select: datasetSelect,
+      select: datasetSelect(user.id),
     });
 
     if (!item) {
@@ -225,7 +260,7 @@ export class DatasetAuthorizedService {
         missingPct: dto.missingPct,
         createdById: user.id,
       },
-      select: datasetSelect,
+      select: datasetSelect(user.id),
     });
     return {
       statusCode: 201,
@@ -240,18 +275,7 @@ export class DatasetAuthorizedService {
     id: string,
     dto: UpdateDatasetDto,
   ) {
-    const existing = await this.prisma.dataset.findFirst({
-      where: { id, createdById: user.id },
-      select: { id: true },
-    });
-
-    if (!existing) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Dataset not found',
-        type: 'ERROR',
-      });
-    }
+    await this.assertCanManageDataset(user, id);
     const item = await this.prisma.dataset.update({
       where: { id },
       data: {
@@ -266,7 +290,7 @@ export class DatasetAuthorizedService {
         ...(dto.rowCount !== undefined && { rowCount: dto.rowCount }),
         ...(dto.missingPct !== undefined && { missingPct: dto.missingPct }),
       },
-      select: datasetSelect,
+      select: datasetSelect(user.id),
     });
     return {
       statusCode: 200,
@@ -299,17 +323,7 @@ export class DatasetAuthorizedService {
    * not five.
    */
   async listDatasetDependentsService(user: Auth.UserPayload, id: string) {
-    const dataset = await this.prisma.dataset.findUnique({
-      where: { id, createdById: user.id },
-      select: { id: true },
-    });
-    if (!dataset) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Dataset not found',
-        type: 'ERROR',
-      });
-    }
+    await this.assertCanManageDataset(user, id);
 
     const [byPointer, byVersion] = await Promise.all([
       this.prisma.model.findMany({
@@ -387,17 +401,7 @@ export class DatasetAuthorizedService {
   }
 
   async deleteDatasetService(user: Auth.UserPayload, id: string) {
-    const existing = await this.prisma.dataset.findUnique({
-      where: { id, createdById: user.id },
-      select: { id: true },
-    });
-    if (!existing) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Dataset not found',
-        type: 'ERROR',
-      });
-    }
+    await this.assertCanManageDataset(user, id);
     await this.prisma.dataset.delete({ where: { id } });
     return {
       statusCode: 200,

@@ -10,6 +10,11 @@ import { useModelDraftResume } from '@/hooks/model/use-model-draft-resume'
 import { readModelConfig, configTargets } from '@/lib/model-config'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
 import { normaliseLossFunction } from '@/lib/training-config'
+import {
+  NEW_DATASET_PARAM,
+  clearModelCreateHandoff,
+  consumeModelCreateHandoff,
+} from '@/lib/model-create-handoff'
 import type { AIModel } from '@/types'
 import {
   resetWizardAtom,
@@ -19,7 +24,7 @@ import {
   mpDescriptionAtom,
   mpWorkspaceIdAtom,
   mpPlantIdAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
@@ -74,7 +79,7 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setDescription = useSetAtom(mpDescriptionAtom)
   const setWorkspaceId = useSetAtom(mpWorkspaceIdAtom)
   const setPlantId = useSetAtom(mpPlantIdAtom)
-  const setNodeId = useSetAtom(mpNodeIdAtom)
+  const setEquipmentId = useSetAtom(mpEquipmentIdAtom)
   const setSelectedDataset = useSetAtom(mpSelectedDatasetAtom)
   const setAlgorithm = useSetAtom(mpAlgorithmAtom)
   const setAlgorithms = useSetAtom(mpAlgorithmsAtom)
@@ -132,8 +137,56 @@ export function useModelWizardMode(): UseModelWizardModeResult {
           .finally(() => setLoading(false))
       } else {
         reset()
+        const newDatasetId = params.get(NEW_DATASET_PARAM)
+        if (newDatasetId) {
+          restoreAfterDatasetCreate(newDatasetId)
+        } else {
+          // A plain visit means any Step 1 → Data Studio trip was abandoned;
+          // a stale intent would otherwise bounce an unrelated later save.
+          clearModelCreateHandoff()
+        }
       }
       return
+    }
+
+    // MODEL-FLOW-032. Back from Data Studio's Save: put Step 1 back the way
+    // it was left and select the dataset just made. Raw atom setters, as in
+    // every hydration here — `reset()` above already left the training
+    // config at its defaults, so the nav hook's cascade has nothing to do.
+    function restoreAfterDatasetCreate(datasetId: string) {
+      const stepOne = consumeModelCreateHandoff()
+      if (stepOne) {
+        setName(stepOne.name)
+        setDescription(stepOne.description)
+        setWorkspaceId(stepOne.workspaceId)
+        setPlantId(stepOne.plantId)
+        setEquipmentId(stepOne.nodeId)
+      }
+      // The Step 1 values are consumed now, so a refresh must not re-run a
+      // restore that would come back half-empty.
+      router.replace('/models/create')
+
+      datasetService
+        .get(datasetId)
+        .then(res => {
+          const dataset = res.data
+          // The dialog locks the workspace, so a mismatch means the dataset
+          // was not the one this trip made — never select it silently.
+          if (stepOne && dataset.workspaceId !== stepOne.workspaceId) {
+            toast.warning(
+              `“${dataset.name}” was saved to a different workspace, so it was not selected.`,
+            )
+            return
+          }
+          if (!stepOne) setWorkspaceId(dataset.workspaceId)
+          setSelectedDataset(dataset)
+          toast.success(`Dataset “${dataset.name}” created and selected`)
+        })
+        .catch(() =>
+          toast.error(
+            'Your new dataset could not be loaded — select it from the list.',
+          ),
+        )
     }
 
     const hydrate = (model: AIModel) => {
@@ -142,7 +195,7 @@ export function useModelWizardMode(): UseModelWizardModeResult {
       setName(model.name)
       setWorkspaceId(model.workspaceId)
       setPlantId(model.nodes?.planId ?? '')
-      setNodeId(model.nodesId ?? '')
+      setEquipmentId(model.nodesId ?? '')
 
       const config = readModelConfig(model)
       if (config) {

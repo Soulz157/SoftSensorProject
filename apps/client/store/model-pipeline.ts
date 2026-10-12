@@ -252,7 +252,7 @@ export const mpNameAtom = atom<string>('')
 export const mpDescriptionAtom = atom<string>('')
 export const mpWorkspaceIdAtom = atom<string>('')
 export const mpPlantIdAtom = atom<string>('')
-export const mpNodeIdAtom = atom<string>('')
+export const mpEquipmentIdAtom = atom<string>('')
 
 // Phase 5/6 — training + results.
 export const mpTrainStateAtom = atom<TrainState>({
@@ -422,7 +422,7 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpDescriptionAtom, '')
   set(mpWorkspaceIdAtom, '')
   set(mpPlantIdAtom, '')
-  set(mpNodeIdAtom, '')
+  set(mpEquipmentIdAtom, '')
   set(mpSelectedDatasetAtom, null)
   set(mpAlgorithmAtom, 'ols')
   set(mpAlgorithmsAtom, ['ols'])

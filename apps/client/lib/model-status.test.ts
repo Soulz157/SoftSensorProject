@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { AIModel } from '@/types'
 import {
-  failedCountByNodeId,
-  monitoringCountByNodeId,
+  failedCountByEquipmentId,
+  monitoringCountByEquipmentId,
   monitoringStatus,
 } from './model-status'
 
@@ -75,26 +75,26 @@ describe('monitoringStatus (MODEL-SERVE-012)', () => {
 /**
  * MODEL-SERVE-012. THE OVERVIEW-TOWER DOT BUG, as a regression test.
  *
- * The tower's per-node dots were fed by `failedCountByNodeId` alone, so a
+ * The tower's per-node dots were fed by `failedCountByEquipmentId` alone, so a
  * model alerting on the MONITORING axis left its node green while the same
  * model raised a row on the Alerts page. The workspace-level figure had both
  * rollups; the node level had only one.
  */
-describe('monitoringCountByNodeId', () => {
+describe('monitoringCountByEquipmentId', () => {
   it('counts a monitoring alert that the DEPLOY rollup cannot see', () => {
     const models = [
       model('m1', { nodesId: 'node-a', monitoring: alerting }),
     ]
 
     // The deploy axis is clean — this model is running, not failed.
-    expect(failedCountByNodeId(models)).toEqual({})
+    expect(failedCountByEquipmentId(models)).toEqual({})
     // ...and that is exactly why the dot stayed green before this existed.
-    expect(monitoringCountByNodeId(models)).toEqual({ 'node-a': 1 })
+    expect(monitoringCountByEquipmentId(models)).toEqual({ 'node-a': 1 })
   })
 
   it('sums several alerting models on one node', () => {
     expect(
-      monitoringCountByNodeId([
+      monitoringCountByEquipmentId([
         model('m1', { nodesId: 'node-a', monitoring: alerting }),
         model('m2', { nodesId: 'node-a', monitoring: alerting }),
         model('m3', { nodesId: 'node-b', monitoring: alerting }),
@@ -104,13 +104,13 @@ describe('monitoringCountByNodeId', () => {
 
   it('omits a model with no node — it has no dot to colour', () => {
     expect(
-      monitoringCountByNodeId([model('m1', { monitoring: alerting })]),
+      monitoringCountByEquipmentId([model('m1', { monitoring: alerting })]),
     ).toEqual({})
   })
 
   it('does NOT count OFF or UNKNOWN — no claim is not a fault', () => {
     expect(
-      monitoringCountByNodeId([
+      monitoringCountByEquipmentId([
         model('m1', {
           nodesId: 'node-a',
           monitoring: { status: 'OFF', reason: null, frozenColumns: [] },

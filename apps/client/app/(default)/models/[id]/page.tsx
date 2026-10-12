@@ -474,7 +474,7 @@ export default function ModelDetailPage({
     a => a !== model.data?.config?.algorithm,
   ).length
 
-  const nodeName = model.nodes
+  const equipmentName = model.nodes
     ? ((model.nodes.data as { name?: string }).name ?? '—')
     : '—'
   const plantName = model.nodes?.plan?.name ?? '—'
@@ -548,7 +548,7 @@ export default function ModelDetailPage({
                 </span>
               </div>
               <p className="mt-0.5 text-sm text-muted-foreground">
-                {plantName} · {nodeName}
+                {plantName} · {equipmentName}
               </p>
               {algorithmLabel && (
                 <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -832,7 +832,7 @@ export default function ModelDetailPage({
               <div className="mt-2 flex items-center gap-1.5">
                 <Cpu className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="truncate text-sm font-semibold text-foreground">
-                  {nodeName}
+                  {equipmentName}
                 </span>
               </div>
               {plantName !== '—' && (

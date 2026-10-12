@@ -30,6 +30,10 @@ import { datasetService } from '@/services/dataset'
 import { datasetVersionService } from '@/services/dataset-version'
 import { datasetDraftService } from '@/services/dataset-draft'
 import { consumeRetrainHandoff, retrainReturnUrl } from '@/lib/retrain-handoff'
+import {
+  modelCreateReturnUrl,
+  peekModelCreateHandoff,
+} from '@/lib/model-create-handoff'
 import { materializeBlocker } from '@/hooks/dataset/use-dataset-version-rows'
 import { useDatasetValidation } from '@/hooks/dataset/use-dataset-validation'
 import { useDatasetArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
@@ -493,6 +497,17 @@ export function Step6ReviewSave({ nav }: Props) {
       const handoff = consumeRetrainHandoff()
       if (handoff && savedDatasetId) {
         router.push(retrainReturnUrl(handoff, savedDatasetId, savedVersionId))
+      } else if (
+        // MODEL-FLOW-032. Create Model Step 1 sent the user here to build
+        // the dataset it will train on. Peeked, not consumed: the model
+        // wizard needs the stored Step 1 values and clears them itself.
+        // Create-mode only — an edit-save is a new version of a dataset
+        // the model wizard could already pick, not the one it asked for.
+        mode === 'create' &&
+        savedDatasetId &&
+        peekModelCreateHandoff()
+      ) {
+        router.push(modelCreateReturnUrl(savedDatasetId))
       } else {
         router.push('/data-studio')
       }

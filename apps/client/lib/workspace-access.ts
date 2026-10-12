@@ -43,7 +43,7 @@ export const WORKSPACE_ROLE_OPTIONS: ReadonlyArray<{
   {
     value: 'STAFF',
     label: 'Staff',
-    description: 'Edits models and monitoring',
+    description: 'Edits models, datasets and monitoring',
   },
   {
     value: 'VIEWER',
@@ -51,6 +51,30 @@ export const WORKSPACE_ROLE_OPTIONS: ReadonlyArray<{
     description: 'Read access, plus any grants',
   },
 ]
+
+/**
+ * Access that comes WITH a role rather than being granted per member, shown
+ * read-only in the Manage access dialog. Mirrors the backend rule in
+ * `apps/backend/src/lib/dataset-manage-access.ts`: OWNER and STAFF manage
+ * every dataset in the workspace; a VIEWER manages only datasets they made.
+ */
+export const ROLE_ACCESS_OPTIONS: ReadonlyArray<{
+  key: 'DATASET_MANAGE'
+  label: string
+  description: string
+}> = [
+  {
+    key: 'DATASET_MANAGE',
+    label: 'Dataset management',
+    description:
+      'Edit, rename and delete any dataset in this workspace. Viewers manage only datasets they created.',
+  },
+]
+
+/** Whether a role carries dataset management over teammates' datasets. */
+export function roleCanManageDatasets(role: WorkspaceRole): boolean {
+  return role !== 'VIEWER'
+}
 
 /** OWNER and STAFF have every feature; a VIEWER only what was granted. */
 export function memberCan(

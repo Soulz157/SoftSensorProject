@@ -23,7 +23,7 @@ import {
   mpHighestUnlockedAtom,
   mpHyperparamsAtom,
   mpNameAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpPlantIdAtom,
   mpSelectedDatasetAtom,
   mpServerDraftIdAtom,
@@ -70,7 +70,7 @@ export function useModelDraftResume(): UseModelDraftResumeResult {
   const setName = useSetAtom(mpNameAtom)
   const setWorkspaceId = useSetAtom(mpWorkspaceIdAtom)
   const setPlantId = useSetAtom(mpPlantIdAtom)
-  const setNodeId = useSetAtom(mpNodeIdAtom)
+  const setEquipmentId = useSetAtom(mpEquipmentIdAtom)
   const setSelectedDataset = useSetAtom(mpSelectedDatasetAtom)
   const setAlgorithm = useSetAtom(mpAlgorithmAtom)
   const setAlgorithms = useSetAtom(mpAlgorithmsAtom)
@@ -97,7 +97,7 @@ export function useModelDraftResume(): UseModelDraftResumeResult {
       if (draft.name) setName(draft.name)
       setWorkspaceId(draft.workspaceId)
       setPlantId(draft.plantId ?? '')
-      setNodeId(draft.nodeId ?? '')
+      setEquipmentId(draft.nodeId ?? '')
 
       if (draft.algorithm !== null && isAlgorithm(draft.algorithm)) {
         setAlgorithm(draft.algorithm)
@@ -117,7 +117,7 @@ export function useModelDraftResume(): UseModelDraftResumeResult {
       setName,
       setWorkspaceId,
       setPlantId,
-      setNodeId,
+      setEquipmentId,
       setAlgorithm,
       setAlgorithms,
       setHyperparams,

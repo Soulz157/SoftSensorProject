@@ -8,13 +8,13 @@ import type { Workspace } from '@/types'
 
 interface PlantsData {
   workspaces: Workspace[]
-  nodesByWorkspace: Record<string, CanvasNode[]>
+  equipmentListByWorkspace: Record<string, CanvasNode[]>
   loading: boolean
   error: string | null
 }
 
 type State = {
-  nodesByWorkspace: Record<string, CanvasNode[]>
+  equipmentListByWorkspace: Record<string, CanvasNode[]>
   loading: boolean
   error: string | null
 }
@@ -28,11 +28,15 @@ type Action =
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'EMPTY':
-      return { nodesByWorkspace: {}, loading: false, error: null }
+      return { equipmentListByWorkspace: {}, loading: false, error: null }
     case 'FETCH_START':
       return { ...state, loading: true, error: null }
     case 'FETCH_SUCCESS':
-      return { nodesByWorkspace: action.map, loading: false, error: null }
+      return {
+        equipmentListByWorkspace: action.map,
+        loading: false,
+        error: null,
+      }
     case 'FETCH_ERROR':
       return { ...state, loading: false, error: action.message }
   }
@@ -42,7 +46,7 @@ export function usePlantsData(): PlantsData {
   const workspaces = useAtomValue(workspacesAtom)
   const workspacesLoading = useAtomValue(workspacesLoadingAtom)
   const [state, dispatch] = useReducer(reducer, {
-    nodesByWorkspace: {},
+    equipmentListByWorkspace: {},
     loading: true,
     error: null,
   })

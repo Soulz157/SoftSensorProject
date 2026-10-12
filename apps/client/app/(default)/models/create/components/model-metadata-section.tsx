@@ -21,9 +21,9 @@ interface Props {
   description: string
   workspaceId: string
   plantId: string
-  nodeId: string
+  equipmentId: string
   plants: WorkspacePlant[]
-  nodes: CanvasNode[]
+  equipmentList: CanvasNode[]
   plantsLoading: boolean
   disabled: boolean
   nameConflict: boolean
@@ -31,7 +31,7 @@ interface Props {
   onDescription: (v: string) => void
   onWorkspace: (id: string) => void
   onPlant: (id: string) => void
-  onNode: (id: string) => void
+  onEquipment: (id: string) => void
 }
 
 /**
@@ -45,9 +45,9 @@ export function ModelMetadataSection({
   description,
   workspaceId,
   plantId,
-  nodeId,
+  equipmentId,
   plants,
-  nodes,
+  equipmentList,
   plantsLoading,
   disabled,
   nameConflict,
@@ -55,7 +55,7 @@ export function ModelMetadataSection({
   onDescription,
   onWorkspace,
   onPlant,
-  onNode,
+  onEquipment,
 }: Props) {
   const workspaces = useAtomValue(workspacesAtom)
 
@@ -67,8 +67,8 @@ export function ModelMetadataSection({
     ? 'Pick a workspace first'
     : !plantId
       ? 'Pick a plant to list its equipment'
-      : nodes.length === 0
-        ? 'No equipment found in this plant. Add nodes to the canvas first.'
+      : equipmentList.length === 0
+        ? 'No equipment found in this plant. Add equipment to the canvas first.'
         : null
 
   return (
@@ -147,15 +147,15 @@ export function ModelMetadataSection({
              * empty string value) and remains a valid intermediate state.
              */}
             <Select
-              value={nodeId}
-              onValueChange={onNode}
+              value={equipmentId}
+              onValueChange={onEquipment}
               disabled={disabled || !!equipmentHint}
             >
               <SelectTrigger className="h-9 w-56">
                 <SelectValue placeholder="Select equipment" />
               </SelectTrigger>
               <SelectContent>
-                {nodes.map(n => (
+                {equipmentList.map(n => (
                   <SelectItem key={n.id} value={n.id}>
                     {(n.data as { name?: string }).name ?? n.id}
                   </SelectItem>

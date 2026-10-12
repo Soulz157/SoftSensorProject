@@ -14,15 +14,15 @@ const FAQ_ITEMS = [
   },
   {
     id: 'q2',
-    question: 'How do I connect a node to a model?',
+    question: 'How do I connect equipment to a model?',
     answer:
-      'Open the workspace, click a node on the canvas (View Mode), and use the Node Detail panel on the right to associate models. Models appear as dots at the bottom of the node card.',
+      'Open the workspace, click the equipment on the canvas (View Mode), and use the Equipment Detail panel on the right to associate models. Models appear as dots at the bottom of the equipment card.',
   },
   {
     id: 'q3',
     question: 'What triggers an Alarm status?',
     answer:
-      'A node enters Alarm status when any of its monitored values breaches the configured upper or lower threshold. Alarm has the highest severity and overrides Warning or Offline states in workspace roll-up.',
+      'Equipment enters Alarm status when any of its monitored values breaches the configured upper or lower threshold. Alarm has the highest severity and overrides Warning or Offline states in workspace roll-up.',
   },
   {
     id: 'q4',
@@ -32,15 +32,15 @@ const FAQ_ITEMS = [
   },
   {
     id: 'q5',
-    question: 'How do I delete a node?',
+    question: 'How do I delete equipment?',
     answer:
-      'Switch to Build Mode on the canvas, then click the red × button on the node card. Confirm the deletion in the two-step confirm prompt that appears.',
+      'Switch to Build Mode on the canvas, then click the red × button on the equipment card. Confirm the deletion in the two-step confirm prompt that appears.',
   },
   {
     id: 'q6',
     question: 'What does Offline status mean?',
     answer:
-      'Offline means the node is not transmitting data. This may indicate a network issue, power loss, or a hardware fault. Offline nodes appear gray on the canvas and in the workspace status dot.',
+      'Offline means the equipment is not transmitting data. This may indicate a network issue, power loss, or a hardware fault. Offline equipment appears gray on the canvas and in the workspace status dot.',
   },
 ]
 

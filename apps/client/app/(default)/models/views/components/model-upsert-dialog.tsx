@@ -51,8 +51,15 @@ export function ModelUpsertDialog({
     onClose,
     dataSource,
   })
-  const { name, workspaceId, plantId, nodeId, plants, nodes, isSubmitting } =
-    state
+  const {
+    name,
+    workspaceId,
+    plantId,
+    equipmentId,
+    plants,
+    equipmentList,
+    isSubmitting,
+  } = state
   const isMissingSource = dataSource.view.state === 'missing-source'
 
   return (
@@ -124,8 +131,8 @@ export function ModelUpsertDialog({
             <div className="space-y-1.5">
               <Label>Equipment </Label>
               <Select
-                value={nodeId || 'none'}
-                onValueChange={actions.handleNodeChange}
+                value={equipmentId || 'none'}
+                onValueChange={actions.handleEquipmentChange}
                 disabled={isSubmitting}
               >
                 <SelectTrigger>
@@ -133,7 +140,7 @@ export function ModelUpsertDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">— Unassigned —</SelectItem>
-                  {nodes.map(n => (
+                  {equipmentList.map(n => (
                     <SelectItem key={n.id} value={n.id}>
                       {(n.data as { name?: string }).name ?? n.id}
                     </SelectItem>

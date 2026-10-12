@@ -8,14 +8,14 @@ import type { Workspace } from '@/types'
 
 interface DashboardData {
   workspaces: Workspace[]
-  nodes: CanvasNode[]
+  equipmentList: CanvasNode[]
   loading: boolean
   error: string | null
   refetch: () => void
 }
 
 type State = {
-  nodes: CanvasNode[]
+  equipmentList: CanvasNode[]
   loading: boolean
   error: string | null
 }
@@ -23,17 +23,21 @@ type State = {
 type Action =
   | { type: 'EMPTY' }
   | { type: 'FETCH_START' }
-  | { type: 'FETCH_SUCCESS'; nodes: CanvasNode[] }
+  | { type: 'FETCH_SUCCESS'; equipmentList: CanvasNode[] }
   | { type: 'FETCH_ERROR'; message: string }
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'EMPTY':
-      return { nodes: [], loading: false, error: null }
+      return { equipmentList: [], loading: false, error: null }
     case 'FETCH_START':
       return { ...state, loading: true, error: null }
     case 'FETCH_SUCCESS':
-      return { nodes: action.nodes, loading: false, error: null }
+      return {
+        equipmentList: action.equipmentList,
+        loading: false,
+        error: null,
+      }
     case 'FETCH_ERROR':
       return { ...state, loading: false, error: action.message }
   }
@@ -44,7 +48,7 @@ export function useDashboardData(): DashboardData {
   const workspacesLoading = useAtomValue(workspacesLoadingAtom)
   const [fetchKey, setFetchKey] = useState(0)
   const [state, dispatch] = useReducer(reducer, {
-    nodes: [],
+    equipmentList: [],
     loading: true,
     error: null,
   })
@@ -62,7 +66,7 @@ export function useDashboardData(): DashboardData {
     Promise.all(workspaces.map(ws => getNodes(ws.id)))
       .then(results => {
         if (cancelled) return
-        dispatch({ type: 'FETCH_SUCCESS', nodes: results.flat() })
+        dispatch({ type: 'FETCH_SUCCESS', equipmentList: results.flat() })
       })
       .catch(() => {
         if (!cancelled)

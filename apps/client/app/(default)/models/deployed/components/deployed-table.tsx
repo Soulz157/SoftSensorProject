@@ -113,7 +113,7 @@ export function DeployedTable({ models, loading, isFetching }: Props) {
           const deployKey = (m.data?.deployStatus ?? 'stopped') as DS
           const ds = DEPLOY_MAP[deployKey] ?? DEPLOY_MAP.stopped
           const DIcon = ds.icon
-          const nodeName = m.nodes
+          const equipmentName = m.nodes
             ? ((m.nodes.data as { name?: string }).name ?? '—')
             : '—'
           const plantName = m.nodes?.plan?.name ?? '—'
@@ -132,7 +132,7 @@ export function DeployedTable({ models, loading, isFetching }: Props) {
               </TableCell>
               <TableCell>
                 <p className="text-sm text-foreground">{plantName}</p>
-                <p className="text-xs text-muted-foreground">{nodeName}</p>
+                <p className="text-xs text-muted-foreground">{equipmentName}</p>
               </TableCell>
               <TableCell>
                 <span

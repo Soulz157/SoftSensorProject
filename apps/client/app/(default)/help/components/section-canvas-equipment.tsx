@@ -11,16 +11,16 @@ const TIPS: Tip[] = [
   {
     icon: Eye,
     title: 'Build Mode vs View Mode',
-    body: 'Toggle between modes using the VIEW / BUILD switch in the canvas toolbar. View Mode is read-only. Build Mode lets you add nodes, draw connections, and drag nodes into position.',
+    body: 'Toggle between modes using the VIEW / BUILD switch in the canvas toolbar. View Mode is read-only. Build Mode lets you add equipment, draw connections, and drag equipment into position.',
   },
   {
     icon: MousePointer,
-    title: 'Connecting Nodes',
-    body: 'In Build Mode, drag from any handle (the dots on node edges) to another node to create an edge. Edges represent physical or logical connections between devices.',
+    title: 'Connecting Equipment',
+    body: 'In Build Mode, drag from any handle (the dots on the edges of an equipment card) to another piece of equipment to create an edge. Edges represent physical or logical connections between devices.',
   },
   {
     icon: Cpu,
-    title: 'Node Types',
+    title: 'Equipment Types',
     body: 'Machine (purple) represents production equipment. Sensor (orange) represents data collection points. Controller (green) represents automation or control systems.',
   },
   {
@@ -30,10 +30,12 @@ const TIPS: Tip[] = [
   },
 ]
 
-export function SectionCanvasNodes() {
+export function SectionCanvasEquipment() {
   return (
     <div>
-      <h1 className="text-xl font-bold text-foreground mb-1">Canvas & Nodes</h1>
+      <h1 className="text-xl font-bold text-foreground mb-1">
+        Canvas & Equipment
+      </h1>
       <p className="text-sm text-muted-foreground mb-6">
         Build your plant topology visually using the canvas editor.
       </p>

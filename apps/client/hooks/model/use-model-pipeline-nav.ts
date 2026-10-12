@@ -10,7 +10,7 @@ import {
   mpNameAtom,
   mpWorkspaceIdAtom,
   mpPlantIdAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpEditModelIdAtom,
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
@@ -103,7 +103,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const name = useAtomValue(mpNameAtom)
   const workspaceId = useAtomValue(mpWorkspaceIdAtom)
   const plantId = useAtomValue(mpPlantIdAtom)
-  const nodeId = useAtomValue(mpNodeIdAtom)
+  const equipmentId = useAtomValue(mpEquipmentIdAtom)
   const editModelId = useAtomValue(mpEditModelIdAtom)
   const { data: workspaceModels } = useModels(workspaceId || null)
   const nameConflict = useMemo(() => {
@@ -155,7 +155,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
             name.trim() !== '' &&
             workspaceId !== '' &&
             plantId !== '' &&
-            nodeId !== '' &&
+            equipmentId !== '' &&
             !nameConflict &&
             selectedDataset !== null
           )
@@ -189,7 +189,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
       name,
       workspaceId,
       plantId,
-      nodeId,
+      equipmentId,
       nameConflict,
       selectedDataset,
       trainState,

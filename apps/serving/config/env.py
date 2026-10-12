@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # one. Default 512 MiB.
     SERVING_CACHE_MAX_BYTES: int = 512 * 1024 * 1024
 
+    # T03. How long the startup warm keeps retrying while the backend is
+    # unreachable (`services/warmup.py`). Past it the replica starts cold
+    # and /readyz flips ready anyway — never stuck on a backend outage.
+    SERVING_WARM_RETRY_SECONDS: float = 120.0
+
     # T04. Cap rows per /predict request — bounded, synchronous by design.
     SERVING_MAX_ROWS: int = 1000
 

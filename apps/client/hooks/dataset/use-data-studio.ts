@@ -10,6 +10,7 @@ import {
 } from '@/store/data-sources'
 import { toast } from 'sonner'
 import { initDatasetWizardAtom } from '@/store/dataset-studio'
+import { clearModelCreateHandoff } from '@/lib/model-create-handoff'
 import type { SavedDataset } from '@/store/datasets'
 import { useDataSources } from '@/hooks/use-data-sources'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
@@ -94,6 +95,9 @@ export function useDataStudio() {
   ) => {
     // Sources may be pre-selected in the dialog; any not chosen here can still
     // be added in-wizard (Step 1 → SourcePickerSheet).
+    // MODEL-FLOW-032. Started from Data Studio, so this Save must land back
+    // in Data Studio even if an abandoned Create Model trip left its intent.
+    clearModelCreateHandoff()
     initDatasetWizard({
       name,
       description,

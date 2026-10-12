@@ -9,7 +9,7 @@ import type { ModelVersionNumber } from '@/lib/model-version-number'
 import {
   mpNameAtom,
   mpDescriptionAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpModeAtom,
   mpEditModelIdAtom,
   mpSelectedDatasetAtom,
@@ -66,7 +66,7 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
   const draftId = useAtomValue(mpServerDraftIdAtom)
   const name = useAtomValue(mpNameAtom)
   const description = useAtomValue(mpDescriptionAtom)
-  const nodeId = useAtomValue(mpNodeIdAtom)
+  const equipmentId = useAtomValue(mpEquipmentIdAtom)
   const dataset = useAtomValue(mpSelectedDatasetAtom)
   const algorithm = useAtomValue(mpAlgorithmAtom)
   const algorithms = useAtomValue(mpAlgorithmsAtom)
@@ -95,7 +95,7 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
       })
       await updateModel(editModelId, {
         name: name.trim(),
-        nodeId: nodeId || null,
+        nodeId: equipmentId || null,
         datasetId: dataset?.id ?? null,
         config,
       })
@@ -116,7 +116,7 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
 
     const res = await modelDraftService.save(draftId, {
       name: name.trim(),
-      nodeId: nodeId || undefined,
+      nodeId: equipmentId || undefined,
       description: description || undefined,
     })
     setCreatedModelId(res.data.id)
@@ -129,7 +129,7 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
     createdModelVersion,
     draftId,
     name,
-    nodeId,
+    equipmentId,
     description,
     dataset,
     algorithm,

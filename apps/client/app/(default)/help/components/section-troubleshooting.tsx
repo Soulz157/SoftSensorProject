@@ -14,7 +14,7 @@ const ISSUES = [
   },
   {
     id: 'i2',
-    problem: 'Nodes not saving after edit',
+    problem: 'Equipment not saving after edit',
     solution:
       'Confirm you clicked ✓ Confirm in the canvas toolbar after making changes. Navigating away or clicking Cancel discards unsaved edits. Ensure you are in Build Mode when editing.',
   },
@@ -22,7 +22,7 @@ const ISSUES = [
     id: 'i3',
     problem: 'Alert count badge not updating',
     solution:
-      'The badge count is derived from node statuses loaded at login. Refresh the page to force a re-fetch of workspace data. If a node status changed after you logged in, the badge reflects the cached value until the next load.',
+      'The badge count is derived from equipment statuses loaded at login. Refresh the page to force a re-fetch of workspace data. If an equipment status changed after you logged in, the badge reflects the cached value until the next load.',
   },
   {
     id: 'i4',

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, within } from '@testing-library/react'
-import { NodeDetailPanel } from '../node-detail-panel'
+import { EquipmentDetailPanel } from '../equipment-detail-panel'
 import type { CanvasNode } from '@/services/canvas'
 import type { WorkspacePlant } from '@/types'
 
@@ -28,12 +28,12 @@ const mockPlant: WorkspacePlant = {
   updatedAt: '2026-06-08T00:00:00Z',
 }
 
-describe('NodeDetailPanel', () => {
+describe('EquipmentDetailPanel', () => {
   it('renders nothing when no node and no plan selected', () => {
     const { container } = render(
-      <NodeDetailPanel
+      <EquipmentDetailPanel
         viewMode="equipment"
-        node={null}
+        equipment={null}
         plan={mockPlant}
         workspaceId={null}
         onClose={() => {}}
@@ -44,9 +44,9 @@ describe('NodeDetailPanel', () => {
 
   it('shows plant details in plant mode', () => {
     const { getByText } = render(
-      <NodeDetailPanel
+      <EquipmentDetailPanel
         viewMode="plants"
-        node={null}
+        equipment={null}
         plan={mockPlant}
         workspaceId="ws1"
         onClose={() => {}}
@@ -58,9 +58,9 @@ describe('NodeDetailPanel', () => {
 
   it('shows node name when node selected', () => {
     const { getByText } = render(
-      <NodeDetailPanel
+      <EquipmentDetailPanel
         viewMode="equipment"
-        node={mockNode}
+        equipment={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
         onClose={() => {}}
@@ -71,9 +71,9 @@ describe('NodeDetailPanel', () => {
 
   it('shows AI model names', () => {
     const { getByText } = render(
-      <NodeDetailPanel
+      <EquipmentDetailPanel
         viewMode="equipment"
-        node={mockNode}
+        equipment={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
         onClose={() => {}}
@@ -85,9 +85,9 @@ describe('NodeDetailPanel', () => {
 
   it('shows alarm status chip for alarm node', () => {
     const { getAllByText } = render(
-      <NodeDetailPanel
+      <EquipmentDetailPanel
         viewMode="equipment"
-        node={mockNode}
+        equipment={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
         onClose={() => {}}
@@ -115,9 +115,9 @@ describe('NodeDetailPanel', () => {
     } as unknown as CanvasNode
 
     const { getByText, container } = render(
-      <NodeDetailPanel
+      <EquipmentDetailPanel
         viewMode="equipment"
-        node={failingNode}
+        equipment={failingNode}
         plan={mockPlant}
         workspaceId="ws1"
         onClose={() => {}}
@@ -133,9 +133,9 @@ describe('NodeDetailPanel', () => {
   // MODEL-SERVE-025. The canvas is gone; Edit and Delete live here instead.
   it('links nowhere near the removed canvas', () => {
     const { container } = render(
-      <NodeDetailPanel
+      <EquipmentDetailPanel
         viewMode="equipment"
-        node={mockNode}
+        equipment={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
         onClose={() => {}}
@@ -148,9 +148,9 @@ describe('NodeDetailPanel', () => {
     const onEditClick = vi.fn()
     const onDeleteClick = vi.fn()
     const { getByRole } = render(
-      <NodeDetailPanel
+      <EquipmentDetailPanel
         viewMode="equipment"
-        node={mockNode}
+        equipment={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
         onEditClick={onEditClick}

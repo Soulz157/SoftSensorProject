@@ -35,6 +35,15 @@ anchored on the dot and stops there.
 `A/B.PV` remains genuinely ambiguous from text alone (is it one tag, or `A`
 divided by `B.PV`?). The parser commits to reading it as one tag and records a
 `parse_warning` so the UI can ask a human, rather than guessing in silence.
+
+A hyphen gets the same treatment as a slash, minus the warning. `AI301-1B.PV`
+and `TPE-H2-FC3931.PV` are single tags; `TI240.PV-TI239.PV` is subtraction.
+The dot-suffix separates them again: the suffix never takes a hyphen, so the
+match ends at `.PV` and the next one starts after the minus. Reading
+`A-B.PV` as subtraction would need `A` to be an operand with no dot-suffix —
+a bare constant like `BIAS`, which the formula grammar cannot resolve anyway —
+so committing to one tag costs nothing that worked before, and a warning on
+every hyphenated tag would bury the slash warnings that do need a human.
 """
 
 from __future__ import annotations
@@ -50,9 +59,10 @@ import pandas as pd
 from services.range_parser import ParsedRange, parse_range, range_parse_warning
 
 #: A plant tag: leading letter, then name characters that MAY include a slash,
-#: terminated by a dot-suffix. The dot is what stops the match, which is what
-#: keeps `FIC226.PV/FIC227.PV` from collapsing into one token.
-TAG_RE = re.compile(r"[A-Za-z][A-Za-z0-9/]*\.[A-Za-z][A-Za-z0-9]*")
+#: and hyphens that each join two name segments, terminated by a dot-suffix.
+#: The dot is what stops the match, which is what keeps `FIC226.PV/FIC227.PV`
+#: and `TI240.PV-TI239.PV` from collapsing into one token.
+TAG_RE = re.compile(r"[A-Za-z][A-Za-z0-9/]*(?:-[A-Za-z0-9/]+)*\.[A-Za-z][A-Za-z0-9]*")
 
 #: A cut condition on the SD&TA sheet, e.g. `<1700`.
 CONDITION_RE = re.compile(r"^(<=|>=|<|>|==|=)\s*(-?\d+(?:\.\d+)?)$")

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 /**
@@ -33,6 +33,13 @@ function member(
   }
 }
 
+/** Feature grants only — the read-only Role access box is a separate group. */
+function featureBoxes() {
+  return within(
+    screen.getByRole('group', { name: 'Feature access' }),
+  ).getAllByRole('checkbox')
+}
+
 function renderDialog(m: WorkspaceMember) {
   const onSaved = vi.fn()
   const onOpenChange = vi.fn()
@@ -56,7 +63,7 @@ describe('MemberAccessDialog', () => {
 
   it('locks the feature checkboxes for STAFF and sends no grants', async () => {
     const { onSaved } = renderDialog(member('STAFF'))
-    const boxes = screen.getAllByRole('checkbox')
+    const boxes = featureBoxes()
     expect(boxes).toHaveLength(2)
     for (const box of boxes) expect(box).toBeDisabled()
     expect(
@@ -68,9 +75,26 @@ describe('MemberAccessDialog', () => {
     expect(onSaved).toHaveBeenCalled()
   })
 
+  it.each([
+    ['OWNER', true],
+    ['STAFF', true],
+    ['VIEWER', false],
+  ] as const)(
+    'shows Dataset management as included for %s: %s',
+    (role, included) => {
+      renderDialog(member(role))
+      const box = within(
+        screen.getByRole('group', { name: 'Role access' }),
+      ).getByRole('checkbox', { name: /Dataset management/ })
+      expect(box).toBeDisabled()
+      if (included) expect(box).toBeChecked()
+      else expect(box).not.toBeChecked()
+    },
+  )
+
   it('sends the grants ticked for a VIEWER', async () => {
     renderDialog(member('VIEWER'))
-    const monitoring = screen.getAllByRole('checkbox')[0]!
+    const monitoring = featureBoxes()[0]!
     expect(monitoring).toBeEnabled()
 
     await userEvent.click(monitoring)
@@ -82,7 +106,7 @@ describe('MemberAccessDialog', () => {
 
   it('starts from the VIEWER current grants and can revoke one', async () => {
     renderDialog(member('VIEWER', ['MONITORING_VIEW', 'NOTIFICATIONS_VIEW']))
-    const notifications = screen.getAllByRole('checkbox')[1]!
+    const notifications = featureBoxes()[1]!
 
     await userEvent.click(notifications)
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))

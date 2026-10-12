@@ -10,7 +10,7 @@ export function useAlertCount(): number {
   // Every equipment row the Alerts page lists: alert, warning and offline
   // nodes. MODEL-SERVE-024-D05 split the server's count three ways; an older
   // server sends only `alarmCount`, which then already covered all three.
-  const nodeCount = workspaces.reduce(
+  const equipmentCount = workspaces.reduce(
     (sum, ws) =>
       sum +
       (ws.alarmCount ?? 0) +
@@ -24,5 +24,5 @@ export function useAlertCount(): number {
   // source lands only in this second term. Without it the nav badge undercounts
   // exactly the failure class T26 moved.
   const monitoringCount = monitoringAlerts(models ?? []).length
-  return nodeCount + failedCount + monitoringCount
+  return equipmentCount + failedCount + monitoringCount
 }

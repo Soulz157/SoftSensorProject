@@ -3,7 +3,7 @@ import { isAbnormal } from '@/lib/overview-status'
 import type { AIModel, WorkspacePlant } from '@/types'
 import type { NodeStatus } from '@/store/status-colors'
 import type { HealthReason } from '@/lib/health-status-style'
-import { NODE_STATUS_PRIORITY } from '@/constants/status'
+import { EQUIPMENT_STATUS_PRIORITY } from '@/constants/status'
 import {
   monitoringStatus,
   failedDeploys,
@@ -49,7 +49,7 @@ const UNASSIGNED_ID = '__unassigned__'
 // they turn their equipment, plant and workspace Abnormal through the same
 // `toBinaryStatus` rule a node alarm does. A failed deploy used to map to
 // 'warning', which the binary rule no longer counts as Abnormal.
-// (NODE_STATUS_PRIORITY: offline=3 > normal=2, so offline never beats normal.)
+// (EQUIPMENT_STATUS_PRIORITY: offline=3 > normal=2, so offline never beats normal.)
 export function normalizeModelStatus(m: AIModel): NodeStatus {
   if (isDeployFailed(m)) return 'alarm'
   const s = monitoringStatus(m)
@@ -99,12 +99,13 @@ function isDeployLive(m: AIModel): boolean {
   return deploy === 'running' || deploy === 'initializing'
 }
 
-// Worst (most severe) status wins — lower NODE_STATUS_PRIORITY is more severe.
+// Worst (most severe) status wins — lower EQUIPMENT_STATUS_PRIORITY is more severe.
 // Lets an alarm at any descendant bubble up to its parent row.
 export function worstStatus(statuses: NodeStatus[]): NodeStatus {
   return statuses.reduce<NodeStatus>(
     (worst, s) =>
-      (NODE_STATUS_PRIORITY[s] ?? 3) < (NODE_STATUS_PRIORITY[worst] ?? 3)
+      (EQUIPMENT_STATUS_PRIORITY[s] ?? 3) <
+      (EQUIPMENT_STATUS_PRIORITY[worst] ?? 3)
         ? s
         : worst,
     'normal',
@@ -116,16 +117,16 @@ export function worstStatus(statuses: NodeStatus[]): NodeStatus {
 // synthetic "Unassigned" plant so nothing is hidden versus the old flat lists.
 export function buildOverviewTree(
   plants: WorkspacePlant[],
-  nodes: CanvasNode[],
+  equipmentList: CanvasNode[],
   models: AIModel[],
 ): OverviewTreePlant[] {
-  const modelsByNodeId = new Map<string, AIModel[]>()
+  const modelsByEquipmentId = new Map<string, AIModel[]>()
   const unassignedModels: AIModel[] = []
   for (const m of models) {
     if (m.nodesId) {
-      const arr = modelsByNodeId.get(m.nodesId) ?? []
+      const arr = modelsByEquipmentId.get(m.nodesId) ?? []
       arr.push(m)
-      modelsByNodeId.set(m.nodesId, arr)
+      modelsByEquipmentId.set(m.nodesId, arr)
     } else {
       unassignedModels.push(m)
     }
@@ -133,9 +134,9 @@ export function buildOverviewTree(
 
   const plantIds = new Set(plants.map(p => p.id))
 
-  const buildNode = (n: CanvasNode): OverviewTreeNode => {
+  const buildEquipment = (n: CanvasNode): OverviewTreeNode => {
     const treeModels: OverviewTreeModel[] = (
-      modelsByNodeId.get(n.id) ?? []
+      modelsByEquipmentId.get(n.id) ?? []
     ).map(m => ({
       id: m.id,
       name: m.name,
@@ -154,7 +155,9 @@ export function buildOverviewTree(
   }
 
   const result: OverviewTreePlant[] = plants.map(plant => {
-    const treeNodes = nodes.filter(n => n.planId === plant.id).map(buildNode)
+    const treeNodes = equipmentList
+      .filter(n => n.planId === plant.id)
+      .map(buildEquipment)
     return {
       id: plant.id,
       name: plant.name,
@@ -164,7 +167,9 @@ export function buildOverviewTree(
   })
 
   // Orphaned nodes (no matching plant) + models with no node.
-  const orphanNodes = nodes.filter(n => !plantIds.has(n.planId)).map(buildNode)
+  const orphanNodes = equipmentList
+    .filter(n => !plantIds.has(n.planId))
+    .map(buildEquipment)
   const orphanModelRows: OverviewTreeModel[] = unassignedModels.map(m => ({
     id: m.id,
     name: m.name,
@@ -204,19 +209,19 @@ export function buildOverviewTree(
  * synthetic "Unassigned models" row. Drives the overview map hover card.
  */
 export function abnormalEquipment(
-  nodes: CanvasNode[],
+  equipmentList: CanvasNode[],
   models: AIModel[],
 ): OverviewTreeNode[] {
   return (
-    buildOverviewTree([], nodes, models)
+    buildOverviewTree([], equipmentList, models)
       .flatMap(p => p.nodes)
       // MODEL-SERVE-024-D02: Abnormal only — an alerting node, or one whose
       // model failed or raised a monitoring ALERT (both map to 'alarm').
       .filter(n => isAbnormal(n.status))
       .sort(
         (a, b) =>
-          (NODE_STATUS_PRIORITY[a.status] ?? 3) -
-          (NODE_STATUS_PRIORITY[b.status] ?? 3),
+          (EQUIPMENT_STATUS_PRIORITY[a.status] ?? 3) -
+          (EQUIPMENT_STATUS_PRIORITY[b.status] ?? 3),
       )
   )
 }
@@ -234,17 +239,19 @@ export interface FailedModelPath {
 // troubleshooting panel. Pure derivation — no I/O.
 export function failedModelPaths(
   plants: WorkspacePlant[],
-  nodes: CanvasNode[],
+  equipmentList: CanvasNode[],
   models: AIModel[],
 ): FailedModelPath[] {
   return failedDeploys(models).map(m => {
-    const node = nodes.find(n => n.id === m.nodesId) ?? null
-    const plant = node ? (plants.find(p => p.id === node.planId) ?? null) : null
+    const equipment = equipmentList.find(n => n.id === m.nodesId) ?? null
+    const plant = equipment
+      ? (plants.find(p => p.id === equipment.planId) ?? null)
+      : null
     return {
       modelId: m.id,
       modelName: m.name,
-      equipmentId: node?.id ?? null,
-      equipmentName: node?.data.name ?? null,
+      equipmentId: equipment?.id ?? null,
+      equipmentName: equipment?.data.name ?? null,
       plantId: plant?.id ?? null,
       plantName: plant?.name ?? null,
     }

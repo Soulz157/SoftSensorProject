@@ -13,7 +13,7 @@ import {
   mpNameAtom,
   mpDescriptionAtom,
   mpPlantIdAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
   mpTargetVariableAtom,
@@ -48,7 +48,7 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
   const setName = useSetAtom(mpNameAtom)
   const setDescription = useSetAtom(mpDescriptionAtom)
   const setPlantId = useSetAtom(mpPlantIdAtom)
-  const setNodeId = useSetAtom(mpNodeIdAtom)
+  const setEquipmentId = useSetAtom(mpEquipmentIdAtom)
   const setSelectedDataset = useSetAtom(mpSelectedDatasetAtom)
   const setAlgorithm = useSetAtom(mpAlgorithmAtom)
   const setTargetVariable = useSetAtom(mpTargetVariableAtom)
@@ -86,7 +86,7 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
       // New instance, new location — never carry the source's identity/target.
       setName('')
       setPlantId('')
-      setNodeId('')
+      setEquipmentId('')
       setDescription(config.description ?? '')
       setAlgorithm(config.algorithm)
       setTargetVariable(configTargets(config))
@@ -118,7 +118,7 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
       models,
       setName,
       setPlantId,
-      setNodeId,
+      setEquipmentId,
       setDescription,
       setSelectedDataset,
       setAlgorithm,

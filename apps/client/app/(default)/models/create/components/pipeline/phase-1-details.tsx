@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import type { WorkspacePlant } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
 import type { WizardMode } from '@/store/model-pipeline'
@@ -8,6 +9,8 @@ import { ModelMetadataSection } from '../model-metadata-section'
 import { DraftResumeSection } from './draft-resume-section'
 import { PresetPicker } from './preset-picker'
 import { DatasetPicker } from './dataset-picker'
+import { CreateDatasetDialog } from '@/app/(default)/data-studio/components/create-dataset-dialog'
+import { useModelCreateDatasetHandoff } from '@/hooks/dataset/use-model-create-dataset-handoff'
 
 interface Props {
   mode: WizardMode
@@ -15,9 +18,9 @@ interface Props {
   description: string
   workspaceId: string
   plantId: string
-  nodeId: string
+  equipmentId: string
   plants: WorkspacePlant[]
-  nodes: CanvasNode[]
+  equipmentList: CanvasNode[]
   plantsLoading: boolean
   nameConflict: boolean
   selectedDataset: SavedDataset | null
@@ -26,7 +29,7 @@ interface Props {
   onDescription: (v: string) => void
   onWorkspace: (id: string) => void
   onPlant: (id: string) => void
-  onNode: (id: string) => void
+  onEquipment: (id: string) => void
   onSelectDataset: (dataset: SavedDataset) => void
 }
 
@@ -54,6 +57,11 @@ export function Phase1Details({
   // means the same thing whichever one is asked (Jakob's Law — the two
   // should behave consistently, not just look alike).
   const dirty = props.name.trim() !== '' || selectedDataset !== null
+
+  // MODEL-FLOW-032. Create mode only: edit mode is a saved Model, and the
+  // return trip lands on `/models/create`, which would drop the edit.
+  const [createOpen, setCreateOpen] = useState(false)
+  const handOffToDataStudio = useModelCreateDatasetHandoff()
 
   return (
     <div className="space-y-5">
@@ -86,7 +94,32 @@ export function Phase1Details({
         workspaceId={props.workspaceId}
         selectedDataset={selectedDataset}
         onSelectDataset={onSelectDataset}
+        onCreateDataset={
+          mode === 'create' ? () => setCreateOpen(true) : undefined
+        }
       />
+
+      {mode === 'create' && (
+        <CreateDatasetDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          defaultWorkspaceId={props.workspaceId}
+          lockWorkspace
+          onConfirm={(name, description, workspaceId, sources) => {
+            setCreateOpen(false)
+            handOffToDataStudio(
+              {
+                name: props.name,
+                description: props.description,
+                workspaceId: props.workspaceId,
+                plantId: props.plantId,
+                nodeId: props.equipmentId,
+              },
+              { name, description, workspaceId, sources },
+            )
+          }}
+        />
+      )}
     </div>
   )
 }

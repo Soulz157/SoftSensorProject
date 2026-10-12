@@ -123,7 +123,9 @@ export function failedCountByWorkspace(
  * model failures into the node's visual status without re-filtering models.
  * Nodes with no failed models are absent from the result (treat as 0).
  */
-export function failedCountByNodeId(models: AIModel[]): Record<string, number> {
+export function failedCountByEquipmentId(
+  models: AIModel[],
+): Record<string, number> {
   const out: Record<string, number> = {}
   for (const m of failedDeploys(models)) {
     if (!m.nodesId) continue
@@ -160,7 +162,7 @@ export function hasMonitoringAlert(m: AIModel): boolean {
 
 /**
  * MODEL-SERVE-012. Count of MONITORING-axis alerts per `nodesId` — the twin
- * of `failedCountByNodeId` above, and the one that was missing.
+ * of `failedCountByEquipmentId` above, and the one that was missing.
  *
  * WHY IT IS A BUG THAT THIS DID NOT EXIST. The workspace level had both
  * rollups (`failedCountByWorkspace` + `monitoringCountByWorkspace`) and the
@@ -174,7 +176,7 @@ export function hasMonitoringAlert(m: AIModel): boolean {
  * Models with no `nodesId` are absent, same as the deploy twin: a model not
  * placed on a node has no dot to colour.
  */
-export function monitoringCountByNodeId(
+export function monitoringCountByEquipmentId(
   models: AIModel[],
 ): Record<string, number> {
   const out: Record<string, number> = {}
@@ -265,7 +267,7 @@ export function abnormalModelCountByWorkspace(
 }
 
 /** Abnormal models per `nodesId`; models not placed on a node are absent. */
-export function abnormalModelCountByNodeId(
+export function abnormalModelCountByEquipmentId(
   models: AIModel[],
 ): Record<string, number> {
   const out: Record<string, number> = {}

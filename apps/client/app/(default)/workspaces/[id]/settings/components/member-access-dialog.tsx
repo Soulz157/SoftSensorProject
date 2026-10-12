@@ -22,6 +22,8 @@ import {
 } from '@/components/ui/select'
 import { useUpdateMemberAccess } from '@/hooks/workspace/use-update-member-access'
 import {
+  ROLE_ACCESS_OPTIONS,
+  roleCanManageDatasets,
   WORKSPACE_PERMISSION_OPTIONS,
   WORKSPACE_ROLE_OPTIONS,
 } from '@/lib/workspace-access'
@@ -106,6 +108,37 @@ export function MemberAccessDialog({
               </SelectContent>
             </Select>
           </div>
+
+          <fieldset className="space-y-2" disabled>
+            <legend className="text-xs font-medium text-foreground">
+              Role access
+            </legend>
+            <p className="text-xs text-muted-foreground">
+              Comes with the role — change the role to change it.
+            </p>
+            <div className="space-y-1">
+              {ROLE_ACCESS_OPTIONS.map(o => (
+                <label
+                  key={o.key}
+                  className="flex cursor-not-allowed items-start gap-3 rounded-md px-2 py-2 opacity-60"
+                >
+                  <Checkbox
+                    checked={roleCanManageDatasets(role)}
+                    disabled
+                    className="mt-0.5"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm text-foreground">
+                      {o.label}
+                    </span>
+                    <span className="block text-xs text-muted-foreground">
+                      {o.description}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
 
           <fieldset className="space-y-2" disabled={!grantsApply || isSaving}>
             <legend className="text-xs font-medium text-foreground">

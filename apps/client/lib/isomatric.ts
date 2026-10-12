@@ -12,7 +12,7 @@ export interface ZoneItem {
   color?: string
 }
 
-export interface MappedNode {
+export interface MappedEquipment {
   node: CanvasNode
   isoX: number
   isoY: number
@@ -22,7 +22,7 @@ export interface ZoneLayoutData {
   zone: ZoneItem
   zoneWidth: number
   zoneHeight: number
-  mappedNodes: MappedNode[]
+  mappedEquipmentList: MappedEquipment[]
   floorPath: string
   labelX: number
   labelY: number
@@ -92,7 +92,7 @@ export function computeLayoutBoundingBox(
 
 export function calculateIsometricLayout(
   zones: ZoneItem[],
-  nodesByZone: Map<string, CanvasNode[]>,
+  equipmentListByZone: Map<string, CanvasNode[]>,
   CX: number,
   CY: number,
   zonesPerRow?: number,
@@ -106,21 +106,21 @@ export function calculateIsometricLayout(
   let rowMaxHeight = 0
 
   return zones.map((zone, index) => {
-    const zoneNodes = nodesByZone.get(zone.id) ?? []
-    const nodeCount = zoneNodes.length
+    const zoneEquipmentList = equipmentListByZone.get(zone.id) ?? []
+    const equipmentCount = zoneEquipmentList.length
 
     let zoneWidth = MIN_ZONE_SIZE
     let zoneHeight = MIN_ZONE_SIZE
-    let mappedNodes: MappedNode[] = []
+    let mappedEquipmentList: MappedEquipment[] = []
 
-    if (nodeCount > 0) {
-      const cols = Math.max(2, Math.ceil(Math.sqrt(nodeCount)))
-      const rows = Math.ceil(nodeCount / cols)
+    if (equipmentCount > 0) {
+      const cols = Math.max(2, Math.ceil(Math.sqrt(equipmentCount)))
+      const rows = Math.ceil(equipmentCount / cols)
 
       zoneWidth = Math.max(MIN_ZONE_SIZE, cols * GRID_SPACING + 40)
       zoneHeight = Math.max(MIN_ZONE_SIZE, rows * GRID_SPACING + 40)
 
-      mappedNodes = zoneNodes.map((node, i) => {
+      mappedEquipmentList = zoneEquipmentList.map((equipment, i) => {
         const col = i % cols
         const row = Math.floor(i / cols)
 
@@ -130,7 +130,7 @@ export function calculateIsometricLayout(
         const isoX = (localX - localY) * Math.cos(Math.PI / 6) + CX
         const isoY = (localX + localY) * Math.sin(Math.PI / 6) * 0.5 + CY
 
-        return { node, isoX, isoY }
+        return { node: equipment, isoX, isoY }
       })
     }
 
@@ -152,7 +152,7 @@ export function calculateIsometricLayout(
       zone,
       zoneWidth,
       zoneHeight,
-      mappedNodes,
+      mappedEquipmentList,
       floorPath,
       labelX,
       labelY,

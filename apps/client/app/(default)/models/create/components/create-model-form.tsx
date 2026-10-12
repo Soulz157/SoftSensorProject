@@ -37,9 +37,9 @@ export function CreateModelForm() {
     setDescription,
     changeWorkspace,
     changePlant,
-    setNodeId,
+    setEquipmentId,
     plants,
-    nodes,
+    equipmentList,
     plantsLoading,
     cancel,
   } = useCreateModel()
@@ -62,9 +62,9 @@ export function CreateModelForm() {
           description={form.description}
           workspaceId={form.workspaceId}
           plantId={form.plantId}
-          nodeId={form.nodeId}
+          equipmentId={form.equipmentId}
           plants={plants}
-          nodes={nodes}
+          equipmentList={equipmentList}
           plantsLoading={plantsLoading}
           nameConflict={nav.nameConflict}
           selectedDataset={nav.selectedDataset}
@@ -72,7 +72,7 @@ export function CreateModelForm() {
           onDescription={setDescription}
           onWorkspace={changeWorkspace}
           onPlant={changePlant}
-          onNode={setNodeId}
+          onEquipment={setEquipmentId}
           onSelectDataset={nav.setSelectedDataset}
         />
       )

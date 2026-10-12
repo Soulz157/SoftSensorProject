@@ -9,9 +9,9 @@ type State = {
   name: string
   workspaceId: string
   plantId: string
-  nodeId: string
+  equipmentId: string
   plants: WorkspacePlant[]
-  nodes: CanvasNode[]
+  equipmentList: CanvasNode[]
   isSubmitting: boolean
 }
 
@@ -22,7 +22,7 @@ type Action =
   | { type: 'FETCH_PLANTS_SUCCESS'; plants: WorkspacePlant[] }
   | { type: 'CHANGE_PLANT'; plantId: string }
   | { type: 'FETCH_NODES_SUCCESS'; nodes: CanvasNode[] }
-  | { type: 'CHANGE_NODE'; nodeId: string }
+  | { type: 'CHANGE_EQUIPMENT'; equipmentId: string }
   | { type: 'SUBMIT_START' }
   | { type: 'SUBMIT_FINISH' }
 
@@ -34,9 +34,9 @@ function reducer(state: State, action: Action): State {
         name: action.model?.name ?? '',
         workspaceId: action.model?.workspaceId ?? '',
         plantId: action.model?.nodes?.planId ?? '',
-        nodeId: action.model?.nodesId ?? '',
+        equipmentId: action.model?.nodesId ?? '',
         plants: action.model ? state.plants : [],
-        nodes: action.model ? state.nodes : [],
+        equipmentList: action.model ? state.equipmentList : [],
         isSubmitting: false,
       }
     case 'SET_NAME':
@@ -47,9 +47,9 @@ function reducer(state: State, action: Action): State {
         ...state,
         workspaceId: action.workspaceId,
         plantId: '',
-        nodeId: '',
+        equipmentId: '',
         plants: [],
-        nodes: [],
+        equipmentList: [],
       }
     case 'FETCH_PLANTS_SUCCESS':
       return { ...state, plants: action.plants }
@@ -58,14 +58,14 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         plantId: action.plantId,
-        nodeId: '',
-        nodes: [],
+        equipmentId: '',
+        equipmentList: [],
       }
     case 'FETCH_NODES_SUCCESS':
-      return { ...state, nodes: action.nodes }
+      return { ...state, equipmentList: action.nodes }
 
-    case 'CHANGE_NODE':
-      return { ...state, nodeId: action.nodeId }
+    case 'CHANGE_EQUIPMENT':
+      return { ...state, equipmentId: action.equipmentId }
 
     case 'SUBMIT_START':
       return { ...state, isSubmitting: true }
@@ -80,9 +80,9 @@ const initialState: State = {
   name: '',
   workspaceId: '',
   plantId: '',
-  nodeId: '',
+  equipmentId: '',
   plants: [],
-  nodes: [],
+  equipmentList: [],
   isSubmitting: false,
 }
 
@@ -158,12 +158,15 @@ export function useModelForm({
 
     dispatch({ type: 'SUBMIT_START' })
     try {
-      const payload = { name: state.name, nodeId: state.nodeId || undefined }
+      const payload = {
+        name: state.name,
+        nodeId: state.equipmentId || undefined,
+      }
 
       if (model) {
         await updateModel(model.id, {
           ...payload,
-          nodeId: state.nodeId || null,
+          nodeId: state.equipmentId || null,
         })
       } else {
         await createModel({ workspaceId: state.workspaceId, ...payload })
@@ -214,8 +217,11 @@ export function useModelForm({
         dispatch({ type: 'CHANGE_WORKSPACE', workspaceId: id }),
       handlePlantChange: (id: string) =>
         dispatch({ type: 'CHANGE_PLANT', plantId: id === 'none' ? '' : id }),
-      handleNodeChange: (id: string) =>
-        dispatch({ type: 'CHANGE_NODE', nodeId: id === 'none' ? '' : id }),
+      handleEquipmentChange: (id: string) =>
+        dispatch({
+          type: 'CHANGE_EQUIPMENT',
+          equipmentId: id === 'none' ? '' : id,
+        }),
       submitForm,
     },
   }

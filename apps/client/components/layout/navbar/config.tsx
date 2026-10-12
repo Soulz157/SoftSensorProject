@@ -24,18 +24,18 @@ export const searchSuggestions = {
       type: 'model',
     },
   ],
-  nodes: [
+  equipment: [
     {
       id: '1',
       name: 'CNC Machine A1',
       workspace: 'Acme Corporation',
-      type: 'node',
+      type: 'equipment',
     },
     {
       id: '2',
       name: 'Assembly Robot B2',
       workspace: 'Smart Factory Alpha',
-      type: 'node',
+      type: 'equipment',
     },
   ],
 }
