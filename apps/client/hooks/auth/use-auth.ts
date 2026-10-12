@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { signIn, signOut, useSession } from 'next-auth/react'
 import { toast } from 'sonner'
 import type { LoginValues } from '@/lib/auth-schemas'
+import { loginUrlWithCallback } from '@/lib/auth/safe-callback-url'
 
 export type LoginFormValues = LoginValues
 
@@ -19,7 +20,12 @@ export const useAuth = () => {
       toast.error('Your session expired', {
         description: 'Sign in again to continue.',
       })
-      signOut({ callbackUrl: '/login' })
+      // DS-LAKE-037: come back to this page (and its ?draftId=) after sign-in.
+      signOut({
+        redirectTo: loginUrlWithCallback(
+          window.location.pathname + window.location.search,
+        ),
+      })
     }
   }, [session?.error])
 

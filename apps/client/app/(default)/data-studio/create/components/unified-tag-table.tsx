@@ -898,7 +898,14 @@ export function UnifiedTagTable({ nav }: Props) {
             // Mapping lives in `presetRangeCandidatesFromDocument` — Step
             // 3.1's edit-mode-only Apply Preset button needs the identical
             // logic and shares this one implementation.
-            const rangeCandidates = presetRangeCandidatesFromDocument(document)
+            const remapped: Record<string, string> = {}
+            for (const check of comparison.checks) {
+              if (check.mappedTo) remapped[check.tag] = check.mappedTo
+            }
+            const rangeCandidates = presetRangeCandidatesFromDocument(
+              document,
+              remapped,
+            )
             setPresetRange(prev => [
               ...prev.filter(c => c.presetId !== document.preset_id),
               ...rangeCandidates,

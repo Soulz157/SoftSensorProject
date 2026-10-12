@@ -402,10 +402,23 @@ export class ArtifactCleanupAdminService
     const cutoff = new Date(
       Date.now() - env.CLEANUP_ACTIVE_EMPTY_MINUTES * 60_000,
     );
+    // DS-LAKE-037. A draft carrying a wizard snapshot is NOT "nothing
+    // expensive to lose": it holds the user's configuration. It gets the idle
+    // window instead, so someone who signs back in after a session expiry
+    // still finds it. A draft with no snapshot keeps the short window.
+    const snapshotCutoff = new Date(
+      Date.now() - env.CLEANUP_ACTIVE_IDLE_HOURS * 3_600_000,
+    );
     const where = {
       status: 'ACTIVE' as const,
-      updatedAt: { lt: cutoff },
       artifacts: { none: { objectReclaimedAt: null } },
+      OR: [
+        { wizardStateVersion: null, updatedAt: { lt: cutoff } },
+        {
+          wizardStateVersion: { not: null },
+          updatedAt: { lt: snapshotCutoff },
+        },
+      ],
     };
 
     if (dryRun) {

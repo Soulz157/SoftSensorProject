@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   Query,
   Res,
@@ -16,6 +17,8 @@ import { Users } from '@/common/decorators/user.decorator';
 import { DatasetDraftAuthorizedService } from './dataset-draft.authorized.service';
 import {
   CreateDraftDto,
+  ListDraftsQueryDto,
+  PatchDraftDto,
   ResplitDraftHoldoutDto,
   SaveDraftAsDatasetDto,
 } from './dto/dataset-draft.authorized.dto';
@@ -66,6 +69,26 @@ export class DatasetDraftAuthorizedController {
     return this.service.createDraftService(user, body);
   }
 
+  /**
+   * DS-LAKE-037. Declared BEFORE `@Get('/:id')` - Nest matches in declaration
+   * order, so a bare GET would otherwise never be reached.
+   */
+  @Get()
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "List the caller's resumable Dataset Creation drafts",
+    description:
+      'Create-mode drafts the caller started that carry a wizard snapshot: ' +
+      'ACTIVE ones, plus ABANDONED ones still inside the cleanup recovery ' +
+      'window. Summaries only - the snapshot itself is read with GET /:id.',
+  })
+  async listDraftsController(
+    @Users() user: Auth.UserPayload,
+    @Query() query: ListDraftsQueryDto,
+  ) {
+    return this.service.listResumableDraftsService(user, query);
+  }
+
   @Get('/:id')
   @HttpCode(200)
   @ApiOperation({ summary: 'Fetch a Dataset Creation draft' })
@@ -92,6 +115,22 @@ export class DatasetDraftAuthorizedController {
     @Param('datasetId') datasetId: string,
   ) {
     return this.service.resolveOrCreateEditDraftService(user, datasetId);
+  }
+
+  @Patch('/:id')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Save the wizard snapshot on a draft (DS-LAKE-037)',
+    description:
+      'Creator only. Refuses (409) once the draft has been saved. Also ' +
+      'revives an ABANDONED draft to ACTIVE and counts as a heartbeat.',
+  })
+  async patchDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: PatchDraftDto,
+  ) {
+    return this.service.patchDraftService(user, id, body);
   }
 
   @Post('/:id/abandon')

@@ -1,3 +1,4 @@
+import { env } from '@/config/env.config';
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- jest mocks are `any` by design */
 import { Test, TestingModule } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
@@ -149,7 +150,7 @@ describe('AuthAuthorizedService', () => {
       expect(ops).toHaveLength(2);
     });
 
-    it('TC-03: should call jwtService.sign with correct user fields and expiresIn 15m', async () => {
+    it('TC-03: should call jwtService.sign with correct user fields and the configured access expiry', async () => {
       // Arrange
       const user = buildUser({
         firstName: 'Jane',
@@ -174,7 +175,7 @@ describe('AuthAuthorizedService', () => {
           company: user.company,
           role: user.role,
         },
-        { expiresIn: '15m' },
+        { expiresIn: env.JWT_ACCESS_EXPIRES },
       );
     });
 

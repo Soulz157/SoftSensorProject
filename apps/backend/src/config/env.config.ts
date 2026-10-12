@@ -1,9 +1,33 @@
+import type { JwtSignOptions } from '@nestjs/jwt';
+
+type JwtExpiry = Extract<NonNullable<JwtSignOptions['expiresIn']>, string>;
+
+const JWT_EXPIRY_RE =
+  /^\d+(\.\d+)? ?(years?|yrs?|y|weeks?|w|days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s|milliseconds?|msecs?|ms)?$/;
+
+function isJwtExpiry(value: string): value is JwtExpiry {
+  return JWT_EXPIRY_RE.test(value);
+}
+
+/** Access-token lifetime from JWT_ACCESS_EXPIRES (e.g. "30m", "1h"),
+ * defaulting to 30 minutes. A malformed value fails at boot rather than at
+ * the first login, where jsonwebtoken would throw on every sign. */
+function accessTokenExpiry(raw: string | undefined): JwtExpiry {
+  const value = raw?.trim() || '30m';
+  if (!isJwtExpiry(value)) {
+    throw new Error(
+      `JWT_ACCESS_EXPIRES="${value}" is not a duration like "30m" or "1h".`,
+    );
+  }
+  return value;
+}
+
 export const env = {
   JWT_SECRET: process.env.JWT_SECRET!,
   JWT_ACCESS_SECRET: process.env.JWT_ACCESS_SECRET!,
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET!,
   JWT_REFRESH_EXPIRES_IN: process.env.JWT_REFRESH_EXPIRES_IN!,
-  JWT_ACCESS_EXPIRES: process.env.JWT_ACCESS_EXPIRES!,
+  JWT_ACCESS_EXPIRES: accessTokenExpiry(process.env.JWT_ACCESS_EXPIRES),
   JWT_REFRESH_EXPIRES: process.env.JWT_REFRESH_EXPIRES!,
   // Base URL of the FastAPI data-connector service (server-side only).
   PYTHON_API_URL: process.env.PYTHON_API_URL ?? 'http://localhost:8000',
@@ -119,10 +143,8 @@ export const env = {
 
   // MODEL-SERVE-002. Shared secret the apps/serving process presents to
   // reach the descriptor endpoints (`ServingTokenGuard`) — not a JWT,
-  // because JwtAccessStrategy's `validate()` carries an unconditional
-  // 100ms delay (strategies/jwt-access.strategy.ts) that has no business
-  // being on a path whose whole point is being bounded, and a serving
-  // process is not a logged-in user. No default: an unset token must fail
+  // because a serving process is not a logged-in user. No default: an
+  // unset token must fail
   // closed, never silently accept every bearer value.
   SERVING_API_TOKEN: process.env.SERVING_API_TOKEN,
 

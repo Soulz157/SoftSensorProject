@@ -13,6 +13,8 @@ import { useDatasetPipelineNav } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { useDatasetEditHydration } from '@/hooks/dataset/use-dataset-edit-hydration'
 import { useDatasetRowsRefetch } from '@/hooks/dataset/use-dataset-rows-refetch'
 import { useDatasetDraftHeartbeat } from '@/hooks/dataset/use-dataset-draft-heartbeat'
+import { useDatasetDraftResume } from '@/hooks/dataset/use-dataset-draft-resume'
+import { useDatasetDraftSync } from '@/hooks/dataset/use-dataset-draft-sync'
 import {
   dwFetchRequiredAtom,
   dwModeAtom,
@@ -63,6 +65,10 @@ export function WizardShell() {
   // able to fix it there, not only once Save has already refused.
   const rowsRefetch = useDatasetRowsRefetch(reloadEditRows)
   useDatasetDraftHeartbeat()
+  // DS-LAKE-037. Resume first, sync second: both only act in create mode, and
+  // sync does nothing until a draft exists or the user has left Step 1.
+  useDatasetDraftResume()
+  useDatasetDraftSync()
   const mode = useAtomValue(dwModeAtom)
   const rowSource = useAtomValue(dwRowSourceAtom)
   const syntheticReason = useAtomValue(dwSyntheticReasonAtom)

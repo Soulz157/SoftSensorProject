@@ -53,6 +53,27 @@ export interface DatasetDraft {
 }
 
 /**
+ * DS-LAKE-037. What `GET /:id` returns on top of the base draft. The snapshot
+ * fields are null unless the caller created the draft (`isCreator`), so a
+ * workspace member who opens someone else's `?draftId=` gets no configuration.
+ */
+export interface DatasetDraftDetail extends DatasetDraft {
+  isCreator: boolean
+  wizardState: Record<string, unknown> | null
+  wizardStateVersion: number | null
+}
+
+/** DS-LAKE-037. One row of the resume list - a summary, never the snapshot. */
+export interface ResumableDatasetDraft {
+  id: string
+  name: string | null
+  workspaceId: string
+  status: DatasetDraftStatus
+  updatedAt: string
+  currentStep: number | null
+}
+
+/**
  * DS-LAKE-024-T04. `resolveOrCreateForDataset`'s own response shape —
  * `rootValidationRowCount` is the edit draft's root BRONZE's own
  * `validationRowCount` (null = pristine, safe to re-split; non-null =
@@ -359,8 +380,36 @@ export const datasetDraftService = {
   }): Promise<ApiResponse<DatasetDraft>> =>
     fetchClient(base, { method: 'POST', body: JSON.stringify(body) }),
 
-  get: (draftId: string): Promise<ApiResponse<DatasetDraft>> =>
+  get: (draftId: string): Promise<ApiResponse<DatasetDraftDetail>> =>
     fetchClient(one(draftId), { method: 'GET' }),
+
+  /**
+   * DS-LAKE-037. The caller's resumable create-mode drafts - ACTIVE, plus
+   * ABANDONED ones still inside the server's recovery window.
+   */
+  listResumable: (
+    workspaceId?: string,
+  ): Promise<ApiResponse<ResumableDatasetDraft[]>> =>
+    fetchClient(
+      workspaceId
+        ? `${base}?workspaceId=${encodeURIComponent(workspaceId)}`
+        : base,
+      { method: 'GET' },
+    ),
+
+  /**
+   * DS-LAKE-037. Writes the wizard snapshot. Creator only; the server also
+   * revives an ABANDONED draft and counts the call as a heartbeat.
+   */
+  patch: (
+    draftId: string,
+    body: {
+      name?: string
+      wizardState: Record<string, unknown>
+      wizardStateVersion: number
+    },
+  ): Promise<ApiResponse<DatasetDraft>> =>
+    fetchClient(one(draftId), { method: 'PATCH', body: JSON.stringify(body) }),
 
   /**
    * DS-LAKE-024-T02. Resolve-or-create the edit-mode draft for a saved

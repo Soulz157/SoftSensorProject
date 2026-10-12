@@ -27,6 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useCsvMaterialize } from '@/hooks/dataset/use-csv-materialize'
 import { useDatasetStudioFetch } from '@/hooks/dataset/use-dataset-studio-fetch'
+import { useDatasetResumeRefetch } from '@/hooks/dataset/use-dataset-resume-refetch'
 import { useDatasetStudioPreview } from '@/hooks/dataset/use-dataset-studio-preview'
 import { useSourceConnectionVerify } from '@/hooks/dataset/use-source-connection-verify'
 import { ConnectionVerifyPanel } from './source-configs/connection-verify-panel'
@@ -100,6 +101,9 @@ export function Step2RawData({ nav }: Props) {
   const range = nav.timeRange
   const raw = useAtomValue(dwRawDatasetAtom)
   const fetch = useDatasetStudioFetch()
+  // DS-LAKE-037. After a draft resume, re-run this same fetch and then jump to
+  // the step the user left; a no-op in every other session.
+  useDatasetResumeRefetch(fetch, fetchTags, range)
   // All-CSV runs need no fetch — this materializes the uploaded file into the
   // raw dataset and settles the fetch state, so the step gate passes untouched.
   const csv = useCsvMaterialize()

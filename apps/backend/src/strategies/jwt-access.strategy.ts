@@ -17,8 +17,7 @@ export class JwtAccessStrategy extends PassportStrategy(
     });
   }
 
-  async validate(payload: JwtPayload) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  validate(payload: JwtPayload) {
     return { id: payload.id, role: payload.role };
   }
 }

@@ -1,4 +1,5 @@
 import { getSession, signOut } from 'next-auth/react'
+import { loginUrlWithCallback } from '@/lib/auth/safe-callback-url'
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL
 
@@ -61,7 +62,16 @@ export async function fetchClient(endpoint: string, options: RequestInit = {}) {
   })
 
   if (response.status === 401) {
-    signOut({ callbackUrl: '/login' })
+    // DS-LAKE-037: remember where the user was so signing in again returns
+    // them there (a half-built dataset wizard, say) instead of /overview.
+    signOut({
+      redirectTo:
+        typeof window === 'undefined'
+          ? '/login'
+          : loginUrlWithCallback(
+              window.location.pathname + window.location.search,
+            ),
+    })
     throw new Error('Session expired')
   }
 

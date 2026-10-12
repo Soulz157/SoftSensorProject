@@ -426,6 +426,12 @@ model DatasetDraft {
 
   editingDatasetId String?
 
+  // DS-LAKE-037. The wizard's configuration (never rows) so an interrupted
+  // create-mode session can be resumed. Version is a separate Int so list /
+  // sweep filters do not depend on Json null semantics.
+  wizardState        Json?
+  wizardStateVersion Int?
+
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
   createdAt   DateTime @default(now())

@@ -21,8 +21,9 @@ export class CreateModelDraftDto extends createZodDto(CreateModelDraftSchema) {}
 
 /**
  * All-optional — Step 2 PATCHes whichever fields changed, not the whole
- * config. This is a deliberate divergence from DatasetDraft, which has no
- * PATCH at all (see decisions.draft_persistence): a training container has
+ * config. This differs from DatasetDraft's PATCH (DS-LAKE-037), which
+ * writes a wizard snapshot rather than typed columns (see
+ * decisions.draft_persistence): a training container has
  * no browser and reads its spec from this row, so the row must be kept
  * current as the wizard's own config changes, not shipped once at the end.
  *

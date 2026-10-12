@@ -5,7 +5,7 @@
   "audit_document": "docs/DATASET_FLOW_AUDIT.md",
   "description": "Refactor the Dataset Creation Flow into a scalable Bronze/Silver/Gold/Final Lakehouse pipeline while keeping the existing five-step wizard UX intact. Every processing stage produces an immutable MinIO artifact with lineage and checksum. A Dataset Version is created ONLY at Save. MinIO is the single source of truth for rows. Large datasets are accessed through server-side metadata, pagination, bounded previews and virtualized frontend rendering; the browser must never materialize or clone the full dataset. Server-side Parquet querying is the default path for large artifacts. TimescaleDB remains a future serving layer reached through an asynchronous Loader seam.",
   "status": "in_progress",
-  "progress": 97,
+  "progress": 96,
   "supersedes": {
     "project": "Data Cleaning & Feature Engineering Service Pipeline — Slice 1",
     "version": "1.0.0",
@@ -4746,6 +4746,204 @@
           "description": "Live: save a dataset named 'Dataset 6 month — new data' in workspace 68ce2dfc and see the name message, not the retry message."
         }
       ]
+    },
+    {
+      "id": "DS-LAKE-037",
+      "title": "Wizard survives session expiry: the in-progress dataset is persisted on its DatasetDraft and the user returns to it after signing in again",
+      "priority": 37,
+      "status": "in_progress",
+      "progress": 88,
+      "dependencies": [],
+      "description": "Reported 2026-10-12: a user part-way through Create Dataset (e.g. Step 3.2 Data Cleaning, or any later step) whose session expires is sent to /login, and after signing in again the dataset is gone, so the whole wizard has to be redone. Two independent causes, both confirmed by reading the code (not yet reproduced live): (1) RETURN PATH IS LOST - both sign-out paths hardcode callbackUrl '/login', and even the proxy's own ?callbackUrl= is never honoured, because login() only calls router.refresh() and the proxy then sends any signed-in user on an auth path to /overview. (2) WIZARD STATE IS NOT DURABLE - every wizard input lives in the 74 in-memory dw* jotai atoms; the server-side DatasetDraft row holds only sourceIds + currentArtifactId, has no configuration and no current step, is created lazily (after the Step 2 fetch warm, or at the first Save Cleaned Tags), and is AVEVA-only. A full-page sign-out wipes the atoms, and nothing in the UI can find the orphaned draft again. Fix mirrors the already-shipped Model Creation pattern (ModelDraft config columns + debounced PATCH via useModelDraftSync + GET ?status=ACTIVE + ?draftId= resume via useModelDraftResume): give DatasetDraft a versioned wizardState snapshot, sync it, resume from it, and carry the wizard path + draftId through login. The six-step wizard UX does not change; Save remains the only DatasetVersion commit.",
+      "findings": [
+        "SIGN-OUT DROPS THE PATH: apps/client/lib/fetcher.ts:63-64 (any 401) and apps/client/hooks/auth/use-auth.ts:17-23 (session.error === 'RefreshTokenExpired') both call signOut({ callbackUrl: '/login' }).",
+        "LOGIN IGNORES callbackUrl: apps/client/proxy.ts:26-29 does set ?callbackUrl=<pathname> on a guest page load (pathname only - the query string, e.g. ?draftId=, is dropped). But use-auth.ts:26-41 login() calls signIn(..., { redirect: false }) then router.refresh(), and proxy.ts:33-34 redirects a signed-in user on an AUTH_PATH to /overview. login-form.tsx does not read callbackUrl. The Microsoft button hardcodes '/overview' (components/auth/microsoft-sign-in.tsx:15).",
+        "STATE IS MEMORY-ONLY: apps/client/store/dataset-studio.ts declares 74 dw* atoms (plain atom(), no atomWithStorage / sessionStorage / localStorage). Resets live at dataset-studio.ts ~677, ~769, ~837.",
+        "DRAFT ROW CARRIES NO CONFIG: packages/prisma/prisma/schema.prisma model DatasetDraft = { id, name?, workspaceId, sourceIds[], status, currentArtifactId?, savedDatasetId?, editingDatasetId?, createdById, timestamps }. Compare ModelDraft, which stores plantId/nodeId/datasetId/targetY/algorithm/hyperparameters/splitRatio.",
+        "DRAFT IS CREATED LATE AND AVEVA-ONLY: ensureDraftId (apps/client/hooks/dataset/dataset-draft-bronze.ts:74-91) is called from use-dataset-bronze-warm.ts (after the Step 2 fetch completes) and use-dataset-draft-pipeline.ts:140 (first server sync). It throws for a non-'aveva' source, so the CSV path never has a server draft.",
+        "NO LIST / PATCH ENDPOINT: dataset-draft.authorized.controller.ts exposes POST /, GET /:id, POST /for-dataset/:datasetId, POST /:id/abandon, POST /:id/touch, artifact/job routes and POST /:id/save. There is no GET / (list) and no PATCH /:id, unlike model-draft.authorized.controller.ts:61 (list) and :87 (patch).",
+        "SWEEP WOULD EAT A CONFIG-ONLY DRAFT: env.config.ts CLEANUP_ACTIVE_EMPTY_MINUTES = 15 (ACTIVE draft with zero live artifacts) and CLEANUP_ACTIVE_IDLE_HOURS = 6 (ACTIVE with artifacts, no heartbeat); CLEANUP_DRAFT_RECOVERY_HOURS = 168 keeps an ABANDONED draft's artifacts. use-dataset-draft-heartbeat.ts beats /touch every 60s only while the tab is visible - it stops the moment the user is bounced to /login.",
+        "REUSABLE HYDRATION EXISTS: apps/client/hooks/dataset/use-dataset-edit-hydration.ts already re-seeds the wizard from a saved dataset's pipelineConfig and artifact ids, and hooks/model/use-model-draft-resume.ts shows the reset-then-raw-setters pattern for a ?draftId= cold mount (project memory: hydrate with raw atom setters only)."
+      ],
+      "decisions": [
+        {
+          "id": "DS-LAKE-037-D01",
+          "decision": "CONFIRMED 2026-10-12. Persist the wizard on the existing DatasetDraft row (new nullable wizardState Json + wizardStateVersion Int), not in browser storage.",
+          "why": "Matches the project's own reversed decision for Model Creation (draft is a DB entity, not jotai) and survives a different device/browser. localStorage was considered and rejected: Set-valued atoms (dwSelectedTagKeysAtom) do not serialize as-is, dwRawDatasetAtom exceeds the storage quota, and a shared browser leaks one user's draft to the next unless the key carries the userId."
+        },
+        {
+          "id": "DS-LAKE-037-D02",
+          "decision": "PROPOSED. The snapshot holds CONFIGURATION ONLY - never rows. Excluded: dwRawDatasetAtom, dwCsvDatasetAtom, dwFeaturedDatasetAtom, preview samples, fetch state/progress, warm states, dwDraftSyncStateAtom, and UI-only atoms (hidden/focused tag, sidebar collapsed). Rows come back from the draft's artifacts (currentArtifactId / GOLD / feature artifact ids), which are already server-side.",
+          "why": "MinIO is the single source of truth for rows (global_definition_of_done); Postgres stores metadata and pointers only."
+        },
+        {
+          "id": "DS-LAKE-037-D03",
+          "decision": "PROPOSED. If the snapshot's artifacts have been reaped, resume keeps the configuration and lands on Step 2 with fetch required (re-fetch with the same tags/range), rather than failing the resume.",
+          "why": "Losing a re-fetchable artifact should cost one fetch, not the user's whole configuration."
+        },
+        {
+          "id": "DS-LAKE-037-D04",
+          "decision": "CONFIRMED 2026-10-12: (a) resume list includes ABANDONED drafts inside CLEANUP_DRAFT_RECOVERY_HOURS (168h); resume revives them to ACTIVE. CAVEAT: the sweep reclaims an idle ACTIVE draft's artifacts after CLEANUP_ACTIVE_IDLE_HOURS (6h) before auto-abandoning, so a resume after >6h restores settings + an automatic re-fetch, not cached server data. (b) CSV: settings only, user re-uploads the file. (c) create mode only; edit/retrain deferred.",
+          "why": "Each changes sweep semantics or adds storage cost, so it is the user's call, not a default."
+        },
+        {
+          "id": "DS-LAKE-037-D05",
+          "decision": "callbackUrl is accepted only as a same-origin relative path (starts with '/', not '//', no scheme), otherwise fall back to /overview.",
+          "why": "Honouring an arbitrary callbackUrl is an open redirect (docs/SECURITY.md)."
+        },
+        {
+          "id": "DS-LAKE-037-D06",
+          "decision": "The create-mode URL carries ?draftId=<id> (router.replace after the draft is created). Edit mode and retrain mode never write it.",
+          "why": "callbackUrl needs something to resume; edit mode also sets dwDraftIdAtom, so writing it there would walk an edit reload into create-resume."
+        },
+        {
+          "id": "DS-LAKE-037-D07",
+          "decision": "Explicit Discard (POST /:id/abandon) nulls wizardState; the sweep's auto-abandon keeps it.",
+          "why": "A discarded draft must not reappear in the resume list; an auto-abandoned one must stay revivable within the recovery window."
+        },
+        {
+          "id": "DS-LAKE-037-D08",
+          "decision": "Rows come back by re-running the Step 2 fetch with the restored tags/range/config, not by paging BRONZE back.",
+          "why": "Steps 3-6 gate on dwRawDatasetAtom; BRONZE excludes the holdout window and lacks the client-side constant overlay, so parity is unverified. BRONZE fast-restore is a follow-up."
+        },
+        {
+          "id": "DS-LAKE-037-D09",
+          "decision": "Only the draft's creator receives wizardState, may PATCH it, or may resume it.",
+          "why": "GET /:id is readable by any workspace member and a shared browser can hand one user's ?draftId= to another."
+        },
+        {
+          "id": "DS-LAKE-037-D10",
+          "decision": "A session with no PI (aveva) source keeps its snapshot draft id in datasetSnapshotDraftIdAtom, NEVER dwDraftIdAtom. A PI session uses dwDraftIdAtom (the row the bronze pipeline would create anyway). The atom is cleared when the wizard shell unmounts.",
+          "why": "~15 hooks (Step 6 save path, gold warm, validation, holdout resplit, cleaning commit) treat 'has a draft id' as 'uses the draft-first pipeline'. Setting it for a CSV dataset would flip every one of those branches for a flow that never used them. Found by advisor review before any live run."
+        },
+        {
+          "id": "DS-LAKE-037-D11",
+          "decision": "Resume drops cleanedTags and featureArtifactStamp, keeps cleaningPipelines/cleaningTags, and pulls a saved Step 5/6 back to Step 4 (planResume in lib/dataset-wizard-snapshot.ts).",
+          "why": "Those two fields are claims about SERVER artifacts that resume does not restore (it builds a fresh BRONZE). Restoring them lets the UI say 'cleaned' about data that is not, and Step 6 would save the uncleaned artifact. Landing on Step 4 re-runs the feature warm; re-committing cleaning is one click per batch."
+        },
+        {
+          "id": "DS-LAKE-037-D12",
+          "decision": "Only a PI config's non-secret fields are snapshotted from dwSourceFetchConfigsAtom; every other source's config is omitted and reseeded by Step 2's mount effect from the live source. The PI userName is restored from the live source.",
+          "why": "The store's DataSourceConfig is a union: CSVConfig.rows is row data, SQLConfig.connectionString and InfluxConfig.token are credentials, RestApiConfig.headers can hold a bearer token, PIConfig has an optional password. docs/SECURITY.md named by CLAUDE.md does not exist in the repo."
+        },
+        {
+          "id": "DS-LAKE-037-D13",
+          "decision": "WIZARD_STATE_MAX_BYTES is 1 MiB (was 256 KiB in the draft plan). Sync failures are console.warn'd, not silent.",
+          "why": "Per-tag cleaning pipelines for a few hundred tags can approach 256 KiB, and a rejected PATCH would leave resume quietly never working. The backend body limit is 50 MiB."
+        }
+      ],
+      "out_of_scope": [
+        "POSSIBLE PREMATURE LOGOUT (hypothesis, unverified): auth.authorized.service.ts:136 deletes the old refresh token immediately on rotation with no grace window, and lib/auth/index.ts:139-168 refreshes inside the NextAuth jwt callback. fetcher.ts already single-flights getSession() within one tab, but a second tab or a concurrent useSession refetch could present the already-rotated token and get 'RefreshTokenExpired' long before JWT_REFRESH_EXPIRES_IN (7d). Repro idea: JWT_ACCESS_EXPIRES=2m, two tabs on Step 3 EDA, watch for two /auth/refresh calls with the same token. If confirmed, file it as its own auth feature (grace window or cross-tab lock) - it is not a dataset-flow change.",
+        "Saving a Dataset row before Save - Save stays the only DatasetVersion commit."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-037-T01",
+          "title": "Schema: DatasetDraft.wizardState Json? + wizardStateVersion Int?",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Hand-written migration (generate SQL with prisma migrate diff, apply by hand - never run migrate dev against this DB; check the column does not already exist). Then pnpm build in packages/prisma, since the backend compiles against dist.",
+          "result": "Done 2026-10-12. DatasetDraft.wizardState Json? + wizardStateVersion Int? in schema.prisma; hand-written additive migration 20261012152852_ds_lake_037_draft_wizard_state. Applied by hand to the LOCAL dev DB (docker softsensorproject-db-1 / soft_sensor_db, user-confirmed; 90 existing drafts, none touched, columns verified jsonb/integer). NOT recorded in _prisma_migrations, matching the 4 other hand-applied migrations (87 recorded vs 91 dirs) - run `migrate resolve --applied` only if the team starts recording. pnpm build in packages/prisma done. CORRECTION to the plan: the active DB is local Docker Postgres; the Supabase URLs in .env are commented out and DIRECT_URL is unset."
+        },
+        {
+          "id": "DS-LAKE-037-T02",
+          "title": "Backend: PATCH /:id (wizardState + name) and GET / (list) on dataset-draft",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Mirror model-draft: declare GET / before GET /:id; list scoped to the caller (createdById) and workspace, filter by status, newest updatedAt first, returns id/name/workspaceId/status/updatedAt/current step from the snapshot - never the full snapshot. PATCH refuses (409, AppException) once SAVED; validates wizardStateVersion and a byte cap on wizardState in the DTO; bumps updatedAt so it doubles as a heartbeat. Business logic in the service; controller stays thin.",
+          "result": "Done 2026-10-12. GET /authorized/dataset-drafts (listResumableDraftsService: caller's own, editingDatasetId null, wizardStateVersion set, ACTIVE or ABANDONED inside CLEANUP_DRAFT_RECOVERY_HOURS, summaries only incl. currentStep), PATCH /:id (patchDraftService: 403 non-creator, 409 SAVED, revives ABANDONED->ACTIVE, 256KB cap in PatchDraftSchema), GET /:id now returns isCreator and withholds wizardState/wizardStateVersion from non-creators, abandon nulls the snapshot (D07). model-draft DTO comment corrected."
+        },
+        {
+          "id": "DS-LAKE-037-T03",
+          "title": "Sweep: a draft with a wizardState is not 'empty'",
+          "status": "completed",
+          "progress": 100,
+          "detail": "artifact-cleanup-eligibility: an ACTIVE draft with no live artifact but a non-null wizardState moves to the CLEANUP_ACTIVE_IDLE_HOURS tier instead of CLEANUP_ACTIVE_EMPTY_MINUTES, so a user who logs back in after 20 minutes still finds it. Apply whatever D04(a) decides for ABANDONED drafts.",
+          "result": "Done 2026-10-12. autoAbandonEmptyActiveDrafts: OR of {no snapshot: CLEANUP_ACTIVE_EMPTY_MINUTES} and {snapshot: CLEANUP_ACTIVE_IDLE_HOURS}. artifact-cleanup-eligibility.ts untouched (the 6h artifact reclaim is unchanged, which is the documented D04 caveat)."
+        },
+        {
+          "id": "DS-LAKE-037-T04",
+          "title": "lib: pure snapshot serializer / deserializer with version",
+          "status": "completed",
+          "progress": 100,
+          "detail": "lib/dataset-wizard-snapshot.ts: buildWizardSnapshot(values) -> plain JSON (Set -> array, Date -> ISO) and parseWizardSnapshot(json, version) -> typed values or a typed 'incompatible' result. Covers the config atoms named in D02's complement: name, description, workspaceId, selected source ids, selected/removed/edited/inserted tags, tag constants/units/overrides, preset range, fetch tags, time range, custom date range/interval, holdout range, source fetch configs, fetch config, feature configs/preset, target tag, SDTA presets, EDA window, crop range, value crop/clip, exclusions, conditional/statistical rules, cleaning pipelines/tags, cleaned tags, selected tag keys, selected columns, scaler configs, draft/gold/feature artifact ids + feature artifact stamp, current step, highest unlocked. Colocated round-trip tests.",
+          "result": "Done 2026-10-12. lib/dataset-wizard-snapshot.ts (WizardSnapshotValues typed off the atoms via ExtractAtomValue, buildWizardSnapshot, parseWizardSnapshot with per-field guards + version, clampStep) and hooks/dataset/dataset-wizard-snapshot-atoms.ts (read/write/subscribe registry over the jotai store, raw setters only). Deviation from the task text: draft/gold/feature artifact ids are NOT in the snapshot - resume leaves them null so the bronze warm builds a fresh BRONZE under the same draft (always correct, even when the old artifact was reclaimed). 6 + 3 test cases. HARDENED 2026-10-12 after advisor review: sanitizeSourceFetchConfigs/restoreSourceConfigs (D12) and planResume (D11) added; lib test now 11 cases."
+        },
+        {
+          "id": "DS-LAKE-037-T05",
+          "title": "Client: create the draft at Step 1 and sync the snapshot (useDatasetDraftSync)",
+          "status": "in_progress",
+          "progress": 75,
+          "detail": "ensureDraftId is called when the user leaves Step 1, not first at the Step 2 warm; per D04(b), a non-AVEVA source gets a config-only draft instead of a throw (the BRONZE path keeps its AVEVA guard). New hooks/dataset/use-dataset-draft-sync.ts: debounced PATCH (same 600ms + flush() shape as useModelDraftSync) whenever a snapshotted atom changes; silent failure like the heartbeat. Mounted from wizard-shell only.",
+          "result": "Implemented 2026-10-12, unit-tested (use-dataset-draft-sync.test.tsx, 5 cases), NOT live-verified. ensureWizardDraftId (shares inFlightDrafts with ensureDraftId); useDatasetDraftSync: store.sub on the snapshot atoms, 600ms debounce, serialised writes, create-mode only, skipped for retrain, draft created on leaving Step 1, router.replace keeps other query params, console.warn on failure, resume-target override so the parked Step 2 never overwrites the saved step. D10: PI session -> dwDraftIdAtom, otherwise datasetSnapshotDraftIdAtom (tested: a CSV session leaves dwDraftIdAtom null). Mounted in wizard-shell.tsx. OPEN: whether a CSV connection is a real DataSource row with a UUID is unverified against a live CSV dataset - if not, the CSV draft create 400s (now logged) and CSV datasets do not resume. PI regression risk to check live: the draft id now appears when leaving Step 1 instead of after the Step 2 bronze warm; readers pair it with artifact ids (feature-preview, gold warm, validation, cleaning commit) but holdout-resplit only guards on draftId."
+        },
+        {
+          "id": "DS-LAKE-037-T06",
+          "title": "Client: ?draftId= resume (useDatasetDraftResume)",
+          "status": "in_progress",
+          "progress": 75,
+          "detail": "New hooks/dataset/use-dataset-draft-resume.ts: GET the draft, reset the wizard, then hydrate with raw atom setters only (never the action atoms that reset downstream state), re-point artifact ids, set current step / highest unlocked. Reuse use-dataset-edit-hydration.ts pieces where they fit. Artifact gone -> D03 fallback. Incompatible snapshot version -> toast + start at Step 1 with sources preselected.",
+          "result": "Implemented 2026-10-12, unit-tested (use-dataset-draft-resume.test.tsx, 5 cases), NOT live-verified. useDatasetDraftResume: GET, refuse unless isCreator / not SAVED / not edit / readable snapshot, initDatasetWizardAtom reset THEN raw-setter hydrate through planResume (D11), sources re-resolved from ids, PI -> park on Step 2 with datasetResumeTargetAtom, CSV -> Step 1 + re-upload toast (D10 slot). useDatasetResumeRefetch (step-2-raw-data.tsx) re-runs the same fetch.retry and releases the saved step when it lands; the target is kept on error so Retry still ends on the right step."
+        },
+        {
+          "id": "DS-LAKE-037-T07",
+          "title": "Auth: carry the wizard path + draftId through login",
+          "status": "in_progress",
+          "progress": 75,
+          "detail": "fetcher.ts 401 and use-auth.ts RefreshTokenExpired pass callbackUrl = /login?callbackUrl=<current path + search>. Do NOT flush the draft sync before signOut: that PATCH would carry the same expired token and fail with 401. Use signOut({ redirectTo }) - callbackUrl is deprecated in next-auth 5.0.0-beta.31. login() and login-form honour a safe callbackUrl (D05); proxy.ts does not override it with /overview. COORDINATE FIRST: fetcher.ts / use-auth.ts / proxy.ts neighbours (backend auth services, env.config.ts) carry uncommitted changes from another session as of 2026-10-12 - check git status before editing.",
+          "result": "Implemented 2026-10-12, unit-tested for the guard only, NOT live-verified. lib/auth/safe-callback-url.ts (safeCallbackUrl + loginUrlWithCallback, 13 cases); fetcher.ts 401 and use-auth.ts RefreshTokenExpired now signOut({ redirectTo: /login?callbackUrl=<path+search> }); proxy.ts keeps the query string in callbackUrl and sends a signed-in user on an auth path to safeCallbackUrl(callbackUrl) ?? /overview - this one change also covers password login (router.refresh() on /login) so use-auth login() and login-form are unchanged; Microsoft button passes the safe callback. No flush-before-signOut (D-fix). None of these files were modified by the other session."
+        },
+        {
+          "id": "DS-LAKE-037-T08",
+          "title": "UI: 'Resume unfinished dataset' entry on Data Studio",
+          "status": "in_progress",
+          "progress": 80,
+          "detail": "Data Studio list shows the caller's resumable drafts (name, last edited, step) with Resume (navigates to /data-studio/create?draftId=) and Discard (POST /:id/abandon). Follow DESIGN_SYSTEM / DESIGN.md; no red/amber (status-color reservation).",
+          "result": "Implemented 2026-10-12, component-tested (4 cases), NOT live-verified. useResumableDatasetDrafts + DatasetDraftResumeSection rendered above DatasetsTab on /datasets (the /data-studio route redirects there): name, workspace, Step N of 6, edited-ago, 'data will be fetched again' for ABANDONED, Resume (-> /data-studio/create?draftId=) and a confirmed Discard (abandon)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A user who is signed out by a 401 or by RefreshTokenExpired while on any Create Dataset step lands back on that wizard, at that step, with the same configuration, after signing in again.",
+        "Reopening via 'Resume unfinished dataset' on Data Studio restores the same state, including from another browser.",
+        "No step before Save creates a Dataset or DatasetVersion row; Save remains the only commit.",
+        "The snapshot never contains row data.",
+        "A callbackUrl that is not a same-origin relative path is ignored.",
+        "If the draft's artifacts have been reaped, resume keeps the configuration and asks for a re-fetch instead of failing.",
+        "The six-step wizard (labels, navigation gating, edit-mode landing step) is unchanged."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-037-V01",
+          "status": "completed",
+          "description": "Unit: snapshot round-trip (Set, Date, nested pipelines) and an incompatible-version result.",
+          "result": "PASS - lib/dataset-wizard-snapshot.test.ts (11), dataset-wizard-snapshot-atoms.test.ts (3, real jotai store), use-dataset-draft-sync.test.tsx (5), use-dataset-draft-resume.test.tsx (5): round-trip, version/shape refusal, no rows, no secrets in source configs, planResume drops cleanedTags/stamp and pulls Step 5/6 back, CSV never sets dwDraftIdAtom, non-creator/SAVED/old-version refused."
+        },
+        {
+          "id": "DS-LAKE-037-V02",
+          "status": "completed",
+          "description": "Backend spec: PATCH refuses a SAVED draft (409) and an oversized snapshot; list returns only the caller's drafts and never the snapshot body.",
+          "result": "PASS - dataset-draft.authorized.service.spec.ts (6 new of 115): PATCH 403 non-creator / 409 SAVED / revive, GET withholds the snapshot from a non-creator, list scoping + summary-only, abandon drops the snapshot."
+        },
+        {
+          "id": "DS-LAKE-037-V03",
+          "status": "completed",
+          "description": "Unit: callbackUrl guard rejects 'https://evil', '//evil', 'javascript:' and accepts '/data-studio/create?draftId=x'.",
+          "result": "PASS - lib/auth/safe-callback-url.test.ts (13): rejects https://evil, //evil, /\\evil, javascript:, control chars, auth pages; accepts /data-studio/create?draftId=x."
+        },
+        {
+          "id": "DS-LAKE-037-V04",
+          "status": "completed",
+          "description": "Unit: sweep eligibility keeps a config-only ACTIVE draft past 15 minutes.",
+          "result": "PASS - artifact-cleanup.admin.service.spec.ts: the sweep gives a snapshot draft the CLEANUP_ACTIVE_IDLE_HOURS window and asserts it is longer than the 15-minute one."
+        },
+        {
+          "id": "DS-LAKE-037-V05",
+          "status": "pending",
+          "description": "Live: set JWT_ACCESS_EXPIRES short and revoke the refresh token while on Step 3.2 with cleaning pipelines configured; sign in again and confirm the same step, tags, cutoffs and pipelines - and confirm no DatasetVersion row was created (SELECT on DatasetVersion before/after).",
+          "result": "NOT RUN. Needs the app running with a real login: expire the session on Step 3.2 and confirm the return trip. Also needs the CSV-source-is-a-UUID question in T05 answered."
+        }
+      ],
+      "progress_note": "2026-10-12: backend (T01-T03) done; client T04-T08 implemented and unit-tested (41 new client tests, 6 new backend cases, all green) but NOTHING user-visible is verified live (V05). An advisor review caught three defects before any live run - CSV sessions getting dwDraftIdAtom (D10), resume restoring claims about artifacts it does not restore (D11), and credentials/rows in the source-config snapshot (D12) - which is the reason to run a plain create-dataset flow for one CSV and one PI dataset (no expiry) before trusting this. Unrelated failures in the client suite at this point: models/create pipeline tests, model-detail-dialog, lib/feature-count-sweep, lib/monitoring formatAxisValue, store/__tests__/useAtom.test.ts (no suite). Backend: 9 existing scaffold specs fail (missing ./dto/workspace.admin.dto, bare 'should be defined' DI) plus the other session's auth.public.service.spec.ts."
     }
   ],
   "deferred": [

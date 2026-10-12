@@ -2,6 +2,7 @@
 
 import { signIn } from 'next-auth/react'
 import { Button } from '@/components/ui/button'
+import { safeCallbackUrl } from '@/lib/auth/safe-callback-url'
 
 /** The one configured OAuth provider (Microsoft Entra ID). The mark is
  *  drawn in `currentColor` so the button stays within the token palette. */
@@ -12,7 +13,15 @@ export function MicrosoftSignIn({ disabled }: { disabled?: boolean }) {
       variant="outline"
       className="h-9 w-full gap-2"
       disabled={disabled}
-      onClick={() => signIn('microsoft-entra-id', { callbackUrl: '/overview' })}
+      onClick={() =>
+        signIn('microsoft-entra-id', {
+          // DS-LAKE-037: return to the page the session expired on.
+          callbackUrl:
+            safeCallbackUrl(
+              new URLSearchParams(window.location.search).get('callbackUrl'),
+            ) ?? '/overview',
+        })
+      }
     >
       <svg
         viewBox="0 0 16 16"

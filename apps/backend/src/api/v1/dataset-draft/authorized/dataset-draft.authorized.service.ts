@@ -8,6 +8,7 @@ import {
   PYTHON_TIMEOUT,
 } from '@/lib/python-client';
 import { artifactKey, PIPELINE_VERSION_REORDERED } from '@/lib/artifact-keys';
+import { env } from '@/config/env.config';
 import { buildSourceBlock } from '@/lib/source-block';
 import {
   canManageDatasetRow,
@@ -43,6 +44,8 @@ import {
 } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 import {
   type CreateDraftDto,
+  type ListDraftsQueryDto,
+  type PatchDraftDto,
   type ResplitDraftHoldoutDto,
   type SaveDraftAsDatasetDto,
 } from './dto/dataset-draft.authorized.dto';
@@ -570,11 +573,125 @@ export class DatasetDraftAuthorizedService {
 
   async getDraftService(user: Auth.UserPayload, draftId: string) {
     const draft = await this.assertDraftAccess(draftId, user);
+    // DS-LAKE-037. The snapshot is the creator's own work-in-progress: GET is
+    // open to any workspace member (they can read the draft's artifacts), but
+    // the configuration is handed only to the user who made it, so a shared
+    // browser cannot turn someone else's ?draftId= into a resume.
+    const isCreator = draft.createdById === user.id;
     return {
       statusCode: 200,
       message: 'Dataset draft fetched successfully',
       type: 'SUCCESS' as const,
-      data: this.mapDraft(draft),
+      data: {
+        ...this.mapDraft(draft),
+        isCreator,
+        wizardState: isCreator ? draft.wizardState : null,
+        wizardStateVersion: isCreator ? draft.wizardStateVersion : null,
+      },
+    };
+  }
+
+  /**
+   * DS-LAKE-037. The caller's resumable create-mode drafts: ACTIVE ones, plus
+   * ABANDONED ones inside `CLEANUP_DRAFT_RECOVERY_HOURS` (the sweep abandons
+   * an idle draft but keeps its row, so it is still revivable). Summaries
+   * only - the snapshot can be large and is read with GET /:id.
+   */
+  async listResumableDraftsService(
+    user: Auth.UserPayload,
+    query: ListDraftsQueryDto,
+  ) {
+    if (query.workspaceId) {
+      await this.assertWorkspaceAccess(query.workspaceId, user);
+    }
+    const recoveryCutoff = new Date(
+      Date.now() - env.CLEANUP_DRAFT_RECOVERY_HOURS * 3_600_000,
+    );
+    const drafts = await this.prisma.datasetDraft.findMany({
+      where: {
+        createdById: user.id,
+        editingDatasetId: null,
+        wizardStateVersion: { not: null },
+        ...(query.workspaceId ? { workspaceId: query.workspaceId } : {}),
+        workspace: { deletedAt: null },
+        OR: [
+          { status: 'ACTIVE' },
+          { status: 'ABANDONED', updatedAt: { gt: recoveryCutoff } },
+        ],
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        workspaceId: true,
+        status: true,
+        updatedAt: true,
+        wizardState: true,
+      },
+    });
+    return {
+      statusCode: 200,
+      message: 'Dataset drafts fetched successfully',
+      type: 'SUCCESS' as const,
+      data: drafts.map((d) => {
+        const step =
+          d.wizardState &&
+          typeof d.wizardState === 'object' &&
+          !Array.isArray(d.wizardState)
+            ? (d.wizardState as Record<string, unknown>).currentStep
+            : null;
+        return {
+          id: d.id,
+          name: d.name,
+          workspaceId: d.workspaceId,
+          status: d.status,
+          updatedAt: d.updatedAt.toISOString(),
+          currentStep: typeof step === 'number' ? step : null,
+        };
+      }),
+    };
+  }
+
+  /**
+   * DS-LAKE-037. Writes the wizard snapshot. Creator only; refused once SAVED.
+   * An ABANDONED draft is revived to ACTIVE in the same write - that is how a
+   * draft the idle sweep abandoned comes back when its owner resumes it. The
+   * `@updatedAt` bump makes every PATCH a heartbeat too.
+   */
+  async patchDraftService(
+    user: Auth.UserPayload,
+    draftId: string,
+    dto: PatchDraftDto,
+  ) {
+    const draft = await this.assertDraftAccess(draftId, user);
+    if (draft.createdById !== user.id) {
+      throw new AppException({
+        statusCode: 403,
+        message: 'Only the creator of a dataset draft can change it',
+        type: 'ERROR',
+      });
+    }
+    if (draft.status === 'SAVED') {
+      throw new AppException({
+        statusCode: 409,
+        message: 'This dataset draft has already been saved',
+        type: 'ERROR',
+      });
+    }
+    const updated = await this.prisma.datasetDraft.update({
+      where: { id: draftId },
+      data: {
+        ...(dto.name ? { name: dto.name } : {}),
+        wizardState: dto.wizardState as PrismaTypes.InputJsonValue,
+        wizardStateVersion: dto.wizardStateVersion,
+        status: 'ACTIVE',
+      },
+    });
+    return {
+      statusCode: 200,
+      message: 'Dataset draft updated successfully',
+      type: 'SUCCESS' as const,
+      data: this.mapDraft(updated),
     };
   }
 
@@ -588,7 +705,14 @@ export class DatasetDraftAuthorizedService {
     await this.assertDraftAccess(draftId, user);
     const draft = await this.prisma.datasetDraft.update({
       where: { id: draftId },
-      data: { status: 'ABANDONED' },
+      // DS-LAKE-037-D07: an explicit Discard drops the snapshot so it never
+      // reappears in the resume list. The idle sweep's auto-abandon does not
+      // go through here and keeps it, which is what keeps that draft revivable.
+      data: {
+        status: 'ABANDONED',
+        wizardState: PrismaTypes.DbNull,
+        wizardStateVersion: null,
+      },
     });
     return {
       statusCode: 200,

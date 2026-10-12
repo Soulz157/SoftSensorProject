@@ -120,6 +120,8 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
       // filter matched" so tests that don't care about the heartbeat are
       // unaffected by its presence.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      // DS-LAKE-037: listResumableDraftsService.
+      findMany: jest.fn().mockResolvedValue([]),
     },
     dataSource: {
       findFirst: jest.fn().mockResolvedValue(SOURCE),
@@ -2774,6 +2776,167 @@ describe('DatasetDraftAuthorizedService — heartbeat (DS-LAKE-014-T04)', () => 
       AppException,
     );
     expect(prisma.datasetDraft.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('DatasetDraftAuthorizedService — wizard snapshot (DS-LAKE-037)', () => {
+  const SNAPSHOT = { currentStep: 3, name: 'Boiler' };
+  const OWN = {
+    ...DRAFT,
+    createdById: 'user-1',
+    editingDatasetId: null,
+    wizardState: SNAPSHOT,
+    wizardStateVersion: 1,
+  };
+
+  it('PATCH writes the snapshot + version, bumps nothing else, and revives the draft to ACTIVE', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValue({
+      ...OWN,
+      status: 'ABANDONED',
+    });
+    prisma.datasetDraft.update.mockResolvedValue({ ...OWN, status: 'ACTIVE' });
+    const { service } = makeService(prisma);
+
+    await service.patchDraftService(USER, 'draft-1', {
+      wizardState: SNAPSHOT,
+      wizardStateVersion: 1,
+    });
+
+    expect(prisma.datasetDraft.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: {
+        wizardState: SNAPSHOT,
+        wizardStateVersion: 1,
+        status: 'ACTIVE',
+      },
+    });
+  });
+
+  it('PATCH is refused (403) for a workspace member who did not create the draft', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValue({
+      ...OWN,
+      createdById: 'someone-else',
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.patchDraftService(USER, 'draft-1', {
+        wizardState: SNAPSHOT,
+        wizardStateVersion: 1,
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(prisma.datasetDraft.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH is refused (409) once the draft is SAVED', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValue({
+      ...OWN,
+      status: 'SAVED',
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.patchDraftService(USER, 'draft-1', {
+        wizardState: SNAPSHOT,
+        wizardStateVersion: 1,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(prisma.datasetDraft.update).not.toHaveBeenCalled();
+  });
+
+  it('GET hands the snapshot to the creator and withholds it from another member', async () => {
+    const prisma = buildPrisma();
+    const { service } = makeService(prisma);
+
+    prisma.datasetDraft.findFirst.mockResolvedValue(OWN);
+    const mine = await service.getDraftService(USER, 'draft-1');
+    expect(mine.data).toMatchObject({
+      isCreator: true,
+      wizardState: SNAPSHOT,
+      wizardStateVersion: 1,
+    });
+
+    prisma.datasetDraft.findFirst.mockResolvedValue({
+      ...OWN,
+      createdById: 'someone-else',
+    });
+    const theirs = await service.getDraftService(USER, 'draft-1');
+    expect(theirs.data).toMatchObject({
+      isCreator: false,
+      wizardState: null,
+      wizardStateVersion: null,
+    });
+  });
+
+  it("list is scoped to the caller's own create-mode drafts with a snapshot, and returns summaries without the snapshot body", async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findMany.mockResolvedValue([
+      {
+        id: 'draft-1',
+        name: 'Boiler',
+        workspaceId: 'ws-1',
+        status: 'ABANDONED',
+        updatedAt: new Date('2026-10-12T00:00:00Z'),
+        wizardState: { currentStep: 4, big: 'x'.repeat(100) },
+      },
+    ]);
+    const { service } = makeService(prisma);
+
+    const res = await service.listResumableDraftsService(USER, {});
+
+    const [findManyArgs] = prisma.datasetDraft.findMany.mock.calls[0] as [
+      { where: { OR: unknown } },
+    ];
+    const where = findManyArgs.where;
+    expect(where).toMatchObject({
+      createdById: 'user-1',
+      editingDatasetId: null,
+      wizardStateVersion: { not: null },
+    });
+    expect(where.OR).toEqual([
+      { status: 'ACTIVE' },
+      { status: 'ABANDONED', updatedAt: { gt: expect.any(Date) } },
+    ]);
+    expect(res.data).toEqual([
+      {
+        id: 'draft-1',
+        name: 'Boiler',
+        workspaceId: 'ws-1',
+        status: 'ABANDONED',
+        updatedAt: '2026-10-12T00:00:00.000Z',
+        currentStep: 4,
+      },
+    ]);
+  });
+
+  it('an explicit abandon drops the snapshot so a discarded draft never reappears', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValue(OWN);
+    prisma.datasetDraft.update.mockResolvedValue({
+      ...OWN,
+      status: 'ABANDONED',
+    });
+    const { service } = makeService(prisma);
+
+    await service.abandonDraftService(USER, 'draft-1');
+
+    const [updateArgs] = prisma.datasetDraft.update.mock.calls[0] as [
+      {
+        data: {
+          status: string;
+          wizardState: unknown;
+          wizardStateVersion: number | null;
+        };
+      },
+    ];
+    expect(updateArgs.data.status).toBe('ABANDONED');
+    expect(updateArgs.data.wizardStateVersion).toBeNull();
+    // Prisma.DbNull, a sentinel - anything but the snapshot itself.
+    expect(updateArgs.data.wizardState).toBeDefined();
+    expect(updateArgs.data.wizardState).not.toEqual(SNAPSHOT);
   });
 });
 

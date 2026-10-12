@@ -651,8 +651,14 @@ describe('DS-LAKE-014-T02: auto-abandon empty ACTIVE drafts', () => {
     expect(prisma.datasetDraft.count).toHaveBeenCalledWith({
       where: {
         status: 'ACTIVE',
-        updatedAt: { lt: expect.any(Date) },
         artifacts: { none: { objectReclaimedAt: null } },
+        OR: [
+          { wizardStateVersion: null, updatedAt: { lt: expect.any(Date) } },
+          {
+            wizardStateVersion: { not: null },
+            updatedAt: { lt: expect.any(Date) },
+          },
+        ],
       },
     });
     expect(prisma.datasetDraft.updateMany).not.toHaveBeenCalled();
@@ -673,8 +679,14 @@ describe('DS-LAKE-014-T02: auto-abandon empty ACTIVE drafts', () => {
     expect(prisma.datasetDraft.updateMany).toHaveBeenCalledWith({
       where: {
         status: 'ACTIVE',
-        updatedAt: { lt: expect.any(Date) },
         artifacts: { none: { objectReclaimedAt: null } },
+        OR: [
+          { wizardStateVersion: null, updatedAt: { lt: expect.any(Date) } },
+          {
+            wizardStateVersion: { not: null },
+            updatedAt: { lt: expect.any(Date) },
+          },
+        ],
       },
       data: { status: 'ABANDONED' },
     });
@@ -682,7 +694,7 @@ describe('DS-LAKE-014-T02: auto-abandon empty ACTIVE drafts', () => {
     expect(result.autoAbandoned).toBe(3);
   });
 
-  it('the cutoff is exactly CLEANUP_ACTIVE_EMPTY_MINUTES before now', async () => {
+  it('a draft with no snapshot uses CLEANUP_ACTIVE_EMPTY_MINUTES; one WITH a snapshot uses CLEANUP_ACTIVE_IDLE_HOURS (DS-LAKE-037)', async () => {
     const prisma = buildPrismaMock({
       artifacts: [],
       drafts: [],
@@ -693,11 +705,24 @@ describe('DS-LAKE-014-T02: auto-abandon empty ACTIVE drafts', () => {
     await service.run({ dryRun: true });
 
     const call = prisma.datasetDraft.count.mock.calls[0][0] as {
-      where: { updatedAt: { lt: Date } };
+      where: {
+        OR: [
+          { wizardStateVersion: null; updatedAt: { lt: Date } },
+          { wizardStateVersion: { not: null }; updatedAt: { lt: Date } },
+        ];
+      };
     };
-    const cutoff = call.where.updatedAt.lt;
-    expect(NOW.getTime() - cutoff.getTime()).toBe(
+    const [bare, withSnapshot] = call.where.OR;
+    expect(NOW.getTime() - bare.updatedAt.lt.getTime()).toBe(
       env.CLEANUP_ACTIVE_EMPTY_MINUTES * 60_000,
+    );
+    expect(NOW.getTime() - withSnapshot.updatedAt.lt.getTime()).toBe(
+      env.CLEANUP_ACTIVE_IDLE_HOURS * 3_600_000,
+    );
+    // The snapshot window must be the longer one, or a user who signs back in
+    // after a session expiry would still lose the draft inside 15 minutes.
+    expect(withSnapshot.updatedAt.lt.getTime()).toBeLessThan(
+      bare.updatedAt.lt.getTime(),
     );
   });
 });

@@ -91,6 +91,37 @@ export async function ensureDraftId(
   })
 }
 
+/**
+ * DS-LAKE-037. Like `ensureDraftId`, but for the wizard-resume snapshot rather
+ * than for BRONZE: it must also work for a source the BRONZE path cannot read
+ * (a CSV), because the snapshot is configuration only. Prefers the PI source
+ * when there is one, so the draft `ensureDraftId` later finds is the SAME row.
+ * Shares `inFlightDrafts`, so a snapshot create and a bronze-warm create
+ * racing on one workspace issue ONE POST.
+ */
+export async function ensureWizardDraftId(
+  ctx: Pick<BronzeContext, 'workspaceId' | 'selectedSources'> & {
+    name?: string
+  },
+  draftId: string | null,
+): Promise<string> {
+  if (draftId) return draftId
+  return dedup(inFlightDrafts, ctx.workspaceId, async () => {
+    const source =
+      ctx.selectedSources.find(s => s.type === 'aveva') ??
+      ctx.selectedSources[0]
+    if (!source) {
+      throw new Error('Select a data source before saving a resumable draft.')
+    }
+    const res = await datasetDraftService.create({
+      workspaceId: ctx.workspaceId,
+      sourceIds: [source.id],
+      name: ctx.name || undefined,
+    })
+    return res.data.id
+  })
+}
+
 export async function ensureBronzeArtifactId(
   ctx: BronzeContext,
   draftId: string,

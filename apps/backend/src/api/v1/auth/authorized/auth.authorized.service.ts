@@ -4,6 +4,7 @@ import { AppException } from '@softsensor/common';
 import { PrismaEnums, PrismaService } from '@softsensor/prisma';
 import { randomBytes } from 'crypto';
 import { REFRESH_TOKEN_TTL_MS } from '@/config/cookie.config';
+import { env } from '@/config/env.config';
 import * as argon2 from 'argon2';
 import {
   ChangePasswordRequestDto,
@@ -125,7 +126,7 @@ export class AuthAuthorizedService {
         company: user.company ?? '',
         role: user.role,
       },
-      { expiresIn: '15m' },
+      { expiresIn: env.JWT_ACCESS_EXPIRES },
     );
 
     const newRefreshToken = randomBytes(64).toString('hex');

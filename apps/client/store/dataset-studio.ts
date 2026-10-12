@@ -131,6 +131,10 @@ export interface PresetRangeCandidate {
  */
 export function presetRangeCandidatesFromDocument(
   document: PresetDocument,
+  /** Workbook tag -> the tag the engineer mapped it to in the apply modal.
+   * Without it a remapped tag's range names a column the dataset never has,
+   * and Step 3.2 drops it silently. */
+  overrides: Readonly<Record<string, string>> = {},
 ): PresetRangeCandidate[] {
   return document.features
     .filter(
@@ -139,8 +143,12 @@ export function presetRangeCandidatesFromDocument(
         f.range_parsed !== null &&
         f.range_parsed.kind !== 'none',
     )
-    .map(f => ({
-      tag: f.required_base_tags[0] ?? f.name,
+    .map(f => {
+      const sourceTag = f.required_base_tags[0] ?? f.name
+      return { f, tag: overrides[sourceTag] ?? sourceTag }
+    })
+    .map(({ f, tag }) => ({
+      tag,
       rowLabel: f.name,
       quotedRange: f.range,
       parsed: f.range_parsed!,

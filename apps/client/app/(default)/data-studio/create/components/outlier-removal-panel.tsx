@@ -310,11 +310,17 @@ function PresetRangeSection({
   targetTag: string | null
   presetRangeStale: boolean
 }) {
+  // Every candidate for a tag in the frame, the isolated tag's first. Not
+  // filtered to `scopeTag`: Step 3.2 always isolates one tag, so a scope
+  // filter showed one proposal at most and hid the whole section whenever the
+  // isolated tag (often the target, or a tag with a blank range) had none.
   const relevant = useMemo(
     () =>
-      candidates.filter(
-        c => tags.includes(c.tag) && (!scopeTag || c.tag === scopeTag),
-      ),
+      candidates
+        .filter(c => tags.includes(c.tag))
+        .sort(
+          (a, b) => Number(b.tag === scopeTag) - Number(a.tag === scopeTag),
+        ),
     [candidates, tags, scopeTag],
   )
 

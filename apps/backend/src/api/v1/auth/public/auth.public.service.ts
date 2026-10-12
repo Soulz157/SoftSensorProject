@@ -11,6 +11,7 @@ import {
 } from './dto/auth.public.dto';
 import { AppException } from '@softsensor/common';
 import { REFRESH_TOKEN_TTL_MS } from '@/config/cookie.config';
+import { env } from '@/config/env.config';
 import { MailAuthorizedService } from '../../mail/authorized/mail.authorized.service';
 
 interface MicrosoftGraphProfile {
@@ -120,7 +121,7 @@ export class AuthPublicService {
         company: user.company ?? '',
         role: user.role,
       },
-      { expiresIn: '15m' },
+      { expiresIn: env.JWT_ACCESS_EXPIRES },
     );
 
     const refreshToken = randomBytes(64).toString('hex');
@@ -262,7 +263,7 @@ export class AuthPublicService {
         company: user.company ?? '',
         role: user.role,
       },
-      { expiresIn: '15m' },
+      { expiresIn: env.JWT_ACCESS_EXPIRES },
     );
 
     const refreshToken = randomBytes(64).toString('hex');

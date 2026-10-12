@@ -104,6 +104,29 @@ describe('OutlierRemovalPanel — Preset range cutoff', () => {
     ).toBeNull()
   })
 
+  it('lists candidates for every frame tag even when Step 3.2 isolates a tag with none', () => {
+    // Step 3.2 always passes the isolated tag as scopeTag. Isolating the
+    // target (no Range control of its own) used to hide the whole section.
+    const other: PresetRangeCandidate = {
+      ...CLOSED,
+      tag: 'FIC505.PV',
+      rowLabel: 'FIC505.PV',
+      quotedRange: '45 - 95',
+      parsed: { kind: 'closed', min: 45, max: 95, unit: null, raw: '45 - 95' },
+    }
+    render(
+      <OutlierRemovalPanel
+        {...baseProps({ tags: ['TI-101', 'FIC505.PV', 's611water.lab'] })}
+        scopeTag="s611water.lab"
+        presetRangeCandidates={[CLOSED, other]}
+        tagUnits={{ 'TI-101': 'C' }}
+      />,
+    )
+    expect(screen.getByText('Preset range cutoff')).toBeInTheDocument()
+    expect(screen.getByText('105-120 C')).toBeInTheDocument()
+    expect(screen.getByText('45 - 95')).toBeInTheDocument()
+  })
+
   it('shows the quoted range verbatim and provenance for a matching-unit candidate', () => {
     render(
       <OutlierRemovalPanel

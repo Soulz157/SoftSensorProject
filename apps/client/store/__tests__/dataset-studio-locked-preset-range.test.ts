@@ -111,6 +111,14 @@ describe('presetRangeCandidatesFromDocument', () => {
 
     expect(presetRangeCandidatesFromDocument(document)).toEqual([])
   })
+
+  it('names the mapped tag when the engineer remapped a Missing tag in the modal', () => {
+    const [candidate] = presetRangeCandidatesFromDocument(doc(), {
+      'TI-101': 'TI-101-ALT',
+    })
+    expect(candidate?.tag).toBe('TI-101-ALT')
+    expect(candidate?.quotedRange).toBe('105-120 C')
+  })
 })
 
 describe('lockedPresetRangeCandidates', () => {

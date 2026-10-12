@@ -26,6 +26,33 @@ export const CreateDraftSchema = z.object({
 export class CreateDraftDto extends createZodDto(CreateDraftSchema) {}
 
 /**
+ * DS-LAKE-037. Upper bound on a serialized wizard snapshot. The snapshot is
+ * configuration only (tags, ranges, cleaning rules) - rows are never in it -
+ * so this is generous; it exists to stop a client writing an unbounded blob
+ * into a Json column.
+ */
+export const WIZARD_STATE_MAX_BYTES = 1024 * 1024;
+
+export const PatchDraftSchema = z.object({
+  name: z.string().min(1).optional(),
+  wizardState: z
+    .record(z.string(), z.unknown())
+    .refine(
+      (v) => JSON.stringify(v).length <= WIZARD_STATE_MAX_BYTES,
+      'wizardState is too large',
+    ),
+  wizardStateVersion: z.number().int().positive(),
+});
+
+export class PatchDraftDto extends createZodDto(PatchDraftSchema) {}
+
+export const ListDraftsQuerySchema = z.object({
+  workspaceId: z.string().uuid().optional(),
+});
+
+export class ListDraftsQueryDto extends createZodDto(ListDraftsQuerySchema) {}
+
+/**
  * DS-LAKE-009-T02. Deliberately its OWN schema, not `CreateDatasetSchema`
  * reused with an optional `draftId` bolted on — `workspaceId`/`sourceIds`
  * come from the draft itself and `rowCount`/`missingPct` come from the
