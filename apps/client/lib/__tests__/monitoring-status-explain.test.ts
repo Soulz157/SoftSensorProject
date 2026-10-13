@@ -6,7 +6,13 @@ import {
 } from '@/lib/monitoring-status-explain'
 import type { PsiReport } from '@/services/model-monitoring'
 
-const PSI_THRESHOLDS = { warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 }
+const PSI_THRESHOLDS = {
+  warn: 0.1,
+  critical: 0.25,
+  minSamplesPerBin: 20,
+  outOfRangeWarnPct: 5,
+  outOfRangeCriticalPct: 20,
+}
 
 function psiReport(overrides: Partial<PsiReport> = {}): PsiReport {
   return {
@@ -160,7 +166,13 @@ describe('explainPsiReport', () => {
       ],
       basis: {
         ...base.basis,
-        thresholds: { warn: 0.2, critical: 0.5, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
+        thresholds: {
+          warn: 0.2,
+          critical: 0.5,
+          minSamplesPerBin: 20,
+          outOfRangeWarnPct: 5,
+          outOfRangeCriticalPct: 20,
+        },
       },
     })
 

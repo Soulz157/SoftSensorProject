@@ -23,6 +23,21 @@ export interface PresetImportSummary {
   createdAt: string
 }
 
+/**
+ * One of the signed-in user's own workbook uploads (Feature Preset Manager's
+ * "Your workbook" picker). Only the caller's uploads are ever returned;
+ * `isLatest` marks their newest.
+ */
+export interface PresetUpload {
+  id: string
+  fileName: string
+  sheetCount: number
+  presetCount: number
+  hasSdta: boolean
+  createdAt: string
+  isLatest: boolean
+}
+
 export interface PresetListResult {
   /** Null when the workspace has never imported a workbook. */
   import: PresetImportSummary | null
@@ -59,6 +74,13 @@ export const featurePresetService = {
     fetchClient(
       `/api/v1/authorized/feature-preset?workspaceId=${encodeURIComponent(workspaceId)}` +
         (importId ? `&importId=${encodeURIComponent(importId)}` : ''),
+      { method: 'GET' },
+    ),
+
+  /** The caller's own workbook uploads in this workspace, newest first. */
+  listImports: (workspaceId: string): Promise<ApiResponse<PresetUpload[]>> =>
+    fetchClient(
+      `/api/v1/authorized/feature-preset/imports?workspaceId=${encodeURIComponent(workspaceId)}`,
       { method: 'GET' },
     ),
 

@@ -2,7 +2,13 @@ import { describe, it, expect } from 'vitest'
 import {
   reconcileRangeUnit,
   describeRangeCutoffSelection,
+  formatKeptWindow,
+  presetRangeBounds,
+  presetRangeWindow,
+  isPresetRangeEdited,
+  presetRangeEditError,
 } from './range-cutoff'
+import type { ConditionalRule } from '@/lib/precleanse'
 import type { Dataset } from '@/lib/preprocessing'
 
 describe('reconcileRangeUnit', () => {
@@ -82,6 +88,19 @@ describe('reconcileRangeUnit', () => {
     const res = reconcileRangeUnit({ min: 105, max: 120, unit: '°C' }, 'c')
     expect(res.verdict).toBe('match')
   })
+
+  it('reads the Unit column spellings ROC COLD uses (oC, T/H) as the usual units', () => {
+    for (const [quoted, tag] of [
+      ['oC', '°C'],
+      ['oC', 'degC'],
+      ['T/H', 't/h'],
+      ['T/H', 'tph'],
+    ] as const) {
+      expect(
+        reconcileRangeUnit({ min: 1, max: 2, unit: quoted }, tag).verdict,
+      ).toBe('match')
+    }
+  })
 })
 
 function row(
@@ -141,7 +160,7 @@ describe('describeRangeCutoffSelection', () => {
       targetTag: null,
     })
     expect(res.refusals).toHaveLength(1)
-    expect(res.refusals[0]).toMatch(/every row would be marked bad/i)
+    expect(res.refusals[0]).toMatch(/every row would lose a reading/i)
   })
 
   it('guard 2: warns that the labelled count cannot be checked before a target is chosen', () => {
@@ -166,5 +185,193 @@ describe('describeRangeCutoffSelection', () => {
     expect(res.remainingLabelledRows).toBe(1)
     expect(res.warnings).toHaveLength(1)
     expect(res.warnings[0]).toMatch(/only 1 labelled row/i)
+  })
+
+  it('DS-LAKE-038: a CLIP bound keeps every row, so it cannot shrink the training set', () => {
+    const res = describeRangeCutoffSelection({
+      dataset: DATASET,
+      activeBounds: [{ tag: 'TI-101', min: 1000, max: 2000, action: 'clip' }],
+      targetTag: 'LAB.lab',
+    })
+    // The same bound as a DROP is refused outright; clamped, nothing is lost.
+    expect(res.refusals).toEqual([])
+    expect(res.warnings).toEqual([])
+    expect(res.remainingRows).toBe(DATASET.rows.length)
+  })
+
+  it('DS-LAKE-038: only the EXCLUDE bounds count when clip and exclude are mixed', () => {
+    const res = describeRangeCutoffSelection({
+      dataset: DATASET,
+      activeBounds: [
+        { tag: 'TI-101', min: 105, max: 120, action: 'exclude' },
+        { tag: 'LAB.lab', min: 5, max: 6, action: 'clip' },
+      ],
+      targetTag: null,
+    })
+    expect(res.remainingRows).toBe(2) // t2 cut by the drop; the clip costs none
+  })
+
+  it('DS-LAKE-038: a bound with no action behaves as exclude (rules saved before Clip)', () => {
+    const res = describeRangeCutoffSelection({
+      dataset: DATASET,
+      activeBounds: BOUNDS,
+      targetTag: null,
+    })
+    expect(res.remainingRows).toBe(2)
+  })
+})
+
+describe('formatKeptWindow', () => {
+  it('reads a closed range as the window it keeps, with ≤ on both sides', () => {
+    expect(formatKeptWindow({ min: 30, max: 100 }, 'kg/h')).toBe(
+      '30 ≤ x ≤ 100 kg/h',
+    )
+  })
+
+  it('reads an open-ended range with one operator', () => {
+    expect(formatKeptWindow({ min: 2, max: null }, 'bar')).toBe('x ≥ 2 bar')
+    expect(formatKeptWindow({ min: null, max: 120 }, null)).toBe('x ≤ 120')
+  })
+
+  it('omits the unit when there is none', () => {
+    expect(formatKeptWindow({ min: 0.85, max: 1.2 }, null)).toBe(
+      '0.85 ≤ x ≤ 1.2',
+    )
+  })
+
+  it('tidies floating-point noise from a unit conversion', () => {
+    expect(formatKeptWindow({ min: 0.1 * 3, max: 100 }, 't/h')).toBe(
+      '0.3 ≤ x ≤ 100 t/h',
+    )
+  })
+
+  it('says so when there are no bounds', () => {
+    expect(formatKeptWindow({ min: null, max: null }, null)).toBe('no bounds')
+  })
+})
+
+describe('presetRangeBounds', () => {
+  const r = (
+    tag: string,
+    op: '<' | '>',
+    value: number,
+    action: ConditionalRule['action'],
+    over: Partial<ConditionalRule> = {},
+  ): ConditionalRule => ({
+    id: `${tag}:${op}`,
+    tag,
+    op,
+    value,
+    action,
+    enabled: true,
+    source: 'preset-range',
+    ...over,
+  })
+
+  it('joins a pair into one bound and carries the action', () => {
+    expect(
+      presetRangeBounds([r('A', '<', 30, 'clip'), r('A', '>', 100, 'clip')]),
+    ).toEqual([{ tag: 'A', min: 30, max: 100, action: 'clip' }])
+  })
+
+  it('keeps a mixed pair as two one-sided bounds', () => {
+    expect(
+      presetRangeBounds([r('A', '<', 30, 'clip'), r('A', '>', 100, 'drop')]),
+    ).toEqual([
+      { tag: 'A', min: 30, max: Infinity, action: 'clip' },
+      { tag: 'A', min: -Infinity, max: 100, action: 'exclude' },
+    ])
+  })
+
+  it('reads the legacy mark and drop actions as exclude and skips disabled / other-source rules', () => {
+    expect(
+      presetRangeBounds([
+        r('A', '<', 30, 'mark'),
+        r('B', '<', 1, 'drop', { enabled: false }),
+        r('C', '<', 1, 'drop', { source: 'sdta' }),
+        r('D', '<', 1, 'drop', { source: undefined }),
+      ]),
+    ).toEqual([{ tag: 'A', min: 30, max: Infinity, action: 'exclude' }])
+  })
+})
+
+describe('presetRangeWindow', () => {
+  const r = (op: '<' | '>', value: number, action: ConditionalRule['action']) =>
+    ({
+      id: op,
+      tag: 'A',
+      op,
+      value,
+      action,
+      enabled: true,
+      source: 'preset-range',
+    }) as ConditionalRule
+
+  it('reads one window from a pair, even with mixed actions', () => {
+    expect(
+      presetRangeWindow([r('<', 30, 'clip'), r('>', 100, 'drop')]),
+    ).toEqual({
+      min: 30,
+      max: 100,
+    })
+  })
+
+  it('leaves a missing side open', () => {
+    expect(presetRangeWindow([r('<', 2, 'drop')])).toEqual({
+      min: 2,
+      max: null,
+    })
+  })
+
+  it('ignores rules that are not preset ranges', () => {
+    expect(
+      presetRangeWindow([{ ...r('<', 2, 'drop'), source: 'sdta' }]),
+    ).toEqual({ min: null, max: null })
+  })
+})
+
+describe('isPresetRangeEdited', () => {
+  const rule = (value: number, original?: number) =>
+    ({
+      id: 'x',
+      tag: 'A',
+      op: '<',
+      value,
+      action: 'clip',
+      enabled: true,
+      source: 'preset-range',
+      presetRange: {
+        presetId: 'p',
+        configNo: 1,
+        quoted: '30-100',
+        unit: null,
+        original,
+      },
+    }) as ConditionalRule
+
+  it('is false while every bound still holds the preset value', () => {
+    expect(isPresetRangeEdited([rule(30, 30)])).toBe(false)
+  })
+
+  it('is true once a bound differs from the preset value', () => {
+    expect(isPresetRangeEdited([rule(25, 30)])).toBe(true)
+  })
+
+  it('treats rules saved before originals were recorded as unedited', () => {
+    expect(isPresetRangeEdited([rule(25)])).toBe(false)
+  })
+})
+
+describe('presetRangeEditError', () => {
+  it('accepts a closed or open-ended window', () => {
+    expect(presetRangeEditError(30, 100)).toBeNull()
+    expect(presetRangeEditError(null, 100)).toBeNull()
+    expect(presetRangeEditError(2, null)).toBeNull()
+  })
+
+  it('refuses low at or above high, and non-numbers', () => {
+    expect(presetRangeEditError(100, 30)).toMatch(/below high/)
+    expect(presetRangeEditError(50, 50)).toMatch(/below high/)
+    expect(presetRangeEditError(Number.NaN, 100)).toMatch(/number/)
   })
 })

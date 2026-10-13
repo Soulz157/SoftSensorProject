@@ -74,6 +74,11 @@ interface PresetCreateManyArgs {
 
 type TransactionCallback = (tx: unknown) => unknown;
 
+interface ImportFindManyArgs {
+  where: { workspaceId: string; createdById: string };
+  orderBy: { createdAt: 'asc' | 'desc' };
+}
+
 interface PrismaMock {
   workspace: {
     findFirst: jest.Mock<Promise<unknown>, [WorkspaceFindFirstArgs]>;
@@ -81,6 +86,7 @@ interface PrismaMock {
   featurePresetImport: {
     findFirst: jest.Mock<Promise<unknown>, [ImportFindFirstArgs]>;
     findUnique: jest.Mock<Promise<unknown>, [{ where: { id: string } }]>;
+    findMany: jest.Mock<Promise<unknown>, [ImportFindManyArgs]>;
     create: jest.Mock<unknown, [ImportCreateArgs]>;
   };
   featurePreset: {
@@ -159,6 +165,9 @@ describe('FeaturePresetAuthorizedService', () => {
       featurePresetImport: {
         findFirst: jest.fn<Promise<unknown>, [ImportFindFirstArgs]>(),
         findUnique: jest.fn<Promise<unknown>, [{ where: { id: string } }]>(),
+        findMany: jest
+          .fn<Promise<unknown>, [ImportFindManyArgs]>()
+          .mockResolvedValue([]),
         create: jest
           .fn<unknown, [ImportCreateArgs]>()
           .mockImplementation((args) => ({ ...args.data })),
@@ -325,6 +334,71 @@ describe('FeaturePresetAuthorizedService', () => {
 
     expect(result.data.import).toBeNull();
     expect(result.data.presets).toEqual([]);
+  });
+
+  // ── upload history ───────────────────────────────────────────────────────
+
+  describe('listImports', () => {
+    const row = (id: string) => ({
+      id,
+      fileName: `${id}.xlsx`,
+      sheetCount: 3,
+      presetCount: 7,
+      sdtaKey: id === 'imp-2' ? 'feature-presets/ws-1/imp-2/sdta.json' : null,
+      createdAt: new Date('2026-10-12T00:00:00Z'),
+    });
+
+    it("lists only the CALLER's uploads, newest first, flagging their latest", async () => {
+      prisma.featurePresetImport.findMany.mockResolvedValue([
+        row('imp-3'),
+        row('imp-2'),
+      ]);
+
+      const result = await service.listImports('ws-1', USER);
+
+      expect(prisma.featurePresetImport.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { workspaceId: 'ws-1', createdById: 'user-1' },
+          orderBy: { createdAt: 'desc' },
+        }),
+      );
+      expect(result.data).toEqual([
+        expect.objectContaining({
+          id: 'imp-3',
+          isLatest: true,
+          hasSdta: false,
+        }),
+        expect.objectContaining({
+          id: 'imp-2',
+          isLatest: false,
+          hasSdta: true,
+        }),
+      ]);
+    });
+
+    it('carries no uploader identity and never the storage key', async () => {
+      prisma.featurePresetImport.findMany.mockResolvedValue([row('imp-2')]);
+      const result = await service.listImports('ws-1', USER);
+      const wire = JSON.stringify(result.data);
+      expect(wire).not.toContain('sdta.json');
+      expect(wire).not.toContain('createdBy');
+      expect(wire).not.toContain('uploadedBy');
+    });
+
+    it('checks workspace access first (404 for an unreachable workspace)', async () => {
+      prisma.workspace.findFirst.mockResolvedValue(null);
+      await expect(service.listImports('ws-other', USER)).rejects.toMatchObject(
+        {
+          statusCode: 404,
+        },
+      );
+      expect(prisma.featurePresetImport.findMany).not.toHaveBeenCalled();
+    });
+
+    it('reports a user with no uploads as an empty list', async () => {
+      const result = await service.listImports('ws-1', USER);
+      expect(result.data).toEqual([]);
+    });
   });
 
   // ── SD&TA ────────────────────────────────────────────────────────────────

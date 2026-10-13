@@ -40,6 +40,7 @@ import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipelin
 import { CutOffSection } from './cutoff-section'
 import { datasetHealth } from '@/lib/feature-preset'
 import { SdtaPresetCard } from './sdta-preset-card'
+import { PresetRangeCard } from './preset-range-card'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
@@ -208,6 +209,16 @@ export function Step5DataCleaning({ nav }: Props) {
     () => base.tags.filter(t => t !== targetTag),
     [base.tags, targetTag],
   )
+  // DS-LAKE-038. The columns the committed artifact has: Step 4's warm applied
+  // `selectedColumns` server-side, but this step's `featured` frame is not
+  // pruned. A range may only name one of these or the commit is refused.
+  const committedTags = useMemo(
+    () =>
+      selectedColumns === null
+        ? featured.tags
+        : featured.tags.filter(t => selectedColumns.includes(t)),
+    [featured.tags, selectedColumns],
+  )
   // DS-LAKE-023: part of the recipe signature `commitCleaningScale` checks
   // against `dwFeatureArtifactStampAtom` before committing — see that
   // hook's own doc comment for why the holdout must be included.
@@ -300,6 +311,8 @@ export function Step5DataCleaning({ nav }: Props) {
       scalers: scalerConfigs,
       targetY: targetTag,
       holdout: holdoutRange,
+      conditionalRules,
+      availableTags: committedTags,
     })
     if (ok) nav.next()
   }
@@ -371,6 +384,25 @@ export function Step5DataCleaning({ nav }: Props) {
               nav.setConditionalRules(next)
               relock()
             }}
+          />
+          {/* DS-LAKE-038. The Preset range cutoff, moved up from the Outlier
+              Removal sidebar so it sits beside the SD&TA card instead of four
+              levels down. Same relock as the SD&TA card: a changed cut must be
+              re-committed before Step 6. */}
+          <PresetRangeCard
+            candidates={presetRangeCandidates}
+            stale={presetRangeStale}
+            tags={committedTags}
+            scopeTag={isolatedTag}
+            tagUnits={tagUnits}
+            previewDataset={cropped}
+            conditionalRules={conditionalRules}
+            onConditionalChange={next => {
+              nav.setConditionalRules(next)
+              relock()
+            }}
+            targetTag={targetTag}
+            editMode={isEditLocked}
           />
           {/* DS-LAKE-032-D06. Same atom as the sidebar's cleaning boxes, and
               the same candidates (`cleanableTags`: every tag but the target),
@@ -447,16 +479,13 @@ export function Step5DataCleaning({ nav }: Props) {
                 }
                 onClearExclusions={() => nav.setExclusions([])}
                 scopeTag={isolatedTag}
+                tagUnits={tagUnits}
                 breakdown={breakdown}
                 croppedDataset={cropped}
                 conditionalRules={conditionalRules}
                 statisticalRules={statisticalRules}
                 onConditionalChange={nav.setConditionalRules}
                 onStatisticalChange={nav.setStatisticalRules}
-                presetRangeCandidates={presetRangeCandidates}
-                presetRangeStale={presetRangeStale}
-                tagUnits={tagUnits}
-                targetTag={targetTag}
               />
             </div>
           ) : (

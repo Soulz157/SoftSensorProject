@@ -15,7 +15,6 @@ import type {
   PrecleanseRemoved,
   StatisticalRule,
 } from '@/lib/precleanse'
-import type { PresetRangeCandidate } from '@/store/dataset-studio'
 import { CutoffSummary } from './cutoff-summary'
 import { OutlierRemovalPanel } from './outlier-removal-panel'
 
@@ -38,14 +37,8 @@ interface Props {
   onConditionalChange: (rules: ConditionalRule[]) => void
   onStatisticalChange: (rules: StatisticalRule[]) => void
   scopeTag?: string
-  /** DS-LAKE-020: proposed range cutoffs from the applied feature preset. */
-  presetRangeCandidates?: PresetRangeCandidate[]
-  /** True when the applied preset predates range-cutoff support. */
-  presetRangeStale?: boolean
-  /** Per-tag engineering unit, for the T03 unit-reconciliation gate. */
+  /** DS-LAKE-038. Per-tag unit for the preset-range rows' window. */
   tagUnits?: Record<string, string | null>
-  /** Null until Step 4 — the T06 labelled-row guard cannot run without it. */
-  targetTag?: string | null
 }
 
 export function CutoffSidebar({
@@ -64,10 +57,7 @@ export function CutoffSidebar({
   onConditionalChange,
   onStatisticalChange,
   scopeTag,
-  presetRangeCandidates,
-  presetRangeStale,
   tagUnits,
-  targetTag,
 }: Props) {
   if (!isOpen) {
     return (
@@ -122,10 +112,7 @@ export function CutoffSidebar({
             onConditionalChange={onConditionalChange}
             onStatisticalChange={onStatisticalChange}
             scopeTag={scopeTag}
-            presetRangeCandidates={presetRangeCandidates}
-            presetRangeStale={presetRangeStale}
             tagUnits={tagUnits}
-            targetTag={targetTag}
           />
         </div>
       </ScrollArea>

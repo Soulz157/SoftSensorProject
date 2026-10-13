@@ -75,12 +75,34 @@ export interface ClipImpact {
  */
 export type OutlierAction = 'mark' | 'drop' | 'drop_row'
 
+/**
+ * DS-LAKE-038. A conditional rule may also CLAMP: `clip` sets a matching value
+ * to the rule's bound and touches nothing else (status and row survive). Only
+ * a preset-range rule offers it - hand-authored rules and statistical rules
+ * keep `OutlierAction`. Same semantics as the `clip` cleaning step, so the
+ * preview equals what the server's `clip` op writes.
+ */
+export type ConditionalAction = OutlierAction | 'clip'
+
+/**
+ * Whether Clip means anything for this rule: only a ONE-SIDED comparison
+ * (`<`, `<=`, `>`, `>=`) has a bound to clamp to. A Range rule (`lower`) and
+ * `==`/`!=` match readings with no single bound beyond them, so they can only
+ * Exclude. Used by `precleanse` and by the Conditional tab, which switches a
+ * rule to Exclude the moment it stops being clippable.
+ */
+export function conditionalRuleCanClip(
+  rule: Pick<ConditionalRule, 'op' | 'lower'>,
+): boolean {
+  return !rule.lower && rule.op !== '==' && rule.op !== '!='
+}
+
 export interface ConditionalRule {
   id: string
   tag: string
   op: CutoffOp
   value: number | ''
-  action: OutlierAction
+  action: ConditionalAction
   enabled: boolean
   /**
    * DS-LAKE-032-D09. Optional lower bound, turning the rule into an interval
@@ -106,6 +128,13 @@ export interface ConditionalRule {
     /** The range string exactly as the sheet quoted it, e.g. "105-120 C". */
     quoted: string
     unit: string | null
+    /**
+     * DS-LAKE-038. The preset's own value for THIS bound, kept when the rule
+     * is created so an edit made in the Outlier Removal panel can be shown
+     * as "Edited" (and reset) everywhere. Absent on rules saved before this
+     * existed - those read as unedited.
+     */
+    original?: number
   }
 }
 
@@ -647,13 +676,30 @@ function runPipeline(
       const cell = row.cells[rule.tag]
       if (!cell) continue
       if (!matchesConditionalRule(cell.value, rule)) continue
+      if (rule.action === 'clip') {
+        // A clamp removes nothing, so it is not counted as a removal. Only a
+        // one-sided comparison has a bound to clamp to.
+        if (conditionalRuleCanClip(rule)) cell.value = rule.value
+        continue
+      }
       if (cell.status === 'Good') counts.conditional++
-      if (rule.action === 'drop_row') {
+      if (rule.source === 'preset-range') {
+        // DS-LAKE-038. EVERY preset-range action other than `clip` is the
+        // Preset range card's "Exclude": the reading is marked Bad and keeps
+        // its value, exactly what the toolkit's Exclude Range does and what
+        // `toPresetRangeOperations` sends as `range_exclude`. That includes a
+        // legacy `drop`, so the preview never disagrees with the saved data.
+        cell.status = 'Bad'
+      } else if (rule.action === 'drop_row') {
         if (!dropRows.has(i)) counts.conditionalRows++
         dropRows.add(i)
       } else {
-        if (rule.action === 'drop') delete row.cells[rule.tag]
-        else cell.status = 'Bad'
+        // `mark`, and a hand-written condition's legacy `drop`: Exclude - the
+        // reading is marked Bad and KEEPS its value, the cleaning toolkit's
+        // Exclude (user decision 2026-10-12). `drop` used to delete the cell,
+        // which left it unimputable; conditions no longer offer that.
+        // Statistical rules keep their own Mark | Drop (handled above).
+        cell.status = 'Bad'
       }
     }
   }

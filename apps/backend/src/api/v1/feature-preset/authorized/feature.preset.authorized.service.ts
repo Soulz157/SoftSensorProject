@@ -229,6 +229,51 @@ export class FeaturePresetAuthorizedService {
   }
 
   /**
+   * The CALLER's own workbook uploads in this workspace, newest first - the
+   * Feature Preset Manager's "Your workbook" picker, so a user can go back to
+   * a template they uploaded.
+   *
+   * Scoped to the caller on purpose (user decision 2026-10-12): listing every
+   * teammate's upload made the picker hard to read. Teammates' templates stay
+   * reachable through `listPresets` with no `importId` (the workspace latest),
+   * which is what a user who has never uploaded still opens on.
+   *
+   * Metadata only (no preset rows). `isLatest` is the caller's newest upload,
+   * computed here so the client never has to guess from dates.
+   */
+  async listImports(workspaceId: string, user: Auth.UserPayload) {
+    await this.assertWorkspaceAccess(workspaceId, user);
+
+    const records = await this.prisma.featurePresetImport.findMany({
+      where: { workspaceId, createdById: user.id },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        fileName: true,
+        sheetCount: true,
+        presetCount: true,
+        sdtaKey: true,
+        createdAt: true,
+      },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Feature preset imports retrieved successfully',
+      type: 'SUCCESS' as const,
+      data: records.map((record, index) => ({
+        id: record.id,
+        fileName: record.fileName,
+        sheetCount: record.sheetCount,
+        presetCount: record.presetCount,
+        hasSdta: record.sdtaKey !== null,
+        createdAt: record.createdAt,
+        isLatest: index === 0,
+      })),
+    };
+  }
+
+  /**
    * The full stored document: target, features, equations, required tags.
    *
    * Proxied through the connector because NestJS deliberately holds no S3

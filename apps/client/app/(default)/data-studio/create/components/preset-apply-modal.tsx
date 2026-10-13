@@ -38,6 +38,7 @@ import {
 import { cn } from '@/lib/utils'
 import { dwWorkspaceIdAtom } from '@/store/dataset-studio'
 import { useFeaturePresets } from '@/hooks/dataset/use-feature-presets'
+import { PresetUploadSelect } from './preset-upload-select'
 import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
 import type { FeatureConfig } from '@/lib/feature-engineering'
 import {
@@ -122,10 +123,12 @@ export function PresetApplyManager({
   const {
     presets,
     currentImport,
+    uploads,
     loading,
     importing,
     error,
     importWorkbook,
+    selectImport,
     loadDocument,
     loadSdta,
   } = useFeaturePresets(workspaceId)
@@ -267,12 +270,47 @@ export function PresetApplyManager({
     setOverrides({})
   }, [])
 
+  /**
+   * Switch to another upload (e.g. the user's own template). Everything chosen
+   * from the previous upload - unit, configuration, overrides, a loaded SD&TA
+   * config - belongs to THAT upload's objects, so it is cleared rather than
+   * carried over, then the first usable preset is opened like after an upload.
+   */
+  const handleSelectImport = useCallback(
+    async (importId: string) => {
+      setUnit('')
+      setPresetId('')
+      setDocument(null)
+      setDocError(null)
+      setOverrides({})
+      setSdta(null)
+      setSdtaError(null)
+      setSdtaApplied(false)
+      try {
+        const next = await selectImport(importId)
+        const first = next.find(p => !p.incomplete) ?? next[0]
+        if (first) {
+          setUnit(first.unit)
+          void selectPreset(first.id)
+        }
+      } catch {
+        // `useFeaturePresets` already surfaces the failure through `error`.
+      }
+    },
+    [selectImport, selectPreset],
+  )
+
   const handleFile = useCallback(
     async (file: File | undefined) => {
       if (!file) return
       try {
         const next = await importWorkbook(file)
         toast.success(`Imported ${next.length} preset(s) from ${file.name}`)
+        // The SD&TA config belongs to an IMPORT; one loaded from the previous
+        // upload must not stay staged against the new one.
+        setSdta(null)
+        setSdtaError(null)
+        setSdtaApplied(false)
         // Land on something usable rather than an empty panel.
         const first = next.find(p => !p.incomplete) ?? next[0]
         if (first) {
@@ -378,6 +416,13 @@ export function PresetApplyManager({
               setDragging={setDragging}
               fileRef={fileRef}
               onFile={handleFile}
+            />
+
+            <PresetUploadSelect
+              uploads={uploads}
+              selectedId={currentImport?.id ?? null}
+              onSelect={id => void handleSelectImport(id)}
+              disabled={loading || importing}
             />
 
             {/* Independent of preset selection — SD&TA belongs to the IMPORT. */}

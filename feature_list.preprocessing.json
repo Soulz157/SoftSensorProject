@@ -4944,6 +4944,150 @@
         }
       ],
       "progress_note": "2026-10-12: backend (T01-T03) done; client T04-T08 implemented and unit-tested (41 new client tests, 6 new backend cases, all green) but NOTHING user-visible is verified live (V05). An advisor review caught three defects before any live run - CSV sessions getting dwDraftIdAtom (D10), resume restoring claims about artifacts it does not restore (D11), and credentials/rows in the source-config snapshot (D12) - which is the reason to run a plain create-dataset flow for one CSV and one PI dataset (no expiry) before trusting this. Unrelated failures in the client suite at this point: models/create pipeline tests, model-detail-dialog, lib/feature-count-sweep, lib/monitoring formatAxisValue, store/__tests__/useAtom.test.ts (no suite). Backend: 9 existing scaffold specs fail (missing ./dto/workspace.admin.dto, bare 'should be defined' DI) plus the other session's auth.public.service.spec.ts."
+    },
+    {
+      "id": "DS-LAKE-038",
+      "title": "Preset Range card in Step 5 beside SD&TA: Clip | Drop per row, and the chosen action reaches the saved dataset",
+      "priority": 38,
+      "status": "in_progress",
+      "progress": 86,
+      "dependencies": [
+        "DS-LAKE-020"
+      ],
+      "supersedes": "DS-LAKE-020-T04 (decision to keep the range control in outlier-removal-panel.tsx and add no server op)",
+      "description": "Requested 2026-10-12: the preset Range control sat four levels deep in Step 5 (CutOffSection -> collapsible Outlier Removal sidebar -> 130-unit ScrollArea -> OutlierRemovalPanel -> PresetRangeSection) and rendered only once cleaning tags were chosen. It now has its own card directly under SdtaPresetCard, each row reads as the kept window '30 <= x <= 100 kg/h', and carries a Clip | Drop toggle. FINDING that drove the server work: preset ranges are ConditionalRules and conditional rules never reach the server - the create-mode commit sent only toCleaningOperationsFromRecord(cleaningPipelines) and cleaning_service.py had no conditional handler (DS-LAKE-020-T04/V03, owner DS-LAKE-005B-D-T01). So before this feature neither action would have reached a saved PI dataset. This reverses the earlier steer recorded in DS-LAKE-020-T04.",
+      "decisions": [
+        {
+          "id": "DS-LAKE-038-D01",
+          "decision": "Own card under SdtaPresetCard (not merged, not side by side). Read-only kept window with <= on both sides; quoted text + provenance as a muted subtitle.",
+          "why": "User choice 2026-10-12. A value ON a bound is untouched by either action, so <= reads true."
+        },
+        {
+          "id": "DS-LAKE-038-D02",
+          "decision": "Actions are Clip and Drop; Mark is gone from preset-range rows. Clip clamps to the bound and keeps status and row. Drop turns the reading into a HOLE (value 0, status Bad). A legacy preset-range rule with action 'mark' reads as Drop.",
+          "why": "User asked to replace Mark with Clip. A saved frame cannot hold an absent cell (frame_service: a hole is a real Bad cell, never NaN), so a hole is the only server form of 'remove this reading'. The preview writes the same hole instead of deleting the cell, so preview == saved data after a fill step."
+        },
+        {
+          "id": "DS-LAKE-038-D03",
+          "decision": "Server: a new cleaning method range_drop (strict bounds, every status, no-op with no bounds) plus the EXISTING clip op. The action rides in the method name, so paramLow/param carry the bounds and no DTO changes (backend zod and python pydantic already pass them).",
+          "why": "Smallest change; clip already has parity coverage. Range ops are sent FIRST in the commit, matching the client order (precleanse before preprocessPipelines)."
+        },
+        {
+          "id": "DS-LAKE-038-D04",
+          "decision": "Selected states use the neutral SegmentedToggle (bg-primary), not ActionToggle's amber/destructive.",
+          "why": "docs/DESIGN_SYSTEM.md section 5 and the status-colour reservation keep red/amber for workspace/plant status."
+        },
+        {
+          "id": "DS-LAKE-038-D05",
+          "decision": "Edit mode is NOT changed. use-dataset-draft-pipeline.ts sends per-batch ops scoped to the batch's tags; prepending every tag's range ops would break that contract.",
+          "why": "Recorded as a known gap: edit-mode saves still do not apply preset ranges server-side. Same family as the SD&TA / hand-typed conditional gap (DS-LAKE-005B-D-T01), not fixed here."
+        },
+        {
+          "id": "DS-LAKE-038-D06",
+          "decision": "In the preview, EVERY preset-range action other than clip writes the hole (0, Bad) - including the legacy 'mark'. The card is the only creator of preset-range rules, so 'mark' exists only in drafts and datasets saved before this feature.",
+          "why": "toPresetRangeOperations sends mark as range_drop (value -> 0). If the preview kept the value, a later crop/clip/smoothing step would read the real number in the preview and 0 on the server. Found by advisor review; tested (mark == drop, and mark -> crop removes the same rows)."
+        },
+        {
+          "id": "DS-LAKE-038-D07",
+          "decision": "Range operations are filtered to the columns the committed artifact has (selectedColumns applied), both in the card's tag list and in the commit (recipe.availableTags).",
+          "why": "python apply_operations -> validate_tags raises on an unknown column and FAILS the whole commit; the client frame in Step 5 is not pruned by selectedColumns. Tested. NOTE the existing cleaning pipelines are not filtered this way - pre-existing, not touched."
+        },
+        {
+          "id": "DS-LAKE-038-D08",
+          "decision": "Drop is REPLACED by Exclude (user request 2026-10-12): an out-of-range reading is marked Bad and KEEPS its value - the cleaning toolkit's Exclude Range, applied outside the kept window with strict bounds. Stored as the rule action `mark`; sent as the new server op `range_exclude`. `range_drop` (the 0.0/Bad hole) was removed before it shipped, with its fixtures and tests. A preset rule an earlier build saved with `drop` reads and sends as Exclude.",
+          "why": "Same vocabulary and the same treatment as the toolkit the user already uses (Clip Bounds / Exclude Range, same Scissors/Ban icons). Keeping the value also means a later crop or clip judges the real reading, not a 0.0 placeholder - the parity case range_exclude_then_crop pins that."
+        },
+        {
+          "id": "DS-LAKE-038-D09",
+          "decision": "Conditions the user writes in the Outlier Removal Conditional tab get the same Clip | Exclude as the preset ranges (the cleaning toolkit's vocabulary), replacing Mark | Drop. Clip clamps a matched reading to the rule's value and is offered only for one-sided <, <=, >, >= rules (conditionalRuleCanClip); a Range or ==/!= rule offers only Exclude, and a rule that becomes unclippable while on Clip falls back to Exclude. A hand-written condition saved with `drop` now behaves as Exclude (Bad, value kept) instead of deleting the cell - parity fixture precleanse_conditional_drop changed by exactly that one cell. SD&TA conditions keep their own drop_row toggle; Statistical rules keep Mark | Drop. The dev-only /design-preview route was deleted.",
+          "why": "User request 2026-10-12: one vocabulary across preset ranges, conditions and the toolkit. Deleting the cell left a reading no fill step could impute; Exclude keeps it imputable. Note hand-written conditions still reach only the preview and the legacy CSV recipe path, not the server (the existing DS-LAKE-005B-D-T01 gap)."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-038-T01",
+          "title": "Engine: ConditionalAction 'clip', preset-range drop = hole, range_drop client method",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/precleanse.ts: ConditionalAction = OutlierAction | 'clip'; clip clamps single-op rules and is not counted as a removal; a preset-range 'drop' writes (0, Bad) while a hand-authored drop still deletes the cell. lib/preprocessing.ts: range_drop in CleaningMethod + applyCleaningStep. 6 + parity cases. REVIEW FIX: legacy 'mark' now also writes the hole in the preview (D06); +2 tests. SUPERSEDED IN PART 2026-10-12 by D08: range_drop -> range_exclude (Bad, value kept)."
+        },
+        {
+          "id": "DS-LAKE-038-T02",
+          "title": "Server: range_drop op in cleaning_service.py",
+          "status": "completed",
+          "progress": 100,
+          "result": "_op_range_drop registered in CLEANING_OPS. 7 unit cases (tests/test_cleaning_range_drop.py: strict bound, open-ended, no-op, other tags and rows kept, fill step imputes the hole, request-shaped entry). SUPERSEDED IN PART 2026-10-12 by D08: range_drop -> range_exclude (Bad, value kept)."
+        },
+        {
+          "id": "DS-LAKE-038-T03",
+          "title": "Parity fixtures incl. CHAINED cases",
+          "status": "completed",
+          "progress": 100,
+          "result": "range_drop_{both_bounds,low_only,high_only,no_bounds_is_noop}, range_drop_then_{interpolate,crop,moving_avg}, clip_then_interpolate, precleanse_preset_range_{drop,clip}; fixtures regenerated into packages/parity-fixtures. Python value parity PASSES for all, including range_drop_then_crop, where the hole's 0.0 is cropped away on BOTH engines (the divergence a deleted client cell would have caused). test_parity.py pins that row removal. SUPERSEDED IN PART 2026-10-12 by D08: range_drop -> range_exclude (Bad, value kept)."
+        },
+        {
+          "id": "DS-LAKE-038-T04",
+          "title": "Mapper + commit: toPresetRangeOperations, sent before the cleaning pipelines",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/cleaning-op-mapper.ts groups enabled preset-range rules per tag AND action (a mixed pair yields two one-sided ops; legacy mark -> range_drop). use-dataset-cleaning-scale-commit.ts prepends them; Step 5 passes conditionalRules. 7 mapper cases + 4 commit cases incl. 'a range changed after a commit is sent by the next commit'. Stale-cut safety: onConditionalChange calls relock() (caps unlock at Step 5) so Step 6 cannot be reached without a fresh commit. REVIEW FIX: commit takes availableTags and never sends a range on a column the artifact lacks (D07); +1 test."
+        },
+        {
+          "id": "DS-LAKE-038-T05",
+          "title": "Guards: action-aware describeRangeCutoffSelection, presetRangeBounds, formatKeptWindow",
+          "status": "completed",
+          "progress": 100,
+          "result": "Only DROP bounds can shrink the training set; a clip raises neither refusal nor labelled-row warning. 25 cases in lib/range-cutoff.test.ts."
+        },
+        {
+          "id": "DS-LAKE-038-T06",
+          "title": "UI: PresetRangeCard under SdtaPresetCard; section removed from the Outlier Removal sidebar",
+          "status": "completed",
+          "progress": 100,
+          "result": "components/preset-range-card.tsx (19 cases). Props removed from CutOffSection -> CutoffSidebar -> OutlierRemovalPanel. Conditional tab: a preset-range rule shows Clip | Drop, hand-authored rules keep Mark | Drop (6 panel cases). Mixed pair shows a notice and one click aligns both bounds. REVIEW FIX: card lists only artifact columns and shows a muted note in edit mode (D05); card now 21 cases."
+        },
+        {
+          "id": "DS-LAKE-038-T07",
+          "title": "Live verification (V05)",
+          "status": "pending",
+          "progress": 0,
+          "result": "NOT RUN. Needs the app with a PI dataset and a preset, and the local apps/python service restarted to load range_drop."
+        }
+      ],
+      "acceptance_criteria": [
+        "In Step 5 with a preset applied, the Preset range card appears directly under the SD&TA card without scrolling, with or without cleaning tags selected.",
+        "Each row reads as a kept window with <= on both sides and offers Clip | Drop.",
+        "Clip: out-of-range readings in the saved dataset equal the bound and stay Good. Drop: they are holes (0.0, Bad) and other tags in those rows survive.",
+        "A range or action changed after a commit is re-committed before Step 6.",
+        "Preview and saved data agree for Drop, including after a following fill, crop or smoothing step."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-038-V01",
+          "status": "completed",
+          "description": "Python parity for every range_drop / clip chained fixture.",
+          "result": "PASS - tests/test_parity.py 338 passed, 94 skipped (the skips are the existing no-precleanse-engine cases). Full python suite: 1027 passed, 94 skipped, INCLUDING the 7 new test_cleaning_range_drop.py cases (an earlier note of '1027 + 7' double-counted)."
+        },
+        {
+          "id": "DS-LAKE-038-V02",
+          "status": "completed",
+          "description": "Client unit coverage: precleanse, mapper, commit, guards, card, panel.",
+          "result": "PASS - non-zero case counts: card 21, outlier panel 6, range-cutoff 25, precleanse-preset-range 8, mapper 7, commit hook 9, parity fixtures 7; tsc clean; eslint 0 errors on touched files. Full client suite: 9 files fail, all unrelated and existing (models/create pipeline tests x5, model-detail-dialog, lib/feature-count-sweep, lib/monitoring formatAxisValue, store/__tests__/useAtom.test.ts = no suite). One earlier full run also showed raw-readings-table, retrain-validation-window, phase-3-training-config and date-time-picker failing; all four pass alone and on the next full run - LOAD-FLAKY, not regressions."
+        },
+        {
+          "id": "DS-LAKE-038-V03",
+          "status": "pending",
+          "description": "Live: enable FIC-101 with Drop, press Next, read the committed GOLD via the draft /rows route and confirm out-of-range cells are holes with other tags intact; repeat with Clip (values equal the bound, Good); confirm the same in the saved dataset after Step 6."
+        }
+      ],
+      "known_gaps": [
+        "EDIT MODE: the card shows (with a note) but an edit-mode save does not apply preset ranges server-side (D05).",
+        "TRAIN/SERVE SKEW: no serving or inference path applies cleaning to live inputs (grep: cleaningPipelines/conditionalRules/valueClip are read only by the client, pipeline-config and artifact_service.clean). Clip therefore trains on clamped values while serving feeds raw ones - the same property every existing cleaning step has, now also true of a preset Clip. Not introduced as a new mechanism, but newly reachable from a one-click control.",
+        "HOLDOUT: replay_holdout deliberately does not call apply_operations (the holdout stays raw, an earlier user decision), so a Clip/Drop range never touches the validation holdout. Same as every other cleaning op.",
+        "TRAINER IMAGE: checked and NOT affected - images/trainer/app has no cleaning registry and reads the FINAL parquet; retrain reads DatasetArtifact.operations only for row counts. So range_drop cannot raise 'Unknown cleaning method' on retrain. (The image still is not built in CI, so a trainer-side feature would be a silent no-op - irrelevant here.)",
+        "The local apps/python service must be restarted to load range_drop before the live check."
+      ],
+      "progress_note": "2026-10-12: implemented and unit-tested end to end (client engine, python op, parity incl. chained, mapper, commit, card). NOT verified live (V03). An advisor review caught two real defects before any live run - legacy 'mark' disagreeing between preview and server (D06) and a range on a deselected column failing the whole commit (D07) - and surfaced the known gaps recorded above. 2026-10-12 later: Drop replaced by Exclude (D08); preset ranges are editable in the Outlier Removal panel and the card shows 'Edited' with the preset's original and a Reset."
     }
   ],
   "deferred": [

@@ -255,6 +255,46 @@ function buildFixtures(): Fixture[] {
     ]),
     pipelineCase('exclude_no_bounds_is_noop', [step('exclude', 'outliers')]),
 
+    // ── DS-LAKE-038: Preset range cutoff (Clip | Drop) ──────────────────────
+    // `range_exclude` marks an out-of-range reading Bad and keeps its value -
+    // the toolkit's `exclude`, outside the window and with strict bounds.
+    // `clip` is the other action and already has its own cases above.
+    pipelineCase('range_exclude_both_bounds', [
+      step('range_exclude', 'outliers', { paramLow: 0, param: 100 }),
+    ]),
+    pipelineCase('range_exclude_low_only', [
+      step('range_exclude', 'outliers', { paramLow: 50 }),
+    ]),
+    pipelineCase('range_exclude_high_only', [
+      step('range_exclude', 'outliers', { param: 50 }),
+    ]),
+    pipelineCase('range_exclude_no_bounds_is_noop', [
+      step('range_exclude', 'outliers'),
+    ]),
+    // CHAINED, because an excluded reading has to behave the same
+    // DOWNSTREAM, not just be written the same: fill steps impute it, while
+    // crop/clip still judge its (kept) value whatever its status.
+    pipelineCase('range_exclude_then_interpolate', [
+      step('range_exclude', 'outliers', { paramLow: 0, param: 100 }),
+      step('interpolate', 'missing'),
+    ]),
+    pipelineCase(
+      'range_exclude_then_crop',
+      [
+        step('range_exclude', 'outliers', { paramLow: 0, param: 100 }),
+        step('crop', 'outliers', { paramLow: 10, param: 100 }),
+      ],
+      ['TI-101'],
+    ),
+    pipelineCase('range_exclude_then_moving_avg', [
+      step('range_exclude', 'outliers', { paramLow: 0, param: 100 }),
+      step('moving_avg', 'smoothing', { param: 3 }),
+    ]),
+    pipelineCase('clip_then_interpolate', [
+      step('clip', 'outliers', { paramLow: 0, param: 100 }),
+      step('interpolate', 'missing'),
+    ]),
+
     // ── DS-LAKE-032: time window and per-step tag scope ────────────────────
     // The grid's stamps are ISO `Z` (00:00Z–00:39Z), which both engines read
     // on the Bangkok wall clock: 07:00–07:39. The window spans rows 5–30, so
@@ -336,6 +376,58 @@ function buildFixtures(): Fixture[] {
           value: 100,
           action: 'drop',
           enabled: true,
+        },
+      ],
+      statistical: [],
+    }),
+    // DS-LAKE-038: a preset-range pair. Exclude (`mark`) marks Bad and keeps
+    // the value, like the server's range_exclude; clip clamps and keeps status.
+    // Python skips every precleanse case (no engine yet), so these pin the
+    // client behaviour the server ops are built to match.
+    precleanseCase('precleanse_preset_range_exclude', {
+      crop: null,
+      conditional: [
+        {
+          id: 'preset-range:TI-101:min',
+          tag: 'TI-101',
+          op: '<',
+          value: 10,
+          action: 'mark',
+          enabled: true,
+          source: 'preset-range',
+        },
+        {
+          id: 'preset-range:TI-101:max',
+          tag: 'TI-101',
+          op: '>',
+          value: 100,
+          action: 'mark',
+          enabled: true,
+          source: 'preset-range',
+        },
+      ],
+      statistical: [],
+    }),
+    precleanseCase('precleanse_preset_range_clip', {
+      crop: null,
+      conditional: [
+        {
+          id: 'preset-range:TI-101:min',
+          tag: 'TI-101',
+          op: '<',
+          value: 10,
+          action: 'clip',
+          enabled: true,
+          source: 'preset-range',
+        },
+        {
+          id: 'preset-range:TI-101:max',
+          tag: 'TI-101',
+          op: '>',
+          value: 100,
+          action: 'clip',
+          enabled: true,
+          source: 'preset-range',
         },
       ],
       statistical: [],

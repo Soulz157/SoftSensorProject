@@ -805,7 +805,15 @@ def prepare_holdout_for_run(
     # this used to be an inline copy; now shared with the serving loader's
     # own predict-time coverage check via softsensor_scaling, so the two
     # cannot silently disagree about which tags need coverage.
-    assert_scaling_coverage(tag_columns(frame), scalers, scaling_params)
+    #
+    # Checked over `_scalable_tags` — the SAME list `to_model_ready` scales
+    # below — never every tag in the frame. A correct spec records no
+    # `scalingParams` entry for the target (it is never scaled), so checking
+    # the full tag list refused every feature-bearing holdout with
+    # "Scaling refused: ['<target>']" and the run silently got no validation
+    # score. `combine_for_retrain` carries the same fix for the same refusal.
+    assert_scaling_coverage(
+        _scalable_tags(frame, target_y), scalers, scaling_params)
 
     # DS-LAKE-023-T05. BEFORE `to_model_ready` — see `drop_bad_feature_rows`'s
     # own docstring for why this must run here, not after. `target_y` is

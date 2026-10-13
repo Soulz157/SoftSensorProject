@@ -353,6 +353,10 @@ export type CleaningMethod =
   | 'clip'
   | 'crop'
   | 'exclude'
+  // DS-LAKE-038. Preset range cutoff "Exclude": out-of-range readings are
+  // marked Bad, value kept (as `exclude` does inside a band). Never offered in
+  // a picker - written by the Preset range card.
+  | 'range_exclude'
   | 'outlier_median'
   // smoothing
   | 'moving_avg'
@@ -520,6 +524,24 @@ function applyCleaningStep(
       if (!cell || !inStepWindow(row.timestamp, step)) continue
       if (low !== undefined && cell.value < low) cell.value = low
       if (high !== undefined && cell.value > high) cell.value = high
+    }
+    return
+  }
+  if (method === 'range_exclude') {
+    const low = step.paramLow
+    const high = step.param
+    if (low === undefined && high === undefined) return
+    for (const row of rows) {
+      const cell = row?.cells[tag]
+      if (!cell) continue
+      // Strict, like the conditional rule it replaces: a value ON a bound is
+      // in range. Every status, like the server op, so the two stay in step.
+      if (
+        (low !== undefined && cell.value < low) ||
+        (high !== undefined && cell.value > high)
+      ) {
+        cell.status = 'Bad'
+      }
     }
     return
   }

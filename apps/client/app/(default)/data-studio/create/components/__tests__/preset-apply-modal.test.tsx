@@ -5,6 +5,7 @@ import { createStore, Provider } from 'jotai'
 import { PresetApplyManager } from '../preset-apply-modal'
 import { dwWorkspaceIdAtom } from '@/store/dataset-studio'
 import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
+import type { PresetUpload } from '@/services/feature-preset'
 import type {
   PresetDocument,
   PresetSummary,
@@ -81,6 +82,9 @@ const DOCUMENT: PresetDocument = {
 const loadDocument = vi.fn()
 const loadSdta = vi.fn()
 const importWorkbook = vi.fn()
+const selectImport = vi.fn()
+/** Mutable so the upload-history cases can give the workspace several uploads. */
+let mockUploads: PresetUpload[] = []
 
 /** Mutable so individual tests can turn the SD&TA card on. Reset in beforeEach. */
 let mockCurrentImport = {
@@ -96,6 +100,8 @@ vi.mock('@/hooks/dataset/use-feature-presets', () => ({
   useFeaturePresets: () => ({
     presets: PRESETS,
     currentImport: mockCurrentImport,
+    uploads: mockUploads,
+    selectImport,
     loading: false,
     importing: false,
     error: null,
@@ -153,6 +159,7 @@ describe('PresetApplyManager', () => {
     vi.clearAllMocks()
     loadDocument.mockResolvedValue(DOCUMENT)
     mockCurrentImport = { ...mockCurrentImport, sdtaKey: null }
+    mockUploads = []
   })
 
   it('renders its trigger without opening the sheet', () => {
@@ -315,5 +322,88 @@ describe('PresetApplyManager — SD&TA cut config', () => {
     await user.click(screen.getByRole('button', { name: /load cut config/i }))
 
     expect(await screen.findByText(/object not found/i)).toBeVisible()
+  })
+})
+
+describe('PresetApplyManager — your workbook', () => {
+  const UPLOADS: PresetUpload[] = [
+    {
+      id: 'imp-1',
+      fileName: 'templates.xlsx',
+      sheetCount: 2,
+      presetCount: 2,
+      hasSdta: false,
+      createdAt: '2026-10-12T07:00:00Z',
+      isLatest: true,
+    },
+    {
+      id: 'imp-0',
+      fileName: 'my-template.xlsx',
+      sheetCount: 2,
+      presetCount: 2,
+      hasSdta: false,
+      createdAt: '2026-10-01T07:00:00Z',
+      isLatest: false,
+    },
+  ]
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    loadDocument.mockResolvedValue(DOCUMENT)
+    mockCurrentImport = { ...mockCurrentImport, sdtaKey: null }
+    mockUploads = UPLOADS
+    selectImport.mockResolvedValue(PRESETS)
+  })
+
+  const workbook = () => screen.getByRole('combobox', { name: 'Your workbook' })
+
+  it("shows the user's workbook as one select, the current one with its Latest badge", async () => {
+    const user = userEvent.setup()
+    renderSheet([row('QQ001A2.PV')])
+    await openSheet(user)
+
+    await waitFor(() => expect(workbook()).toBeVisible())
+    expect(workbook()).toHaveTextContent('templates.xlsx')
+    expect(workbook()).toHaveTextContent('Latest')
+  })
+
+  it('picking an older upload loads its presets and opens the first usable one', async () => {
+    const user = userEvent.setup()
+    renderSheet([row('QQ001A2.PV')])
+    await openSheet(user)
+
+    await waitFor(() => expect(workbook()).toBeVisible())
+    await user.click(workbook())
+    await user.click(await screen.findByRole('option', { name: /my-template/ }))
+
+    expect(selectImport).toHaveBeenCalledWith('imp-0')
+    const firstUsable = PRESETS.find(p => !p.incomplete)!
+    await waitFor(() =>
+      expect(loadDocument).toHaveBeenCalledWith(firstUsable.id),
+    )
+  })
+
+  it('a failed switch opens no preset', async () => {
+    selectImport.mockRejectedValue(new Error('boom'))
+    const user = userEvent.setup()
+    renderSheet([row('QQ001A2.PV')])
+    await openSheet(user)
+
+    await waitFor(() => expect(workbook()).toBeVisible())
+    await user.click(workbook())
+    await user.click(await screen.findByRole('option', { name: /my-template/ }))
+
+    await waitFor(() => expect(selectImport).toHaveBeenCalled())
+    expect(loadDocument).not.toHaveBeenCalled()
+  })
+
+  it('no selector at all for a user with no uploads of their own', async () => {
+    mockUploads = []
+    const user = userEvent.setup()
+    renderSheet([row('QQ001A2.PV')])
+    await openSheet(user)
+
+    expect(await screen.findByText(/feature preset manager/i)).toBeVisible()
+    expect(screen.queryByRole('combobox', { name: 'Your workbook' })).toBeNull()
   })
 })

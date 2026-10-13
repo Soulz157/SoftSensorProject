@@ -1,3 +1,4 @@
+import type { ConditionalRule } from '@/lib/precleanse'
 import type { CleaningStep, TagPipeline } from '@/lib/preprocessing'
 
 /** The server request shape one step becomes. */
@@ -98,4 +99,58 @@ export function toCleaningOperationsFromRecord(
   return Array.from(groups.values()).flatMap(({ steps, tags }) =>
     toCleaningOperations(steps, tags),
   )
+}
+
+/**
+ * DS-LAKE-038. The Preset range card's enabled rules, as server operations.
+ *
+ * A preset range is two `ConditionalRule`s per tag (`< min`, `> max`), and
+ * conditional rules never reach the server on their own - only the cleaning
+ * pipelines are sent. So the card's choice has to ride along as operations or
+ * the saved dataset would silently ignore it:
+ *
+ *   clip            -> `clip`           clamp to the bound, row and Good kept
+ *   exclude (`mark`) -> `range_exclude` reading marked Bad, value kept - the
+ *                                       toolkit's Exclude, outside the window
+ *
+ * Grouped per TAG and per ACTION: the Conditional tab still lets someone set a
+ * different action on each bound of a pair, and the two bounds then cannot
+ * share one operation. Order is by tag then action so the request is stable.
+ *
+ * Exclude is stored as the rule action `mark` (Bad, value kept). A preset
+ * rule left with `drop` by an earlier build is sent as Exclude too, so it
+ * never disagrees with the preview.
+ */
+export function toPresetRangeOperations(
+  rules: ConditionalRule[],
+): MappedCleaningOperation[] {
+  const byKey = new Map<
+    string,
+    { tag: string; type: 'clip' | 'range_exclude'; min?: number; max?: number }
+  >()
+  for (const rule of rules) {
+    if (!rule.enabled || rule.source !== 'preset-range') continue
+    if (rule.value === '' || rule.lower) continue
+    if (rule.op !== '<' && rule.op !== '>') continue
+    const type =
+      rule.action === 'clip'
+        ? 'clip'
+        : rule.action === 'mark' || rule.action === 'drop'
+          ? 'range_exclude'
+          : null
+    if (!type) continue
+    const key = `${rule.tag}\u0000${type}`
+    const entry = byKey.get(key) ?? { tag: rule.tag, type }
+    if (rule.op === '<') entry.min = rule.value
+    else entry.max = rule.value
+    byKey.set(key, entry)
+  }
+  return Array.from(byKey.values())
+    .sort((a, b) => a.tag.localeCompare(b.tag) || a.type.localeCompare(b.type))
+    .map(({ tag, type, min, max }) => ({
+      type,
+      tags: [tag],
+      ...(min !== undefined && { paramLow: min }),
+      ...(max !== undefined && { param: max }),
+    }))
 }

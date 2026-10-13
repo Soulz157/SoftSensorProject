@@ -4,7 +4,11 @@ import { useCallback, useRef, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import { datasetDraftService } from '@/services/dataset-draft'
 import { pollDraftJobUntilTerminal } from '@/lib/poll-preprocessing-job'
-import { toCleaningOperationsFromRecord } from '@/lib/cleaning-op-mapper'
+import {
+  toCleaningOperationsFromRecord,
+  toPresetRangeOperations,
+} from '@/lib/cleaning-op-mapper'
+import type { ConditionalRule } from '@/lib/precleanse'
 import type { TagPipeline } from '@/lib/preprocessing'
 import {
   featureRecipeStamp,
@@ -81,6 +85,9 @@ export function useDatasetCleaningScaleCommit(): {
       scalers: Record<string, ScalerMethod>
       targetY: string | null
       holdout?: { from: string; to: string } | null
+      /** DS-LAKE-038. See the implementation's own doc comment below. */
+      conditionalRules?: ConditionalRule[]
+      availableTags?: string[] | null
     },
   ) => Promise<boolean>
 } {
@@ -103,6 +110,20 @@ export function useDatasetCleaningScaleCommit(): {
         scalers: Record<string, ScalerMethod>
         targetY: string | null
         holdout?: { from: string; to: string } | null
+        /**
+         * DS-LAKE-038. The Preset range card's rules. They are conditional
+         * rules, which never reach the server on their own, so the enabled
+         * ones are sent as operations (see `toPresetRangeOperations`).
+         */
+        conditionalRules?: ConditionalRule[]
+        /**
+         * Columns the source artifact actually has (Step 4's warm already
+         * applied `selectedColumns`). The server refuses an operation naming a
+         * column the artifact lacks - `validate_tags` fails the WHOLE commit -
+         * so a range on a deselected column, or a stale one left behind by a
+         * Step 4 change, must not be sent. Absent = send every enabled range.
+         */
+        availableTags?: string[] | null
       },
     ): Promise<boolean> => {
       if (!draftId || !sourceArtifactId) {
@@ -138,7 +159,19 @@ export function useDatasetCleaningScaleCommit(): {
       cancelledRef.current = false
       setState({ status: 'committing' })
       try {
-        const operations = toCleaningOperationsFromRecord(cleaningPipelines)
+        // Range operations first: on the client the cut runs in `precleanse`,
+        // BEFORE the per-tag pipelines, so an imputation step can fill the
+        // readings a range just dropped. Same order here keeps the saved
+        // dataset equal to the preview.
+        const operations = [
+          ...toPresetRangeOperations(
+            (recipe.conditionalRules ?? []).filter(
+              r =>
+                !recipe.availableTags || recipe.availableTags.includes(r.tag),
+            ),
+          ),
+          ...toCleaningOperationsFromRecord(cleaningPipelines),
+        ]
         const res = await datasetDraftService.clean(draftId, sourceArtifactId, {
           operations,
           scaleRecipe: {

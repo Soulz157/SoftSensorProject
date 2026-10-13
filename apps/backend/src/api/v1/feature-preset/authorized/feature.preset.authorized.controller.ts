@@ -61,6 +61,20 @@ export class FeaturePresetAuthorizedController {
     return this.service.listPresets(workspaceId, user, importId);
   }
 
+  @Get('/imports')
+  @ApiOperation({
+    summary: "List the caller's own workbook uploads, newest first",
+    description:
+      'For the Feature Preset Manager "Your workbook" picker. Only the ' +
+      "caller's uploads; isLatest marks their newest.",
+  })
+  async listImports(
+    @Query('workspaceId') workspaceId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.listImports(workspaceId, user);
+  }
+
   @Get('/:id/document')
   @ApiOperation({ summary: 'Read one stored preset document' })
   async getPresetDocument(

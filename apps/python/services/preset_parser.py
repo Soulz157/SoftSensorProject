@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -74,7 +74,16 @@ EXCEL_EPOCH = datetime(1899, 12, 30)
 #: Header labels -> canonical column key. Matched against a casefolded, stripped
 #: cell; the `range`/`description`/`effect` entries match by prefix because the
 #: sheets append qualifiers (`Range control`, `effect กับ Y`).
-_EXACT_LABELS = {"no": "no", "y": "y", "x": "x", "relation": "relation"}
+#: `unit` (DS-LAKE-038): some workbooks - ROC COLD's HOT-format copy - write the
+#: engineering unit in its own `Unit` column and leave the range bare
+#: (`45 - 95` next to `T/H`).
+_EXACT_LABELS = {
+    "no": "no",
+    "y": "y",
+    "x": "x",
+    "relation": "relation",
+    "unit": "unit",
+}
 _PREFIX_LABELS = (
     ("description", "description"),
     ("range", "range"),
@@ -277,8 +286,7 @@ def find_header_row(frame: pd.DataFrame) -> int | None:
     """Index of the `No | Y | X` header, or `None` when this is not a unit sheet."""
     for row in range(frame.shape[0]):
         labels = {
-            _text(frame.iat[row, column]).casefold()
-            for column in range(frame.shape[1])
+            _text(frame.iat[row, column]).casefold() for column in range(frame.shape[1])
         }
         if all(required in labels for required in _REQUIRED_COLUMNS):
             return row
@@ -342,6 +350,22 @@ def _config_number(text: str) -> int | None:
         return None
 
 
+def _with_unit_column(parsed: ParsedRange, unit_text: str) -> ParsedRange:
+    """Give a bare range (`45 - 95`) the unit from the row's `Unit` column.
+
+    A unit written INSIDE the range cell (`105-120 C`) wins: it is the more
+    specific statement. A blank or `-` Unit cell, or a range that did not
+    parse, leaves the range as it was. Without this, a workbook that keeps its
+    units in their own column has every range treated as dimensionless - the
+    number applied as-is, skipping the unit check that guards a kg/h bound
+    against a t/h tag.
+    """
+    unit = unit_text.strip()
+    if parsed.kind == "none" or parsed.unit is not None or unit in ("", "-"):
+        return parsed
+    return replace(parsed, unit=unit)
+
+
 def _build_feature(
     frame: pd.DataFrame,
     row: int,
@@ -365,7 +389,9 @@ def _build_feature(
         formula = expression
 
     range_text = _cell(frame, row, columns.get("range"))
-    range_parsed = parse_range(range_text)
+    range_parsed = _with_unit_column(
+        parse_range(range_text), _cell(frame, row, columns.get("unit"))
+    )
     warnings = _tag_warnings(tags)
     range_warning = range_parse_warning(range_parsed)
     if range_warning is not None:

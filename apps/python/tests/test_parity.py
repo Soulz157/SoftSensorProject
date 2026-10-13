@@ -142,6 +142,16 @@ def test_drop_cases_actually_drop_rows(fixture: dict[str, Any]) -> None:
             f"{name} is a value-axis crop — the rows outside its band must be "
             f"REMOVED ({n_in} -> {n_out})."
         )
+    elif name == "range_exclude_then_crop":
+        # DS-LAKE-038. range_exclude marks a reading Bad but KEEPS its value, and
+        # `crop` judges the value whatever its status - so the crop removes the
+        # same rows it would without the exclude. Client and server agree on
+        # this (the case passes value parity), which is what the chained
+        # fixture exists to pin.
+        assert n_out < n_in, (
+            f"{name}: the crop band still judges the kept values, so the rows "
+            f"outside it must be REMOVED ({n_in} -> {n_out})."
+        )
     elif name == "precleanse_conditional_drop":
         assert n_out == n_in, (
             "precleanse 'drop' deletes only that tag's cell and must NOT remove "

@@ -1,14 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { OutlierRemovalPanel } from '../outlier-removal-panel'
 import type { Dataset } from '@/lib/preprocessing'
 import type { ConditionalRule } from '@/lib/precleanse'
-import type { PresetRangeCandidate } from '@/store/dataset-studio'
 
 /**
- * DS-LAKE-020-T05/T06: the "Preset range cutoff" section this feature adds to
- * `outlier-removal-panel.tsx`. `OutlierRemovalPanel` takes no atoms — every
+ * `OutlierRemovalPanel` (the Preset range cutoff cases moved to
+ * `preset-range-card.test.tsx` with DS-LAKE-038). It takes no atoms — every
  * case here is driven entirely through props, no jotai Provider needed.
  */
 
@@ -18,32 +17,6 @@ const DATASET: Dataset = {
     { timestamp: 't1', cells: { 'TI-101': { value: 110, status: 'Good' } } },
     { timestamp: 't2', cells: { 'TI-101': { value: 200, status: 'Good' } } }, // out of range
   ],
-}
-
-const CLOSED: PresetRangeCandidate = {
-  tag: 'TI-101',
-  rowLabel: 'TI-101',
-  quotedRange: '105-120 C',
-  parsed: { kind: 'closed', min: 105, max: 120, unit: 'C', raw: '105-120 C' },
-  presetId: 's-204-no1',
-  configNo: 1,
-  sheet: 'S-204',
-}
-
-const OPEN_ENDED: PresetRangeCandidate = {
-  tag: 'TI-101',
-  rowLabel: 'TI-101',
-  quotedRange: '>21500 kg/hr',
-  parsed: {
-    kind: 'lower',
-    min: 21500,
-    max: null,
-    unit: 'kg/hr',
-    raw: '>21500 kg/hr',
-  },
-  presetId: 's-204-no1',
-  configNo: 1,
-  sheet: 'S-204',
 }
 
 function baseProps(
@@ -63,213 +36,372 @@ function baseProps(
   }
 }
 
-describe('OutlierRemovalPanel — Preset range cutoff', () => {
-  it('renders nothing when there are no candidates for the visible tags', () => {
-    render(<OutlierRemovalPanel {...baseProps()} presetRangeCandidates={[]} />)
+describe('OutlierRemovalPanel — preset range moved out (DS-LAKE-038)', () => {
+  it('no longer renders the Preset range cutoff section - it lives in its own card', () => {
+    render(<OutlierRemovalPanel {...baseProps()} />)
     expect(screen.queryByText('Preset range cutoff')).toBeNull()
   })
 
-  it('says why when there are no candidates because the preset predates range-cutoff support', () => {
-    render(
-      <OutlierRemovalPanel
-        {...baseProps()}
-        presetRangeCandidates={[]}
-        presetRangeStale
-      />,
-    )
-    expect(screen.getByText('Preset range cutoff')).toBeInTheDocument()
-    expect(
-      screen.getByText(/imported before range-cutoff support existed/i),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/re-import the same excel workbook/i),
-    ).toBeInTheDocument()
-  })
-
-  it('prefers showing real candidates over the stale notice when both are present', () => {
-    // A later Apply Preset that resolves to a fresh document should always
-    // win the display — staleness is only ever surfaced when there is
-    // nothing else to show.
-    render(
-      <OutlierRemovalPanel
-        {...baseProps()}
-        presetRangeCandidates={[CLOSED]}
-        presetRangeStale
-        tagUnits={{ 'TI-101': 'C' }}
-      />,
-    )
-    expect(screen.getByText('105-120 C')).toBeInTheDocument()
-    expect(
-      screen.queryByText(/imported before range-cutoff support existed/i),
-    ).toBeNull()
-  })
-
-  it('lists candidates for every frame tag even when Step 3.2 isolates a tag with none', () => {
-    // Step 3.2 always passes the isolated tag as scopeTag. Isolating the
-    // target (no Range control of its own) used to hide the whole section.
-    const other: PresetRangeCandidate = {
-      ...CLOSED,
-      tag: 'FIC505.PV',
-      rowLabel: 'FIC505.PV',
-      quotedRange: '45 - 95',
-      parsed: { kind: 'closed', min: 45, max: 95, unit: null, raw: '45 - 95' },
-    }
-    render(
-      <OutlierRemovalPanel
-        {...baseProps({ tags: ['TI-101', 'FIC505.PV', 's611water.lab'] })}
-        scopeTag="s611water.lab"
-        presetRangeCandidates={[CLOSED, other]}
-        tagUnits={{ 'TI-101': 'C' }}
-      />,
-    )
-    expect(screen.getByText('Preset range cutoff')).toBeInTheDocument()
-    expect(screen.getByText('105-120 C')).toBeInTheDocument()
-    expect(screen.getByText('45 - 95')).toBeInTheDocument()
-  })
-
-  it('shows the quoted range verbatim and provenance for a matching-unit candidate', () => {
-    render(
-      <OutlierRemovalPanel
-        {...baseProps()}
-        presetRangeCandidates={[CLOSED]}
-        tagUnits={{ 'TI-101': 'C' }}
-      />,
-    )
-    expect(screen.getByText('Preset range cutoff')).toBeInTheDocument()
-    expect(screen.getByText('105-120 C')).toBeInTheDocument()
-    expect(screen.getByText(/s-204-no1 · config 1 · S-204/)).toBeInTheDocument()
-  })
-
-  it('V03: toggling a closed range ON emits two strict ConditionalRules with the resolved bound', async () => {
+  it('still lists a preset-range rule, with a Clip | Exclude toggle and no Mark', async () => {
     const onConditionalChange = vi.fn()
-    render(
-      <OutlierRemovalPanel
-        {...baseProps({ onConditionalChange })}
-        presetRangeCandidates={[CLOSED]}
-        tagUnits={{ 'TI-101': 'C' }}
-      />,
-    )
-    await userEvent.click(
-      screen.getByRole('switch', {
-        name: 'Toggle preset range cutoff for TI-101',
-      }),
-    )
-    expect(onConditionalChange).toHaveBeenCalledTimes(1)
-    const rules = onConditionalChange.mock.calls[0]![0] as ConditionalRule[]
-    expect(rules).toHaveLength(2)
-    const min = rules.find(r => r.op === '<')!
-    const max = rules.find(r => r.op === '>')!
-    expect(min.value).toBe(105)
-    expect(max.value).toBe(120)
-    expect(min.tag).toBe('TI-101')
-    expect(min.action).toBe('mark')
-    expect(min.source).toBe('preset-range')
-    expect(min.presetRange).toEqual({
-      presetId: 's-204-no1',
-      configNo: 1,
-      quoted: '105-120 C',
-      unit: 'C',
-    })
-  })
-
-  it('toggling OFF removes the preset-range rules for that tag and no others', async () => {
-    const existing: ConditionalRule = {
+    const rule: ConditionalRule = {
       id: 'preset-range:TI-101:min',
       tag: 'TI-101',
       op: '<',
       value: 105,
-      action: 'mark',
+      action: 'clip',
+      enabled: true,
+      source: 'preset-range',
+    }
+    render(
+      <OutlierRemovalPanel
+        {...baseProps({ conditionalRules: [rule], onConditionalChange })}
+      />,
+    )
+    expect(screen.getByText('Preset range')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Mark' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Clip' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Exclude' }))
+    const [next] = onConditionalChange.mock.calls[0]![0] as ConditionalRule[]
+    expect(next!.action).toBe('mark')
+  })
+
+  const PAIR: ConditionalRule[] = [
+    {
+      id: 'preset-range:TI-101:min',
+      tag: 'TI-101',
+      op: '<',
+      value: 105,
+      action: 'clip',
       enabled: true,
       source: 'preset-range',
       presetRange: {
-        presetId: 's-204-no1',
+        presetId: 'p',
         configNo: 1,
         quoted: '105-120 C',
         unit: 'C',
+        original: 105,
       },
-    }
-    const handTyped: ConditionalRule = {
-      id: 'hand-1',
+    },
+    {
+      id: 'preset-range:TI-101:max',
       tag: 'TI-101',
-      op: '==',
-      value: 0,
-      action: 'drop',
+      op: '>',
+      value: 120,
+      action: 'clip',
       enabled: true,
-    }
+      source: 'preset-range',
+      presetRange: {
+        presetId: 'p',
+        configNo: 1,
+        quoted: '105-120 C',
+        unit: 'C',
+        original: 120,
+      },
+    },
+  ]
+  const HAND: ConditionalRule = {
+    id: 'hand',
+    tag: 'TI-101',
+    op: '==',
+    value: 0,
+    action: 'drop',
+    enabled: true,
+  }
+  const low = () =>
+    screen.getByRole('spinbutton', { name: 'TI-101 lower bound' })
+  const high = () =>
+    screen.getByRole('spinbutton', { name: 'TI-101 upper bound' })
+
+  it('shows a preset-range PAIR as one editable row: TAG │ [low] ≤ x ≤ [high] unit', async () => {
     const onConditionalChange = vi.fn()
     render(
       <OutlierRemovalPanel
         {...baseProps({
-          conditionalRules: [existing, handTyped],
+          conditionalRules: [...PAIR, HAND],
           onConditionalChange,
         })}
-        presetRangeCandidates={[CLOSED]}
         tagUnits={{ 'TI-101': 'C' }}
       />,
     )
-    const toggle = screen.getByRole('switch', {
-      name: 'Toggle preset range cutoff for TI-101',
-    })
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
-    await userEvent.click(toggle)
-    expect(onConditionalChange).toHaveBeenCalledWith([handTyped])
+
+    expect(low()).toHaveValue(105)
+    expect(high()).toHaveValue(120)
+    expect(screen.getByText('C')).toBeInTheDocument()
+    expect(screen.getAllByText('Preset range')).toHaveLength(1)
+    // Tag and inputs are split by the drawn divider, hidden from readers.
+    expect(
+      screen.getByText('TI-101', { selector: 'span.truncate' })
+        .nextElementSibling,
+    ).toHaveAttribute('aria-hidden')
+    // The hand rule keeps its own row and switch; the preset row has none.
+    expect(screen.getAllByRole('switch')).toHaveLength(1)
+
+    await userEvent.click(
+      within(
+        screen.getByRole('group', {
+          name: 'What to do with TI-101 readings outside the range',
+        }),
+      ).getByRole('button', { name: 'Exclude' }),
+    )
+    const next = onConditionalChange.mock.calls[0]![0] as ConditionalRule[]
+    expect(
+      next.filter(r => r.source === 'preset-range').map(r => r.action),
+    ).toEqual(['mark', 'mark'])
+    expect(next.find(r => r.id === 'hand')).toEqual(HAND)
   })
 
-  it('V02: disables the toggle and refuses to apply when the unit gate has no known conversion', () => {
-    const unknownUnit: PresetRangeCandidate = {
-      ...CLOSED,
-      parsed: { ...CLOSED.parsed, unit: 'cP' },
-    }
+  it('editing a bound writes only that bound, keeping its preset provenance', async () => {
+    const onConditionalChange = vi.fn()
     render(
       <OutlierRemovalPanel
-        {...baseProps()}
-        presetRangeCandidates={[unknownUnit]}
-        tagUnits={{ 'TI-101': 'C' }}
+        {...baseProps({ conditionalRules: PAIR, onConditionalChange })}
       />,
     )
-    const toggle = screen.getByRole('switch', {
-      name: 'Toggle preset range cutoff for TI-101',
-    })
-    expect(toggle).toBeDisabled()
-    expect(screen.getByText(/no known conversion/i)).toBeInTheDocument()
+    await userEvent.clear(low())
+    await userEvent.type(low(), '100')
+
+    const last = onConditionalChange.mock.calls.at(-1)![0] as ConditionalRule[]
+    expect(last.map(r => r.value)).toEqual([100, 120])
+    expect(last[0]!.presetRange?.original).toBe(105)
   })
 
-  it('shows the operating-window warning for an open-ended range', () => {
+  it('refuses an impossible window: says so and writes nothing', async () => {
+    const onConditionalChange = vi.fn()
     render(
       <OutlierRemovalPanel
-        {...baseProps()}
-        presetRangeCandidates={[OPEN_ENDED]}
-        tagUnits={{ 'TI-101': 'kg/hr' }}
+        {...baseProps({ conditionalRules: PAIR, onConditionalChange })}
       />,
     )
-    expect(screen.getByText(/operating window/i)).toBeInTheDocument()
+    await userEvent.clear(low())
+    await userEvent.type(low(), '130')
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/below high/i)
+    // '1' and '13' were valid on the way; '130' (above 120) never landed.
+    const values = onConditionalChange.mock.calls.map(
+      c => (c[0] as ConditionalRule[])[0]!.value,
+    )
+    expect(values).not.toContain(130)
   })
 
-  it('T06: warns that the labelled-row count cannot be checked before a target is chosen, once a cutoff is enabled', async () => {
-    const active: ConditionalRule = {
+  it('an emptied bound is never written', async () => {
+    const onConditionalChange = vi.fn()
+    render(
+      <OutlierRemovalPanel
+        {...baseProps({ conditionalRules: PAIR, onConditionalChange })}
+      />,
+    )
+    await userEvent.clear(high())
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/enter a value/i)
+    expect(onConditionalChange).not.toHaveBeenCalled()
+  })
+
+  it('an edited range shows Edited and resets to the preset numbers', async () => {
+    const onConditionalChange = vi.fn()
+    const edited = [{ ...PAIR[0]!, value: 100 }, PAIR[1]!]
+    render(
+      <OutlierRemovalPanel
+        {...baseProps({ conditionalRules: edited, onConditionalChange })}
+      />,
+    )
+    expect(screen.getByText('Edited')).toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reset TI-101 to the preset range' }),
+    )
+    const next = onConditionalChange.mock.calls[0]![0] as ConditionalRule[]
+    expect(next.map(r => r.value)).toEqual([105, 120])
+  })
+
+  it('an unedited range shows no Edited badge and no reset', () => {
+    render(<OutlierRemovalPanel {...baseProps({ conditionalRules: PAIR })} />)
+    expect(screen.queryByText('Edited')).toBeNull()
+    expect(
+      screen.queryByRole('button', {
+        name: 'Reset TI-101 to the preset range',
+      }),
+    ).toBeNull()
+  })
+
+  it('removing the preset row removes both bounds and keeps hand rules', async () => {
+    const onConditionalChange = vi.fn()
+    const min: ConditionalRule = {
       id: 'preset-range:TI-101:min',
       tag: 'TI-101',
       op: '<',
       value: 105,
-      action: 'mark',
+      action: 'drop',
       enabled: true,
       source: 'preset-range',
-      presetRange: {
-        presetId: 's-204-no1',
-        configNo: 1,
-        quoted: '105-120 C',
-        unit: 'C',
-      },
+    }
+    const max: ConditionalRule = {
+      ...min,
+      id: 'preset-range:TI-101:max',
+      op: '>',
+      value: 120,
+    }
+    const hand: ConditionalRule = {
+      id: 'hand',
+      tag: 'TI-101',
+      op: '==',
+      value: 0,
+      action: 'mark',
+      enabled: true,
     }
     render(
       <OutlierRemovalPanel
-        {...baseProps({ conditionalRules: [active] })}
-        presetRangeCandidates={[CLOSED]}
-        tagUnits={{ 'TI-101': 'C' }}
-        targetTag={null}
+        {...baseProps({
+          conditionalRules: [min, max, hand],
+          onConditionalChange,
+        })}
       />,
     )
-    expect(screen.getByText(/target tag isn't chosen/i)).toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove preset range for TI-101' }),
+    )
+    expect(onConditionalChange).toHaveBeenCalledWith([hand])
+  })
+
+  it('a pair with mixed actions lights neither segment', () => {
+    const base: ConditionalRule = {
+      id: 'preset-range:TI-101:min',
+      tag: 'TI-101',
+      op: '<',
+      value: 105,
+      action: 'clip',
+      enabled: true,
+      source: 'preset-range',
+    }
+    render(
+      <OutlierRemovalPanel
+        {...baseProps({
+          conditionalRules: [
+            base,
+            {
+              ...base,
+              id: 'preset-range:TI-101:max',
+              op: '>',
+              value: 120,
+              action: 'drop',
+            },
+          ],
+        })}
+      />,
+    )
+    for (const name of ['Clip', 'Exclude']) {
+      expect(screen.getByRole('button', { name })).toHaveAttribute(
+        'aria-pressed',
+        'false',
+      )
+    }
+  })
+
+  describe('a condition the user writes: Clip | Exclude, like the cleaning toolkit', () => {
+    const hand = (extra: Partial<ConditionalRule> = {}): ConditionalRule => ({
+      id: 'hand',
+      tag: 'TI-101',
+      op: '>',
+      value: 500,
+      action: 'mark',
+      enabled: true,
+      ...extra,
+    })
+    const toggle = () =>
+      screen.getByRole('group', { name: 'What to do with matching readings' })
+
+    it('offers Clip and Exclude, and no Mark or Drop', () => {
+      render(
+        <OutlierRemovalPanel {...baseProps({ conditionalRules: [hand()] })} />,
+      )
+      expect(
+        within(toggle()).getByRole('button', { name: 'Clip' }),
+      ).toBeInTheDocument()
+      expect(
+        within(toggle()).getByRole('button', { name: 'Exclude' }),
+      ).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.queryByText('Mark')).toBeNull()
+      expect(screen.queryByText('Drop')).toBeNull()
+    })
+
+    it('Clip writes the clip action; Exclude writes mark (Bad, value kept)', async () => {
+      const onConditionalChange = vi.fn()
+      render(
+        <OutlierRemovalPanel
+          {...baseProps({ conditionalRules: [hand()], onConditionalChange })}
+        />,
+      )
+      await userEvent.click(
+        within(toggle()).getByRole('button', { name: 'Clip' }),
+      )
+      expect(
+        (onConditionalChange.mock.calls[0]![0] as ConditionalRule[])[0]!.action,
+      ).toBe('clip')
+    })
+
+    it('a condition saved with drop shows as Exclude', () => {
+      render(
+        <OutlierRemovalPanel
+          {...baseProps({ conditionalRules: [hand({ action: 'drop' })] })}
+        />,
+      )
+      expect(
+        within(toggle()).getByRole('button', { name: 'Exclude' }),
+      ).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('a Range or == condition offers only Exclude - there is no bound to clip to', () => {
+      render(
+        <OutlierRemovalPanel
+          {...baseProps({
+            conditionalRules: [
+              hand({ id: 'a', op: '<', lower: { value: 200, op: '<=' } }),
+            ],
+          })}
+        />,
+      )
+      expect(
+        within(toggle()).queryByRole('button', { name: 'Clip' }),
+      ).toBeNull()
+      expect(
+        within(toggle()).getByRole('button', { name: 'Exclude' }),
+      ).toBeInTheDocument()
+    })
+
+    it('turning Range on while set to Clip switches the condition to Exclude', async () => {
+      const onConditionalChange = vi.fn()
+      render(
+        <OutlierRemovalPanel
+          {...baseProps({
+            conditionalRules: [hand({ action: 'clip', op: '<' })],
+            onConditionalChange,
+          })}
+        />,
+      )
+      await userEvent.click(screen.getByRole('button', { name: /range/i }))
+      const [next] = onConditionalChange.mock.calls[0]![0] as ConditionalRule[]
+      expect(next!.lower).toBeDefined()
+      expect(next!.action).toBe('mark')
+    })
+
+    it('an SD&TA condition keeps its own toggle', () => {
+      render(
+        <OutlierRemovalPanel
+          {...baseProps({
+            conditionalRules: [hand({ source: 'sdta', action: 'drop_row' })],
+          })}
+        />,
+      )
+      expect(
+        screen.queryByRole('group', {
+          name: 'What to do with matching readings',
+        }),
+      ).toBeNull()
+      expect(screen.getByText('Mark')).toBeInTheDocument()
+    })
   })
 })
 

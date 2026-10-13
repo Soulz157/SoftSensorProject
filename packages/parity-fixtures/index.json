@@ -91,6 +91,38 @@
       "engine": "preprocessPipelines"
     },
     {
+      "name": "range_exclude_both_bounds",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "range_exclude_low_only",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "range_exclude_high_only",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "range_exclude_no_bounds_is_noop",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "range_exclude_then_interpolate",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "range_exclude_then_crop",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "range_exclude_then_moving_avg",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "clip_then_interpolate",
+      "engine": "preprocessPipelines"
+    },
+    {
       "name": "clip_windowed",
       "engine": "preprocessPipelines"
     },
@@ -140,6 +172,14 @@
     },
     {
       "name": "precleanse_conditional_drop",
+      "engine": "precleanse"
+    },
+    {
+      "name": "precleanse_preset_range_exclude",
+      "engine": "precleanse"
+    },
+    {
+      "name": "precleanse_preset_range_clip",
       "engine": "precleanse"
     },
     {
