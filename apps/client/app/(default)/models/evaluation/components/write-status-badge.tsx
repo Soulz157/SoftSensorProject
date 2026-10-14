@@ -8,8 +8,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { STATUS_LABEL } from '@/lib/evaluation-history'
-import type { WriteBackStatus } from '@/services/model-evaluation'
+import { STATUS_LABEL } from '@/lib/backfill-history'
+import type { WriteBackStatus } from '@/services/model-backfill'
 
 const ICON: Record<WriteBackStatus, LucideIcon> = {
   PENDING: CircleDashed,

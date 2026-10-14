@@ -4,7 +4,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   modelEvaluationService,
   type EvaluationCompareResult,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 import {
   buildChartRows,
   defaultRange,
@@ -12,7 +12,7 @@ import {
   stampToUtcIso,
   validateRange,
   type ChartRow,
-} from '@/lib/evaluation-compare'
+} from '@/lib/backfill-compare'
 import {
   activeLab,
   addLabRow,
@@ -24,7 +24,7 @@ import {
   restoreLabRow,
   seedLab,
   type LabRow,
-} from '@/lib/evaluation-lab'
+} from '@/lib/backfill-lab'
 import type { LabPoint } from '@/lib/lab-ingestion'
 import {
   computeMetrics,
@@ -83,7 +83,7 @@ export interface UseModelEvaluation {
  *
  * The lab series starts as the raw recorded events and stays editable; each
  * row remembers its imported original, so a reset needs no re-import.
- * Pairing and metrics are pure derivations over it (`lib/evaluation-compare`),
+ * Pairing and metrics are pure derivations over it (`lib/backfill-compare`),
  * so they follow every edit without another request.
  *
  * The component that uses this is keyed by model id, so a model switch

@@ -5,7 +5,7 @@ import {
   modelEvaluationService,
   type WriteBackHistoryItem,
   type WriteBackHistoryPage,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 
 export interface UseWriteBackHistory {

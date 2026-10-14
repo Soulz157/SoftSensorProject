@@ -7,11 +7,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useWriteBack } from '@/hooks/model/use-write-back'
 import { useWriteBackConfig } from '@/hooks/model/use-write-back-config'
-import type { LabRow } from '@/lib/evaluation-lab'
+import type { LabRow } from '@/lib/backfill-lab'
 import type {
   EvaluationCompareResult,
   WriteBackKind,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 import { WriteBackConfigDialog } from './write-back-config-dialog'
 import { WriteBackConfirmDialog } from './write-back-confirm-dialog'
 

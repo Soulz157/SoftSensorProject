@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { WriteBackConfigView } from '@/services/model-evaluation'
+import type { WriteBackConfigView } from '@/services/model-backfill'
 import type { UseWriteBack } from '@/hooks/model/use-write-back'
 import type { UseWriteBackConfig } from '@/hooks/model/use-write-back-config'
 import { WriteBackCard } from '../write-back-card'

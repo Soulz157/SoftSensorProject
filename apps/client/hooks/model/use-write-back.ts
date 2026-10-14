@@ -8,9 +8,9 @@ import {
   type WriteBackConfigView,
   type WriteBackDryRun,
   type WriteBackKind,
-} from '@/services/model-evaluation'
-import type { LabRow } from '@/lib/evaluation-lab'
-import { pointsFor, writeBlocker } from '@/lib/evaluation-write-back'
+} from '@/services/model-backfill'
+import type { LabRow } from '@/lib/backfill-lab'
+import { pointsFor, writeBlocker } from '@/lib/backfill-write-back'
 
 export interface UseWriteBack {
   /** Why `kind` cannot be written right now; null when it can. */

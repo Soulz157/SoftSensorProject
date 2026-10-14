@@ -2,26 +2,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AIModel } from '@/types'
-import type { UseModelEvaluation } from '@/hooks/use-model-evaluation'
-import type { EvaluationCompareResult } from '@/services/model-evaluation'
-import { ModelEvaluation } from '../model-evaluation'
+import type { UseModelEvaluation } from '@/hooks/use-model-backfill'
+import type { EvaluationCompareResult } from '@/services/model-backfill'
+import { ModelEvaluation } from '../model-backfill'
 
 /**
  * MODEL-SERVE-032. The Evaluation page's states, with the data hook mocked
  * and the two chart components stubbed (recharts needs a layout engine; the
- * chart math is covered by lib/evaluation-compare.test.ts). What is pinned
+ * chart math is covered by lib/backfill-compare.test.ts). What is pinned
  * here is what the page SAYS: that a skipped row, a missing lab, an absent
  * import and a server refusal each read as themselves.
  */
 const hook = vi.fn<() => UseModelEvaluation>()
-vi.mock('@/hooks/use-model-evaluation', () => ({
+vi.mock('@/hooks/use-model-backfill', () => ({
   useModelEvaluation: () => hook(),
 }))
-vi.mock('../evaluation-chart', () => ({
+vi.mock('../backfill-chart', () => ({
   EvaluationChart: () => <div data-testid="chart" />,
   EVALUATION_SYNC_ID: 'evaluation',
 }))
-vi.mock('../evaluation-x-panel', () => ({
+vi.mock('../backfill-x-panel', () => ({
   EvaluationXPanel: () => <div data-testid="x-panel" />,
 }))
 vi.mock('../lab-editor', () => ({

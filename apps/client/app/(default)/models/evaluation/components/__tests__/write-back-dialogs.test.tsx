@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import type {
   WriteBackConfigView,
   WriteBackDryRun,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 import { WriteBackConfirmDialog } from '../write-back-confirm-dialog'
 import { WriteBackConfigDialog } from '../write-back-config-dialog'
 

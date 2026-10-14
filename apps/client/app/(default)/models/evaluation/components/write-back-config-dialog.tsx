@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 import { dataSourceService, type TagMetaItem } from '@/services/data-sources'
-import type { WriteBackConfigView } from '@/services/model-evaluation'
+import type { WriteBackConfigView } from '@/services/model-backfill'
 
 const NUMERIC = /^(float|int)/i
 const MIN_QUERY = 2

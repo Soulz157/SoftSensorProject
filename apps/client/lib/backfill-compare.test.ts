@@ -11,8 +11,8 @@ import {
   utcToWallMs,
   validateRange,
   xRows,
-} from './evaluation-compare'
-import type { EvaluationCompareResult } from '@/services/model-evaluation'
+} from './backfill-compare'
+import type { EvaluationCompareResult } from '@/services/model-backfill'
 
 type Points = EvaluationCompareResult['points']
 

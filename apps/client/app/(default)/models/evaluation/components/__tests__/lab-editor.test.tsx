@@ -6,7 +6,7 @@ import {
   editLabRow,
   removeLabRow,
   seedLab,
-} from '@/lib/evaluation-lab'
+} from '@/lib/backfill-lab'
 import { LabEditor } from '../lab-editor'
 
 const T1 = '2026-10-14T01:00:00.000Z' // 08:00 plant time

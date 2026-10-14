@@ -17,9 +17,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { stampToUtcIso, utcToWallMs } from '@/lib/evaluation-compare'
+import { stampToUtcIso, utcToWallMs } from '@/lib/backfill-compare'
 import { formatWallClockFull } from '@/lib/monitoring'
-import type { LabOrigin, LabRow } from '@/lib/evaluation-lab'
+import type { LabOrigin, LabRow } from '@/lib/backfill-lab'
 import type { LabPoint } from '@/lib/lab-ingestion'
 
 interface Props {

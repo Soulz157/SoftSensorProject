@@ -11,7 +11,7 @@
  */
 
 import { parseLabCsv, type LabPoint } from '@/lib/lab-ingestion'
-import { stampToUtcIso } from '@/lib/evaluation-compare'
+import { stampToUtcIso } from '@/lib/backfill-compare'
 
 export type LabOrigin = 'imported' | 'edited' | 'added'
 

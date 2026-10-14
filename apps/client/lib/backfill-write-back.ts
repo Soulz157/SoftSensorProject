@@ -3,12 +3,12 @@
  * refuse to. Pure, no IO.
  */
 
-import { activeLab, type LabRow } from '@/lib/evaluation-lab'
+import { activeLab, type LabRow } from '@/lib/backfill-lab'
 import type {
   EvaluationCompareResult,
   WriteBackConfigView,
   WriteBackKind,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 
 /** Mirrors the server's per-batch cap. */
 export const WRITE_MAX_POINTS = 2000

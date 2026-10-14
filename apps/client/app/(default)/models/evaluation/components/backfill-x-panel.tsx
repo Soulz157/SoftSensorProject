@@ -11,9 +11,9 @@ import {
 } from 'recharts'
 import { Button } from '@/components/ui/button'
 import { formatAxisValue } from '@/lib/monitoring'
-import { xRows } from '@/lib/evaluation-compare'
-import type { EvaluationCompareResult } from '@/services/model-evaluation'
-import { EVALUATION_SYNC_ID } from './evaluation-chart'
+import { xRows } from '@/lib/backfill-compare'
+import type { EvaluationCompareResult } from '@/services/model-backfill'
+import { EVALUATION_SYNC_ID } from './backfill-chart'
 
 /** A model can read dozens of base tags; drawing every one on first paint is
  *  both slow and unreadable, so the panel opens on the first few. */

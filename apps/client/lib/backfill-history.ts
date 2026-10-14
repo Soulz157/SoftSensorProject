@@ -1,10 +1,10 @@
 import { formatWallClockFull } from '@/lib/monitoring'
-import { utcToWallMs } from '@/lib/evaluation-compare'
+import { utcToWallMs } from '@/lib/backfill-compare'
 import type {
   RollbackDryRun,
   WriteBackBatchSummary,
   WriteBackStatus,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 
 /**
  * MODEL-SERVE-032. Pure rules for the write-history table and the rollback

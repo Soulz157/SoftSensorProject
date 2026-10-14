@@ -11,7 +11,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import type { WriteBackDryRun } from '@/services/model-evaluation'
+import type { WriteBackDryRun } from '@/services/model-backfill'
 
 const KIND_LABEL = { PREDICTION: 'predictions', LAB: 'lab values' } as const
 

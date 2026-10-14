@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type { RollbackDryRun } from '@/services/model-evaluation'
+import type { RollbackDryRun } from '@/services/model-backfill'
 import {
   canRollbackNow,
   formatDriftActual,
   formatPlantTime,
   formatStored,
   rollbackBlocker,
-} from './evaluation-history'
+} from './backfill-history'
 
 const batch = {
   kind: 'PREDICTION' as const,

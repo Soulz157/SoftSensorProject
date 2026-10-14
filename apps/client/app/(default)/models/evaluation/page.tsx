@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAllModels } from '@/hooks/use-all-models'
-import { ModelEvaluation } from './components/model-evaluation'
+import { ModelEvaluation } from './components/model-backfill'
 
 export default function ModelEvaluationPage() {
   const { models, loading } = useAllModels()

@@ -1,17 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { toast } from 'sonner'
-import { seedLab } from '@/lib/evaluation-lab'
+import { seedLab } from '@/lib/backfill-lab'
 import type {
   EvaluationCompareResult,
   WriteBackBatchSummary,
   WriteBackConfigView,
   WriteBackDryRun,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 import { useWriteBack } from '../use-write-back'
 
 const writeBack = vi.fn()
-vi.mock('@/services/model-evaluation', () => ({
+vi.mock('@/services/model-backfill', () => ({
   modelEvaluationService: { writeBack: (...a: unknown[]) => writeBack(...a) },
 }))
 vi.mock('sonner', () => ({

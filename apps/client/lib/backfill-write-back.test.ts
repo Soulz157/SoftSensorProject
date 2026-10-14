@@ -4,9 +4,9 @@ import {
   pointsFor,
   writeBlocker,
   WRITE_MAX_POINTS,
-} from './evaluation-write-back'
-import { seedLab, removeLabRow, editLabRow } from './evaluation-lab'
-import type { WriteBackConfigView } from '@/services/model-evaluation'
+} from './backfill-write-back'
+import { seedLab, removeLabRow, editLabRow } from './backfill-lab'
+import type { WriteBackConfigView } from '@/services/model-backfill'
 
 const T1 = '2026-10-14T01:00:00.000Z'
 const T2 = '2026-10-14T02:00:00.000Z'

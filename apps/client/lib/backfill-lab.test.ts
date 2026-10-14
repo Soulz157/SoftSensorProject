@@ -9,7 +9,7 @@ import {
   removeLabRow,
   restoreLabRow,
   seedLab,
-} from './evaluation-lab'
+} from './backfill-lab'
 
 const T1 = '2026-10-14T01:00:00.000Z'
 const T2 = '2026-10-14T02:00:00.000Z'

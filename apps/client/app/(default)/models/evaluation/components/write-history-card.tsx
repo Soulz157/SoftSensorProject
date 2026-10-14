@@ -23,8 +23,8 @@ import {
   formatStored,
   KIND_LABEL,
   rollbackBlocker,
-} from '@/lib/evaluation-history'
-import type { WriteBackHistoryItem } from '@/services/model-evaluation'
+} from '@/lib/backfill-history'
+import type { WriteBackHistoryItem } from '@/services/model-backfill'
 import { RollbackDialog } from './rollback-dialog'
 import { WriteStatusBadge } from './write-status-badge'
 

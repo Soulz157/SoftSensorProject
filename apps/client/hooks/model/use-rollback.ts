@@ -6,8 +6,8 @@ import {
   modelEvaluationService,
   type RollbackDryRun,
   type WriteBackHistoryItem,
-} from '@/services/model-evaluation'
-import { canRollbackNow } from '@/lib/evaluation-history'
+} from '@/services/model-backfill'
+import { canRollbackNow } from '@/lib/backfill-history'
 
 export interface UseRollback {
   /** The batch the dialog is about; null = dialog closed. */

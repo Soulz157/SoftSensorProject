@@ -4,7 +4,7 @@ import { useState } from 'react'
 import {
   modelEvaluationService,
   type WriteBackBatchDetail,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 
 export interface UseWriteBackBatch {

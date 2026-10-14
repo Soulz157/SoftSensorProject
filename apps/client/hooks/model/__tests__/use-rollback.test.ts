@@ -5,11 +5,11 @@ import type {
   RollbackDryRun,
   WriteBackBatchSummary,
   WriteBackHistoryItem,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 import { useRollback } from '../use-rollback'
 
 const rollbackCall = vi.fn()
-vi.mock('@/services/model-evaluation', () => ({
+vi.mock('@/services/model-backfill', () => ({
   modelEvaluationService: {
     rollback: (...a: unknown[]) => rollbackCall(...a),
   },

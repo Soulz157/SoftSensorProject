@@ -5,7 +5,7 @@ import type {
   RollbackDryRun,
   WriteBackConfigView,
   WriteBackHistoryItem,
-} from '@/services/model-evaluation'
+} from '@/services/model-backfill'
 import type { UseRollback } from '@/hooks/model/use-rollback'
 import type { UseWriteBackConfig } from '@/hooks/model/use-write-back-config'
 import type { UseWriteBackHistory } from '@/hooks/model/use-write-back-history'

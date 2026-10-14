@@ -15,7 +15,7 @@ import {
   formatWallClockFull,
   pickTimeFormat,
 } from '@/lib/monitoring'
-import type { ChartRow } from '@/lib/evaluation-compare'
+import type { ChartRow } from '@/lib/backfill-compare'
 
 /** Shared with the X-tag mini charts so the cursor moves through all of them. */
 export const EVALUATION_SYNC_ID = 'evaluation'

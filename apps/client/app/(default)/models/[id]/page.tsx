@@ -68,7 +68,7 @@ import { HEALTH_REASON_LABEL } from '@/lib/health-status-style'
 import { ALGORITHM_LABELS } from '@/store/model-pipeline'
 import { formatMetricValue } from '@/lib/model-evaluation'
 import type { AIModel } from '@/types'
-import { ModelEvaluation } from '../evaluation/components/model-evaluation'
+import { ModelEvaluation } from '../evaluation/components/model-backfill'
 import { ModelUpsertDialog } from '../views/components/model-upsert-dialog'
 import { ModelRetrainDialog } from './components/model-retrain-dialog'
 import { RetrainTab } from './components/retrain-tab'
@@ -896,7 +896,7 @@ export default function ModelDetailPage({
                 className="flex items-center gap-2 px-4"
               >
                 <Gauge className="h-4 w-4 shrink-0" />
-                <span>Evaluation</span>
+                <span>BackFill</span>
               </TabsTrigger>
 
               {/* MODEL-SERVE-016-T02. Between Evaluation and Logs on

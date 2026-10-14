@@ -13,7 +13,7 @@
 import { alignLabToPredictions, type LabPoint } from '@/lib/lab-ingestion'
 import type { PredPoint } from '@/lib/mock-lab-data'
 import type { EvalPoint } from '@/lib/model-evaluation'
-import type { EvaluationCompareResult } from '@/services/model-evaluation'
+import type { EvaluationCompareResult } from '@/services/model-backfill'
 
 /** Bangkok is UTC+7 all year. */
 export const PLANT_UTC_OFFSET_MS = 7 * 3_600_000
