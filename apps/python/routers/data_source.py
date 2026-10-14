@@ -7,7 +7,7 @@ apps/backend src/lib/python-client.ts. The browser never calls them directly.
 
 PI (AVEVA) is implemented here. SQL and REST sub-routes are added by F4 / F5.
 """
-from asyncio import log
+import logging
 import traceback
 
 from fastapi import APIRouter, HTTPException
@@ -18,6 +18,8 @@ from schemas.data_source import (
     ConnectionTestResponse,
     PICurrentRequest,
     PIFetchRequest,
+    PIRecordedRequest,
+    PIRecordedResponse,
     PITagsRequest,
     PITestRequest,
     TagResolveRequest,
@@ -28,9 +30,13 @@ from schemas.data_source import (
     SQLTablesRequest,
     SQLTablesResponse,
     SQLTestRequest,
+    PIWriteRequest,
+    PIWriteResponse,
 )
 from schemas.data import DataFetchResponse, TagListResponse, TagCurrentResponse, TagResolveResponse
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/data-sources", tags=["DataSources"])
 
@@ -90,6 +96,34 @@ def pi_resolve_tags(body: TagResolveRequest) -> TagResolveResponse:
         return _pi.resolve_tags(body.credentials, body.tag_list)
     except Exception:
         log.exception("pi_resolve_tags failed")
+        raise HTTPException(502, "PI Web API error")
+
+
+@router.post(
+    "/pi/recorded",
+    response_model=PIRecordedResponse,
+    summary="Raw recorded events of one PI tag (UTC in, UTC out)",
+)
+def pi_recorded(body: PIRecordedRequest) -> PIRecordedResponse:
+    try:
+        return _pi.recorded(body)
+    except Exception:
+        log.exception("pi_recorded failed")
+        raise HTTPException(502, "PI Web API error")
+
+
+@router.post(
+    "/pi/write",
+    response_model=PIWriteResponse,
+    summary="Replace / Remove recorded events on one PI tag",
+)
+def pi_write(body: PIWriteRequest) -> PIWriteResponse:
+    try:
+        return _pi.write(body)
+    except Exception:
+        # Part of the batch may already be stored: the caller must read the
+        # range back rather than assume nothing happened.
+        log.exception("pi_write failed")
         raise HTTPException(502, "PI Web API error")
 
 

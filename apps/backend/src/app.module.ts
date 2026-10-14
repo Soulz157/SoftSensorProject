@@ -30,6 +30,7 @@ import { ModelServingModule } from './api/v1/model-serving/model-serving.module'
 import { PredictionJobModule } from './api/v1/prediction-job/prediction-job.module';
 import { PredictionLogModule } from './api/v1/prediction-log/prediction-log.module';
 import { InferenceWindowModule } from './api/v1/inference-window/inference-window.module';
+import { ModelEvaluationModule } from './api/v1/model-evaluation/model-evaluation.module';
 import { MetricRegistryModule } from './api/v1/metric-registry/metric-registry.module';
 import { NotificationModule } from './api/v1/notification/notification.module';
 
@@ -79,6 +80,7 @@ import { NotificationModule } from './api/v1/notification/notification.module';
     ModelServingModule,
     PredictionJobModule,
     InferenceWindowModule,
+    ModelEvaluationModule,
     MetricRegistryModule,
     NotificationModule,
     PredictionLogModule,

@@ -966,6 +966,61 @@ class InferenceWindowMaterializeRequest(BaseModel):
         return self
 
 
+class InferenceEvalFrameRequest(BaseModel):
+    """MODEL-SERVE-032. The Evaluation page's range read: the same fetch +
+    recipe + trim as `InferenceWindowMaterializeRequest`, but the rows come
+    back INLINE and nothing is persisted -- so it carries no model / version /
+    dt / hour (there is no `inference/` key to build and none to collide with
+    a scheduled window's artifact).
+
+    `window_start` / `window_end` are REAL UTC instants, half-open
+    [start, end), exactly as for the scheduled window.
+    """
+
+    feature_spec_key: str
+    feature_columns: list[str] = Field(..., min_length=1)
+    #: Extra raw tags to return beside the features, for the X trend panel
+    #: (the model's own `baseTags`). Never scored.
+    display_tags: list[str] = Field(default_factory=list)
+    window_start: str = Field(..., examples=["2026-10-14T00:00:00.000Z"])
+    window_end: str = Field(..., examples=["2026-10-15T00:00:00.000Z"])
+    interval: str = Field(..., examples=["1m"])
+    #: Refuse BEFORE fetching when the range implies more rows than this.
+    max_rows: int = Field(2000, ge=1, le=20000)
+    pi: Optional[PIFetchRequest] = None
+    sql: Optional[SqlMaterializeSpec] = None
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> "InferenceEvalFrameRequest":
+        if (self.pi is None) == (self.sql is None):
+            raise ValueError("Provide exactly one of 'pi' or 'sql'.")
+        return self
+
+
+class EvalFrameCell(BaseModel):
+    #: None for a Bad cell: a Bad cell's stored number (0.0) is a placeholder,
+    #: never a reading, and must not reach a chart or a scorer.
+    value: Optional[float]
+    status: Literal["Good", "Bad", "Questionable"]
+
+
+class EvalFrameRow(BaseModel):
+    #: UTC instant, ISO-8601 `Z`.
+    timestamp: str
+    #: True only when EVERY feature column is Good -- the same rule the live
+    #: predict driver applies before it scores a row.
+    usable: bool
+    cells: dict[str, EvalFrameCell]
+
+
+class InferenceEvalFrameResponse(BaseModel):
+    rows: list[EvalFrameRow]
+    feature_columns: list[str]
+    display_tags: list[str]
+    #: Rows with at least one non-Good feature cell (they get no prediction).
+    unusable_rows: int
+
+
 class InferenceWindowMaterializeResponse(BaseModel):
     """MODEL-SERVE-006-T05. A dedicated, narrow response — NOT
     `ArtifactStatsResponse`, which carries several fields (column_stats_key,

@@ -44,13 +44,21 @@ import pandas as pd
 
 from intergrations.object_store import (
     INFERENCE_INPUT_FILENAME,
+    STATUS_BAD,
     STATUS_GOOD,
+    STATUS_QUESTIONABLE,
     TIMESTAMP_COLUMN,
     inference_window_key,
     status_column,
 )
 from intergrations.object_store import missing_pct as _missing_pct
-from schemas.preprocess import FeatureConfigRequest, InferenceWindowMaterializeRequest
+from schemas.preprocess import (
+    EvalFrameCell,
+    EvalFrameRow,
+    FeatureConfigRequest,
+    InferenceEvalFrameRequest,
+    InferenceWindowMaterializeRequest,
+)
 from services.boxplot_service import good_values
 from services.data_service import parse_interval
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
@@ -64,6 +72,7 @@ from services.frame_service import (
     diagnose_empty_pi_fetch,
     from_pi_response,
     from_sql_response,
+    utc_iso,
     utc_to_wall_clock,
 )
 from softsensor_scaling import (
@@ -314,18 +323,18 @@ def _tag_observations(
     return out
 
 
-def materialize_window(
-    store, request: InferenceWindowMaterializeRequest
-) -> dict[str, Any]:
-    """MODEL-SERVE-006-T04/T05/T06. Returns
-    `{object_key, row_count, scored_rows, missing_pct, checksum}` —
-    `InferenceWindowMaterializeResponse`'s own field set.
+def _build_window_frame(store, request) -> tuple[pd.DataFrame, dict, pd.Timestamp, pd.Timestamp]:
+    """Fetch -> apply the pinned recipe's features -> trim to the window.
 
-    `row_count` counts rows inside [window_start, window_end) BEFORE
-    dropping any Bad-feature row; `scored_rows` counts what is actually
-    written. The gap between them, divided by `row_count`, is
-    `missing_pct` — the same relationship MODEL-FLOW-010-T06's holdout
-    `missingPct` already has to its own row counts.
+    Shared by `materialize_window` (scheduled scoring, which then DROPS Bad
+    rows and writes an artifact) and `evaluation_frame` (the Evaluation page,
+    which keeps Bad rows visible and persists nothing). `request` is anything
+    with `feature_spec_key`, `window_start`, `window_end`, `interval`, `pi`
+    and `sql` -- both request models qualify.
+
+    Returns `(frame, spec, window_start_wall, window_end_wall)`; the frame is
+    naive Bangkok wall-clock, still carrying every fetched tag, its
+    `__status` sidecar and the computed feature columns.
     """
     spec = store.get_json(request.feature_spec_key)
     step_configs = [
@@ -432,6 +441,26 @@ def materialize_window(
             "the fetch config's tag/time range likely does not cover it."
         )
 
+    return frame, spec, window_start_wall, window_end_wall
+
+
+def materialize_window(
+    store, request: InferenceWindowMaterializeRequest
+) -> dict[str, Any]:
+    """MODEL-SERVE-006-T04/T05/T06. Returns
+    `{object_key, row_count, scored_rows, missing_pct, checksum}` —
+    `InferenceWindowMaterializeResponse`'s own field set.
+
+    `row_count` counts rows inside [window_start, window_end) BEFORE
+    dropping any Bad-feature row; `scored_rows` counts what is actually
+    written. The gap between them, divided by `row_count`, is
+    `missing_pct` — the same relationship MODEL-FLOW-010-T06's holdout
+    `missingPct` already has to its own row counts.
+    """
+    frame, spec, window_start_wall, window_end_wall = _build_window_frame(
+        store, request
+    )
+
     # Narrow to exactly the model's own feature columns (+ their status
     # sidecars, kept — assert_frame_shape requires every tag to carry one,
     # and to_model_ready's own doc comment states it re-derives them to
@@ -507,4 +536,89 @@ def materialize_window(
         "target_stats": target_stats,
         "target_histogram": target_histogram,
         "tag_observations": tag_observations,
+    }
+
+
+_STATUS_WORD = {
+    STATUS_GOOD: "Good",
+    STATUS_BAD: "Bad",
+    STATUS_QUESTIONABLE: "Questionable",
+}
+
+
+def evaluation_frame(store, request: InferenceEvalFrameRequest) -> dict[str, Any]:
+    """MODEL-SERVE-032. The Evaluation page's range read.
+
+    Same fetch + recipe + trim as `materialize_window` (they share
+    `_build_window_frame`), but:
+
+    * rows come back INLINE and nothing is written -- no `inference/` key, so
+      nothing here can collide with a scheduled window's artifact;
+    * Bad rows are KEPT and marked, not dropped: the page must show a gap as a
+      gap and the caller scores only `usable` rows. Dropping them here would
+      make the chart silently shorter than the range the user asked for;
+    * a Bad cell carries `value: None`, never its stored 0.0 placeholder.
+
+    The row cap is checked from the range and the cadence BEFORE any fetch, so
+    an oversized request fails in milliseconds, not after minutes of PI reads.
+    """
+    interval_td = parse_interval(request.interval)
+    start = pd.Timestamp(request.window_start)
+    end = pd.Timestamp(request.window_end)
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("window_start / window_end must be UTC instants (with 'Z').")
+    if end <= start:
+        raise ValueError("window_end must be after window_start.")
+    expected_rows = int((end - start) / interval_td)
+    if expected_rows > request.max_rows:
+        raise ValueError(
+            f"This range is about {expected_rows} rows at a {request.interval} "
+            f"interval; the limit is {request.max_rows}. Narrow the range."
+        )
+
+    frame, _spec, _ws, _we = _build_window_frame(store, request)
+
+    missing = [c for c in request.feature_columns if c not in frame.columns]
+    if missing:
+        raise ValueError(
+            "The recipe did not produce the model's feature column(s) "
+            f"{sorted(missing)} -- the feature spec and the model version "
+            "disagree."
+        )
+
+    columns = list(dict.fromkeys([*request.feature_columns, *request.display_tags]))
+    present = [c for c in columns if c in frame.columns]
+    feature_set = set(request.feature_columns)
+
+    rows: list[EvalFrameRow] = []
+    unusable = 0
+    for rec in frame.to_dict("records"):
+        cells: dict[str, EvalFrameCell] = {}
+        for col in columns:
+            if col not in present:
+                cells[col] = EvalFrameCell(value=None, status="Bad")
+                continue
+            code = int(rec.get(status_column(col), STATUS_BAD))
+            word = _STATUS_WORD.get(code, "Bad")
+            raw = rec[col]
+            ok = word != "Bad" and pd.notna(raw)
+            cells[col] = EvalFrameCell(
+                value=float(raw) if ok else None,
+                status=word if pd.notna(raw) else "Bad",
+            )
+        usable = all(cells[c].status == "Good" for c in feature_set)
+        unusable += 0 if usable else 1
+        rows.append(
+            EvalFrameRow(
+                timestamp=utc_iso(rec[TIMESTAMP_COLUMN]),
+                usable=usable,
+                cells=cells,
+            )
+        )
+
+    return {
+        "rows": rows,
+        "feature_columns": list(request.feature_columns),
+        "display_tags": list(request.display_tags),
+        "unusable_rows": unusable,
     }

@@ -72,6 +72,9 @@ import { NotificationEvaluatorService } from './authorized/notification-evaluato
   // references PredictionLog in code, so the dependency direction stays
   // acyclic (verified: PredictionLog -> InferenceWindow ->
   // {TrainningContainer, ModelServing}).
-  exports: [InferenceWindowMonitoringService],
+  // MODEL-SERVE-032. The scheduler joins the exports for ONE reason: the
+  // Evaluation page reads the model's source through `asFetchConfig` /
+  // `resolveSource`, which are public so the source mapping has one copy.
+  exports: [InferenceWindowMonitoringService, InferenceWindowSchedulerService],
 })
 export class InferenceWindowModule {}

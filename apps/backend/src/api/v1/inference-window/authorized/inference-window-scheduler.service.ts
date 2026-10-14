@@ -14,6 +14,7 @@ import {
 } from '@/lib/python-preprocess-client';
 import { formatDtHour, windowStartsBetween } from '@/lib/inference-windows';
 import { env } from '@/config/env.config';
+import { buildPiCredentials } from '@/lib/source-block';
 import { nextTagObservation, type FetchOutcome } from '@/lib/tag-observation';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
@@ -632,14 +633,7 @@ export class InferenceWindowSchedulerService
     if (row.type === 'aveva') {
       return {
         pi: {
-          credentials: {
-            api_server: row.host,
-            pi_server:
-              (typeof config.piServer === 'string' && config.piServer) ||
-              row.dbName,
-            user: row.username,
-            password: secret,
-          },
+          credentials: buildPiCredentials(row, secret),
           tag_list: fetchConfig.tags ?? [],
           // Placeholders — materialize_window overrides start_time/end_time
           // with its own widened fetch range before calling out to PI.

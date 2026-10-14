@@ -245,10 +245,14 @@ export function Phase5Evaluation({ nav }: Props) {
         className="flex w-full flex-col"
       >
         {/* Toolbar: population switch + metric selector */}
-  <div className="flex w-full flex-wrap items-center justify-between gap-2">
+        <div className="flex w-full flex-wrap items-center justify-between gap-2">
           <TabsList>
-            <TabsTrigger value="own" className='cursor-pointer'>{ownLabel}</TabsTrigger>
-            <TabsTrigger value="holdout" className='cursor-pointer'>Validation holdout</TabsTrigger>
+            <TabsTrigger value="own" className="cursor-pointer">
+              {ownLabel}
+            </TabsTrigger>
+            <TabsTrigger value="holdout" className="cursor-pointer">
+              Validation holdout
+            </TabsTrigger>
           </TabsList>
 
           <DropdownMenu>
@@ -277,7 +281,6 @@ export function Phase5Evaluation({ nav }: Props) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-
         <TabsContent value="own" className="w-full pt-4">
           <EvaluationPopulationPanel
             evaluation={own}

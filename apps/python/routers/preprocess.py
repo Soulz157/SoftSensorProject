@@ -76,6 +76,8 @@ from schemas.preprocess import (
     PredictionJobUploadPresignResponse,
     PredictionJobObjectPresignRequest,
     PredictionJobObjectPresignResponse,
+    InferenceEvalFrameRequest,
+    InferenceEvalFrameResponse,
     InferenceWindowMaterializeRequest,
     InferenceWindowMaterializeResponse,
     InferenceWindowTruthJoinRequest,
@@ -1139,6 +1141,25 @@ async def materialize_inference_window(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(inference_window_service.materialize_window, store, body)
+
+
+@router.post(
+    "/evaluation-frame",
+    response_model=InferenceEvalFrameResponse,
+    summary="Evaluation page: one range's scoring input, returned inline",
+    description=(
+        "MODEL-SERVE-032. Same fetch + recipe + trim as /inference-window, "
+        "but rows come back in the response and NOTHING is persisted. Bad "
+        "rows are kept and flagged (`usable: false`, Bad cells `value: null`) "
+        "instead of dropped. Timestamps are UTC. A range implying more than "
+        "`max_rows` is refused before any fetch."
+    ),
+)
+async def evaluation_frame(
+    body: InferenceEvalFrameRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(inference_window_service.evaluation_frame, store, body)
 
 
 @router.post(

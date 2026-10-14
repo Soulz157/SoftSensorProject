@@ -40,3 +40,26 @@ export function normalizePermissions(
   if (role !== 'VIEWER') return [];
   return [...new Set(permissions)];
 }
+
+/**
+ * MODEL-SERVE-032. May this caller change what a model writes into the
+ * plant historian (config, write, rollback)?
+ *
+ * Stricter than `canReadWithGrant` and than the editor rule most mutating
+ * routes use (OWNER or STAFF): a PI write is attributed to the data source
+ * creator's account and lands in production, so STAFF and VIEWER are out
+ * even though they may edit the model. Global ADMIN and the workspace's own
+ * owner qualify; so does a member row with the OWNER role.
+ *
+ * `isWorkspaceOwner` is `Workspace.ownerId === user.id`, which has no
+ * WorkspaceMember row, so it is a separate input rather than a role.
+ */
+export function canWriteBack(input: {
+  globalRole: PrismaEnums.Role;
+  isWorkspaceOwner: boolean;
+  member: Pick<MemberAccess, 'role'> | null;
+}): boolean {
+  if (input.globalRole === 'ADMIN') return true;
+  if (input.isWorkspaceOwner) return true;
+  return input.member?.role === 'OWNER';
+}

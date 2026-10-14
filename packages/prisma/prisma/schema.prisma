@@ -114,6 +114,8 @@ model User {
   loaderJobs             LoaderJob[]
   promotedModelVersions  ModelVersion[]
   manualPredictions      ManualPrediction[]
+  piWriteBatches         PiWriteBatch[]
+  writeBackConfigs       ModelWriteBackConfig[]
   predictionJobs         PredictionJob[]
   inferenceSchedules     InferenceSchedule[]
   notificationChannels   NotificationChannel[]
@@ -234,6 +236,8 @@ model Model {
   candidateJobs         ModelCandidateJob[]
   predictionLogs        PredictionLog[]
   manualPredictions     ManualPrediction[]
+  writeBackConfig       ModelWriteBackConfig?
+  piWriteBatches        PiWriteBatch[]
   inferenceWindows      InferenceWindow[]
   inferenceSchedule     InferenceSchedule?
   tagObservations       TagObservation[]
@@ -2495,4 +2499,113 @@ model NotificationUserMute {
   createdAt DateTime @default(now())
 
   @@id([userId, modelId])
+}
+
+/// MODEL-SERVE-032. Where a model's Evaluation page may write back to PI.
+/// One row per model. Both tags are OUTPUT tags: never the model's own
+/// target (`targetY`, which the truth join reads) and never an input tag —
+/// the service validates that on every PUT, not this schema.
+model ModelWriteBackConfig {
+  id String @id @default(uuid())
+
+  modelId String @unique
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Plain string, no FK: a write-back history must stay readable after the
+  /// data source row is edited or removed.
+  sourceId String
+
+  predictionTag String?
+  labTag        String?
+
+  updatedById String?
+  updatedBy   User?   @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum PiWriteKind {
+  PREDICTION
+  LAB
+  ROLLBACK
+}
+
+enum PiWriteStatus {
+  PENDING
+  WRITING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+  ROLLED_BACK
+}
+
+/// MODEL-SERVE-032. One write (or rollback) of a contiguous point set to one
+/// PI tag. The per-point before/after lives in PiWriteValue. Rows are never
+/// deleted by the app: this table IS the audit trail.
+model PiWriteBatch {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  sourceId String
+  kind     PiWriteKind
+  tag      String
+
+  /// UTC instants of the first and last point in the batch.
+  rangeFrom DateTime
+  rangeTo   DateTime
+
+  pointCount Int
+  status     PiWriteStatus @default(PENDING)
+
+  modelVersionId String?
+
+  /// Set on a ROLLBACK batch: the batch it undoes.
+  rollbackOfId String?
+  rollbackOf   PiWriteBatch?  @relation("PiWriteRollback", fields: [rollbackOfId], references: [id], onDelete: SetNull)
+  rollbacks    PiWriteBatch[] @relation("PiWriteRollback")
+
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  /// The PI login the source stores. PI attributes the write to THIS account
+  /// regardless of which app user pressed the button.
+  piAccount String
+
+  error String?
+
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  values PiWriteValue[]
+
+  @@index([modelId, createdAt])
+  @@index([sourceId, tag, status])
+}
+
+model PiWriteValue {
+  id String @id @default(uuid())
+
+  batchId String
+  batch   PiWriteBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  /// UTC instant of the point.
+  timestamp DateTime
+
+  /// Whether PI held a recorded value at this instant BEFORE the write. A
+  /// rollback Replaces when true and Removes when false.
+  beforeExisted Boolean
+  beforeValue   Float?
+
+  /// Null on a ROLLBACK row that REMOVED the point (nothing is sent).
+  sentValue Float?
+  /// Read back after the write; can differ from sentValue (compression).
+  afterValue Float?
+
+  itemOk    Boolean @default(false)
+  itemError String?
+
+  @@unique([batchId, timestamp])
 }

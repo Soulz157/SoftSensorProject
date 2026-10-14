@@ -4,6 +4,7 @@ import { AppException } from '@softsensor/common';
 import { decryptSecret } from '@/lib/crypto';
 import { dataSourceAccessWhere } from '@/lib/data-source-access';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
+import { buildPiCredentials } from '@/lib/source-block';
 import type {
   AdHocSourceDto,
   FetchParamsDto,
@@ -308,12 +309,7 @@ export class DataSourceConnectService {
   // ── credential mapping (row/config → connector contract) ────────────────────
 
   private buildPiCredentials(src: ResolvedSource) {
-    return {
-      api_server: src.host,
-      pi_server: this.str(src.config, 'piServer') || src.dbName,
-      user: src.username,
-      password: src.secret,
-    };
+    return buildPiCredentials(src, src.secret);
   }
 
   private buildSqlCredentials(src: ResolvedSource) {

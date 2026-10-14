@@ -43,8 +43,10 @@ function round(v: number, digits = 2): number {
  *
  * The lab "actual" follows a sine baseline + small measurement noise. The model
  * "predicted" adds a per-model systematic bias amplified at peak load (high
- * sine) so error concentrates in the peak regime — exercising the heuristics in
- * `generateAnalysis` (`lib/model-evaluation.ts`).
+ * sine) so error concentrates in the peak regime.
+ *
+ * MODEL-SERVE-032: no longer used by the Evaluation page (it reads real data
+ * now); `hooks/model/use-monitoring-data.ts` still does.
  */
 export function generateLabComparison(
   modelId: string,
@@ -83,24 +85,4 @@ export function generateLabComparison(
     })
   }
   return points
-}
-
-/**
- * Generate the model's prediction series alone for one model over the given
- * range (ascending by timestamp). Shares the deterministic baseline of
- * `generateLabComparison` but exposes only the predicted half — the lab/actual
- * counterpart now comes from user-supplied ground truth, not this generator.
- *
- * Swap path: replace with a `services/` `fetchClient` call returning the same
- * `PredPoint[]` once a NestJS prediction-history endpoint lands.
- */
-export function generatePredictions(
-  modelId: string,
-  range: TimeRange,
-  now: number = Date.now(),
-): PredPoint[] {
-  return generateLabComparison(modelId, range, now).map(p => ({
-    timestamp: p.timestamp,
-    predicted: p.predicted,
-  }))
 }

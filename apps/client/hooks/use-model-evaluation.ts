@@ -1,190 +1,198 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { rangeConfig, type TimeRange } from '@/lib/mock-readings'
-import { generatePredictions, type PredPoint } from '@/lib/mock-lab-data'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
-  alignLabToPredictions,
-  parseLabCsv,
-  type LabPoint,
-} from '@/lib/lab-ingestion'
+  modelEvaluationService,
+  type EvaluationCompareResult,
+} from '@/services/model-evaluation'
+import {
+  buildChartRows,
+  defaultRange,
+  pairLab,
+  stampToUtcIso,
+  validateRange,
+  type ChartRow,
+} from '@/lib/evaluation-compare'
+import {
+  activeLab,
+  addLabRow,
+  addLabRows,
+  editLabRow,
+  labChangeCount,
+  parseLabCsvPlantTime,
+  removeLabRow,
+  restoreLabRow,
+  seedLab,
+  type LabRow,
+} from '@/lib/evaluation-lab'
+import type { LabPoint } from '@/lib/lab-ingestion'
 import {
   computeMetrics,
-  generateAnalysis,
-  type EvalAnalysis,
   type EvalMetrics,
   type EvalPoint,
 } from '@/lib/model-evaluation'
 import type { AIModel } from '@/types'
 
 export interface UseModelEvaluation {
-  /** Model prediction series (always present). */
-  preds: PredPoint[]
-  /** Applied lab points aligned to predictions — drives chart + metrics. */
-  points: EvalPoint[]
-  metrics: EvalMetrics
-  /** `null` until the user triggers `generate()`. */
-  analysis: EvalAnalysis | null
-  isGenerating: boolean
-  /** Produce the on-demand analysis (simulated latency, mock-backed). */
-  generate: () => void
+  // ── range ──────────────────────────────────────────────────────────
+  /** Plant wall-clock stamps, `yyyy-MM-ddTHH:mm`. */
+  from: string
+  to: string
+  setFrom: (stamp: string) => void
+  setTo: (stamp: string) => void
+  /** What is wrong with the picked range, before any request. */
+  rangeError: string | null
 
-  // ── Lab ground-truth ingestion ──────────────────────────────────────
-  /** Working set the user is editing (not yet compared). */
-  draftLab: LabPoint[]
-  /** Snapshot last compared (drives `points`/`metrics`). */
-  appliedLab: LabPoint[]
-  /** True when the draft differs from what's applied. */
-  isDirty: boolean
-  /** Append one manually-entered lab point to the draft. */
-  addLabPoint: (point: LabPoint) => void
-  /** Remove a draft point by index. */
-  removeDraftPoint: (index: number) => void
-  /** Merge parsed CSV rows into the draft; returns counts for UX feedback. */
-  importCsv: (text: string) => { added: number; errors: string[] }
-  /** Promote the draft to applied → recompute comparison. */
-  apply: () => void
-  /** Clear both draft and applied lab data. */
-  clearLab: () => void
+  // ── import ─────────────────────────────────────────────────────────
+  /** Fetch the range from the model's data source and score it now. */
+  importRange: () => Promise<void>
+  loading: boolean
+  /** The server's own refusal text (range too big, no schedule, ...). */
+  error: string | null
+  /** The last successful import; null until one has run. */
+  data: EvaluationCompareResult | null
+
+  // ── derived from data + lab ────────────────────────────────────────
+  rows: ChartRow[]
+  /** Lab/prediction pairs: imported lab events plus applied user points. */
+  pairs: EvalPoint[]
+  metrics: EvalMetrics
+  /** The lab series behind `pairs`: imported events with the user's edits
+   *  applied and removals left out. */
+  labPoints: LabPoint[]
+
+  // ── the editable lab series ────────────────────────────────────────
+  /** Every row, including removed ones (so they can be restored). Seeded
+   *  from the raw recorded lab events on each import. */
+  labRows: LabRow[]
+  /** Edited + added + removed rows, i.e. how far it has moved from import. */
+  labChanges: number
+  addLab: (point: LabPoint) => void
+  editLab: (timestamp: string, value: number) => void
+  removeLab: (timestamp: string) => void
+  restoreLab: (timestamp: string) => void
+  importLabCsv: (text: string) => { added: number; errors: string[] }
+  /** Drop every edit and go back to the imported lab events. */
+  resetLab: () => void
 }
 
-/** Simulated analysis latency so the on-demand action feels like a real call. */
-const GENERATE_DELAY_MS = 800
-
 /**
- * Drives the model-evaluation panel: a deterministic model prediction series
- * plus user-supplied laboratory ground truth. The user builds a `draftLab` set
- * (manual entry / CSV) and applies it; applied points are aligned to the
- * predictions by nearest timestamp and scored (RMSE / MAE / R² / bias). The
- * on-demand analysis runs over the aligned pairs.
+ * MODEL-SERVE-032. Drives the Evaluation page: pick a range, import it from
+ * the model's data source (predictions are scored NOW by the PRODUCTION
+ * version; lab values are the raw recorded events), and compare.
  *
- * Swap to real data later by replacing `generatePredictions(...)` with a
- * `services/` request and the `generateAnalysis(...)` call with an LLM call —
- * the return shape stays identical.
+ * The lab series starts as the raw recorded events and stays editable; each
+ * row remembers its imported original, so a reset needs no re-import.
+ * Pairing and metrics are pure derivations over it (`lib/evaluation-compare`),
+ * so they follow every edit without another request.
+ *
+ * The component that uses this is keyed by model id, so a model switch
+ * remounts it and nothing here has to detect one.
  */
-export function useModelEvaluation(
-  model: AIModel,
-  range: TimeRange,
-): UseModelEvaluation {
-  const preds = useMemo(
-    () => generatePredictions(model.id, range),
-    [model.id, range],
-  )
-  const toleranceMs = useMemo(() => rangeConfig(range).stepMs, [range])
+export function useModelEvaluation(model: AIModel): UseModelEvaluation {
+  const [initial] = useState(() => defaultRange())
+  const [from, setFrom] = useState(initial.from)
+  const [to, setTo] = useState(initial.to)
 
-  const [draftLab, setDraftLab] = useState<LabPoint[]>([])
-  const [appliedLab, setAppliedLab] = useState<LabPoint[]>([])
+  const [data, setData] = useState<EvaluationCompareResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // A slow response from an earlier click must not overwrite a newer one.
+  const latest = useRef(0)
 
-  // Lab data is per-model: reset both buffers when the model changes (but keep
-  // them across a range switch — the tag/measurement set is unchanged).
-  // Adjusted during render (React's "storing information from previous
-  // renders" pattern), not in an effect.
-  const [prevModelId, setPrevModelId] = useState(model.id)
-  if (prevModelId !== model.id) {
-    setPrevModelId(model.id)
-    setDraftLab([])
-    setAppliedLab([])
-  }
+  const [labRows, setLabRows] = useState<LabRow[]>([])
 
-  const points = useMemo(
-    () => alignLabToPredictions(preds, appliedLab, toleranceMs),
-    [preds, appliedLab, toleranceMs],
-  )
-  const metrics = useMemo(() => computeMetrics(points), [points])
+  const rangeError = validateRange(from, to)
 
-  const isDirty = useMemo(
-    () => JSON.stringify(draftLab) !== JSON.stringify(appliedLab),
-    [draftLab, appliedLab],
-  )
-
-  const addLabPoint = useCallback((point: LabPoint) => {
-    setDraftLab(prev =>
-      [...prev, point].sort(
-        (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp),
-      ),
-    )
-  }, [])
-
-  const removeDraftPoint = useCallback((index: number) => {
-    setDraftLab(prev => prev.filter((_, i) => i !== index))
-  }, [])
-
-  const importCsv = useCallback((text: string) => {
-    const { points: parsed, errors } = parseLabCsv(text)
-    if (parsed.length > 0) {
-      setDraftLab(prev =>
-        [...prev, ...parsed].sort(
-          (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp),
-        ),
-      )
+  const importRange = useCallback(async () => {
+    const problem = validateRange(from, to)
+    const fromIso = stampToUtcIso(from)
+    const toIso = stampToUtcIso(to)
+    if (problem || !fromIso || !toIso) {
+      setError(problem ?? 'Pick a valid range.')
+      return
     }
-    return { added: parsed.length, errors }
-  }, [])
+    const ticket = ++latest.current
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await modelEvaluationService.compare(
+        model.id,
+        fromIso,
+        toIso,
+      )
+      if (ticket !== latest.current) return
+      setData(result)
+      // A fresh import starts from the recorded events; edits made to the
+      // previous range's series belong to that range.
+      setLabRows(seedLab(result.lab.events))
+    } catch (err) {
+      if (ticket !== latest.current) return
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not import this range.',
+      )
+    } finally {
+      if (ticket === latest.current) setLoading(false)
+    }
+  }, [model.id, from, to])
 
-  const apply = useCallback(() => {
-    setAppliedLab(draftLab)
-  }, [draftLab])
-
-  const clearLab = useCallback(() => {
-    setDraftLab([])
-    setAppliedLab([])
-  }, [])
-
-  const [analysis, setAnalysis] = useState<EvalAnalysis | null>(null)
-  const [isGenerating, setIsGenerating] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Reset stale analysis when the evaluated model, range, or applied data
-  // shifts — state during render, the pending timer (a ref) in the effect.
-  const [prevAnalysisInputs, setPrevAnalysisInputs] = useState({
-    modelId: model.id,
-    range,
-    appliedLab,
-  })
-  if (
-    prevAnalysisInputs.modelId !== model.id ||
-    prevAnalysisInputs.range !== range ||
-    prevAnalysisInputs.appliedLab !== appliedLab
-  ) {
-    setPrevAnalysisInputs({ modelId: model.id, range, appliedLab })
-    setAnalysis(null)
-    setIsGenerating(false)
-  }
-  useEffect(() => {
-    if (timer.current) clearTimeout(timer.current)
-  }, [model.id, range, appliedLab])
-
-  // Clean up a pending timer on unmount.
-  useEffect(
-    () => () => {
-      if (timer.current) clearTimeout(timer.current)
-    },
-    [],
+  const labPoints = useMemo(() => activeLab(labRows), [labRows])
+  const rows = useMemo(
+    () => (data ? buildChartRows(data, labPoints) : []),
+    [data, labPoints],
   )
+  const pairs = useMemo(
+    () => (data ? pairLab(data, labPoints) : []),
+    [data, labPoints],
+  )
+  const metrics = useMemo(() => computeMetrics(pairs), [pairs])
 
-  const generate = useCallback(() => {
-    if (timer.current) clearTimeout(timer.current)
-    setIsGenerating(true)
-    timer.current = setTimeout(() => {
-      setAnalysis(generateAnalysis(model, metrics, points))
-      setIsGenerating(false)
-    }, GENERATE_DELAY_MS)
-  }, [model, metrics, points])
+  const labChanges = useMemo(() => labChangeCount(labRows), [labRows])
+
+  const addLab = useCallback((point: LabPoint) => {
+    setLabRows(prev => addLabRow(prev, point))
+  }, [])
+  const editLab = useCallback((timestamp: string, value: number) => {
+    setLabRows(prev => editLabRow(prev, timestamp, value))
+  }, [])
+  const removeLab = useCallback((timestamp: string) => {
+    setLabRows(prev => removeLabRow(prev, timestamp))
+  }, [])
+  const restoreLab = useCallback((timestamp: string) => {
+    setLabRows(prev => restoreLabRow(prev, timestamp))
+  }, [])
+  const importLabCsv = useCallback((text: string) => {
+    const { points, errors } = parseLabCsvPlantTime(text)
+    if (points.length > 0) setLabRows(prev => addLabRows(prev, points))
+    return { added: points.length, errors }
+  }, [])
+  const resetLab = useCallback(() => {
+    setLabRows(data ? seedLab(data.lab.events) : [])
+  }, [data])
 
   return {
-    preds,
-    points,
+    from,
+    to,
+    setFrom,
+    setTo,
+    rangeError,
+    importRange,
+    loading,
+    error,
+    data,
+    rows,
+    pairs,
     metrics,
-    analysis,
-    isGenerating,
-    generate,
-    draftLab,
-    appliedLab,
-    isDirty,
-    addLabPoint,
-    removeDraftPoint,
-    importCsv,
-    apply,
-    clearLab,
+    labPoints,
+    labRows,
+    labChanges,
+    addLab,
+    editLab,
+    removeLab,
+    restoreLab,
+    importLabCsv,
+    resetLab,
   }
 }

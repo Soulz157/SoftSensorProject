@@ -16,6 +16,41 @@ import { decryptSecret } from '@/lib/crypto';
  * path accept no credential fields from the browser at all; that is what
  * makes decrypting here, instead of trusting the request body, load-bearing.
  */
+/**
+ * MODEL-SERVE-032. THE one place a stored PI DataSource becomes the
+ * connector's credential contract. Three call sites used to build this by
+ * hand and had already disagreed: the connect service and the scheduler used
+ * `config.piServer || dbName`, this file used `dbName` alone -- so a source
+ * with a `piServer` override read one server on the dataset path and another
+ * on the monitoring path. A write-back would have been a fourth copy aimed at
+ * the one server whose choice matters most.
+ *
+ * `secret` is the already-decrypted password; callers decrypt it (they differ
+ * on how: per-user ownership check vs. background tick) and it never leaves
+ * the NestJS -> python hop.
+ */
+export function buildPiCredentials(
+  source: {
+    host: string;
+    username: string;
+    dbName: string;
+    config: PrismaTypes.JsonValue | Record<string, unknown> | null;
+  },
+  secret: string,
+) {
+  const config = (source.config ?? {}) as Record<string, unknown>;
+  const piServer =
+    typeof config.piServer === 'string' && config.piServer
+      ? config.piServer
+      : source.dbName;
+  return {
+    api_server: source.host,
+    pi_server: piServer,
+    user: source.username,
+    password: secret,
+  };
+}
+
 export function buildSourceBlock(
   source: {
     type: string;
@@ -39,12 +74,7 @@ export function buildSourceBlock(
   if (source.type === 'aveva') {
     return {
       pi: {
-        credentials: {
-          api_server: source.host,
-          pi_server: source.dbName,
-          user: source.username,
-          password: secret,
-        },
+        credentials: buildPiCredentials(source, secret),
         tag_list: dto.tags,
         start_time: dto.startTime,
         end_time: dto.endTime,
