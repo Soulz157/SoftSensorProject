@@ -57,6 +57,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { RawReadingsTable } from './raw-readings-table'
+import { LabStaleNotice } from './lab-stale-notice'
 import { EditLockBanner } from './step-1-tags'
 import {
   SourceFetchConfigCard,
@@ -761,6 +762,7 @@ export function Step2RawData({ nav }: Props) {
               </div>
             </div>
           </div>
+          <LabStaleNotice dataset={raw} />
         </div>
       ) : csvBypass ? (
         /* CSV with nothing uploaded yet — Step 1 owns the file. */

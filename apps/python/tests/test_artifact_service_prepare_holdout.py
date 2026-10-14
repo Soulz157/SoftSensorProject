@@ -283,3 +283,38 @@ def test_prepare_leaves_an_unscaled_target_with_no_recorded_params_alone() -> No
     assert written["LAB-1"].tolist() == [200.0, 201.0, 202.0]
     # Features still go through the recorded (train-fitted) scaler.
     assert written["TI-101"].tolist() == [0.0, 0.01, 0.02]
+
+
+def test_prepare_refuses_a_legacy_spec_whose_target_was_scaled_anyway() -> None:
+    """Same legacy trap as the replay path: `target_scaled: false` but a
+    `scalingParams` entry for the target means GOLD's target is 0..1 while
+    this holdout's target is raw (live: FINAL 66173c35, r2 -35196, MAE 202).
+    Must refuse with a rebuild hint, never score."""
+    frame = _daily_frame(3)
+    frame["LAB-1"] = [200.0, 201.0, 202.0]
+    frame["LAB-1__status"] = pd.array([STATUS_GOOD] * 3, dtype="int8")
+    store = RecordingStore({
+        "ds-1/artifacts/silver-1/validate_data.parquet": frame
+    })
+    _seed_feature_spec(
+        store,
+        "ds-1/artifacts/gold-1/feature_spec.json",
+        target_y="LAB-1",
+        target_scaled=False,
+        scaling=[],
+        scalingParams={
+            "TI-101": {"min": 0.0, "max": 100.0},
+            "LAB-1": {"min": 198.5, "max": 210.6},
+        },
+    )
+
+    with pytest.raises(ValueError, match="[Rr]ebuild"):
+        artifact_service.prepare_holdout_for_run(
+            store,
+            PrepareHoldoutForRunRequest(
+                feature_spec_key="ds-1/artifacts/gold-1/feature_spec.json",
+                source_key="ds-1/artifacts/silver-1/validate_data.parquet",
+                target_key="ds-1/artifacts/silver-1/validate_ready.parquet",
+            ),
+        )
+    assert store.writes == [], "a refused prepare must write nothing"

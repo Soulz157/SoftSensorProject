@@ -4,6 +4,7 @@ import {
   cvScoringPhaseOf,
   headlineMetricOf,
   holdoutAbsenceOf,
+  isR2Meaningful,
   metricValueOf,
   populationAxisLabel,
   populationLabel,
@@ -65,7 +66,13 @@ const REAL_CV_METRICS = {
 describe('sourcedMetricsOf', () => {
   it('tags an ordinary run test-split', () => {
     expect(sourcedMetricsOf(run())).toEqual([
-      { source: 'test-split', r2: 0.9, rmse: 0.5, mae: 0.4 },
+      {
+        source: 'test-split',
+        r2: 0.9,
+        rmse: 0.5,
+        mae: 0.4,
+        targetDistinct: null,
+      },
     ])
   })
 
@@ -77,6 +84,7 @@ describe('sourcedMetricsOf', () => {
       r2: REAL_HOLDOUT.r2,
       rmse: REAL_HOLDOUT.rmse,
       mae: REAL_HOLDOUT.mae,
+      targetDistinct: null,
       rowCount: 1153,
       droppedUnlabelled: 0,
       droppedBadFeatures: 0,
@@ -141,6 +149,7 @@ describe('sourcedMetricsOf', () => {
       r2: null,
       rmse: null,
       mae: 0.4,
+      targetDistinct: null,
     })
   })
 
@@ -803,5 +812,46 @@ describe("the 'cv-oof' population (MODEL-FLOW-030)", () => {
         { cvFoldsKey: 'k', holdoutSeriesAbsence: null },
       ]),
     ).toMatch(/Retrain to see this chart/)
+  })
+})
+
+describe('isR2Meaningful — a constant target makes R² undefined', () => {
+  it('rejects one distinct target value (sklearn reports a believable 0.0)', () => {
+    expect(isR2Meaningful(1)).toBe(false)
+    expect(isR2Meaningful(0)).toBe(false)
+  })
+
+  it('accepts a target that varies', () => {
+    expect(isR2Meaningful(2)).toBe(true)
+    expect(isR2Meaningful(17)).toBe(true)
+  })
+
+  it('treats a missing count (older trainer image) as meaningful, never as flat', () => {
+    expect(isR2Meaningful(null)).toBe(true)
+    expect(isR2Meaningful(undefined)).toBe(true)
+  })
+})
+
+describe('sourcedMetricsOf — carries y_true_distinct beside each figure', () => {
+  it('reads the count for the test split and the holdout', () => {
+    const [test, holdout] = sourcedMetricsOf(
+      run({
+        metrics: { r2: 0.1, rmse: 0.2, mae: 0.1, y_true_distinct: 9 },
+        holdoutMetrics: { r2: 0, rmse: 0.05, mae: 0.04, y_true_distinct: 1 },
+      }),
+    )
+    expect(test).toMatchObject({ source: 'test-split', targetDistinct: 9 })
+    expect(holdout).toMatchObject({
+      source: 'holdout',
+      targetDistinct: 1,
+      r2: 0,
+    })
+  })
+
+  it('reads null for a run recorded before the key existed', () => {
+    const [test] = sourcedMetricsOf(
+      run({ metrics: { r2: 0.1, rmse: 0.2, mae: 0.1 } }),
+    )
+    expect(test).toMatchObject({ targetDistinct: null })
   })
 })

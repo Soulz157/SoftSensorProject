@@ -1,5 +1,8 @@
 'use client'
 
+import { isLabTag } from '@/lib/lab-tag'
+import { LAB_STALE_MULTIPLIER } from '@/lib/data-quality'
+
 export interface BadDataDetail {
   bad: number
   questionable: number
@@ -46,7 +49,11 @@ export function BadDataBreakdown({ tag, badCount, detail }: Props) {
             <Tile label="Frozen" value={detail.frozen} hint="rows" />
           </div>
           <p className="text-[10px] text-muted-foreground">
-            Frozen = value unchanged for 3h or more.
+            {/* NOTE: lab tags use a different Frozen rule (`qualityByTag`) —
+                stated here so the figure is never read as the 3h rule. */}
+            {isLabTag(tag)
+              ? `Lab tag: Frozen = value unchanged longer than ${LAB_STALE_MULTIPLIER}× its usual change interval (at least 3 days). The 3h sensor rule does not apply — a lab value is carried forward between samples.`
+              : 'Frozen = value unchanged for 3h or more.'}
           </p>
 
           {detail.reasons && detail.reasons.length > 0 && (

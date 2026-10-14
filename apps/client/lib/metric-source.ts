@@ -58,6 +58,10 @@ export interface MetricTriple {
 /** A run's own test split. */
 export interface TestSplitMetrics extends MetricTriple {
   source: 'test-split'
+  /** Distinct target values the figures were computed over — see
+   *  `isR2Meaningful`. Null/absent for a run from a trainer image before the
+   *  key. */
+  targetDistinct?: number | null
 }
 
 /**
@@ -72,10 +76,34 @@ export interface TestSplitMetrics extends MetricTriple {
  */
 export interface HoldoutMetrics extends MetricTriple {
   source: 'holdout'
+  /** Distinct target values the figures were computed over — see
+   *  `isR2Meaningful`. Null/absent for a run from a trainer image before the
+   *  key. */
+  targetDistinct?: number | null
   rowCount: number | null
   droppedUnlabelled: number | null
   droppedBadFeatures: number | null
 }
+
+/**
+ * Whether an R² figure means anything. The trainer records `y_true_distinct`
+ * beside every r2/rmse/mae (images/trainer/app/metrics.py). Fewer than 2
+ * distinct target values — a lab value carried forward across the whole
+ * window — makes R² undefined, and sklearn reports it as a believable 0.0.
+ * RMSE/MAE stay valid. `null` (a run from an older trainer image, which never
+ * recorded the count) is NOT evidence of a flat target and reads as
+ * meaningful, so legacy runs keep showing their number unchanged.
+ */
+export function isR2Meaningful(
+  targetDistinct: number | null | undefined,
+): boolean {
+  return targetDistinct == null || targetDistinct >= 2
+}
+
+/** Shown in place of an R² that `isR2Meaningful` rejects. */
+export const R2_NOT_MEANINGFUL = 'Not meaningful'
+export const R2_NOT_MEANINGFUL_REASON =
+  'Target is constant in this window — R² is undefined. RMSE/MAE still valid.'
 
 /**
  * A CV run's fold aggregate. `mean` WITHOUT `std` is not the same claim —
@@ -210,6 +238,7 @@ export function sourcedMetricsOf(
       r2: num(metrics, 'r2'),
       rmse: num(metrics, 'rmse'),
       mae: num(metrics, 'mae'),
+      targetDistinct: num(metrics, 'y_true_distinct'),
     })
   }
 
@@ -220,6 +249,7 @@ export function sourcedMetricsOf(
       r2: num(holdout, 'r2'),
       rmse: num(holdout, 'rmse'),
       mae: num(holdout, 'mae'),
+      targetDistinct: num(holdout, 'y_true_distinct'),
       rowCount: num(holdout, 'row_count'),
       droppedUnlabelled: num(holdout, 'dropped_unlabelled'),
       droppedBadFeatures: num(holdout, 'dropped_bad_features'),

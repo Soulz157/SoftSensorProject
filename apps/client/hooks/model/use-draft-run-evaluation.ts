@@ -193,6 +193,9 @@ export interface PopulationMetrics {
   std: { r2: number; rmse: number; mae: number } | null
   /** Folds averaged — out-of-fold only. */
   nSplits: number | null
+  /** Distinct target values behind r2 (`isR2Meaningful`, lib/metric-source).
+   *  Null/absent for out-of-fold means and runs from older trainer images. */
+  targetDistinct?: number | null
 }
 
 export interface PopulationEvaluation {
@@ -404,6 +407,7 @@ async function loadTestSplit(
     r2: requireMetric(run.metrics, 'r2'),
     rmse: requireMetric(run.metrics, 'rmse'),
     mae: requireMetric(run.metrics, 'mae'),
+    targetDistinct: numberOf(run.metrics, 'y_true_distinct'),
   }
   let predRes: Awaited<ReturnType<typeof modelDraftRunService.predictions>>
   try {
@@ -470,6 +474,7 @@ async function loadOutOfFold(
               ? { r2: std.r2, rmse: std.rmse, mae: std.mae }
               : null,
           nSplits: numberOf(run.metrics, 'n_splits'),
+          targetDistinct: null,
         }
       : null
 
@@ -528,7 +533,14 @@ async function loadHoldout(
   const mae = numberOf(run.holdoutMetrics, 'mae')
   const metrics: PopulationMetrics | null =
     r2 !== null && rmse !== null && mae !== null
-      ? { r2, rmse, mae, std: null, nSplits: null }
+      ? {
+          r2,
+          rmse,
+          mae,
+          std: null,
+          nSplits: null,
+          targetDistinct: numberOf(run.holdoutMetrics, 'y_true_distinct'),
+        }
       : null
 
   const absent = (absence: PopulationAbsence): LoadedPopulation => ({

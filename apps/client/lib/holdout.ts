@@ -1,5 +1,6 @@
 import type { CustomDateRange } from '@/store/data-visualize'
 import type { CustomInterval } from '@/store/model-pipeline'
+import type { Dataset } from '@/lib/preprocessing'
 
 /**
  * Guards for selecting a validation holdout window (DS-LAKE-018-T01). Four
@@ -135,6 +136,21 @@ export interface HoldoutGuardInput {
    * guards exactly as they read before this feature.
    */
   featureBearing?: boolean
+  /**
+   * The target's distinct-value summary inside the draft window, from
+   * `describeTargetInWindow`. Null/absent means "could not be counted" (target
+   * not in the frame, no rows in the window) and says nothing — a missing
+   * count must never read as a flat target. Computed by the caller because it
+   * needs the raw frame; kept out of this function so the guards stay cheap.
+   */
+  targetInWindow?: TargetInWindow | null
+}
+
+export interface TargetInWindow {
+  /** Distinct finite Good target values inside the window. */
+  distinct: number
+  /** The one value, when `distinct === 1`; null otherwise. */
+  constantValue: number | null
 }
 
 export interface HoldoutGuardResult {
@@ -165,6 +181,7 @@ export function describeHoldoutSelection({
   targetChosen,
   leadIn = HOLDOUT_LEAD_IN_DURATION,
   featureBearing = false,
+  targetInWindow = null,
 }: HoldoutGuardInput): HoldoutGuardResult {
   if (!holdoutRange) return NO_HOLDOUT
 
@@ -259,5 +276,150 @@ export function describeHoldoutSelection({
     )
   }
 
+  // Guard 5 — TARGET MUST MOVE INSIDE THE WINDOW. Warning only, never a
+  // refusal and never a cut: a lab value that stops updating (sampler
+  // stopped, value carried forward) is still real data the user may want to
+  // hold out on purpose. But a validation set with ONE target value cannot
+  // be scored — r2 is undefined for a constant y_true — so say so before
+  // training instead of after a meaningless number.
+  if (targetInWindow) {
+    if (targetInWindow.distinct === 0) {
+      warnings.push(
+        'No labelled target values fall inside this window, so validation ' +
+          "can't be scored here. Pick a window where the target has readings.",
+      )
+    } else if (targetInWindow.distinct === 1) {
+      const value =
+        targetInWindow.constantValue === null
+          ? 'a single value'
+          : String(targetInWindow.constantValue)
+      warnings.push(
+        `The target stays at ${value} for this whole window. With one ` +
+          "target value, R² can't be scored meaningfully. Consider a window " +
+          'where the lab value changes. Nothing is removed — this is only a ' +
+          'heads-up.',
+      )
+    }
+  }
+
   return { refusals, warnings, resolvedLeadInRows }
+}
+
+/**
+ * The raw frame's column for the chosen target. The target is stored by its
+ * CURRENT name, but a tag renamed in Step 1 (`dwEditedTagsAtom`, original ->
+ * new) may still be keyed by its original name in the raw frame. Returns null
+ * when neither spelling is a column, so the caller stays silent instead of
+ * guessing.
+ */
+export function resolveRawTargetKey(
+  rawTags: readonly string[],
+  targetTag: string | null,
+  editedTags: Readonly<Record<string, string>>,
+): string | null {
+  if (targetTag === null) return null
+  if (rawTags.includes(targetTag)) return targetTag
+  const original = Object.keys(editedTags).find(
+    key => editedTags[key] === targetTag,
+  )
+  return original !== undefined && rawTags.includes(original) ? original : null
+}
+
+/**
+ * Distinct Good target values inside `[range.from, range.to]`, both ends
+ * inclusive — the same bounds the server's `_split_holdout` cuts with
+ * (`ts >= from`, `ts <= to`), so this counts exactly the rows that would land
+ * in the validation file.
+ *
+ * Returns null — "cannot tell" — when the target is not a column of `raw`, the
+ * range is incomplete or unparsable, or no raw row falls in the window. A
+ * partial frame must produce no warning rather than a false one.
+ */
+export function describeTargetInWindow(
+  raw: Dataset,
+  targetTag: string,
+  range: CustomDateRange,
+): TargetInWindow | null {
+  if (!raw.tags.includes(targetTag)) return null
+  const from = toMs(range.from)
+  const to = toMs(range.to)
+  if (Number.isNaN(from) || Number.isNaN(to)) return null
+
+  const values = new Set<number>()
+  let rowsInWindow = 0
+  for (const row of raw.rows) {
+    const ts = toMs(row.timestamp)
+    if (ts < from || ts > to) continue
+    rowsInWindow += 1
+    const cell = row.cells[targetTag]
+    if (cell && cell.status === 'Good' && Number.isFinite(cell.value)) {
+      values.add(cell.value)
+    }
+  }
+  if (rowsInWindow === 0) return null
+
+  return {
+    distinct: values.size,
+    constantValue:
+      values.size === 1 ? (values.values().next().value ?? null) : null,
+  }
+}
+
+/**
+ * A timestamp string reduced to naive wall-clock `YYYY-MM-DDTHH:MM:SS`,
+ * dropping any `Z`/offset and fractional seconds. The stored holdout boundary
+ * is serialised with `toISOString()` (`...Z`) while the sidecar's rows are
+ * naive — `new Date()` would read the first as UTC and the second as LOCAL,
+ * shifting the cut by the viewer's offset. Fixed-width ISO strings compare
+ * correctly as text, so no Date is involved.
+ */
+function wallClock(value: string): string {
+  const s = value.trim().replace(' ', 'T').slice(0, 19)
+  return s.length === 16 ? `${s}:00` : s
+}
+
+/**
+ * Rows of a validation sidecar that sit inside the holdout window. A legacy
+ * (BRONZE-stage) sidecar carries a lead-in margin of TRAINING rows ahead of
+ * the window, so charting it unclipped would label training rows as
+ * validation. Clipped here, in the browser, on wall-clock text (see
+ * `wallClock`) rather than via a server `startTime`.
+ *
+ * `holdoutTo: null` is an open-ended holdout — only the start is enforced.
+ */
+export function clipToHoldoutWindow(
+  dataset: Dataset,
+  holdoutFrom: string,
+  holdoutTo: string | null,
+): Dataset {
+  const from = wallClock(holdoutFrom)
+  const to = holdoutTo === null ? null : wallClock(holdoutTo)
+  return {
+    tags: dataset.tags,
+    rows: dataset.rows.filter(row => {
+      const ts = wallClock(row.timestamp)
+      return ts >= from && (to === null || ts <= to)
+    }),
+  }
+}
+
+/**
+ * Tags a validation chart starts with: the lab (`.lab`) tags when the dataset
+ * has any — the target is a lab value and it is the line that decides whether
+ * the split can be scored — otherwise the first few tags. `all` is the full
+ * list, so the caller can offer the other view.
+ */
+export function validationChartTags(tags: readonly string[]): {
+  initial: string[]
+  all: string[]
+  hasLabSubset: boolean
+} {
+  const all = [...tags]
+  const lab = all.filter(tag => tag.toLowerCase().endsWith('.lab'))
+  const hasLabSubset = lab.length > 0 && lab.length < all.length
+  return {
+    initial: lab.length > 0 ? lab : all.slice(0, 4),
+    all,
+    hasLabSubset,
+  }
 }

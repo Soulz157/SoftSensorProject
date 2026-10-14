@@ -25,6 +25,11 @@ import type {
 import type { CvFoldRecord } from '@/services/model-draft'
 import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
 import { ChartLegend } from '@/components/charts/chart-legend'
+import {
+  isR2Meaningful,
+  R2_NOT_MEANINGFUL,
+  R2_NOT_MEANINGFUL_REASON,
+} from '@/lib/metric-source'
 import { StatTile } from '../../stat-tile'
 import { ActualVsPredictedChart, AVP_LEGEND } from './actual-vs-predicted-chart'
 import { ParityScatterChart, PARITY_LEGEND } from './parity-scatter-chart'
@@ -175,6 +180,9 @@ export function EvaluationPopulationPanel({
   const valueFor = (key: MetricKey): string => {
     if (key === 'sd') return fit && fit.n >= 2 ? fit.sd.toFixed(3) : '—'
     if (!metrics) return '—'
+    if (key === 'r2' && !isR2Meaningful(metrics.targetDistinct)) {
+      return R2_NOT_MEANINGFUL
+    }
     const mean = metrics[key]
     const std = metrics.std?.[key]
     return std !== undefined && isOof
@@ -183,10 +191,15 @@ export function EvaluationPopulationPanel({
   }
   const accentFor = (key: MetricKey): string | undefined => {
     if (key === 'sd' || !metrics) return undefined
+    if (key === 'r2' && !isR2Meaningful(metrics.targetDistinct))
+      return undefined
     return METRIC_META[key].accent?.(metrics[key])
   }
   const subFor = (key: MetricKey): string => {
     if (isOof && key === 'sd') return 'pooled out-of-fold residual SD'
+    if (key === 'r2' && metrics && !isR2Meaningful(metrics.targetDistinct)) {
+      return R2_NOT_MEANINGFUL_REASON
+    }
     if (isOof && metrics?.std) {
       return `mean ± std across ${metrics.nSplits ?? cvFolds?.n_splits ?? 'k'} folds`
     }

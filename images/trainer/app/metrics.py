@@ -32,18 +32,32 @@ LogFn = Callable[..., None]
 MAX_LOSS_HISTORY_POINTS = 5_000
 
 
-def regression_metrics(y_true, y_pred, prefix: str = "") -> dict[str, float]:
+def regression_metrics(
+    y_true, y_pred, prefix: str = ""
+) -> dict[str, float | int]:
     """r2/mae/rmse over one pair of arrays, optionally key-prefixed.
 
     `prefix="train_"` is how MODEL-FLOW-013-T04's naming is applied: named
     train_* so nothing later mistakes these for holdout figures, which are a
     distinct object — MODEL-FLOW-004 already had to rename a heading for
     exactly that confusion.
+
+    `{prefix}y_true_distinct` is the number of distinct finite target values
+    the figures were computed over. sklearn's `r2_score` returns a plain 0.0
+    for a constant `y_true` (`force_finite`), so r2 alone cannot tell a flat
+    target (e.g. a lab value carried forward for a month) from a zero-skill
+    model; a count below 2 means r2 is not meaningful. r2 itself stays a
+    float — the log lines, CV aggregation and sorting all read it as one.
+    RMSE/MAE are unaffected by a constant target and stay meaningful.
     """
+    y_values = np.asarray(y_true, dtype=float)
     return {
         f"{prefix}r2": float(r2_score(y_true, y_pred)),
         f"{prefix}mae": float(mean_absolute_error(y_true, y_pred)),
         f"{prefix}rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        f"{prefix}y_true_distinct": int(
+            np.unique(y_values[np.isfinite(y_values)]).size
+        ),
     }
 
 

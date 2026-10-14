@@ -407,3 +407,33 @@ def test_replay_refusal_still_fires_on_a_tz_aware_boundary() -> None:
                 scalers={"TI-101__lag5": "none"},
             ),
         )
+
+
+def test_replay_for_run_refuses_a_legacy_spec_whose_target_was_scaled_anyway() -> None:
+    """A dataset built before MODEL-SERVE-010-T05 scaled its target in GOLD
+    (min-max to 0..1) while its spec still claims `target_scaled: false` —
+    the only trace is a `scalingParams` entry for the target. The holdout
+    target stays raw, so scoring it produced r2 ≈ -35000 / MAE ≈ the raw
+    mean. Refuse with a rebuild hint instead of reporting that number."""
+    store = RecordingStore(
+        {"ds-1/artifacts/bronze-1/validate_data.parquet": _daily_frame(10)[7:10].reset_index(drop=True)}
+    )
+    _seed_feature_spec(
+        store,
+        "ds-1/artifacts/gold-1/feature_spec.json",
+        target_y="TI-101",
+        target_scaled=False,
+        scalingParams={"TI-101": {"min": 0.0, "max": 100.0}},
+    )
+
+    with pytest.raises(ValueError, match="[Rr]ebuild"):
+        artifact_service.replay_holdout_for_run(
+            store,
+            ReplayHoldoutForRunRequest(
+                feature_spec_key="ds-1/artifacts/gold-1/feature_spec.json",
+                source_key="ds-1/artifacts/bronze-1/validate_data.parquet",
+                target_key="ds-1/artifacts/bronze-1/validate_ready.parquet",
+                holdout_from="2026-01-08",
+            ),
+        )
+    assert store.writes == [], "a refused replay must write nothing"

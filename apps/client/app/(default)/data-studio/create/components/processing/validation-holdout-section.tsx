@@ -1,16 +1,21 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import { Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { toDateTimeLocal } from '@/components/date-time-picker'
 import { CalendarDateTimePicker } from '@/components/calendar-date-time-picker'
-import { describeHoldoutSelection } from '@/lib/holdout'
+import {
+  describeHoldoutSelection,
+  describeTargetInWindow,
+  resolveRawTargetKey,
+} from '@/lib/holdout'
 import { resolveInterval } from '@/lib/dataset-fetch'
 import {
   dwCustomIntervalAtom,
+  dwEditedTagsAtom,
   dwFetchConfigAtom,
   dwHoldoutRangeAtom,
   dwRawDatasetAtom,
@@ -100,6 +105,7 @@ export function ValidationHoldoutSection({
   const fetchConfig = useAtomValue(dwFetchConfigAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const period = useAtomValue(dwTimeRangeAtom)
+  const editedTags = useAtomValue(dwEditedTagsAtom)
 
   const rawWindow = deriveRawWindow(raw)
   const fetchFrom = rawWindow?.from ?? ''
@@ -133,6 +139,16 @@ export function ValidationHoldoutSection({
     setDraftTo(holdoutRange?.to ?? '')
   }
 
+  // Counted on the DRAFT window, so the warning shows before Apply. Null
+  // ("cannot tell") for an incomplete draft, an unset/renamed-away target or a
+  // window with no raw rows — the guard stays silent for all of those.
+  const targetInWindow = useMemo(() => {
+    if (!draftFrom || !draftTo) return null
+    const key = resolveRawTargetKey(raw.tags, targetTag, editedTags)
+    if (key === null) return null
+    return describeTargetInWindow(raw, key, { from: draftFrom, to: draftTo })
+  }, [raw, targetTag, editedTags, draftFrom, draftTo])
+
   const guard = describeHoldoutSelection({
     fetchRange: { from: fetchFrom, to: fetchTo },
     holdoutRange:
@@ -140,6 +156,7 @@ export function ValidationHoldoutSection({
     interval,
     targetChosen: targetTag !== null,
     featureBearing,
+    targetInWindow,
   })
 
   // Commits only a VALID selection — a refusal is shown inline but never
@@ -160,6 +177,7 @@ export function ValidationHoldoutSection({
       interval,
       targetChosen: targetTag !== null,
       featureBearing,
+      targetInWindow,
     })
     if (result.refusals.length === 0) {
       setHoldoutRange({ from: draftFrom, to: draftTo })

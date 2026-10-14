@@ -4,6 +4,7 @@ import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
 import type { ConditionalRule, RangeExclusion } from '@/lib/precleanse'
 import type { CutoffOp } from '@/types/cutoff'
 import { TagResolution } from '@/hooks/dataset/use-tag-resolution'
+import { isLabTag } from '@/lib/lab-tag'
 
 /**
  * Pure logic for applying an imported soft-sensor preset to the dataset wizard.
@@ -172,10 +173,7 @@ export interface TagComparison {
   ready: boolean
 }
 
-/** Lab tags are sampled by hand, so they are absent from a PI-only catalogue. */
-export function isLabTag(tag: string): boolean {
-  return tag.toLowerCase().endsWith('.lab')
-}
+export { isLabTag }
 
 /** Case- and whitespace-insensitive key, for the near-miss fallback. */
 function normalize(tag: string): string {

@@ -23,6 +23,7 @@ import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifa
 import { useArtifactColumnStats } from '@/hooks/dataset/artifact/use-dataset-artifact-column-stats'
 import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
 import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
+import { useArtifactValidationRows } from '@/hooks/dataset/artifact/use-artifact-validation-rows'
 import { useArtifactFeatureSpec } from '@/hooks/dataset/artifact/use-artifact-feature-spec'
 import { inverseScale } from '@/lib/inverse-scale'
 import { PREVIEW_MAX_ROWS } from '@/lib/downsample'
@@ -32,6 +33,7 @@ import { perTagStatsOrdered } from '@/lib/dataset-stats'
 import { SourceIdentityPanel } from './dataset-review/source-identity-panel'
 import { PerTagStatsPanel } from './dataset-review/per-tag-stats-panel'
 import { HoldoutPanel } from './dataset-review/holdout-panel'
+import { LabStaleNotice } from '@/app/(default)/data-studio/create/components/lab-stale-notice'
 
 interface Props {
   nav: UsePipelineNavResult
@@ -171,6 +173,17 @@ export function Phase2DatasetReview({ nav }: Props) {
     error: holdoutError,
   } = useArtifactHoldout(datasetId, artifactId)
 
+  // The validation rows behind the Validation Data chart. Tags are passed only
+  // once a holdout is known to exist — the hook does nothing on an empty list,
+  // so a dataset with no holdout never issues the request. Unscaled, like the
+  // train preview above (already inverted), so no inversion here.
+  const validationRows = useArtifactValidationRows(
+    datasetId,
+    artifactId,
+    holdout ? tags : [],
+    { maxRows: PREVIEW_MAX_ROWS },
+  )
+
   const workspaceName = dataset
     ? (workspaces.find(w => w.id === dataset.workspaceId)?.name ??
       'Unknown Workspace')
@@ -254,6 +267,19 @@ export function Phase2DatasetReview({ nav }: Props) {
             />
           </section> */}
 
+          {/* Same rule as Data Studio Step 2, over this step's own bounded
+              read — the scope note says so rather than implying the whole
+              artifact was scanned. */}
+          <LabStaleNotice
+            dataset={engineeringUnitSample ?? { tags: [], rows: [] }}
+            scopeNote={
+              totalRowCount !== null &&
+              (engineeringUnitSample?.rows.length ?? 0) < totalRowCount
+                ? `Checked the ${(engineeringUnitSample?.rows.length ?? 0).toLocaleString()} loaded rows of ${totalRowCount.toLocaleString()}.`
+                : undefined
+            }
+          />
+
           <section className="space-y-2">
             <p className="text-sm font-semibold text-foreground">
               Validation Data
@@ -262,6 +288,7 @@ export function Phase2DatasetReview({ nav }: Props) {
               holdout={holdout}
               loading={holdoutLoading}
               error={holdoutError}
+              rows={validationRows}
             />
           </section>
 

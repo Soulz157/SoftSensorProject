@@ -697,6 +697,28 @@ def replay_holdout(store: ObjectStore, request: ReplayHoldoutRequest) -> dict[st
     )
 
 
+def _refuse_legacy_scaled_target(spec: dict[str, Any], target_y: Any) -> None:
+    """Refuse holdout scoring for a spec that contradicts itself about the
+    target.
+
+    Datasets built before MODEL-SERVE-010-T05 (`_scalable_tags`) min-max
+    scaled the target in GOLD anyway, while their spec still says
+    `target_scaled: false`. The only trace is a `scalingParams` entry for the
+    target — a correct spec never has one, because the target is never
+    scaled. The holdout path leaves the target raw, so the model's 0..1
+    predictions were scored against raw lab values: r2 ≈ -35000, MAE ≈ the
+    raw mean (live: FINAL 66173c35). That number is worse than no number, so
+    refuse with the one remedy that works — rebuild the dataset.
+    """
+    if target_y and target_y in (spec.get("scalingParams") or {}):
+        raise ValueError(
+            f"This dataset was built with its target '{target_y}' scaled to "
+            "0-1, so its validation data cannot be scored in the same units. "
+            "Rebuild the dataset (open it in Data Studio and save it again) "
+            "to get a validation score."
+        )
+
+
 def replay_holdout_for_run(
     store: ObjectStore, request: ReplayHoldoutForRunRequest
 ) -> dict[str, Any]:
@@ -730,6 +752,7 @@ def replay_holdout_for_run(
             "feature_spec.json — refusing holdout replay (no inverse "
             "transform recorded)."
         )
+    _refuse_legacy_scaled_target(spec, target_y)
 
     features_config = [
         FeatureConfigRequest(
@@ -789,6 +812,7 @@ def prepare_holdout_for_run(
             "feature_spec.json — refusing holdout scoring (no inverse "
             "transform recorded)."
         )
+    _refuse_legacy_scaled_target(spec, target_y)
 
     scalers = {row["tag"]: row["method"] for row in spec.get("scaling", [])}
     scaling_params = spec.get("scalingParams") or {}

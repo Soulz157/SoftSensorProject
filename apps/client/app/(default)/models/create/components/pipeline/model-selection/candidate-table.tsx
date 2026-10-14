@@ -42,7 +42,10 @@ import {
   METRIC_SOURCE_LABELS,
   OOF_LOAD_FAILED_TEXT,
   candidateAbsenceText,
+  isR2Meaningful,
   metricValueOf,
+  R2_NOT_MEANINGFUL,
+  R2_NOT_MEANINGFUL_REASON,
   type CvFoldEstimate,
   type SourcedMetrics,
 } from '@/lib/metric-source'
@@ -184,6 +187,24 @@ export function MetricSourceCell({
         ) : (
           <span className="font-mono text-xs text-muted-foreground">—</span>
         )}
+      </TableCell>
+    )
+  }
+  // A constant target makes R² undefined (sklearn reports 0.0) — say so
+  // instead of printing a believable number. RMSE/MAE are unaffected.
+  if (
+    metricKey === 'r2' &&
+    metric.source !== 'cv-fold-estimate' &&
+    !isR2Meaningful(metric.targetDistinct)
+  ) {
+    return (
+      <TableCell
+        className={cn('text-right', highlighted && VALIDATE_COLUMN_CLASS)}
+        title={R2_NOT_MEANINGFUL_REASON}
+      >
+        <span className="text-[10px] text-muted-foreground italic">
+          {R2_NOT_MEANINGFUL}
+        </span>
       </TableCell>
     )
   }

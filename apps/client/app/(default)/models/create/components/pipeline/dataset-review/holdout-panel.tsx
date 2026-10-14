@@ -3,12 +3,22 @@
 import type { ArtifactHoldout } from '@/services/dataset-version'
 import { artifactTimeSpanLabel } from '@/lib/dataset-stats'
 import { Skeleton } from '@/components/ui/skeleton'
+import type { Dataset } from '@/lib/preprocessing'
 import { StatTile } from '../../stat-tile'
+import { HoldoutTrendChart } from './holdout-trend-chart'
 
 interface Props {
   holdout: ArtifactHoldout | null
   loading: boolean
   error: string | null
+  /** The validation sidecar page behind the chart (MODEL-FLOW-010 Step 2). */
+  rows: {
+    sample: Dataset | null
+    totalRowCount: number | null
+    loading: boolean
+    missing: boolean
+    error: string | null
+  }
 }
 
 function fmtPct(n: number | null): string {
@@ -27,7 +37,7 @@ function fmtPct(n: number | null): string {
  * this field existed shows `missingPct: null` — the panel says so plainly
  * rather than silently dropping the tile or implying a clean 0%.
  */
-export function HoldoutPanel({ holdout, loading, error }: Props) {
+export function HoldoutPanel({ holdout, loading, error, rows }: Props) {
   if (loading) {
     return (
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -58,29 +68,40 @@ export function HoldoutPanel({ holdout, loading, error }: Props) {
   const window = artifactTimeSpanLabel(holdout.holdoutFrom, holdout.holdoutTo)
 
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-      <StatTile
-        label="Holdout window"
-        value={window}
-        surface="muted"
-        valueSize="md"
-      />
-      <StatTile
-        label="Holdout rows"
-        value={holdout.rowCount.toLocaleString()}
-        surface="muted"
-        valueSize="md"
-      />
-      <StatTile
-        label="Missing / Bad rate"
-        value={fmtPct(holdout.missingPct)}
-        sub={
-          holdout.missingPct === null
-            ? 'missing rate not recorded for this holdout'
-            : undefined
-        }
-        surface="muted"
-        valueSize="md"
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <StatTile
+          label="Holdout window"
+          value={window}
+          surface="muted"
+          valueSize="md"
+        />
+        <StatTile
+          label="Holdout rows"
+          value={holdout.rowCount.toLocaleString()}
+          surface="muted"
+          valueSize="md"
+        />
+        <StatTile
+          label="Missing / Bad rate"
+          value={fmtPct(holdout.missingPct)}
+          sub={
+            holdout.missingPct === null
+              ? 'missing rate not recorded for this holdout'
+              : undefined
+          }
+          surface="muted"
+          valueSize="md"
+        />
+      </div>
+      <HoldoutTrendChart
+        sample={rows.sample}
+        totalRowCount={rows.totalRowCount}
+        loading={rows.loading}
+        missing={rows.missing}
+        error={rows.error}
+        holdoutFrom={holdout.holdoutFrom}
+        holdoutTo={holdout.holdoutTo}
       />
     </div>
   )
