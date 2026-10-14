@@ -9,7 +9,6 @@ import {
 } from '@/services/model-draft'
 import {
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpExtraVariantsAtom,
   mpTargetVariableAtom,
@@ -88,10 +87,13 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     vi.useRealTimers()
   })
 
-  it('refuses Find Best Parameters even if the UI-disable was bypassed by stale state (2 algorithms, no sweep — [fix] only exempts exactly 1)', async () => {
+  // MODEL-FLOW-016, kept 2026-10-14: CV fits one algorithm. The CV control
+  // turns itself off when a second algorithm is added; this is the backstop
+  // for stale state.
+  it('refuses Cross-Validation with two algorithms, even if the UI-disable was bypassed by stale state', async () => {
     const { result, store } = renderTraining(s => {
-      s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
+      s.set(mpNSplitsAtom, 5)
     })
 
     await act(async () => {
@@ -302,10 +304,31 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
   })
 
-  it('refuses a sweep with fewer than 2 algorithms', async () => {
-    const { result, store } = renderTraining(s => {
-      s.set(mpFindBestModelAtom, true)
-      s.set(mpAlgorithmsAtom, ['ols'])
+  // 2026-10-14. One algorithm plus the user's own rows, Find Best Parameters
+  // off: a search over exactly those rows. Several candidates means the
+  // server expands no grid, so nothing beyond what the user typed runs.
+  it('trains one algorithm and its added rows as a HYPERPARAMETER_SEARCH of exactly those candidates', async () => {
+    vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+      statusCode: 201,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'job-1' } as never,
+    })
+    vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+      statusCode: 200,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: {
+        id: 'job-1',
+        status: 'RUNNING',
+        completedRuns: 0,
+        totalRuns: 2,
+        candidates: [],
+      } as never,
+    })
+    const { result } = renderTraining(s => {
+      s.set(mpAlgorithmsAtom, ['ridge'])
+      s.set(mpExtraVariantsAtom, { ridge: [{ alpha: 7 }] })
     })
 
     await act(async () => {
@@ -313,8 +336,13 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       await vi.advanceTimersByTimeAsync(0)
     })
 
-    expect(store.get(mpTrainStateAtom).status).toBe('error')
-    expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
+    expect(modelDraftRunService.create).not.toHaveBeenCalled()
+    const [, payload] = vi.mocked(modelDraftCandidateJobService.create).mock
+      .calls[0]!
+    expect(payload.kind).toBe('HYPERPARAMETER_SEARCH')
+    expect(payload.candidates).toHaveLength(2)
+    expect(payload.candidates[1]?.hyperparameters).toMatchObject({ alpha: 7 })
+    expect(payload).not.toHaveProperty('extraVariants')
   })
 
   it('creates an ALGORITHM_SWEEP candidate job with one candidate per selected algorithm', async () => {
@@ -337,7 +365,6 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result, store } = renderTraining(s => {
-      s.set(mpFindBestModelAtom, true)
       s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
     })
 
@@ -387,7 +414,6 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result } = renderTraining(s => {
-      s.set(mpFindBestModelAtom, true)
       s.set(mpAlgorithmsAtom, ['ols', 'ridge', 'xgboost'])
       // The second tab's own (non-default) value — ridge's default alpha is
       // 1.0, not 0.037 (same deliberately-non-default fixture discipline
@@ -456,7 +482,6 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result, store } = renderTraining(s => {
-      s.set(mpFindBestModelAtom, true)
       s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
     })
 
@@ -494,7 +519,6 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result, store } = renderTraining(s => {
-      s.set(mpFindBestModelAtom, true)
       s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
     })
@@ -546,14 +570,12 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       [
         'ALGORITHM_SWEEP',
         (s: ReturnType<typeof createStore>) => {
-          s.set(mpFindBestModelAtom, true)
           s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
         },
       ],
       [
         'SWEEP_THEN_TUNE',
         (s: ReturnType<typeof createStore>) => {
-          s.set(mpFindBestModelAtom, true)
           s.set(mpFindBestParamsAtom, true)
           s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
         },
@@ -589,7 +611,6 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
 
     it('sends NEITHER figure when split-stats has not resolved and the dataset carries no row count — the honest null, not a bug', async () => {
       const { result } = renderTraining(s => {
-        s.set(mpFindBestModelAtom, true)
         s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
       }, null)
 
@@ -634,7 +655,6 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result, store } = renderTraining(s => {
-      s.set(mpFindBestModelAtom, true)
       s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
     })
@@ -713,11 +733,9 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
   // does not 400 a sequence candidate (it never mentions them) — the refusal
   // is a scope decision, kept because a sweep would launch up to three
   // sequence fits before any tuning. Defense in depth for stale draft state —
-  // AlgorithmStack's own picker disables lstm/gru whenever Find Best Model is
-  // on, but this is the backstop if that state predates the toggle.
-  it('[fix] still refuses lstm in a Find Best Model sweep — a sweep of sequence models is not enabled', async () => {
+  // AlgorithmStack notes the mix under its cards; this is the backstop.
+  it('[fix] still refuses lstm beside another algorithm — a sweep of sequence models is not enabled', async () => {
     const { result, store } = renderTraining(s => {
-      s.set(mpFindBestModelAtom, true)
       s.set(mpAlgorithmsAtom, ['lstm', 'ridge'])
     })
 
@@ -834,7 +852,6 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     [
       'an ALGORITHM_SWEEP',
       (s: ReturnType<typeof createStore>) => {
-        s.set(mpFindBestModelAtom, true)
         s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
       },
     ],

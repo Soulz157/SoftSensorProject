@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  CircleDashed,
   Clock,
   Loader2,
 } from 'lucide-react'
@@ -101,7 +102,10 @@ function CandidateHyperparams({ candidate }: { candidate: CandidateResult }) {
   )
   if (rows.length === 0) return null
   return (
-    <p className="truncate text-[10px] text-muted-foreground">
+    <p
+      className="max-w-72 truncate text-[10px] text-muted-foreground"
+      title={rows.map(r => `${r.label}: ${String(r.value)}`).join(' · ')}
+    >
       {rows.map(r => `${r.label}: ${String(r.value)}`).join(' · ')}
     </p>
   )
@@ -295,63 +299,147 @@ const OPERAND_ABSENCE_TEXT: Record<OperandAbsence, string> = {
 }
 
 /**
- * MODEL-FLOW-019-T12 AC12/AC13/AC1. One line per configured criterion — a
- * shape icon plus the comparison, e.g. "✓ Validate RMSE < Test RMSE" —
- * never a colour-coded pass/fail (red/amber are reserved for
- * workspace+plant status elsewhere in this codebase), and never hiding,
- * filtering, or disabling anything else on the row (AC13). A legacy
- * criterion (T07's or T11's shape) is filtered out before evaluation
- * rather than reaching `evaluateCriterion` with fields it does not have
- * (V19) — Step 3's own migration strip is where it is surfaced and
- * cleared.
+ * MODEL-FLOW-019-T12 AC12/AC13/AC1, compacted by layout A (user pick,
+ * 2026-10-14). A criterion's text used to repeat on every row in 9px type,
+ * with its two numbers stacked under it, which made each row as tall as the
+ * criteria list and the table too wide. Now the text is written ONCE, in a
+ * numbered legend above the table (`CriteriaLegend`); each row carries one
+ * mark per criterion plus a count (`CriteriaSummary`); the two numbers move
+ * to the row's expanded panel (`CriteriaDetail`).
+ *
+ * Unchanged: never a colour-coded pass/fail (red/amber are reserved for
+ * workspace+plant status), never hiding, filtering, or disabling anything
+ * else on the row (AC13). Three states, told apart by SHAPE and label: met
+ * (check), not met (triangle), not evaluated (dashed circle) — the last is
+ * not a failure and is never counted as one. A legacy criterion (T07's or
+ * T11's shape) is filtered out before evaluation (V19).
  */
-function RowCriteriaMarks({
+function currentCriteria(criteria: AcceptanceCriterion[]) {
+  return criteria.filter((c): c is AcceptanceCriterion => !isLegacyCriterion(c))
+}
+
+const VERDICT_ICON = {
+  pass: CheckCircle2,
+  fail: AlertTriangle,
+  'not-evaluated': CircleDashed,
+} as const
+
+const VERDICT_LABEL = {
+  pass: 'met',
+  fail: 'not met',
+  'not-evaluated': 'not evaluated',
+} as const
+
+function CriteriaLegend({ criteria }: { criteria: AcceptanceCriterion[] }) {
+  const current = currentCriteria(criteria)
+  if (current.length === 0) return null
+  return (
+    <ol
+      aria-label="Acceptance criteria"
+      className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground"
+    >
+      <li className="font-medium text-foreground">Criteria</li>
+      {current.map((criterion, i) => (
+        <li key={i} className="flex items-center gap-1.5">
+          <span className="flex h-4.5 w-4.5 items-center justify-center rounded-full bg-muted font-mono text-[10px] font-semibold text-foreground">
+            {i + 1}
+          </span>
+          {criterionLabel(criterion)}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function CriteriaSummary({
   criteria,
   figures,
 }: {
   criteria: AcceptanceCriterion[]
   figures: ComparisonFigures
 }) {
-  const current = criteria.filter(
-    (c): c is AcceptanceCriterion => !isLegacyCriterion(c),
+  const current = currentCriteria(criteria)
+  if (current.length === 0) return null
+  const verdicts = current.map(c => evaluateCriterion(c, figures).verdict)
+  const met = verdicts.filter(v => v === 'pass').length
+  const unevaluated = verdicts.filter(v => v === 'not-evaluated').length
+  const evaluated = verdicts.length - unevaluated
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="flex items-center gap-0.5">
+        {verdicts.map((verdict, i) => {
+          const Icon = VERDICT_ICON[verdict]
+          return (
+            <Icon
+              key={i}
+              role="img"
+              aria-label={`Criterion ${i + 1}: ${VERDICT_LABEL[verdict]}`}
+              className={cn(
+                'h-3.5 w-3.5 shrink-0',
+                verdict === 'pass'
+                  ? 'text-foreground'
+                  : 'text-muted-foreground',
+              )}
+            />
+          )
+        })}
+      </span>
+      <span className="font-mono text-[11px] text-foreground tabular-nums">
+        {met}/{evaluated}
+      </span>
+      {unevaluated > 0 && (
+        <span className="text-[10px] text-muted-foreground">
+          · {unevaluated} not evaluated
+        </span>
+      )}
+    </div>
   )
+}
+
+function CriteriaDetail({
+  criteria,
+  figures,
+}: {
+  criteria: AcceptanceCriterion[]
+  figures: ComparisonFigures
+}) {
+  const current = currentCriteria(criteria)
   if (current.length === 0) return null
   return (
-    <div className="space-y-0.5">
+    <ul
+      aria-label="Criteria for this candidate"
+      className="grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2 lg:grid-cols-3"
+    >
       {current.map((criterion, i) => {
         const evaluation = evaluateCriterion(criterion, figures)
-        const label = criterionLabel(criterion)
-        if (evaluation.verdict === 'not-evaluated') {
-          const reason = evaluation.left.absence ?? evaluation.right.absence
-          return (
-            <p key={i} className="text-[9px] italic text-muted-foreground">
-              {label} — not evaluated
-              {reason && ` (${OPERAND_ABSENCE_TEXT[reason]})`}
-            </p>
-          )
-        }
-        const Icon =
-          evaluation.verdict === 'pass' ? CheckCircle2 : AlertTriangle
+        const Icon = VERDICT_ICON[evaluation.verdict]
+        const reason =
+          evaluation.verdict === 'not-evaluated'
+            ? (evaluation.left.absence ?? evaluation.right.absence)
+            : null
         return (
-          <p
-            key={i}
-            className="flex flex-col items-end gap-0 text-[9px] text-muted-foreground"
-          >
-            <span className="flex items-center gap-0.5">
-              <Icon className="h-2.5 w-2.5 shrink-0" />
-              {label}
+          <li key={i} className="flex items-start gap-1.5">
+            <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0">
+              <span className="mr-1 font-mono text-[10px] font-semibold text-muted-foreground">
+                {i + 1}
+              </span>
+              {criterionLabel(criterion)}{' '}
+              <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                {evaluation.left.value !== null &&
+                evaluation.right.value !== null
+                  ? `${evaluation.left.value.toFixed(3)} / ${evaluation.right.value.toFixed(3)}`
+                  : ''}
+              </span>{' '}
+              <span className="text-[11px] text-muted-foreground">
+                · {VERDICT_LABEL[evaluation.verdict]}
+                {reason && ` (${OPERAND_ABSENCE_TEXT[reason]})`}
+              </span>
             </span>
-            {evaluation.left.value !== null &&
-              evaluation.right.value !== null && (
-                <span>
-                  {evaluation.left.value.toFixed(2)} /{' '}
-                  {evaluation.right.value.toFixed(2)}
-                </span>
-              )}
-          </p>
+          </li>
         )
       })}
-    </div>
+    </ul>
   )
 }
 
@@ -427,6 +515,8 @@ export function CandidateTable({
   rowAction,
   chartMode = 'full',
   criteria,
+  recommendedRunId = null,
+  recommendedBasis,
 }: {
   candidates: CandidateResult[]
   resolvedRunId: string | null
@@ -459,6 +549,11 @@ export function CandidateTable({
   /** MODEL-FLOW-019-T07. Advisory thresholds — annotates cells, never
    *  filters/hides/blocks a row. Defaults to none set. */
   criteria?: AcceptanceCriterion[]
+  /** The job's own winner (`bestRunId`), badged Recommended. Absent where
+   *  there is no job to have picked one (runs launched one at a time). */
+  recommendedRunId?: string | null
+  /** What the winner was picked on, e.g. "lowest Test RMSE". */
+  recommendedBasis?: string
 }) {
   const ranking = useMemo(
     () => rankCandidates(candidates, sortMetric),
@@ -492,14 +587,20 @@ export function CandidateTable({
   )
   const hasCriteria = (criteria ?? []).length > 0
 
-  // rank + algorithm + status + two columns per selected metric + an
-  // optional criteria column + actions — the chart row spans every column
+  // rank + algorithm (status folded in) + two columns per selected metric +
+  // an optional criteria column + actions — the chart row spans every column
   // so it reads as one panel, not a cell.
-  const totalCols = 3 + visibleMetrics.length * 2 + (hasCriteria ? 1 : 0) + 1
+  const totalCols = 2 + visibleMetrics.length * 2 + (hasCriteria ? 1 : 0) + 1
 
   return (
     <div className="space-y-2">
-      <p className="text-[11px] text-muted-foreground">{summary}</p>
+      <p className="text-[11px] text-muted-foreground">
+        <span>{summary}</span>
+        {recommendedRunId && recommendedBasis && (
+          <span> ★ Recommended is the {recommendedBasis}.</span>
+        )}
+      </p>
+      {hasCriteria && <CriteriaLegend criteria={criteria ?? []} />}
       <div className="rounded-xl border">
         <Table>
           <TableHeader>
@@ -509,9 +610,6 @@ export function CandidateTable({
               </TableHead>
               <TableHead rowSpan={2} className="align-bottom">
                 Algorithm
-              </TableHead>
-              <TableHead rowSpan={2} className="align-bottom">
-                Status
               </TableHead>
               {visibleMetrics.map(key => {
                 const sortable = isRankMetricKey(key)
@@ -577,7 +675,7 @@ export function CandidateTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {ranking.entries.map(entry => {
+            {ranking.entries.map((entry, entryIndex) => {
               const candidate = entry.row
               const algorithmLabel =
                 ALGORITHM_LABELS[candidate.algorithm as Algorithm] ??
@@ -648,7 +746,11 @@ export function CandidateTable({
               const isExpanded = Boolean(
                 candidate.runId && expandedRunIds.has(candidate.runId),
               )
-              const rowKey = `${candidate.algorithm}-${candidate.phase}-${candidate.runId ?? 'pending'}`
+              // The index too: two candidates may share an algorithm and both
+              // still be pending (no runId), which used to collide.
+              const rowKey = `${candidate.algorithm}-${candidate.phase}-${candidate.runId ?? `pending-${entryIndex}`}`
+              const isRecommended =
+                candidate.runId !== null && candidate.runId === recommendedRunId
               return (
                 <Fragment key={rowKey}>
                   <TableRow data-state={isSelected ? 'selected' : undefined}>
@@ -673,27 +775,42 @@ export function CandidateTable({
                         <span className="font-medium text-foreground">
                           {algorithmLabel}
                         </span>
+                        {/* The Status column folded in here (layout A): the
+                            icon already says it, so the word is only needed
+                            when the run is not a finished one. */}
+                        {candidate.status !== 'SUCCEEDED' && (
+                          <span className="text-[11px] text-muted-foreground">
+                            {status.label}
+                          </span>
+                        )}
+                        {isRecommended && (
+                          <Badge
+                            className="h-4 px-1.5 text-[10px]"
+                            title={
+                              recommendedBasis
+                                ? `Recommended: the ${recommendedBasis}`
+                                : undefined
+                            }
+                          >
+                            ★ Recommended
+                          </Badge>
+                        )}
                         {isSelected && (
                           <Badge
                             variant="secondary"
-                            className="h-4 px-1.5 text-[9px]"
+                            className="h-4 px-1.5 text-[10px]"
                           >
                             Selected
                           </Badge>
                         )}
                       </div>
                       <CandidateHyperparams candidate={candidate} />
-                      {candidate.runId && rowNote?.(candidate.runId)}
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-xs text-muted-foreground">
-                        {status.label}
-                      </span>
                       {candidate.failureReason && (
-                        <p className="text-[11px] text-red-500">
+                        <p className="text-[11px] text-destructive">
                           {candidate.failureReason}
                         </p>
                       )}
+                      {candidate.runId && rowNote?.(candidate.runId)}
                     </TableCell>
                     {visibleMetrics.map(key =>
                       isRankMetricKey(key) ? (
@@ -742,7 +859,7 @@ export function CandidateTable({
                     )}
                     {hasCriteria && (
                       <TableCell className="border-l">
-                        <RowCriteriaMarks
+                        <CriteriaSummary
                           criteria={criteria ?? []}
                           figures={comparisonFigures}
                         />
@@ -792,6 +909,14 @@ export function CandidateTable({
                   {isExpanded && candidate.runId && (
                     <TableRow>
                       <TableCell colSpan={totalCols} className="bg-muted/30">
+                        {hasCriteria && (
+                          <div className="px-2 pt-2">
+                            <CriteriaDetail
+                              criteria={criteria ?? []}
+                              figures={comparisonFigures}
+                            />
+                          </div>
+                        )}
                         <div className="grid gap-4 p-2 sm:grid-cols-1">
                           {/* MODEL-FLOW-019-T28. The same Test/Validate pair
                               the group overlay above already draws, now per

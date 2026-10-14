@@ -28,7 +28,6 @@ import {
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
@@ -83,7 +82,6 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setSelectedDataset = useSetAtom(mpSelectedDatasetAtom)
   const setAlgorithm = useSetAtom(mpAlgorithmAtom)
   const setAlgorithms = useSetAtom(mpAlgorithmsAtom)
-  const setFindBestModel = useSetAtom(mpFindBestModelAtom)
   const setFindBestParams = useSetAtom(mpFindBestParamsAtom)
   const setTargetVariable = useSetAtom(mpTargetVariableAtom)
   const setHyperparams = useSetAtom(mpHyperparamsAtom)
@@ -202,7 +200,6 @@ export function useModelWizardMode(): UseModelWizardModeResult {
         setDescription(config.description ?? '')
         setAlgorithm(config.algorithm)
         setAlgorithms(config.algorithms ?? [config.algorithm])
-        setFindBestModel(config.findBestModel ?? false)
         setFindBestParams(config.findBestParams ?? false)
         setTargetVariable(configTargets(config))
         setHyperparams(config.hyperparameters)

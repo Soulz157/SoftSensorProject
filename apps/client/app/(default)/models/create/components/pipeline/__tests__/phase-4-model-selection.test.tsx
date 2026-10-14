@@ -1036,11 +1036,15 @@ describe('Phase4ModelSelection — advisory acceptance criteria (MODEL-FLOW-019-
         },
       ],
     )
+    // Layout A (2026-10-14): the row carries a dashed mark and a count that
+    // keeps "not evaluated" apart from "not met"; the reason is in the
+    // expanded row's criteria detail.
     expect(
-      screen.getByText(
-        /Validate RMSE > Test RMSE — not evaluated \(no holdout\)/,
-      ),
+      screen.getByRole('img', { name: 'Criterion 1: not evaluated' }),
     ).toBeInTheDocument()
+    expect(screen.getByText(/1 not evaluated/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show charts' }))
+    expect(screen.getByText(/not evaluated \(no holdout\)/)).toBeInTheDocument()
   })
 
   it('evaluates two comparisons on the SAME candidate independently, one passing and one failing', () => {

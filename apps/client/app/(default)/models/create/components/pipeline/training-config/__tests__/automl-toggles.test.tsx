@@ -1,19 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { AutoMlToggles } from '../automl-toggles'
 import type { Algorithm } from '@/store/model-pipeline'
 
 /**
- * [fix]. "allow find best parameter when select 1 algorithm" — Find Best
- * Parameters is enabled either via Find Best Model's sweep (unchanged) OR
- * directly when exactly one algorithm is selected, with no sweep on. These
- * cases were previously untested — no test file for this component existed
- * before this fix.
+ * Find Best Model was removed 2026-10-14: training every selected algorithm
+ * is the default and Step 4 recommends the best. Find Best Parameters is the
+ * one toggle left, available for any selection, and its description says
+ * what it will tune for the current one.
  */
 function baseProps() {
   return {
-    findBestModel: false,
-    onFindBestModel: vi.fn(),
     findBestParams: false,
     onFindBestParams: vi.fn(),
     cvEnabled: false,
@@ -25,37 +23,37 @@ function findBestParamsSwitch() {
   return screen.getByRole('switch', { name: /find best parameters/i })
 }
 
-describe('AutoMlToggles — Find Best Parameters enable/disable', () => {
-  it('is enabled with exactly one algorithm selected, Find Best Model off', () => {
+describe('AutoMlToggles', () => {
+  it('has no Find Best Model toggle any more', () => {
+    render(<AutoMlToggles {...baseProps()} />)
+    expect(
+      screen.queryByRole('switch', { name: /find best model/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('with one algorithm, searches that algorithm', () => {
     render(<AutoMlToggles {...baseProps()} algorithms={['ridge']} />)
     expect(findBestParamsSwitch()).not.toBeDisabled()
     expect(
-      screen.getByText(/tune this algorithm’s hyperparameters directly/i),
+      screen.getByText(
+        /curated set of hyperparameter variants for this algorithm/i,
+      ),
     ).toBeInTheDocument()
   })
 
-  it('is disabled with zero algorithms selected, Find Best Model off', () => {
-    render(<AutoMlToggles {...baseProps()} algorithms={[]} />)
-    expect(findBestParamsSwitch()).toBeDisabled()
-  })
-
-  it('is disabled with two or more algorithms selected, Find Best Model off', () => {
+  it('with two or more algorithms, tunes the one with the lowest Test RMSE', () => {
     render(<AutoMlToggles {...baseProps()} algorithms={['ridge', 'ols']} />)
-    expect(findBestParamsSwitch()).toBeDisabled()
-  })
-
-  it('stays enabled with Find Best Model on, regardless of algorithm count (unchanged sweep-winner path)', () => {
-    render(
-      <AutoMlToggles
-        {...baseProps()}
-        findBestModel
-        algorithms={['ridge', 'ols']}
-      />,
-    )
     expect(findBestParamsSwitch()).not.toBeDisabled()
     expect(
-      screen.getByText(/tune the sweep’s winning algorithm/i),
+      screen.getByText(/tune the one with the lowest Test RMSE/i),
     ).toBeInTheDocument()
+  })
+
+  it('reports a click to the caller', async () => {
+    const props = baseProps()
+    render(<AutoMlToggles {...props} />)
+    await userEvent.click(findBestParamsSwitch())
+    expect(props.onFindBestParams).toHaveBeenCalledWith(true)
   })
 })
 
@@ -66,12 +64,5 @@ describe('AutoMlToggles — with Cross-Validation on (MODEL-FLOW-029)', () => {
     expect(
       screen.getByText(/every variant is cross-validated/i),
     ).toBeInTheDocument()
-  })
-
-  it('still disables Find Best Model — CV and a sweep stay exclusive', () => {
-    render(<AutoMlToggles {...baseProps()} cvEnabled />)
-    expect(
-      screen.getByRole('switch', { name: /find best model/i }),
-    ).toBeDisabled()
   })
 })

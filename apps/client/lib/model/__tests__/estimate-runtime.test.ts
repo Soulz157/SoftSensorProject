@@ -16,7 +16,6 @@ const BASE: RuntimeInput = {
   features: 1,
   algorithms: ['lightgbm'],
   targets: 1,
-  findBestModel: false,
   findBestParams: false,
 }
 
@@ -33,24 +32,24 @@ describe('estimateRuntimeSeconds (MODEL-FLOW-024-T05)', () => {
     expect(est({ findBestParams: true }) / est()).toBeCloseTo(5, 6)
   })
 
-  it('prices a sweep from the SELECTED algorithms only, not every entry in the cost table', () => {
-    const sweep = est({
-      algorithms: ['lightgbm', 'xgboost'],
-      findBestModel: true,
-    })
+  it('prices two algorithms from the SELECTED ones only, not every entry in the cost table', () => {
     // 1.0 + 1.3 = 2.3 units at 10s each.
-    expect(sweep).toBeCloseTo(23, 6)
-    // And it is the same number as fitting those two without a sweep.
-    expect(sweep).toBeCloseTo(
-      est({ algorithms: ['lightgbm', 'xgboost'], findBestModel: false }),
-      6,
-    )
+    expect(est({ algorithms: ['lightgbm', 'xgboost'] })).toBeCloseTo(23, 6)
+  })
+
+  it('prices each added row as one more fit of its algorithm', () => {
+    // lightgbm x2 (card + one row) + xgboost x1 = 2.0 + 1.3 = 3.3 units.
+    expect(
+      est({
+        algorithms: ['lightgbm', 'xgboost'],
+        candidatesPerAlgorithm: { lightgbm: 2, xgboost: 1 },
+      }),
+    ).toBeCloseTo(33, 6)
   })
 
   it('prices sweep-then-tune as the sweep plus 4 variants of the average selected algorithm', () => {
     const both = est({
       algorithms: ['lightgbm', 'xgboost'],
-      findBestModel: true,
       findBestParams: true,
     })
     // (1.0 + 1.3) + 4 x mean(1.0, 1.3) = 2.3 + 4.6 = 6.9 units.
@@ -77,7 +76,6 @@ describe('breakdownRuntime (MODEL-FLOW-024-T05)', () => {
     const shares = breakdownRuntime({
       ...BASE,
       algorithms: ['lightgbm', 'xgboost'],
-      findBestModel: true,
     })
     expect(shares.map(s => s.id).sort()).toEqual(['lightgbm', 'xgboost'])
   })
@@ -88,7 +86,6 @@ describe('breakdownRuntime (MODEL-FLOW-024-T05)', () => {
       {
         ...BASE,
         algorithms: ['lightgbm', 'xgboost'],
-        findBestModel: true,
         findBestParams: true,
       },
       { ...BASE, findBestParams: true },

@@ -12,13 +12,13 @@ import {
 import type { DraftSplitStatsResult } from '@/services/dataset-version'
 import { datasetSizeFrom } from '@/lib/hyperparam-ranges'
 import { baseHyperparamsFor } from '@/lib/tuning-preview'
+import { planTrainingLaunch } from '@/lib/training-launch'
 import { isSequenceAlgorithm } from '@/lib/metric-source'
 import {
   mpTrainStateAtom,
   mpServerDraftIdAtom,
   mpTargetVariableAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpHyperparamsAtom,
   mpPerAlgorithmHyperparamsAtom,
@@ -91,7 +91,7 @@ interface Deps {
  * explicit refusal (model-run-launch) is for a CV run. What actually 400ed a
  * direct HYPERPARAMETER_SEARCH was `expandSearchCandidates` finding NO
  * `TUNING_GRID` entry, which MODEL-FLOW-024 added. A direct Find Best
- * Parameters on one lstm/gru is therefore allowed. A SWEEP (Find Best Model,
+ * Parameters on one lstm/gru is therefore allowed. A SWEEP (two or more algorithms,
  * with or without tuning) still refuses them: it would launch up to three
  * sequence fits before any tuning, and whether it should is an open decision
  * on MODEL-FLOW-024, not something to enable by accident. `null` here is this
@@ -124,7 +124,6 @@ export function useModelTraining({
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const targetVariables = useAtomValue(mpTargetVariableAtom)
   const algorithms = useAtomValue(mpAlgorithmsAtom)
-  const findBestModel = useAtomValue(mpFindBestModelAtom)
   const findBestParams = useAtomValue(mpFindBestParamsAtom)
   const hyperparameters = useAtomValue(mpHyperparamsAtom)
   const perAlgorithmHyperparameters = useAtomValue(
@@ -452,128 +451,55 @@ export function useModelTraining({
             : 'Select exactly one target — a run fits one target per model.',
         )
       }
-      // MODEL-FLOW-013-T11 / [fix]. Find Best Parameters TUNES a winner —
-      // either the sweep's (Find Best Model on) or, with exactly one
-      // algorithm selected, that algorithm directly (a HYPERPARAMETER_SEARCH
-      // job — no sweep needed, there is only one candidate). The UI already
-      // disables the toggle for every other combination
-      // (automl-toggles.tsx); this is defense in depth against stale draft
-      // state from before that dependency existed.
-      if (findBestParams && !findBestModel && algorithms.length !== 1) {
-        throw new Error(
-          'Find Best Parameters tunes the sweep’s winner — turn on Find Best Model too, or select exactly one algorithm to tune it directly.',
-        )
-      }
-      // MODEL-FLOW-016. userDecisions: CV × algorithm sweep is mutually
-      // exclusive — a CV run fits one algorithm's k folds, a sweep
-      // evaluates several. The UI already disables Find Best Model while
-      // CV is on (automl-toggles.tsx) and clears nSplits when a sweep
-      // turns on (CvControl's own eligibility effect, core-config.tsx);
-      // this is defense in depth against stale draft state from before
-      // either dependency existed, same discipline the check above applies.
-      if (nSplits !== undefined && findBestModel) {
-        throw new Error(
-          'Cross-Validation fits one algorithm — turn off Find Best Model, or turn off Cross-Validation to sweep.',
-        )
-      }
+      // What to launch is decided by `planTrainingLaunch` alone (user decision
+      // 2026-10-14: training every selected algorithm and every added row is
+      // the default, Find Best Model is gone, Find Best Parameters only adds
+      // the curated grid). It throws the refusals the controls already
+      // prevent — CV or LSTM/GRU beside another algorithm, more than 20
+      // candidates — so stale draft state still cannot reach the server.
+      const plan = planTrainingLaunch({
+        algorithms,
+        baseFor: hyperparametersFor,
+        extraVariants,
+        findBestParams,
+        nSplits,
+      })
 
       const draftId = await ensureDraftId()
       if (!draftId) {
         throw new Error("Model draft isn't ready yet — check Step 1.")
       }
 
-      // [fix]. Find Best Parameters with exactly one algorithm selected and
-      // no sweep — a direct HYPERPARAMETER_SEARCH job. The client sends ONE
-      // candidate (this algorithm's current/default hyperparameters); the
-      // server expands it into the curated TUNING_GRID shortlist
-      // (tuning-grid.ts, the same shortlist SWEEP_THEN_TUNE's phase 2
-      // already uses) — the grid stays declared in exactly one place,
-      // never duplicated client-side.
-      if (findBestParams && !findBestModel) {
-        const [algorithm] = algorithms
-        if (algorithms.length !== 1 || !algorithm) {
-          throw new Error(
-            'Select exactly one algorithm to tune it directly, or turn on Find Best Model to sweep first.',
-          )
-        }
-        const backendAlgorithm = toBackendAlgorithm(algorithm, false)
-        if (!backendAlgorithm) {
-          throw new Error(
-            `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick another algorithm.`,
-          )
-        }
-        const created = await modelDraftCandidateJobService.create(draftId, {
-          goldArtifactId: selectedDataset.currentArtifactId,
-          targetY,
-          kind: 'HYPERPARAMETER_SEARCH',
-          // MODEL-FLOW-029. EXACTLY ONE of the two, as for a single run: with
-          // Cross-Validation on, every variant is a cv_expanding run and the
-          // job's winner is the lowest mean CV RMSE. This branch used to send
-          // the ratio unconditionally, silently dropping CV.
-          ...(nSplits !== undefined
-            ? { nSplits }
-            : { trainTestSplit: trainTestSplit / 100 }),
-          candidates: [
-            {
-              algorithm: backendAlgorithm,
-              // MODEL-FLOW-022-T04. This algorithm is always the primary
-              // here (findBestParams + single-algorithm), so this is the
-              // USER'S value, not the default it used to send.
-              hyperparameters: hyperparametersFor(algorithm),
-            },
-          ],
-          // MODEL-FLOW-026. The rows the user added by hand in Step 3's
-          // variant table. Sent only on THIS branch: a SWEEP_THEN_TUNE job
-          // builds its tuning phase server-side after the winner is known,
-          // from the job row, so the server refuses the field there rather
-          // than accept a list it could never read back.
-          ...(extraVariants[algorithm]?.length
-            ? { extraVariants: extraVariants[algorithm] }
-            : {}),
-          ...sizedFigures,
-        })
-
-        pollJob(draftId, created.data.id)
-        return
-      }
-
-      if (findBestModel) {
-        // MODEL-FLOW-013-T07/T11. Algorithm sweep — one candidate per
-        // selected algorithm, its own clean defaults, RMSE decides the
-        // winner. The job schema's own floor (.min(2)) is why 2 is required
-        // here, not 1: a single-candidate "sweep" is just a normal run,
-        // which createDraftRunService already exists for. Both toggles on
-        // (SWEEP_THEN_TUNE) launches the SAME phase-1 candidates — phase 2
-        // (tuning phase 1's winner) is appended server-side once phase 1
-        // exhausts, never built client-side.
-        if (algorithms.length < 2) {
-          throw new Error(
-            'Select at least 2 algorithms to sweep, or turn off Find Best Model.',
-          )
-        }
-        const candidates = algorithms.map(a => {
-          const backendAlgorithm = toBackendAlgorithm(a, true)
+      if (plan.type === 'job') {
+        // A sweep refuses LSTM/GRU (scope decision, MODEL-FLOW-024); a
+        // one-algorithm search may tune one.
+        const forSweep = plan.kind !== 'HYPERPARAMETER_SEARCH'
+        const candidates = plan.candidates.map(c => {
+          const backendAlgorithm = toBackendAlgorithm(c.algorithm, forSweep)
           if (!backendAlgorithm) {
             throw new Error(
-              `"${ALGORITHM_LABELS[a]}" isn't supported by the training service yet — remove it from the sweep.`,
+              `"${ALGORITHM_LABELS[c.algorithm]}" isn't supported by the training service yet — remove it.`,
             )
           }
           return {
             algorithm: backendAlgorithm,
-            // MODEL-FLOW-022-T04. The user's own per-tab value — the fix
-            // this feature exists for. `hyperparametersFor` falls back to
-            // `defaultHyperparams(a)` only for an algorithm the user never
-            // opened a tab for.
-            hyperparameters: hyperparametersFor(a),
+            hyperparameters: c.hyperparameters,
           }
         })
-
         const created = await modelDraftCandidateJobService.create(draftId, {
           goldArtifactId: selectedDataset.currentArtifactId,
           targetY,
-          kind: findBestParams ? 'SWEEP_THEN_TUNE' : 'ALGORITHM_SWEEP',
-          trainTestSplit: trainTestSplit / 100,
+          kind: plan.kind,
+          // MODEL-FLOW-029. EXACTLY ONE of the two. Only a one-algorithm
+          // search can be cross-validated; `planTrainingLaunch` has already
+          // refused CV for every other kind.
+          ...(nSplits !== undefined && plan.kind === 'HYPERPARAMETER_SEARCH'
+            ? { nSplits }
+            : { trainTestSplit: trainTestSplit / 100 }),
           candidates,
+          // MODEL-FLOW-026. Only a grid search on one algorithm carries them
+          // separately; everywhere else the rows are already candidates.
+          ...(plan.extraVariants ? { extraVariants: plan.extraVariants } : {}),
           ...sizedFigures,
         })
 
@@ -581,12 +507,7 @@ export function useModelTraining({
         return
       }
 
-      const [algorithm] = algorithms
-      if (algorithms.length !== 1 || !algorithm) {
-        throw new Error(
-          'Select exactly one algorithm — a run fits one algorithm per model.',
-        )
-      }
+      const { algorithm } = plan.candidate
       const backendAlgorithm = toBackendAlgorithm(algorithm, false)
       if (!backendAlgorithm) {
         throw new Error(
@@ -639,7 +560,6 @@ export function useModelTraining({
     trainState.status,
     selectedDataset,
     targetVariables,
-    findBestModel,
     findBestParams,
     algorithms,
     hyperparameters,

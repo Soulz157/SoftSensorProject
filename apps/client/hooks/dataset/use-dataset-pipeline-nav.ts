@@ -451,12 +451,15 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const setTimeRange = useCallback(
     (range: FetchPeriod) => {
       if (lockedRef.current) return
+      // The Fetch Period is only the summary bucket size. It must NOT clear
+      // the Start/End window: every fetch reader needs it, and clearing it
+      // left the pickers showing dates the fetch no longer had ("Set a start
+      // and end time before fetching").
       setTimeRangeAtom(range)
-      setCustomDateRangeAtom(null)
       resetFetch()
       setHighestUnlocked(prev => Math.min(prev, 2))
     },
-    [setTimeRangeAtom, setCustomDateRangeAtom, resetFetch, setHighestUnlocked],
+    [setTimeRangeAtom, resetFetch, setHighestUnlocked],
   )
 
   const setCustomRange = useCallback(

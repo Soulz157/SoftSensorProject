@@ -423,3 +423,84 @@ export function validationChartTags(tags: readonly string[]): {
     hasLabSubset,
   }
 }
+
+/**
+ * Status of the Step 4 validation split, shared by the step-header chip and
+ * the section's own badge so both read the same. `days` is the committed
+ * window as `yyyy-MM-dd → yyyy-MM-dd`, or null when nothing is applied. An
+ * incomplete range (either end empty) counts as not applied.
+ */
+export function holdoutStatus(range: CustomDateRange | null): {
+  applied: boolean
+  days: string | null
+} {
+  if (!range?.from || !range?.to) return { applied: false, days: null }
+  return {
+    applied: true,
+    days: `${range.from.slice(0, 10)} → ${range.to.slice(0, 10)}`,
+  }
+}
+
+export interface SplitTimeline {
+  /** First and last day of the whole span, `yyyy-MM-dd`. */
+  startDay: string
+  endDay: string
+  /** The validation band as a share of the span, 0..100; null = no holdout. */
+  validation: { leftPct: number; widthPct: number; fromDay: string } | null
+}
+
+/**
+ * Geometry of Model Step 2's "How the data is split" strip: where the
+ * validation window sits inside the dataset's time span. Read on wall-clock
+ * text (`wallClock`), the same reading `clipToHoldoutWindow` uses, so the
+ * strip and the validation chart agree on the window's edges.
+ *
+ * The span covers both sides, since a holdout cut from the end of the data
+ * leaves the training artifact ending where the holdout starts. An open-ended
+ * holdout (`holdoutTo: null`) runs to the end of the span. Returns null when
+ * the dataset's own start or end is missing or unreadable, so the caller
+ * draws nothing rather than a wrong bar.
+ */
+export function splitTimeline(input: {
+  dataStart: string | null | undefined
+  dataEnd: string | null | undefined
+  holdoutFrom: string | null | undefined
+  holdoutTo: string | null | undefined
+}): SplitTimeline | null {
+  const ms = (v: string | null | undefined) =>
+    v ? new Date(wallClock(v)).getTime() : Number.NaN
+  const dataStart = ms(input.dataStart)
+  const dataEnd = ms(input.dataEnd)
+  if (!Number.isFinite(dataStart) || !Number.isFinite(dataEnd)) return null
+
+  const from = ms(input.holdoutFrom)
+  const hasHoldout = Number.isFinite(from)
+  const to = input.holdoutTo ? ms(input.holdoutTo) : Number.NaN
+
+  const start = hasHoldout ? Math.min(dataStart, from) : dataStart
+  const end = Math.max(
+    dataEnd,
+    hasHoldout && Number.isFinite(to) ? to : dataEnd,
+  )
+  const span = end - start
+  if (span <= 0) return null
+
+  const day = (t: number) => {
+    const d = new Date(t)
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  }
+
+  let validation: SplitTimeline['validation'] = null
+  if (hasHoldout) {
+    const bandEnd = Number.isFinite(to) ? to : end
+    const leftPct = ((from - start) / span) * 100
+    const widthPct = ((Math.max(bandEnd, from) - from) / span) * 100
+    validation = {
+      leftPct: Math.min(100, Math.max(0, leftPct)),
+      widthPct: Math.min(100 - leftPct, Math.max(0, widthPct)),
+      fromDay: day(from),
+    }
+  }
+  return { startDay: day(start), endDay: day(end), validation }
+}

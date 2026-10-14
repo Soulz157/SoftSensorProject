@@ -156,13 +156,11 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
             <p className="flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2 py-1.5 text-[10px] leading-relaxed text-amber-700 ring-1 ring-amber-500/20 dark:text-amber-400">
               <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
               <span>
-                {input.findBestModel
-                  ? `Find Best Model trains all ${shares.length} algorithms — turning it off and keeping ${top.label} cuts the run to about ${formatDuration(top.seconds)}.`
-                  : dominates
-                    ? `${top.label} accounts for ${top.pct.toFixed(0)}% of the estimate — dropping it saves roughly ${formatDuration(top.seconds)}.`
-                    : stacked
-                      ? `${shares.length} algorithms run sequentially, so runtime is the sum, not the max. Trim the list to shorten the run.`
-                      : `Find Best Parameters adds up to ${Math.max(0, ...input.algorithms.map(a => input.tuningVariants?.[a] ?? 4))} extra fits on top of this run — turn it off for a first pass.`}
+                {dominates
+                  ? `${top.label} accounts for ${top.pct.toFixed(0)}% of the estimate — dropping it saves roughly ${formatDuration(top.seconds)}.`
+                  : stacked
+                    ? `${shares.length} algorithms run sequentially, so runtime is the sum, not the max. Trim the list to shorten the run.`
+                    : `Find Best Parameters adds up to ${Math.max(0, ...input.algorithms.map(a => input.tuningVariants?.[a] ?? 4))} extra fits on top of this run — turn it off for a first pass.`}
               </span>
             </p>
           )}

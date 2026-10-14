@@ -5,7 +5,7 @@ import { useSetAtom } from 'jotai'
 import {
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
+  mpExtraVariantsAtom,
   mpFindBestParamsAtom,
   mpHyperparamsAtom,
   mpNSplitsAtom,
@@ -47,8 +47,8 @@ export interface UseApplyRunParamsResult {
 export function useApplyRunParams(): UseApplyRunParamsResult {
   const setAlgorithm = useSetAtom(mpAlgorithmAtom)
   const setAlgorithms = useSetAtom(mpAlgorithmsAtom)
-  const setFindBestModel = useSetAtom(mpFindBestModelAtom)
   const setFindBestParams = useSetAtom(mpFindBestParamsAtom)
+  const setExtraVariants = useSetAtom(mpExtraVariantsAtom)
   const setHyperparameters = useSetAtom(mpHyperparamsAtom)
   const setTargetVariable = useSetAtom(mpTargetVariableAtom)
   const setTrainTestSplit = useSetAtom(mpTrainTestSplitAtom)
@@ -76,8 +76,10 @@ export function useApplyRunParams(): UseApplyRunParamsResult {
         setNSplits(undefined)
         setTrainTestSplit(splitPercentFromRun(run.splitSpec))
       }
-      setFindBestModel(false)
       setFindBestParams(false)
+      // Added rows now always train as their own candidates (2026-10-14), so
+      // leftover rows would turn "train this run's params" into extra fits.
+      setExtraVariants({})
 
       // Replicated nav-setter side effect — see doc comment above.
       commitRunConfig()
@@ -87,8 +89,8 @@ export function useApplyRunParams(): UseApplyRunParamsResult {
     [
       setAlgorithm,
       setAlgorithms,
-      setFindBestModel,
       setFindBestParams,
+      setExtraVariants,
       commitRunConfig,
       setHyperparameters,
       setTargetVariable,

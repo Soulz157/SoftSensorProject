@@ -253,14 +253,17 @@ export function Step5DataCleaning({ nav }: Props) {
   const allDropped = base.rows.length > 0 && preprocessed === 0
   // Step-by-step preview for the isolated tag: apply only the first
   // `previewIndex` draft steps so the scrubber shows each stage's effect live.
+  // Original is `featured` (before any rule); Cleaned is `base` (cut-off,
+  // SD&TA, Preset range already applied) plus the draft steps, so a rule
+  // change moves the Cleaned line even at the Raw Data position.
   const previewRows = useMemo(() => {
     const truncated = draft.slice(0, previewIndex)
     const processed = preprocessPipelines(
       base,
       isolatedTag ? { [isolatedTag]: truncated } : {},
     )
-    return tagFillPreview(base, processed, isolatedTag)
-  }, [base, draft, previewIndex, isolatedTag])
+    return tagFillPreview(featured, processed, isolatedTag)
+  }, [featured, base, draft, previewIndex, isolatedTag])
 
   // T01 hybrid: a server-verified preview fires ONLY when the scrubber is
   // sitting on the final step (every draft step applied) — every intermediate

@@ -885,7 +885,9 @@ export interface TagFillPreviewRow {
  * Join `base` (pre-fill) and `filled` (post-`preprocess`) by timestamp for a
  * single tag, for before/after preview charts. Joins by timestamp rather than
  * index since `filled` may have fewer rows (a drop-semantics tag can remove
- * rows that `base` still has).
+ * rows that `base` still has). Both sides keep Good cells only: an excluded
+ * (Bad) cell keeps its value, so reading it on the `after` side would hide
+ * the exclusion; every fill flips its cell to Good, so filled values still show.
  */
 export function tagFillPreview(
   base: Dataset,
@@ -900,7 +902,10 @@ export function tagFillPreview(
   const afterByTs = new Map<string, number | null>(
     filled.rows
       .filter(r => wanted.has(r.timestamp))
-      .map(r => [r.timestamp, r.cells[tag]?.value ?? null]),
+      .map(r => {
+        const cell = r.cells[tag]
+        return [r.timestamp, cell && cell.status === 'Good' ? cell.value : null]
+      }),
   )
 
   return src.map(r => {

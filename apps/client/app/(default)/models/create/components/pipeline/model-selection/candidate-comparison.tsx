@@ -279,6 +279,13 @@ export function CandidateComparison({
         sortMetric={sortMetric}
         onSortMetric={setSortMetric}
         criteria={acceptanceCriteria}
+        // The server's own pick (lowest Test RMSE, or lowest mean CV RMSE
+        // for a cross-validated search) — badged, never forced: the user's
+        // Select still wins (`resolvedRunIdFor`).
+        recommendedRunId={job.bestRunId}
+        recommendedBasis={
+          job.nSplits != null ? 'lowest mean CV RMSE' : 'lowest Test RMSE'
+        }
         onScoreGroup={ids => void handleScoreGroup(ids)}
         scoreSubmitting={scoreSubmitting}
       />
@@ -312,6 +319,8 @@ function CandidateGroups({
   sortMetric,
   onSortMetric,
   criteria,
+  recommendedRunId,
+  recommendedBasis,
   onScoreGroup,
   scoreSubmitting,
 }: {
@@ -338,6 +347,8 @@ function CandidateGroups({
   sortMetric: RankMetricKey
   onSortMetric: (key: RankMetricKey) => void
   criteria?: AcceptanceCriterion[]
+  recommendedRunId: string | null
+  recommendedBasis: string
   /** MODEL-FLOW-019-T20 follow-up. Fires with every runId in ONE phase
    *  group that `scoreableRunIds` names — never the whole job, so a
    *  Sweep-phase click cannot spawn containers for the Tuning phase too. */
@@ -415,6 +426,8 @@ function CandidateGroups({
           holdoutLoading={holdoutLoading}
           oofLoading={oofLoading}
           criteria={criteria}
+          recommendedRunId={recommendedRunId}
+          recommendedBasis={recommendedBasis}
         />
       </div>
     )

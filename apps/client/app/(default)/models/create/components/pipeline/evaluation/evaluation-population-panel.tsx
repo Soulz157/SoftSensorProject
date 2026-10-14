@@ -31,6 +31,15 @@ import {
   R2_NOT_MEANINGFUL_REASON,
 } from '@/lib/metric-source'
 import { StatTile } from '../../stat-tile'
+
+/** Columns per tile count at `sm` and up, written out in full so Tailwind
+ *  sees each class. Index = number of selected metrics. */
+const TILE_COLUMNS: Record<number, string> = {
+  1: 'grid-cols-1',
+  2: 'sm:grid-cols-2',
+  3: 'sm:grid-cols-3',
+  4: 'sm:grid-cols-4',
+}
 import { ActualVsPredictedChart, AVP_LEGEND } from './actual-vs-predicted-chart'
 import { ParityScatterChart, PARITY_LEGEND } from './parity-scatter-chart'
 import { ResidualChart, RESIDUAL_LEGEND } from './residual-chart'
@@ -219,11 +228,12 @@ export function EvaluationPopulationPanel({
       {note}
 
       {tiles.length > 0 && (
+        // One row for every selected metric (up to the four in METRIC_KEYS):
+        // the old `sm:grid-cols-3` wrapped SD onto a row of its own. Two per
+        // row on a phone. Four across a narrower panel take the smaller
+        // value size, so a CV "0.123 ± 0.045" still fits its tile.
         <div
-          className={cn(
-            'grid gap-4',
-            tiles.length >= 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-2',
-          )}
+          className={cn('grid grid-cols-2 gap-3', TILE_COLUMNS[tiles.length])}
         >
           {tiles.map(key => (
             <StatTile
@@ -232,6 +242,7 @@ export function EvaluationPopulationPanel({
               value={valueFor(key)}
               sub={subFor(key)}
               toneClassName={accentFor(key)}
+              valueSize={tiles.length >= 4 ? 'md' : 'lg'}
             />
           ))}
         </div>

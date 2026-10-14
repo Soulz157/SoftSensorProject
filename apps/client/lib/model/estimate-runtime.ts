@@ -74,7 +74,11 @@ export function breakdownRuntime(input: RuntimeInput): AlgoShare[] {
   const ids = input.algorithms
   if (ids.length === 0) return []
 
-  const weights = selectedCosts(ids)
+  // Weighted by each algorithm's candidate count too, so an algorithm with
+  // three added rows reads as three fits' worth of the total.
+  const weights = selectedCosts(ids).map(
+    (c, i) => c * (input.candidatesPerAlgorithm?.[ids[i]!] ?? 1),
+  )
   const sum = weights.reduce((s, w) => s + w, 0) || 1
   const total = estimateRuntimeSeconds(input)
   return ids
@@ -94,8 +98,14 @@ export interface RuntimeInput {
   features: number
   algorithms: string[]
   targets: number
-  findBestModel: boolean
   findBestParams: boolean
+  /**
+   * How many first-round candidates each algorithm trains: its card plus the
+   * rows the user added on it (`firstRoundFits`'s per-algorithm count). An
+   * algorithm missing here counts once. Absent for a grid search on one
+   * algorithm, whose added rows are priced in `tuningVariants` instead.
+   */
+  candidatesPerAlgorithm?: Partial<Record<string, number>>
   nEstimators?: number
   /**
    * MODEL-FLOW-025-T06. How many variants Find Best Parameters would actually
@@ -139,7 +149,8 @@ export function cvFitCount(input: RuntimeInput): CvFitCount | null {
     input.findBestParams && algorithm
       ? (input.tuningVariants?.[algorithm] ?? TUNE_VARIANTS)
       : 0
-  const candidates = Math.max(input.algorithms.length, 1) + variants
+  const own = algorithm ? (input.candidatesPerAlgorithm?.[algorithm] ?? 1) : 1
+  const candidates = own + variants
   const fitsEach = fitsPerCandidate(input.nSplits)
   return { candidates, fitsEach, total: candidates * fitsEach }
 }
@@ -159,9 +170,9 @@ export function cvFitCount(input: RuntimeInput): CvFitCount | null {
  *            (MODEL-FLOW-025-T06), else TUNE_VARIANTS
  *
  * A single algorithm with Find Best Parameters is therefore 5x one fit, not
- * 10x. `findBestModel` no longer changes the number: a sweep costs what
- * fitting its selected algorithms costs. It stays on `RuntimeInput` because
- * callers still pass it. Left alone: `ALGO_COST` is keyed on ids this
+ * 10x. A first round costs what fitting its candidates costs: each selected
+ * algorithm times its own candidate count (the card plus added rows). Left
+ * alone: `ALGO_COST` is keyed on ids this
  * catalogue does not have (rf, svr, gbr...), so `random_forest`, `svm`,
  * `hist_gradient_boosting`, `grp`, `pls`, `lstm` and `gru` all fall back to
  * cost 1 — the numbers are invented, and inventing more is not this change.
@@ -174,13 +185,18 @@ export function estimateRuntimeSeconds({
   findBestParams,
   nEstimators,
   tuningVariants,
+  candidatesPerAlgorithm,
   nSplits,
 }: RuntimeInput): number {
   const cells = Math.max(rows, 1) * Math.max(features, 1)
   const trees = (nEstimators ?? 100) / 100
 
   const costs = selectedCosts(algorithms)
-  const baseCost = costs.reduce((s, c) => s + c, 0) || 1
+  const baseCost =
+    costs.reduce(
+      (s, c, i) => s + c * (candidatesPerAlgorithm?.[algorithms[i]!] ?? 1),
+      0,
+    ) || 1
   // MODEL-FLOW-025-T06. Each algorithm's tuning cost is ITS variant count times
   // its cost; the mean over the selection stands for "whichever wins". With one
   // algorithm (a direct search) that is exact rather than 4x by assumption.

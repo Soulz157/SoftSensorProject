@@ -15,7 +15,6 @@ import {
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
@@ -70,7 +69,6 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
   const dataset = useAtomValue(mpSelectedDatasetAtom)
   const algorithm = useAtomValue(mpAlgorithmAtom)
   const algorithms = useAtomValue(mpAlgorithmsAtom)
-  const findBestModel = useAtomValue(mpFindBestModelAtom)
   const findBestParams = useAtomValue(mpFindBestParamsAtom)
   const targetVariables = useAtomValue(mpTargetVariableAtom)
   const hyperparameters = useAtomValue(mpHyperparamsAtom)
@@ -85,7 +83,6 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
         datasetId: dataset?.id ?? '',
         algorithm,
         algorithms,
-        findBestModel,
         findBestParams,
         targetVariables,
         hyperparameters,
@@ -134,7 +131,6 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
     dataset,
     algorithm,
     algorithms,
-    findBestModel,
     findBestParams,
     hyperparameters,
     lossFunction,

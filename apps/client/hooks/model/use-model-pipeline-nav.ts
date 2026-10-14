@@ -15,7 +15,7 @@ import {
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
+  mpExtraVariantsAtom,
   mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
@@ -48,7 +48,6 @@ export interface UsePipelineNavResult {
   selectedDataset: SavedDataset | null
   algorithm: Algorithm
   algorithms: Algorithm[]
-  findBestModel: boolean
   findBestParams: boolean
   targetVariables: string[]
   hyperparameters: Record<string, HyperparamValue>
@@ -120,7 +119,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   )
   const [algorithm, setAlgorithmAtom] = useAtom(mpAlgorithmAtom)
   const [algorithms, setAlgorithmsAtom] = useAtom(mpAlgorithmsAtom)
-  const [findBestModel, setFindBestModelAtom] = useAtom(mpFindBestModelAtom)
   const [findBestParams, setFindBestParamsAtom] = useAtom(mpFindBestParamsAtom)
   const [targetVariables, setTargetVariableAtom] = useAtom(mpTargetVariableAtom)
   const [hyperparameters, setHyperparametersAtom] = useAtom(mpHyperparamsAtom)
@@ -142,6 +140,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const setCreatedModelId = useSetAtom(mpCreatedModelIdAtom)
   const setSelectedMetrics = useSetAtom(mpSelectedMetricsAtom)
   const setServerDraftId = useSetAtom(mpServerDraftIdAtom)
+  const setExtraVariants = useSetAtom(mpExtraVariantsAtom)
 
   const resetTraining = useCallback(() => {
     setTrainState({ status: 'idle', progress: 0 })
@@ -233,7 +232,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   )
 
   // MODEL-FLOW-014-T08: the per-field relock setters that used to live here
-  // (setAlgorithm, setAlgorithms, setFindBestModel, setFindBestParams,
+  // (setAlgorithm, setAlgorithms, setFindBestParams,
   // setFetchTagOverride, setTargetVariable, setHyperparameter,
   // setLossFunction, setTrainTestSplit, setSeed) are gone — Step 3 now
   // edits a local draft (`useRunConfigDraft`) and commits all nine fields
@@ -266,7 +265,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setSelectedDatasetAtom(null)
     setAlgorithmAtom('ols')
     setAlgorithmsAtom(['ols'])
-    setFindBestModelAtom(false)
     setFindBestParamsAtom(false)
     setTargetVariableAtom([])
     setHyperparametersAtom(defaultHyperparams('ols'))
@@ -297,11 +295,13 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     // (use-create-model.ts), so a draft keyed to the OLD workspace must
     // not survive; the next meaningful edit creates a fresh one.
     setServerDraftId(null)
+    // Added rows now always train (2026-10-14) — a workspace change must not
+    // carry one model's rows into the next.
+    setExtraVariants({})
   }, [
     setSelectedDatasetAtom,
     setAlgorithmAtom,
     setAlgorithmsAtom,
-    setFindBestModelAtom,
     setFindBestParamsAtom,
     setTargetVariableAtom,
     setHyperparametersAtom,
@@ -321,6 +321,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setHighestUnlocked,
     setCurrentStep,
     setServerDraftId,
+    setExtraVariants,
   ])
 
   return {
@@ -330,7 +331,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     selectedDataset,
     algorithm,
     algorithms,
-    findBestModel,
     findBestParams,
     targetVariables,
     hyperparameters,

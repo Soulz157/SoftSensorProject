@@ -18,6 +18,8 @@ import {
 import { sourcedMetricsOf } from '@/lib/metric-source'
 import { datasetSizeFrom } from '@/lib/hyperparam-ranges'
 import { useTuningVariantCounts } from '@/hooks/model/use-tuning-variant-counts'
+import { candidatesFor, planTrainingLaunch } from '@/lib/training-launch'
+import { baseHyperparamsFor } from '@/lib/tuning-preview'
 import { CoreConfig } from './training-config/core-config'
 import { AutoMlToggles } from './training-config/automl-toggles'
 import { RuntimeEstimate } from './training-config/runtime-estimate'
@@ -88,10 +90,42 @@ export function Phase3TrainingConfig({ nav }: Props) {
     perAlgorithmHyperparameters: draft.perAlgorithmHyperparameters,
     // MODEL-FLOW-026. Hand-added variants are extra fits, so the estimate
     // must price them — read from the atom, not the draft, because they are
-    // not Apply-gated configuration (see `mpExtraVariantsAtom`).
-    extraVariants,
+    // not Apply-gated configuration (see `mpExtraVariantsAtom`). Counted here
+    // only for a grid search on one algorithm, where the server appends them
+    // after the grid; everywhere else they are first-round candidates,
+    // priced by `candidatesPerAlgorithm` below.
+    extraVariants: draft.algorithms.length === 1 ? extraVariants : undefined,
     size: datasetSize,
   })
+
+  // Each algorithm's first-round candidates: its card plus the added rows
+  // that survive de-duplication — the same rule the launch applies
+  // (`candidatesFor`, lib/training-launch.ts). Omitted for a grid search on
+  // one algorithm, where the rows are already in `tuningVariants`.
+  const candidatesPerAlgorithm = useMemo(() => {
+    if (draft.algorithms.length === 1 && draft.findBestParams) return undefined
+    return Object.fromEntries(
+      draft.algorithms.map(a => [
+        a,
+        candidatesFor(
+          a,
+          baseHyperparamsFor(
+            a,
+            draft.algorithms,
+            draft.hyperparameters,
+            draft.perAlgorithmHyperparameters,
+          ),
+          extraVariants[a],
+        ).length,
+      ]),
+    )
+  }, [
+    draft.algorithms,
+    draft.findBestParams,
+    draft.hyperparameters,
+    draft.perAlgorithmHyperparameters,
+    extraVariants,
+  ])
 
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const { runs: draftRuns } = useDraftRuns(serverDraftId)
@@ -111,11 +145,36 @@ export function Phase3TrainingConfig({ nav }: Props) {
     : undefined
   const rowCount = selectedDataset?.rowCount ?? 0
 
+  // The same refusals Start would raise (LSTM/GRU beside another algorithm,
+  // CV with two algorithms, more than 20 candidates), stated before the
+  // click rather than after it. Read off the draft the user is editing.
+  const launchRefusal = useMemo(() => {
+    try {
+      planTrainingLaunch({
+        algorithms: draft.algorithms,
+        baseFor: a =>
+          baseHyperparamsFor(
+            a,
+            draft.algorithms,
+            draft.hyperparameters,
+            draft.perAlgorithmHyperparameters,
+          ),
+        extraVariants,
+        findBestParams: draft.findBestParams,
+        nSplits: draft.nSplits,
+      })
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : 'These settings cannot start.'
+    }
+  }, [draft, extraVariants])
+
   const canTrain =
     targetVariables.length > 0 &&
     training.status !== 'training' &&
     tags.length > 0 &&
-    !dirty
+    !dirty &&
+    launchRefusal === null
 
   return (
     <div className="space-y-6">
@@ -171,7 +230,6 @@ export function Phase3TrainingConfig({ nav }: Props) {
             algorithms={draft.algorithms}
             nSplits={draft.nSplits}
             onNSplitsChange={runConfigDraft.setNSplits}
-            findBestModel={draft.findBestModel}
             datasetId={selectedDataset?.id ?? null}
             artifactId={selectedDataset?.currentArtifactId ?? null}
             hasArtifact={hasArtifact}
@@ -216,13 +274,10 @@ export function Phase3TrainingConfig({ nav }: Props) {
             hyperparameters={draft.hyperparameters}
             onHyperparameterChange={runConfigDraft.setHyperparameter}
             findBestParams={draft.findBestParams}
-            findBestModel={draft.findBestModel}
             datasetSize={datasetSize}
           />
 
           <AutoMlToggles
-            findBestModel={draft.findBestModel}
-            onFindBestModel={runConfigDraft.setFindBestModel}
             findBestParams={draft.findBestParams}
             onFindBestParams={runConfigDraft.setFindBestParams}
             cvEnabled={draft.nSplits !== undefined}
@@ -273,8 +328,8 @@ export function Phase3TrainingConfig({ nav }: Props) {
             features={featureCount}
             algorithms={draft.algorithms}
             targets={draft.targetVariables.length}
-            findBestModel={draft.findBestModel}
             findBestParams={draft.findBestParams}
+            candidatesPerAlgorithm={candidatesPerAlgorithm}
             nEstimators={nEstimators}
             tuningVariants={tuningVariants}
             nSplits={draft.nSplits}
@@ -303,6 +358,9 @@ export function Phase3TrainingConfig({ nav }: Props) {
             </Button>
 
             <div className="min-w-0 flex-1 space-y-1">
+              {launchRefusal && training.status !== 'training' && (
+                <p className="text-xs text-destructive">{launchRefusal}</p>
+              )}
               {dirty && training.status !== 'training' && (
                 <p className="text-xs text-muted-foreground">
                   Apply the changes above to start training with them.

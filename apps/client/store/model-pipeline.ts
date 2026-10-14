@@ -107,9 +107,10 @@ export type HyperparamValue = number | string | boolean | null
 export const mpAlgorithmAtom = atom<Algorithm>('ols')
 /** Up to 3 candidate algorithms. `mpAlgorithmAtom` mirrors the primary (index 0). */
 export const mpAlgorithmsAtom = atom<Algorithm[]>(['ols'])
-/** AutoML Step A — evaluate the selected algorithms and auto-pick the best. */
-export const mpFindBestModelAtom = atom<boolean>(false)
-/** AutoML Step B — hyperparameter-tune the best model (requires Step A). */
+/** Find Best Parameters: with one algorithm, search the curated grid for it;
+ * with two or more, tune whichever candidate wins on Test RMSE. (Find Best
+ * Model was removed 2026-10-14 — training every selected algorithm is the
+ * default, and Step 4 recommends the best.) */
 export const mpFindBestParamsAtom = atom<boolean>(false)
 export const mpTargetVariableAtom = atom<string[]>([])
 export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
@@ -426,7 +427,6 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpSelectedDatasetAtom, null)
   set(mpAlgorithmAtom, 'ols')
   set(mpAlgorithmsAtom, ['ols'])
-  set(mpFindBestModelAtom, false)
   set(mpFindBestParamsAtom, false)
   set(mpTargetVariableAtom, [])
   // Default algorithm is `ols` — seed its clean hyperparameters (mirrors

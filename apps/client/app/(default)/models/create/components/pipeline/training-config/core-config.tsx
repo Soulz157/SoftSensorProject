@@ -61,7 +61,6 @@ interface Props {
   algorithms: Algorithm[]
   nSplits: number | undefined
   onNSplitsChange: (nSplits: number | undefined) => void
-  findBestModel: boolean
   datasetId: string | null
   artifactId: string | null
   hasArtifact: boolean
@@ -85,7 +84,6 @@ export function CoreConfig({
   algorithms,
   nSplits,
   onNSplitsChange,
-  findBestModel,
   datasetId,
   artifactId,
   hasArtifact,
@@ -194,14 +192,12 @@ export function CoreConfig({
           hasHoldout={hasHoldout}
           holdoutLoading={holdoutLoading}
           algorithms={algorithms}
-          findBestModel={findBestModel}
           nSplits={nSplits}
           onNSplitsChange={onNSplitsChange}
           maxAdmissibleK={maxAdmissibleK}
           splitStatsLoading={splitStatsLoading}
         />
       </div>
-
     </div>
   )
 }
@@ -353,7 +349,6 @@ interface CvControlProps {
   hasHoldout: boolean
   holdoutLoading: boolean
   algorithms: Algorithm[]
-  findBestModel: boolean
   nSplits: number | undefined
   onNSplitsChange: (nSplits: number | undefined) => void
   maxAdmissibleK: number | null
@@ -364,7 +359,6 @@ function CvControl({
   hasHoldout,
   holdoutLoading,
   algorithms,
-  findBestModel,
   nSplits,
   onNSplitsChange,
   maxAdmissibleK,
@@ -409,8 +403,11 @@ function CvControl({
   if (isSequence) {
     disabledReason =
       'Not available for LSTM/GRU — they split by window, not by row.'
-  } else if (findBestModel) {
-    disabledReason = 'Turn off Find Best Model first — CV runs one algorithm.'
+  } else if (algorithms.length > 1) {
+    // MODEL-FLOW-016, kept 2026-10-14: CV fits one algorithm. The effect
+    // below turns CV off the moment a second algorithm is added.
+    disabledReason =
+      'Cross-Validation fits one algorithm — remove the others to use it.'
   } else if (!holdoutLoading && !hasHoldout) {
     disabledReason =
       "This dataset has no validation holdout, so a CV run's model could " +

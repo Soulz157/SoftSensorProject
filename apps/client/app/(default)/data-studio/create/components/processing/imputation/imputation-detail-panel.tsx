@@ -245,9 +245,15 @@ export function ImputationDetailPanel({
     .map(r => r.after)
     .filter((v): v is number => v !== null)
 
+  // At Raw Data the Cleaned line differs from Original only when a cut-off,
+  // SD&TA or Preset range rule touched this tag.
+  const rulesActive =
+    previewIndex === 0 && previewRows.some(r => r.before !== r.after)
   const previewLabel =
     previewIndex === 0
-      ? 'Original Data'
+      ? rulesActive
+        ? 'Cut-off and preset rules only'
+        : 'Original Data'
       : `Result after ${ITEM_BY_METHOD[pipeline[previewIndex - 1]?.method ?? '']?.label ?? 'step'}`
 
   return (

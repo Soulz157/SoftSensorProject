@@ -85,7 +85,6 @@ export function Phase6Deploy({ nav }: Props) {
     targetVariables,
     algorithms,
     trainTestSplit,
-    findBestModel,
     findBestParams,
     autoRetrain,
     setAutoRetrain,
@@ -205,10 +204,10 @@ export function Phase6Deploy({ nav }: Props) {
         },
     {
       label: 'Automated tuning',
-      value: findBestModel
-        ? findBestParams
-          ? 'Find best model + parameters'
-          : 'Find best model'
+      value: findBestParams
+        ? algorithms.length > 1
+          ? 'Find best parameters — tuned the winning algorithm'
+          : 'Find best parameters'
         : 'Off',
     },
   ]

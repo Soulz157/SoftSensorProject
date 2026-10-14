@@ -6,7 +6,6 @@ import {
   mpAcceptanceCriteriaAtom,
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpHyperparamsAtom,
   mpPerAlgorithmHyperparamsAtom,
@@ -28,7 +27,6 @@ import type { UsePipelineNavResult } from './use-model-pipeline-nav'
 
 export interface RunConfigDraft {
   algorithms: Algorithm[]
-  findBestModel: boolean
   findBestParams: boolean
   targetVariables: string[]
   /** The PRIMARY algorithm's (`algorithms[0]`) values — derived from
@@ -71,7 +69,6 @@ function committedSnapshot(nav: UsePipelineNavResult): RunConfigDraft {
 
   return {
     algorithms: nav.algorithms,
-    findBestModel: nav.findBestModel,
     findBestParams: nav.findBestParams,
     targetVariables: nav.targetVariables,
     hyperparameters: nav.hyperparameters,
@@ -141,7 +138,6 @@ function criteriaEqual(
 
 function draftsEqual(a: RunConfigDraft, b: RunConfigDraft): boolean {
   return (
-    a.findBestModel === b.findBestModel &&
     a.findBestParams === b.findBestParams &&
     a.lossFunction === b.lossFunction &&
     a.trainTestSplit === b.trainTestSplit &&
@@ -162,7 +158,6 @@ export interface UseRunConfigDraftResult {
   draft: RunConfigDraft
   dirty: boolean
   setAlgorithms: (algorithms: Algorithm[]) => void
-  setFindBestModel: (on: boolean) => void
   setFindBestParams: (on: boolean) => void
   setTargetVariable: (tags: string[]) => void
   setHyperparameter: (
@@ -209,7 +204,6 @@ export function useRunConfigDraft(
   )
   if (
     syncedFrom.algorithms !== nav.algorithms ||
-    syncedFrom.findBestModel !== nav.findBestModel ||
     syncedFrom.findBestParams !== nav.findBestParams ||
     syncedFrom.targetVariables !== nav.targetVariables ||
     syncedFrom.hyperparameters !== nav.hyperparameters ||
@@ -256,16 +250,6 @@ export function useRunConfigDraft(
         perAlgorithmHyperparameters,
       }
     })
-  }, [])
-
-  const setFindBestModel = useCallback((on: boolean) => {
-    setDraft(prev => ({
-      ...prev,
-      findBestModel: on,
-      // Mirrors the deleted nav.setFindBestModel cascade: Step B requires
-      // Step A, so turning A off cascades B off in the draft too.
-      findBestParams: on ? prev.findBestParams : false,
-    }))
   }, [])
 
   const setFindBestParams = useCallback((on: boolean) => {
@@ -326,7 +310,6 @@ export function useRunConfigDraft(
 
   const setAlgorithmsAtom = useSetAtom(mpAlgorithmsAtom)
   const setAlgorithmAtom = useSetAtom(mpAlgorithmAtom)
-  const setFindBestModelAtom = useSetAtom(mpFindBestModelAtom)
   const setFindBestParamsAtom = useSetAtom(mpFindBestParamsAtom)
   const setTargetVariableAtom = useSetAtom(mpTargetVariableAtom)
   const setHyperparametersAtom = useSetAtom(mpHyperparamsAtom)
@@ -344,7 +327,6 @@ export function useRunConfigDraft(
     const primary = draft.algorithms[0] ?? 'ols'
     setAlgorithmsAtom(draft.algorithms)
     setAlgorithmAtom(primary)
-    setFindBestModelAtom(draft.findBestModel)
     setFindBestParamsAtom(draft.findBestParams)
     setTargetVariableAtom(draft.targetVariables)
     setHyperparametersAtom(draft.hyperparameters)
@@ -374,7 +356,6 @@ export function useRunConfigDraft(
     draft,
     setAlgorithmsAtom,
     setAlgorithmAtom,
-    setFindBestModelAtom,
     setFindBestParamsAtom,
     setTargetVariableAtom,
     setHyperparametersAtom,
@@ -394,7 +375,6 @@ export function useRunConfigDraft(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     nav.algorithms,
-    nav.findBestModel,
     nav.findBestParams,
     nav.targetVariables,
     nav.hyperparameters,
@@ -410,7 +390,6 @@ export function useRunConfigDraft(
     draft,
     dirty,
     setAlgorithms,
-    setFindBestModel,
     setFindBestParams,
     setNSplits,
     setTargetVariable,

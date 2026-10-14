@@ -32,13 +32,24 @@ import {
   type FormulaPatch,
 } from './feature-engineering/creation-panel'
 import { DataAnalysisCard } from './processing/data-analysis-card'
-import { ValidationHoldoutSection } from './processing/validation-holdout-section'
+import {
+  VALIDATION_SPLIT_ID,
+  ValidationHoldoutSection,
+} from './processing/validation-holdout-section'
+import { holdoutStatus } from '@/lib/holdout'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import { cn } from '@/lib/utils'
 import { EditLockBanner } from './step-1-tags'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
+}
+
+function scrollToValidationSplit() {
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  document
+    .getElementById(VALIDATION_SPLIT_ID)
+    ?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
 }
 
 /**
@@ -217,9 +228,33 @@ export function Step4FeatureEngineering({ nav }: Props) {
             </p>
           )}
         </div>
-        <Badge variant="secondary" className="tabular-nums">
-          {selectedCount} / {allColumns.length} features
-        </Badge>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {/* What a user sees on arrival: the split card sits below the
+              feature tabs, so this chip says whether one is set and jumps
+              there. Hidden where the card is absent or locked. */}
+          {!fromRetrain && !holdoutDisabledReason && (
+            <button
+              type="button"
+              onClick={scrollToValidationSplit}
+              aria-label="Go to Split Validation data"
+              className="rounded-full focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              {holdoutStatus(holdoutRange).applied ? (
+                <Badge className="cursor-pointer">Validation: Applied</Badge>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="cursor-pointer text-muted-foreground hover:bg-muted"
+                >
+                  Validation: Not set
+                </Badge>
+              )}
+            </button>
+          )}
+          <Badge variant="secondary" className="tabular-nums">
+            {selectedCount} / {allColumns.length} features
+          </Badge>
+        </div>
       </div>
 
       {/* DS-LAKE-024-T07. Was: "Features and column selection are locked

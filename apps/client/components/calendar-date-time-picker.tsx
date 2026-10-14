@@ -48,6 +48,7 @@ export function CalendarDateTimePicker({
   dataBounds,
   allowed,
   defaultTime,
+  resetTimeOnDayPick = false,
   disabled,
   invalid,
   className,
@@ -66,6 +67,10 @@ export function CalendarDateTimePicker({
   /** Time given to a freshly picked day, before clamping: '00:00' for a
    *  start, '23:59' for an end. */
   defaultTime: string
+  /** Re-picking a day normally keeps the time already shown. Set this when a
+   *  leftover time would be wrong: a fetch window's stale 07:31 would put
+   *  every summary bucket on :31 instead of the boundary. */
+  resetTimeOnDayPick?: boolean
   disabled?: boolean
   invalid?: boolean
   /** Trigger width etc. — e.g. `w-full` in a form grid. */
@@ -130,8 +135,12 @@ export function CalendarDateTimePicker({
           disabled={disabledDays}
           onSelect={date => {
             if (!date) return
-            // A re-picked day keeps the user's own time, else the default.
-            onChange(clampStamp(dateToDay(date), time || defaultTime, allowed))
+            // A re-picked day keeps the user's own time, else the default —
+            // unless the caller asked for the default every time.
+            const pickedTime = resetTimeOnDayPick
+              ? defaultTime
+              : time || defaultTime
+            onChange(clampStamp(dateToDay(date), pickedTime, allowed))
           }}
         />
         <div className="flex items-center gap-2 border-t border-border p-2">

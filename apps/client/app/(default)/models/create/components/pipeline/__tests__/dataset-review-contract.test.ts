@@ -41,6 +41,8 @@ const STEP_FILES = [
   'dataset-review/per-tag-stats-panel.tsx',
   'dataset-review/holdout-panel.tsx',
   'dataset-review/holdout-trend-chart.tsx',
+  'dataset-review/split-overview.tsx',
+  'dataset-review/review-section-heading.tsx',
 ]
 
 function read(file: string): string {

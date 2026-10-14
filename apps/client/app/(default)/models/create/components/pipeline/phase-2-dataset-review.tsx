@@ -1,7 +1,8 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { Layers, PencilLine } from 'lucide-react'
+import { Database, FlaskConical, Layers, PencilLine } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { brandBoundedSample } from '@/lib/preprocessing'
 import { DataAnalysisCard } from '@/app/(default)/data-studio/create/components/processing/data-analysis-card'
 import { Button } from '@/components/ui/button'
@@ -30,7 +31,12 @@ import { PREVIEW_MAX_ROWS } from '@/lib/downsample'
 import type { EdaWindowControl, TimeWindow } from '@/lib/time-window'
 import type { Dataset } from '@/lib/preprocessing'
 import { perTagStatsOrdered } from '@/lib/dataset-stats'
-import { SourceIdentityPanel } from './dataset-review/source-identity-panel'
+import {
+  SourceIdentityPanel,
+  SourceStatsTiles,
+} from './dataset-review/source-identity-panel'
+import { SplitOverview } from './dataset-review/split-overview'
+import { ReviewSectionHeading } from './dataset-review/review-section-heading'
 import { PerTagStatsPanel } from './dataset-review/per-tag-stats-panel'
 import { HoldoutPanel } from './dataset-review/holdout-panel'
 import { LabStaleNotice } from '@/app/(default)/data-studio/create/components/lab-stale-notice'
@@ -184,6 +190,10 @@ export function Phase2DatasetReview({ nav }: Props) {
     { maxRows: PREVIEW_MAX_ROWS },
   )
 
+  // The training artifact's own row count — holdout rows were cut out of it
+  // when the dataset was built, so this never includes validation rows.
+  const trainRows = metadata?.rowCount ?? dataset?.rowCount ?? 0
+
   const workspaceName = dataset
     ? (workspaces.find(w => w.id === dataset.workspaceId)?.name ??
       'Unknown Workspace')
@@ -251,11 +261,44 @@ export function Phase2DatasetReview({ nav }: Props) {
         metadata={metadata}
         metadataLoading={metadataLoading}
         metadataError={metadataError}
+        showStats={!hasArtifact}
       />
 
       {hasArtifact ? (
         <>
-          {/* <section className="space-y-2">
+          {/* Layout C (user pick, 2026-10-14): the split first, then one
+              section per side, so nothing about the validation rows sits in
+              the middle of the training data's own summary and analysis. */}
+          <SplitOverview
+            dataStart={metadata?.startTime ?? null}
+            dataEnd={metadata?.endTime ?? null}
+            trainRows={trainRows}
+            holdout={holdout}
+            loading={metadataLoading || holdoutLoading}
+          />
+
+          <section aria-labelledby="training-data-title" className="space-y-3">
+            <ReviewSectionHeading
+              id="training-data-title"
+              icon={<Database className="h-4 w-4 text-primary" />}
+              title="Training data"
+              description="Rows the model learns from. Step 3 splits them into train and test."
+              badge={
+                <Badge
+                  variant="secondary"
+                  className="font-mono text-[11px] tabular-nums"
+                >
+                  {trainRows.toLocaleString()} rows
+                </Badge>
+              }
+            />
+            <SourceStatsTiles
+              dataset={dataset}
+              metadata={metadata}
+              metadataLoading={metadataLoading}
+              metadataError={metadataError}
+            />
+            {/* <section className="space-y-2">
             <p className="text-sm font-semibold text-foreground">
               Per-tag statistics
             </p>
@@ -267,32 +310,20 @@ export function Phase2DatasetReview({ nav }: Props) {
             />
           </section> */}
 
-          {/* Same rule as Data Studio Step 2, over this step's own bounded
+            {/* Same rule as Data Studio Step 2, over this step's own bounded
               read — the scope note says so rather than implying the whole
               artifact was scanned. */}
-          <LabStaleNotice
-            dataset={engineeringUnitSample ?? { tags: [], rows: [] }}
-            scopeNote={
-              totalRowCount !== null &&
-              (engineeringUnitSample?.rows.length ?? 0) < totalRowCount
-                ? `Checked the ${(engineeringUnitSample?.rows.length ?? 0).toLocaleString()} loaded rows of ${totalRowCount.toLocaleString()}.`
-                : undefined
-            }
-          />
-
-          <section className="space-y-2">
-            <p className="text-sm font-semibold text-foreground">
-              Validation Data
-            </p>
-            <HoldoutPanel
-              holdout={holdout}
-              loading={holdoutLoading}
-              error={holdoutError}
-              rows={validationRows}
+            <LabStaleNotice
+              dataset={engineeringUnitSample ?? { tags: [], rows: [] }}
+              scopeNote={
+                totalRowCount !== null &&
+                (engineeringUnitSample?.rows.length ?? 0) < totalRowCount
+                  ? `Checked the ${(engineeringUnitSample?.rows.length ?? 0).toLocaleString()} loaded rows of ${totalRowCount.toLocaleString()}.`
+                  : undefined
+              }
             />
-          </section>
 
-          {/* Replaces the old PreviewCorrelationPanel outright rather than
+            {/* Replaces the old PreviewCorrelationPanel outright rather than
               sitting beside it — the card's Raw Table tab IS that bounded
               preview and its Correlation tab IS those ranked pairs, so
               keeping both would render the same two things twice on one
@@ -303,15 +334,43 @@ export function Phase2DatasetReview({ nav }: Props) {
               step has no range concept of its own (the artifact's real span
               is shown by SourceIdentityPanel above), so it takes the neutral
               middle option rather than implying a window that was chosen. */}
-          <DataAnalysisCard
-            dataset={boundedSample}
-            range="7d"
-            datasetId={datasetId}
-            artifactId={artifactId}
-            showTransforms={false}
-            showTagSelector
-            edaWindow={edaWindow}
-          />
+            <DataAnalysisCard
+              dataset={boundedSample}
+              range="7d"
+              datasetId={datasetId}
+              artifactId={artifactId}
+              showTransforms={false}
+              showTagSelector
+              edaWindow={edaWindow}
+            />
+          </section>
+
+          <div className="h-px bg-border" role="separator" />
+
+          <section
+            aria-labelledby="validation-data-title"
+            className="space-y-3"
+          >
+            <ReviewSectionHeading
+              id="validation-data-title"
+              icon={<FlaskConical className="h-4 w-4 text-chart-5" />}
+              title="Validation data"
+              description="Held out when the dataset was built. The model never trains on these rows; Model Selection and Evaluation score it on them."
+              badge={
+                holdout ? (
+                  <Badge className="bg-chart-5/15 font-mono text-[11px] text-chart-5 tabular-nums">
+                    {holdout.rowCount.toLocaleString()} rows · held out
+                  </Badge>
+                ) : null
+              }
+            />
+            <HoldoutPanel
+              holdout={holdout}
+              loading={holdoutLoading}
+              error={holdoutError}
+              rows={validationRows}
+            />
+          </section>
         </>
       ) : (
         // One shared message for the whole lower half rather than four

@@ -20,7 +20,7 @@ import {
   type HyperparamValue,
 } from '@/store/model-pipeline'
 import { ineligibleReason } from '@/lib/algorithm-eligibility'
-import { SEQUENCE_ALGORITHMS } from '@/lib/metric-source'
+import { isSequenceAlgorithm } from '@/lib/metric-source'
 import type { DatasetSize } from '@/lib/hyperparam-ranges'
 import { baseHyperparamsFor } from '@/lib/tuning-preview'
 import { DynamicHyperparameters } from './dynamic-hyperparameters'
@@ -44,7 +44,6 @@ interface Props {
     value: HyperparamValue,
   ) => void
   findBestParams: boolean
-  findBestModel: boolean
   /**
    * MODEL-FLOW-024. The two size figures from the split stats Step 3 fetched;
    * sizes the suggested ranges under each field. Omitted (or unresolved) shows
@@ -61,7 +60,6 @@ export function AlgorithmStack({
   hyperparameters,
   onHyperparameterChange,
   findBestParams,
-  findBestModel,
   datasetSize,
 }: Props) {
   const atCap = algorithms.length >= MAX
@@ -74,26 +72,15 @@ export function AlgorithmStack({
       ),
     )
 
-  // MODEL-FLOW-024. lstm/gru train as a single run and, since this feature,
-  // Find Best Parameters can tune one directly (one algorithm, no sweep — a
-  // HYPERPARAMETER_SEARCH over `TUNING_GRID.lstm/.gru`). A SWEEP (Find Best
-  // Model, with or without tuning) still refuses them. That is a scope
-  // decision, not a backend limit: this comment used to say the candidate-job
-  // service 400s a sequence-algorithm candidate outright, and it does not —
-  // what 400ed a direct search was the empty tuning grid. A sweep would launch
-  // up to three sequence fits before any tuning, and whether it should is an
-  // open decision on MODEL-FLOW-024. Disabling the selection here, one layer
-  // above `toBackendAlgorithm`'s backstop, means a user cannot select lstm,
-  // turn on Find Best Model, and only discover the refusal at launch.
-  const sequenceReason: Partial<Record<Algorithm, string>> = findBestModel
-    ? Object.fromEntries(
-        SEQUENCE_ALGORITHMS.map(a => [
-          a,
-          'Not available for Find Best Model — LSTM/GRU can be trained, or tuned with Find Best Parameters, one at a time.',
-        ]),
-      )
-    : {}
-
+  // MODEL-FLOW-024, rekeyed 2026-10-14 when Find Best Model was removed.
+  // lstm/gru train on their own: a run of two or more algorithms is a sweep,
+  // and a sweep refuses them (scope decision, not a backend limit). Adding one
+  // beside another algorithm is still allowed, because that is how a user
+  // swaps the only algorithm for a sequence model (add, then remove the old
+  // one); the note under the cards says so, and Start refuses the mix
+  // (`planTrainingLaunch`) until it is resolved.
+  const sequenceMix =
+    algorithms.length > 1 && algorithms.some(a => isSequenceAlgorithm(a))
   /**
    * Per-algorithm entry wins; the flat field answers for the PRIMARY only,
    * and only when there is no entry at all (`??`, so an entry the store
@@ -132,26 +119,6 @@ export function AlgorithmStack({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trainLabelledRows])
 
-  // [fix]. Same self-correcting shape, for the same reason, one mode
-  // switch later: turning ON Find Best Model while lstm/gru is already
-  // selected must drop it from the selection rather than wait for a
-  // launch-time refusal — the dropdown's `disabled` above only stops a NEW
-  // selection, not one made before the toggle flipped. Find Best Parameters
-  // alone no longer does this (MODEL-FLOW-024): it can tune a sequence model.
-  useEffect(() => {
-    if (!findBestModel || algorithms.length <= 1) return
-    const stillEligible = algorithms.filter(
-      a => !SEQUENCE_ALGORITHMS.includes(a),
-    )
-    if (
-      stillEligible.length !== algorithms.length &&
-      stillEligible.length > 0
-    ) {
-      onAlgorithmsChange(stillEligible)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findBestModel])
-
   const add = (a: Algorithm) => {
     if (atCap || algorithms.includes(a)) return
     onAlgorithmsChange([...algorithms, a])
@@ -170,17 +137,15 @@ export function AlgorithmStack({
 
   const addable = ALGORITHMS.filter(a => !algorithms.includes(a))
 
-  // MODEL-FLOW-025. With Find Best Parameters on, each open card lists the
-  // variants that search will try for it. Find Best Model on top of it (a sweep
-  // then a tune) tunes only the algorithm that WINS, so there the list reads
-  // "if this wins"; with Find Best Model off it is a direct search on the one
-  // selected algorithm. With Find Best Parameters off there is nothing to show
-  // — a sweep alone runs each algorithm once with its own values.
-  const variantMode: VariantPreviewMode | undefined = findBestParams
-    ? findBestModel
-      ? 'sweep-then-tune'
-      : 'direct'
-    : undefined
+  // MODEL-FLOW-025/026. Every open card lists the rows the user added (each
+  // trains as its own candidate). With Find Best Parameters on it also lists
+  // the curated variants: on one algorithm they are searched directly; on two
+  // or more only the candidate that wins the first round is tuned with them.
+  const variantMode: VariantPreviewMode = findBestParams
+    ? onlyOne
+      ? 'direct'
+      : 'sweep-then-tune'
+    : 'manual'
 
   return (
     <div className="space-y-2.5 rounded-lg border border-border p-3">
@@ -192,17 +157,13 @@ export function AlgorithmStack({
           </span>
         </div>
         <p className="text-[11px] text-muted-foreground">
-          {onlyOne ? (
-            'Trains one model. Add a second to compare algorithms in the same run.'
-          ) : (
-            <>
-              Trains in the order below, one at a time — not together. Expect{' '}
-              {algorithms.length} fits
-              {findBestParams &&
-                ", plus a curated set of hyperparameter variants tried against whichever algorithm wins (Find Best Parameters' phase 2, decided after phase 1 finishes) — open an algorithm to see them"}
-              .
-            </>
-          )}
+          {onlyOne
+            ? 'Trains one model, plus one per row you add below. Add a second algorithm to compare them.'
+            : `Trains every algorithm below, plus every row you add on a card, one at a time. Step 4 compares them and recommends the lowest Test RMSE${
+                findBestParams
+                  ? ', then Find Best Parameters tunes that winner with a curated set of variants'
+                  : ''
+              }.`}
         </p>
       </div>
 
@@ -232,6 +193,12 @@ export function AlgorithmStack({
       </ul>
 
       <div className="space-y-1">
+        {sequenceMix && (
+          <p className="text-[11px] text-destructive">
+            LSTM and GRU train on their own — remove the other algorithms before
+            training.
+          </p>
+        )}
         {addable.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -252,12 +219,8 @@ export function AlgorithmStack({
               {addable.map(a => {
                 // DEFERRED_REASON first: "the trainer cannot run this at
                 // all" outranks "this dataset is too big for it" when both
-                // apply. sequenceReason next: "not for this MODE" outranks
-                // a dataset-size refusal too — both could apply to lstm/gru
-                // on a large dataset, and the mode is what the user just
-                // changed, so it is the more useful thing to say.
-                const reason =
-                  DEFERRED_REASON[a] ?? sequenceReason[a] ?? oversizedReason[a]
+                // apply.
+                const reason = DEFERRED_REASON[a] ?? oversizedReason[a]
                 return (
                   <DropdownMenuCheckboxItem
                     key={a}

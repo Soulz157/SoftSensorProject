@@ -247,8 +247,8 @@ export function Phase5Evaluation({ nav }: Props) {
         {/* Toolbar: population switch + metric selector */}
   <div className="flex w-full flex-wrap items-center justify-between gap-2">
           <TabsList>
-            <TabsTrigger value="own">{ownLabel}</TabsTrigger>
-            <TabsTrigger value="holdout">Validation holdout</TabsTrigger>
+            <TabsTrigger value="own" className='cursor-pointer'>{ownLabel}</TabsTrigger>
+            <TabsTrigger value="holdout" className='cursor-pointer'>Validation holdout</TabsTrigger>
           </TabsList>
 
           <DropdownMenu>

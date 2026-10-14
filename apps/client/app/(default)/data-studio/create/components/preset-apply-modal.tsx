@@ -926,7 +926,7 @@ function PresetSource({
           onFile(e.dataTransfer.files?.[0])
         }}
         className={cn(
-          'flex w-full flex-col items-center gap-1.5 rounded-xl border-2 border-dashed p-5 transition-colors',
+          'cursor-pointer flex w-full flex-col items-center gap-1.5 rounded-xl border-2 border-dashed p-5 transition-colors',
           dragging
             ? 'border-primary bg-primary/5'
             : 'border-border hover:border-primary/40 hover:bg-muted/40',

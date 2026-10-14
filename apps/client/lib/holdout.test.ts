@@ -5,6 +5,8 @@ import {
   describeTargetInWindow,
   resolveRawTargetKey,
   validationChartTags,
+  holdoutStatus,
+  splitTimeline,
   HOLDOUT_LEAD_IN_DURATION,
 } from './holdout'
 import type { Dataset } from './preprocessing'
@@ -347,5 +349,85 @@ describe('validationChartTags', () => {
     const r = validationChartTags(['a', 'b', 'c', 'd', 'e'])
     expect(r.initial).toEqual(['a', 'b', 'c', 'd'])
     expect(r.hasLabSubset).toBe(false)
+  })
+})
+
+describe('holdoutStatus', () => {
+  it('is not applied with no range', () => {
+    expect(holdoutStatus(null)).toEqual({ applied: false, days: null })
+  })
+
+  it('is not applied when either end is empty', () => {
+    expect(holdoutStatus({ from: '2023-12-01T00:00', to: '' })).toEqual({
+      applied: false,
+      days: null,
+    })
+  })
+
+  it('names the committed days', () => {
+    expect(
+      holdoutStatus({ from: '2023-12-01T00:00', to: '2023-12-31T23:59' }),
+    ).toEqual({ applied: true, days: '2023-12-01 → 2023-12-31' })
+  })
+})
+
+describe('splitTimeline', () => {
+  const dataStart = '2022-01-01 00:00:00'
+  const dataEnd = '2023-11-30 23:00:00'
+
+  it('places a holdout cut from the end at the right edge', () => {
+    const t = splitTimeline({
+      dataStart,
+      dataEnd,
+      holdoutFrom: '2023-12-01T00:00',
+      holdoutTo: '2023-12-31T23:59',
+    })
+    expect(t?.startDay).toBe('2022-01-01')
+    expect(t?.endDay).toBe('2023-12-31')
+    expect(t?.validation?.fromDay).toBe('2023-12-01')
+    expect(t!.validation!.leftPct + t!.validation!.widthPct).toBeCloseTo(100, 1)
+    // December of a two-year span: about one twenty-fourth.
+    expect(t!.validation!.widthPct).toBeGreaterThan(3.5)
+    expect(t!.validation!.widthPct).toBeLessThan(5)
+  })
+
+  it('places a holdout in the middle of the data inside the span', () => {
+    const t = splitTimeline({
+      dataStart: '2022-01-01 00:00:00',
+      dataEnd: '2022-12-31 00:00:00',
+      holdoutFrom: '2022-07-01T00:00',
+      holdoutTo: '2022-07-31T23:59',
+    })
+    expect(t?.endDay).toBe('2022-12-31')
+    expect(t!.validation!.leftPct).toBeGreaterThan(45)
+    expect(t!.validation!.leftPct).toBeLessThan(55)
+  })
+
+  it('runs an open-ended holdout to the end of the span', () => {
+    const t = splitTimeline({
+      dataStart,
+      dataEnd,
+      holdoutFrom: '2023-06-01T00:00',
+      holdoutTo: null,
+    })
+    expect(t!.validation!.leftPct + t!.validation!.widthPct).toBeCloseTo(100, 5)
+  })
+
+  it('has no band without a holdout', () => {
+    expect(
+      splitTimeline({ dataStart, dataEnd, holdoutFrom: null, holdoutTo: null })
+        ?.validation,
+    ).toBeNull()
+  })
+
+  it('draws nothing when the data span is unknown', () => {
+    expect(
+      splitTimeline({
+        dataStart: null,
+        dataEnd,
+        holdoutFrom: '2023-12-01T00:00',
+        holdoutTo: null,
+      }),
+    ).toBeNull()
   })
 })

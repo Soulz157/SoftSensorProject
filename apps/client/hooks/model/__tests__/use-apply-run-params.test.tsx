@@ -5,7 +5,6 @@ import { useApplyRunParams } from '../use-apply-run-params'
 import {
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpHighestUnlockedAtom,
   mpHyperparamsAtom,
@@ -94,14 +93,12 @@ describe('useApplyRunParams', () => {
     expect(store.get(mpTrainTestSplitAtom)).toBe(70)
   })
 
-  it('forces both AutoML toggles off so the applied hyperparameters are visible', () => {
-    store.set(mpFindBestModelAtom, true)
+  it('forces Find Best Parameters off so the applied hyperparameters are visible', () => {
     store.set(mpFindBestParamsAtom, true)
 
     const { result } = renderApply()
     act(() => result.current.applyRun(ridgeRun()))
 
-    expect(store.get(mpFindBestModelAtom)).toBe(false)
     expect(store.get(mpFindBestParamsAtom)).toBe(false)
   })
 

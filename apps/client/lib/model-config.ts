@@ -32,9 +32,11 @@ export interface ModelConfig {
   algorithm: Algorithm
   /** Candidate algorithms (multi-select, ≤3). `algorithm` is the primary. */
   algorithms?: Algorithm[]
-  /** AutoML Step A — auto-pick the best of `algorithms`. */
+  /** Removed from the wizard 2026-10-14 (training every algorithm is the
+   *  default). Still read so a model saved before then loads; never written. */
   findBestModel?: boolean
-  /** AutoML Step B — hyperparameter-tune the best model. */
+  /** Find Best Parameters — the curated-grid search (one algorithm) or the
+   *  tune-the-winner pass (two or more). */
   findBestParams?: boolean
   /** Tags the model predicts. Read via `configTargets` (handles legacy single). */
   targetVariables: string[]
@@ -81,7 +83,6 @@ export interface BuildModelConfigInput {
   datasetId: string
   algorithm: Algorithm
   algorithms?: Algorithm[]
-  findBestModel?: boolean
   findBestParams?: boolean
   targetVariables: string[]
   hyperparameters: Record<string, HyperparamValue>
@@ -100,9 +101,6 @@ export function buildModelConfig(input: BuildModelConfigInput): ModelConfig {
     datasetId: input.datasetId,
     algorithm: input.algorithm,
     ...(input.algorithms ? { algorithms: input.algorithms } : {}),
-    ...(input.findBestModel !== undefined
-      ? { findBestModel: input.findBestModel }
-      : {}),
     ...(input.findBestParams !== undefined
       ? { findBestParams: input.findBestParams }
       : {}),

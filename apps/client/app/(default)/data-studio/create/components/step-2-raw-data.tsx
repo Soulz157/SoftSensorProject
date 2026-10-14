@@ -144,7 +144,10 @@ export function Step2RawData({ nav }: Props) {
   const advanceOnDone = useRef(false)
 
   const now = new Date()
+  // Top of the hour, so the default window starts on a bucket boundary rather
+  // than on whatever minute the page was opened.
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000)
+  oneHourAgo.setMinutes(0, 0, 0)
 
   // MODEL-SERVE-017. The earliest start a retrain-built dataset may have, as
   // a `datetime-local` value. Formatted field by field in LOCAL time, never
@@ -165,13 +168,19 @@ export function Step2RawData({ nav }: Props) {
     )
   }, [retrainCutTimestamp])
 
-  // Defaults to one hour ago — EXCEPT in a retrain session, where that is
-  // almost always before the split boundary and would open the step on a
-  // window the server refuses. Computed above for exactly this reason.
-  const [customFrom, setCustomFrom] = useState(
+  // Defaults to the top of the hour one hour ago — EXCEPT in a retrain
+  // session, where that is almost always before the split boundary and would
+  // open the step on a window the server refuses. Computed above for exactly
+  // this reason.
+  const [defaultFrom] = useState(
     () => retrainMinStart ?? toDateTimeLocal(oneHourAgo),
   )
-  const [customTo, setCustomTo] = useState(() => toDateTimeLocal(now))
+  const [defaultTo] = useState(() => toDateTimeLocal(now))
+  // The atom is the single source of truth: the pickers show exactly the
+  // window `useDatasetStudioFetch` will send, also after a remount or a draft
+  // resume. The defaults only stand in until the init effect below writes them.
+  const customFrom = nav.customDateRange?.from ?? defaultFrom
+  const customTo = nav.customDateRange?.to ?? defaultTo
 
   // How far the Interval calendars page. Nothing is fetched yet, so there is
   // no first reading to bound by: the retrain split floor when there is one,
@@ -226,12 +235,10 @@ export function Step2RawData({ nav }: Props) {
   }
 
   const handleCustomFromChange = (v: string) => {
-    setCustomFrom(v)
     nav.setCustomRange(v, customTo)
   }
 
   const handleCustomToChange = (v: string) => {
-    setCustomTo(v)
     nav.setCustomRange(customFrom, v)
   }
 
@@ -453,6 +460,7 @@ export function Step2RawData({ nav }: Props) {
                 allowed={{ min: retrainMinStart, max: customTo }}
                 dataBounds={fetchCalendarBounds}
                 defaultTime="00:00"
+                resetTimeOnDayPick
                 disabled={isFetching}
                 onChange={handleCustomFromChange}
                 className="w-full"
@@ -469,6 +477,7 @@ export function Step2RawData({ nav }: Props) {
                 allowed={{ min: customFrom, max: nowStamp }}
                 dataBounds={fetchCalendarBounds}
                 defaultTime="23:59"
+                resetTimeOnDayPick
                 disabled={isFetching}
                 onChange={handleCustomToChange}
                 className="w-full"
