@@ -35,19 +35,18 @@ import type {
 export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
   ols: ['fit_intercept'],
   ridge: ['alpha', 'fit_intercept', 'solver'],
-  hist_gradient_boosting: [
-    'learning_rate',
-    'n_estimators',
-    'num_leaves',
-    'max_depth',
-    'min_samples_leaf',
-    'l2_regularization',
-  ],
   svm: ['C', 'kernel', 'epsilon', 'tol', 'max_iter'],
   mlp: ['hidden_layer_sizes', 'alpha', 'max_iter'],
   grp: ['alpha', 'n_restarts_optimizer'],
   pls: ['n_components', 'max_iter'],
   random_forest: [
+    'n_estimators',
+    'max_depth',
+    'max_leaf_nodes',
+    'min_samples_leaf',
+    'min_samples_split',
+  ],
+  extra_trees: [
     'n_estimators',
     'max_depth',
     'max_leaf_nodes',
@@ -89,10 +88,10 @@ export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
  * every run regardless of whether it did anything.
  */
 export const SEED_CONSUMING_ALGORITHMS: Algorithm[] = [
-  'hist_gradient_boosting',
   'mlp',
   'grp',
   'random_forest',
+  'extra_trees',
   'lightgbm',
   'xgboost',
   'ridge',

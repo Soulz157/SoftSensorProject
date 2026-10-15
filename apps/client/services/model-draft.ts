@@ -452,12 +452,12 @@ export interface CreateDraftRunInput {
   algorithm:
     | 'ols'
     | 'ridge'
-    | 'hist_gradient_boosting'
     | 'svm'
     | 'mlp'
     | 'grp'
     | 'pls'
     | 'random_forest'
+    | 'extra_trees'
     | 'lightgbm'
     | 'xgboost'
     | 'lstm'

@@ -104,6 +104,24 @@ export function countBinary(
   return { normal: equipmentList.length - abnormal, abnormal }
 }
 
+/** The plant badge's "2/8" count: abnormal equipment of all equipment. */
+export interface EquipmentAlertChip {
+  abnormal: number
+  total: number
+}
+
+/**
+ * MODEL-SERVE-033. The count the Overview plant badge shows, from
+ * `countBinary`. null when nothing is abnormal: an all-green plant shows no
+ * count at all, never "0/8".
+ */
+export function equipmentAlertChip(
+  counts: Record<BinaryStatus, number>,
+): EquipmentAlertChip | null {
+  if (counts.abnormal <= 0) return null
+  return { abnormal: counts.abnormal, total: counts.normal + counts.abnormal }
+}
+
 const SEVERITY_ORDER: Record<NodeStatus, number> = {
   alarm: 3,
   offline: 2,

@@ -4366,6 +4366,115 @@
         "tsc --noEmit clean; full client suite 25 failures identical on clean HEAD (pre-existing, 9 unrelated files)",
         "PENDING: live round trip in the browser"
       ]
+    },
+    {
+      "id": "MODEL-FLOW-033",
+      "title": "Add Extra Trees (sklearn ExtraTreesRegressor) as a training algorithm",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 95,
+      "dependencies": [
+        "MODEL-FLOW-024"
+      ],
+      "description": "New algorithm id `extra_trees`, label 'Extra Trees'. Same five knobs as random_forest (n_estimators, max_depth, max_leaf_nodes, min_samples_leaf, min_samples_split) and random_state=seed; bootstrap left at sklearn's default (False), not exposed.",
+      "userDecisions": [
+        "2026-10-15: user asked for ExtraTreesRegressor and said go on the read-first report; bootstrap kept at sklearn default (not exposed), not asked back."
+      ],
+      "findings": [
+        "Serving needs no change: it joblib-loads model.joblib and pins the same scikit-learn 1.5.2 as the trainer; no algorithm allowlist there.",
+        "Algorithm is a plain String column in Prisma: no migration.",
+        "The trainer only knows the new id after an image rebuild; CI builds but does not push, and docker.io is unreachable from Claude's shell, so the user builds it."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-033-T01",
+          "title": "Trainer: build_model branch, impurity importance, tests",
+          "status": "completed",
+          "result": "images/trainer/app/models.py extra_trees branch; importance.py _IMPURITY_ALGORITHMS; test_train.py (2 build tests + closed-form loss-history loop), test_importance.py (1). Trainer suite 89/89 inside scgc/soft-sensor-trainer:1.0.22 with the source mounted."
+        },
+        {
+          "id": "MODEL-FLOW-033-T02",
+          "title": "Backend: TrainingAlgorithmEnum, tuning grid (medium + tiny/small/large), read-live spec header",
+          "status": "completed",
+          "result": "Grid rows copied from random_forest (declared priors, not tuned for extra trees). tuning-grid.spec 89/89; tsc clean. model-run controller spec 'should be defined' fails, as it did before this change."
+        },
+        {
+          "id": "MODEL-FLOW-033-T03",
+          "title": "Client: Algorithm union/list/label, hyperparam form, run-params, ranges, sweep list",
+          "status": "completed",
+          "result": "store/model-pipeline, services/model-draft, lib/training-config, lib/run-params (+SEED list), lib/hyperparam-ranges, feature-count-sweep-launcher; training-config and run-params read-live tests updated. tsc and eslint clean. Full client suite: the same 25 pre-existing failures, none new."
+        },
+        {
+          "id": "MODEL-FLOW-033-T04",
+          "title": "Image 1.0.23 built by the user, contents verified, imageRef bumped, one live Extra Trees training run",
+          "status": "in_progress",
+          "result": "2026-10-15: user built scgc/soft-sensor-trainer:1.0.23 (6a078a741f27). Verified: the image's own /workspace/images/trainer/app/models.py has the extra_trees branch and importance.py lists it; with the baked code (no mount) build_model('extra_trees') fit an ExtraTreesRegressor and extract_feature_importance returned method 'impurity'; trainer suite 89/89 inside 1.0.23. imageRef bumped to 1.0.23 (trainning-container spec 13/13). LIVE 2026-10-15 02:25-02:26 UTC: the user trained through the app; 5 extra_trees ModelTrainingRun rows SUCCEEDED (only image 1.0.23 knows the id, so they ran on it), each with featureImportanceKey set and no loss history (expected, same as random_forest). NOT DONE: no extra_trees ModelVersion exists yet, so Save Model and a predict through serving are unverified."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Extra Trees is selectable in Step 2 with the same five settings as Random Forest.",
+        "A run trains an ExtraTreesRegressor, reports impurity feature importance, and the saved model serves."
+      ],
+      "verification": [
+        "Trainer suite in-image incl. extra_trees tests (done).",
+        "Backend tuning-grid read-live spec (done).",
+        "Client run-params / training-config read-live tests (done).",
+        "Live: one Extra Trees run on image 1.0.23 to SUCCEEDED, then predict through serving (pending)."
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-034",
+      "title": "Remove Histogram Gradient Boosting (hist_gradient_boosting) as a training algorithm",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-FLOW-033"
+      ],
+      "description": "User asked (2026-10-15) to check and delete the Histogram Gradient Boosting model. Removed from the trainer, the API enum, the tuning grid and every client catalogue; stored history still reads by name.",
+      "userDecisions": [
+        "2026-10-15: 'check and delete Histogram gradient boosting model'."
+      ],
+      "findings": [
+        "Local DB 2026-10-15: 0 ModelVersion rows and 0 ModelDraft.algorithm use it, so no saved model, serving path or retrain depends on it. 8 SUCCEEDED ModelTrainingRun rows (draft history) do.",
+        "Every client display site already falls back to the raw id; a RETIRED label map in store/model-pipeline keeps those 8 runs reading 'Histogram Gradient Boosting (retired)'.",
+        "Draft resume filters unknown ids through isAlgorithm, so a stored selection cannot re-enter the wizard; a direct API call with it now gets a 400 from TrainingAlgorithmEnum.",
+        "Prisma and python schema doc comments still name it: they describe stored historical values, not offered ones. No migration (algorithm is a String column)."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-034-T01",
+          "title": "Trainer: remove build_model branch, loss-history branch, tests",
+          "status": "completed",
+          "result": "models.py (branch + import), metrics.py (hgb loss branch), importance.py comment; removed the 2 hgb loss-history tests, added a parametrized test that both 'hist_gradient_boosting' and 'hgb' raise Unsupported algorithm. Suite 89/89 with the source mounted in 1.0.23."
+        },
+        {
+          "id": "MODEL-FLOW-034-T02",
+          "title": "Backend: enum, tuning grid (4 tiers), spec header and capacity case",
+          "status": "completed",
+          "result": "tsc clean; tuning-grid + model-run specs 333/334 (the 1 is the model-run controller 'should be defined' spec, failing before this change)."
+        },
+        {
+          "id": "MODEL-FLOW-034-T03",
+          "title": "Client: Algorithm union/list, model-draft union, training-config, run-params (+seed list), hyperparam-ranges, sweep list, tests",
+          "status": "completed",
+          "result": "tsc and eslint clean; full client suite the same 25 failures in the same 9 files as before this change, none new."
+        },
+        {
+          "id": "MODEL-FLOW-034-T04",
+          "title": "Trainer image rebuild",
+          "status": "pending",
+          "result": "Optional, not urgent: the running image 1.0.23 still has the hgb branch, but nothing can reach it because the API refuses the id. The source and image differ until the next build (see the trainer-image-drift rule)."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Histogram Gradient Boosting is not offered in Step 2 and the API refuses it.",
+        "Existing runs trained with it still display by name."
+      ],
+      "verification": [
+        "Trainer, backend and client suites as above (done).",
+        "Live: Step 2 algorithm list has no Histogram Gradient Boosting (pending, needs the app running)."
+      ]
     }
   ],
   "global_definition_of_done": [

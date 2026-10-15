@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 import pytest
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor
 from sklearn.linear_model import Ridge
 
 from importance import extract_feature_importance, extract_permutation_importance
@@ -38,6 +38,17 @@ def test_random_forest_yields_impurity_with_one_entry_per_feature():
     # feature_importances_ is already non-negative and sums to ~1.
     assert all(f["importance"] >= 0 for f in result["features"])
     assert "coefficient" not in result["features"][0]
+
+
+def test_extra_trees_yields_impurity_with_one_entry_per_feature():
+    X, y = _xy()
+    model = ExtraTreesRegressor(n_estimators=10, random_state=0).fit(X, y)
+    result = extract_feature_importance("extra_trees", model, FEATURE_COLS, {})
+    assert result is not None
+    assert result["algorithm"] == "extra_trees"
+    assert result["method"] == "impurity"
+    assert [f["name"] for f in result["features"]] == FEATURE_COLS
+    assert all(f["importance"] >= 0 for f in result["features"])
 
 
 def test_ridge_yields_coefficient_with_signed_value_and_abs_importance():
@@ -251,7 +262,7 @@ def test_algorithms_with_no_importance_return_none():
     class _Stub:
         pass
 
-    for algorithm in ("hgb", "hist_gradient_boosting", "mlp", "grp", "lstm", "gru"):
+    for algorithm in ("mlp", "grp", "lstm", "gru"):
         assert extract_feature_importance(algorithm, _Stub(), FEATURE_COLS, {}) is None
 
 

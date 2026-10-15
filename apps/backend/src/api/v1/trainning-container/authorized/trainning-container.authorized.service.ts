@@ -30,8 +30,15 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // the user (2026-10-08, image 51d727619caa); trainer suite 83/83 run against
   // the mounted source, and the built image confirmed to contain the new code.
   // Not pushed.
+  //
+  // 1.0.23 — MODEL-FLOW-033. build_model gains `extra_trees`
+  // (sklearn ExtraTreesRegressor, random_forest's five knobs) and it reports
+  // impurity importance. ADDITIVE: every other algorithm is unchanged. Built by
+  // the user (2026-10-15, image 6a078a741f27); the image's own code confirmed
+  // to contain the branch and to fit an ExtraTreesRegressor, and the trainer
+  // suite passes 89/89 inside it. Not pushed.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.22';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.23';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

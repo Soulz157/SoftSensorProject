@@ -88,10 +88,6 @@ function extractSequenceBranchBody(source: string): string {
 }
 
 const HEADER_TO_ALGORITHM: { pattern: RegExp; algorithm: Algorithm }[] = [
-  {
-    pattern: /if algorithm in \("hgb", "hist_gradient_boosting"\):/,
-    algorithm: 'hist_gradient_boosting',
-  },
   { pattern: /if algorithm == "ridge":/, algorithm: 'ridge' },
   { pattern: /if algorithm == "ols":/, algorithm: 'ols' },
   { pattern: /if algorithm == "svm":/, algorithm: 'svm' },
@@ -99,6 +95,7 @@ const HEADER_TO_ALGORITHM: { pattern: RegExp; algorithm: Algorithm }[] = [
   { pattern: /if algorithm == "grp":/, algorithm: 'grp' },
   { pattern: /if algorithm == "pls":/, algorithm: 'pls' },
   { pattern: /if algorithm == "random_forest":/, algorithm: 'random_forest' },
+  { pattern: /if algorithm == "extra_trees":/, algorithm: 'extra_trees' },
   { pattern: /if algorithm == "lightgbm":/, algorithm: 'lightgbm' },
   { pattern: /if algorithm == "xgboost":/, algorithm: 'xgboost' },
   // lstm/gru share ONE branch (`if algorithm in SEQUENCE_ALGORITHMS:`) —

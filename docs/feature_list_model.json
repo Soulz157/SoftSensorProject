@@ -4310,6 +4310,67 @@
       "verification": [
         "NOT YET RUN."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-033",
+      "title": "Overview plant badge: equipment count only when something is red; split overview-tower.tsx",
+      "priority": "medium",
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-SERVE-024"
+      ],
+      "description": "User request 2026-10-15. The Overview plant name badge drew one red/green dot per equipment (max 8, then +N), so an all-green plant carried a row of green noise and red was colour-only (DESIGN.md: status colour never alone). overview-tower.tsx (1,286 lines) mixed geometry, skin, ~12 drawing closures, the scene, the shell and the badge.",
+      "userDecisions": [
+        "2026-10-15: Count chip. All green -> no dots, no count (dot + name + check). Any red -> red alert icon + abnormal/total in Geist Mono, e.g. 2/8.",
+        "2026-10-15: split the file now, behaviour-preserving."
+      ],
+      "findings": [
+        "The only caller (overview-map.tsx) renders PlantTower with showBadge={false} and draws PlantNameBadge in its own top layer, so PlantTower's showBadge/equipmentStatuses and badge branch were dead.",
+        "The count uses countBinary(equipmentList, abnormalEquipmentIds) -> isEquipmentAbnormal: the same rule page.tsx uses to turn a plant red, so a red plant and a non-zero count agree. Warning/offline count as Normal (MODEL-SERVE-024-D02).",
+        "A plant can be red with 0 red equipment (failedDeploysByWorkspace: an abnormal model with no equipment). The badge then shows the alert icon with no count, never 0/n."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-033-T01",
+          "title": "Golden markup test of the tower before the split",
+          "status": "completed",
+          "progress": 100,
+          "result": "overview/components/__tests__/overview-tower.golden.test.tsx: sha256 of renderToStaticMarkup over lod x status x squash x count (24) + selected ring (1), recorded on the OLD overview-tower.tsx."
+        },
+        {
+          "id": "MODEL-SERVE-033-T02",
+          "title": "Split into components/tower/ + lib/iso-tower.ts; delete dead badge path",
+          "status": "completed",
+          "progress": 100,
+          "result": "tower/{index.ts, plant-tower.tsx (shell), plant-scene.tsx (memo, sections in paint order, bodies copied verbatim by script), tower-painter.tsx (createTowerPainter, one key counter), tower-skin.ts, plant-name-badge.tsx}; lib/iso-tower.ts (makeProjection, roundedPath, plateOutline, towerHeightScale, constants). All 25 goldens pass unchanged, no -u. overview-tower.tsx deleted."
+        },
+        {
+          "id": "MODEL-SERVE-033-T03",
+          "title": "Badge count chip + map wiring + aria-label",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/overview-status.ts equipmentAlertChip; badge prop chip replaces equipmentStatuses (MAX_DOTS/DOT_SPACING/STATUS_PRIORITY gone); map computes chipByWorkspace once (both duplicated status-array maps removed; failedByEquipmentId prop dropped from map + page.tsx, abnormalEquipmentIds already holds those ids); tower aria-label adds 'n of N equipment abnormal'. Count <text> carries className font-mono: next/font registers Geist under a generated family name, so the literal fontFamily 'Geist Mono' never matches (the badge's existing 'Geist Sans' literal has the same pre-existing issue, left alone). Tests: plant-name-badge.test.tsx (4), lib/__tests__/iso-tower.test.ts (9), aria-label case in the golden file (1)."
+        },
+        {
+          "id": "MODEL-SERVE-033-T04",
+          "title": "Live check on /overview (light + dark)",
+          "status": "completed",
+          "progress": 100,
+          "result": "LIVE 2026-10-15, confirmed by the user on /overview: with local equipment ROC > Test (54c9ab70) set to alarm, ROC's badge showed the alert icon + count and the all-green plants showed dot, name and check only. The user reported it as passing."
+        }
+      ],
+      "acceptance": [
+        "An all-green plant's badge shows status dot, name and check icon only.",
+        "A plant with red equipment shows the alert icon and abnormal/total. n should equal the hover card's abnormal count, with one known pre-existing divergence: the chip (like the plant-red rule) uses isModelAbnormal, which counts a STOPPED model still reporting monitoring ALERT/CRITICAL; the hover card's normalizeModelStatus ignores monitoring on a stopped model.",
+        "Tower rendering is byte-identical to before the split."
+      ],
+      "verification": [
+        "vitest overview + iso-tower: 39 passed (25 golden recorded on the OLD file and unchanged, 1 aria-label, 4 badge, 9 lib).",
+        "Full client suite: 25 failed | 3132 passed, the same 9 known failing files as the baseline; none new.",
+        "tsc --noEmit: 0 errors. eslint on changed files: clean.",
+        "Live /overview checked by the user 2026-10-15 (red-plant and all-green cases): pass. Still NOT DONE: a before/after badge snapshot (behaviour tests used instead); light-theme count colour has no unit test."
+      ]
     }
   ],
   "global_definition_of_done": [

@@ -16,12 +16,12 @@ const MetricsSchema = z.record(z.string(), JsonScalar);
 export const TrainingAlgorithmEnum = z.enum([
   'ols',
   'ridge',
-  'hist_gradient_boosting',
   'svm',
   'mlp',
   'grp',
   'pls',
   'random_forest',
+  'extra_trees',
   'lightgbm',
   'xgboost',
   'lstm',

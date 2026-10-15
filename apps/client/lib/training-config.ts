@@ -139,89 +139,6 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       ],
     },
   ],
-  // Key names match `xgboost`/`lightgbm` below on purpose, not `max_iter` /
-  // `max_leaf_nodes` (the estimator's real kwargs) — train.py's
-  // hist_gradient_boosting branch maps n_estimators→max_iter and
-  // num_leaves→max_leaf_nodes so the three boosting algorithms present one
-  // shared vocabulary to the user.
-  hist_gradient_boosting: [
-    {
-      kind: 'number',
-      key: 'learning_rate',
-      label: 'Learning rate',
-      defaultValue: 0.1,
-      step: 0.01,
-      min: 0,
-      suggestedRange: {
-        min: 0.01,
-        max: 0.3,
-        note: 'lower needs more estimators to reach the same fit',
-      },
-    },
-    {
-      kind: 'number',
-      key: 'n_estimators',
-      label: 'N-estimators',
-      defaultValue: 200,
-      step: 10,
-      min: 1,
-      suggestedRange: {
-        min: 100,
-        max: 500,
-        note: 'boosting rounds (max_iter); pairs with learning_rate',
-      },
-    },
-    {
-      kind: 'number',
-      key: 'num_leaves',
-      label: 'Num leaves',
-      defaultValue: 31,
-      step: 1,
-      min: 2,
-      suggestedRange: {
-        min: 7,
-        max: 63,
-        note: 'max_leaf_nodes; higher fits finer structure, overfits sooner',
-      },
-    },
-    {
-      kind: 'nullable-number',
-      key: 'max_depth',
-      label: 'Max depth',
-      defaultValue: null,
-      suggestedRange: {
-        min: 3,
-        max: 12,
-        note: 'unlimited lets leaf-wise growth run past num_leaves alone',
-      },
-    },
-    {
-      kind: 'number',
-      key: 'min_samples_leaf',
-      label: 'Min samples per leaf',
-      defaultValue: 20,
-      step: 1,
-      min: 1,
-      suggestedRange: {
-        min: 5,
-        max: 50,
-        note: 'raise it to stop leaves that memorise a handful of rows',
-      },
-    },
-    {
-      kind: 'number',
-      key: 'l2_regularization',
-      label: 'L2 regularization',
-      defaultValue: 0,
-      step: 0.1,
-      min: 0,
-      suggestedRange: {
-        min: 0,
-        max: 10,
-        note: 'shrinkage on leaf values; higher = more conservative splits',
-      },
-    },
-  ],
   svm: [
     {
       kind: 'number',
@@ -465,6 +382,71 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
     },
   ],
   random_forest: [
+    {
+      kind: 'number',
+      key: 'n_estimators',
+      label: 'N-estimators',
+      defaultValue: 100,
+      step: 10,
+      min: 1,
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'more trees only reduce variance — a forest does not overfit by count',
+      },
+    },
+    {
+      kind: 'nullable-number',
+      key: 'max_depth',
+      label: 'Max depth',
+      defaultValue: null,
+      suggestedRange: {
+        min: 5,
+        max: 20,
+        note: 'unlimited grows each tree until its leaves are pure',
+      },
+    },
+    {
+      kind: 'nullable-number',
+      key: 'max_leaf_nodes',
+      label: 'Max leaf nodes',
+      defaultValue: null,
+      suggestedRange: {
+        min: 16,
+        max: 256,
+        note: 'caps tree size by leaf count instead of depth — a shape-independent capacity limit',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_samples_leaf',
+      label: 'Min samples per leaf',
+      defaultValue: 1,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 1,
+        max: 20,
+        note: 'raise it to stop leaves that memorise a handful of rows',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_samples_split',
+      label: 'Min samples to split',
+      defaultValue: 2,
+      step: 1,
+      min: 2,
+      suggestedRange: {
+        min: 2,
+        max: 40,
+        note: 'the smallest node still allowed to branch; blunter than the leaf floor',
+      },
+    },
+  ],
+  // MODEL-FLOW-033. Same knobs as random_forest (build_model reads the same
+  // five keys); only the split rule differs.
+  extra_trees: [
     {
       kind: 'number',
       key: 'n_estimators',

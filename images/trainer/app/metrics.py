@@ -90,7 +90,7 @@ def extract_loss_history(
     `metric` names exactly what is plotted, never assumed comparable across
     algorithms: "rmse" for lightgbm/xgboost, because the fit explicitly requests
     that eval_metric so it IS the same number metrics.json reports; "loss" for
-    mlp/hist_gradient_boosting/lstm/gru, whose native trajectory is in the
+    mlp/lstm/gru, whose native trajectory is in the
     estimator's own loss units — forcing an RMSE label on those would be false,
     the exact failure class this feature's findings name.
 
@@ -109,27 +109,6 @@ def extract_loss_history(
             # changing model quality outside this feature's scope). Train
             # series only, honestly.
             series = {"train": [float(v) for v in model.loss_curve_]}
-            metric = "loss"
-        elif algorithm in ("hgb", "hist_gradient_boosting"):
-            # LIVE-VERIFIED against the pinned scikit-learn (1.5.2): both
-            # train_score_ and validation_score_ ALWAYS exist as attributes,
-            # but are EMPTY arrays (not absent) whenever `early_stopping`
-            # resolves to False — the unconfigured default ('auto') for any
-            # dataset at or under 10,000 training rows, which is the common
-            # case in this trainer's domain (see GPR_MAX_TRAIN_ROWS). `len()
-            # == 0`, not `hasattr`/`is None`, is what actually distinguishes
-            # "no trajectory this run" from a real one. Never forced on —
-            # forcing early_stopping=True would carve a held-out slice out
-            # of every hgb run's training data, changing model quality
-            # outside this feature's scope, the same reason mlp's branch
-            # above does not force it either.
-            train_score = model.train_score_
-            if len(train_score) == 0:
-                return None
-            series = {"train": [float(v) for v in train_score]}
-            validation_score = getattr(model, "validation_score_", None)
-            if validation_score is not None and len(validation_score) > 0:
-                series["validation"] = [float(v) for v in validation_score]
             metric = "loss"
         elif algorithm == "lightgbm":
             evals = model.evals_result_
@@ -163,7 +142,7 @@ def extract_loss_history(
             # not "rmse": the value plotted is the un-rooted mean squared
             # error, and labelling it rmse would repeat the exact
             # mismatched-unit failure this function's own docstring warns
-            # against for mlp/hist_gradient_boosting.
+            # against for mlp.
             metric = "loss"
         else:
             return None

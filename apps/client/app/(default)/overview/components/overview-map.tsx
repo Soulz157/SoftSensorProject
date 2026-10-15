@@ -8,15 +8,18 @@ import {
   computeLayoutBoundingBox,
 } from '@/lib/isomatric'
 import type { ZoneItem } from '@/lib/isomatric'
-import { PlantTower, PlantNameBadge, DEFAULT_SQUASH } from './overview-tower'
+import { PlantTower, PlantNameBadge, DEFAULT_SQUASH } from './tower'
 import { OverviewHoverCard } from './overview-hover-card'
 import type { CanvasNode } from '@/services/canvas'
 import type { Workspace } from '@/types'
 import {
   type NodeStatus,
   type BinaryStatus,
+  type EquipmentAlertChip,
   BINARY_STATUS_META,
+  countBinary,
   deriveStatus,
+  equipmentAlertChip,
 } from '@/lib/overview-status'
 import { useMapViewport } from '@/hooks/canvas/use-map-viewport'
 import { failedDeploys } from '@/lib/model-status'
@@ -59,7 +62,6 @@ interface PlantsMapProps {
   onWorkspaceDoubleClick: (id: string) => void
   highlightedIds?: Set<string>
   failedDeploysByWorkspace?: Record<string, number>
-  failedByEquipmentId?: Record<string, number>
   abnormalEquipmentIds?: Set<string>
 }
 
@@ -71,7 +73,6 @@ export function PlantsMap({
   onWorkspaceDoubleClick,
   highlightedIds,
   failedDeploysByWorkspace,
-  failedByEquipmentId,
   abnormalEquipmentIds,
 }: PlantsMapProps) {
   const { resolvedTheme, setTheme } = useTheme()
@@ -132,6 +133,21 @@ export function PlantsMap({
   const hoveredFailedCount = failedDeploys(hoveredModelsRaw ?? []).length
 
   const totalAbnormal = abnormalEquipmentIds?.size ?? 0
+
+  // MODEL-SERVE-033. The badge's "2/8", by the same rule that turns the plant
+  // red (`isEquipmentAbnormal`, as page.tsx reconciles workspace status).
+  const chipByWorkspace = useMemo(() => {
+    const out: Record<string, EquipmentAlertChip | null> = {}
+    for (const ws of workspaces) {
+      out[ws.id] = equipmentAlertChip(
+        countBinary(
+          equipmentListByWorkspace[ws.id] ?? [],
+          abnormalEquipmentIds,
+        ),
+      )
+    }
+    return out
+  }, [workspaces, equipmentListByWorkspace, abnormalEquipmentIds])
   // MODEL-SERVE-024-D02: Abnormal only for an alerting node or an abnormal
   // model (`abnormalNodeIds`). Offline equipment no longer turns it red.
   const overallBinary: BinaryStatus = totalAbnormal > 0 ? 'abnormal' : 'normal'
@@ -428,19 +444,12 @@ export function PlantsMap({
                   cx={labelX}
                   cy={labelY - 10}
                   squash={floorSquash}
-                  showBadge={false}
                   equipmentCount={ws.nodeCount ?? equipmentList.length}
                   status={status}
-                  equipmentStatuses={equipmentList.map(n => {
-                    const base = n.data.status as NodeStatus
-                    return (failedByEquipmentId?.[n.id] ?? 0) > 0
-                      ? 'alarm'
-                      : base
-                  })}
+                  chip={chipByWorkspace[ws.id] ?? null}
                   workspaceColor={ws.color ?? 'blue'}
                   name={ws.name}
                   selected={isSelected}
-                  isDark={isDark}
                   onMouseEnter={() => !isDragging && setHoveredId(ws.id)}
                   onMouseLeave={handleTowerLeave}
                   onClick={() => !isDragging && onWorkspaceClick(ws.id)}
@@ -481,12 +490,7 @@ export function PlantsMap({
                   cx={labelX}
                   cy={labelY - 30}
                   status={status}
-                  equipmentStatuses={equipmentList.map(n => {
-                    const base = n.data.status as NodeStatus
-                    return (failedByEquipmentId?.[n.id] ?? 0) > 0
-                      ? 'alarm'
-                      : base
-                  })}
+                  chip={chipByWorkspace[ws.id] ?? null}
                   name={ws.name}
                   isDark={isDark}
                   squash={floorSquash}

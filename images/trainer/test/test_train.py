@@ -100,30 +100,6 @@ def test_extract_loss_history_mlp_is_train_only_with_loss_metric():
     }
 
 
-def test_extract_loss_history_hgb_returns_none_when_early_stopping_did_not_run():
-    # LIVE-VERIFIED regression guard (scikit-learn 1.5.2, the pinned
-    # version): train_score_/validation_score_ ALWAYS exist as attributes
-    # on a fitted HistGradientBoostingRegressor, but are EMPTY arrays — not
-    # absent — whenever early_stopping resolved to False, which is the
-    # unconfigured default ('auto') for any dataset at or under 10,000 rows,
-    # the common case in this trainer's domain. A version that checked
-    # hasattr()/is None instead of len()==0 would have produced a
-    # technically-present but empty series here — misleading, not honest.
-    model = _FakeModel(train_score_=[], validation_score_=[])
-    assert extract_loss_history("hist_gradient_boosting", model) is None
-
-
-def test_extract_loss_history_hgb_includes_validation_only_when_populated():
-    without_validation = _FakeModel(train_score_=[0.9, 0.6])
-    history = extract_loss_history("hist_gradient_boosting", without_validation)
-    assert history is not None
-    assert "validation" not in history["series"]
-
-    with_validation = _FakeModel(train_score_=[0.9, 0.6], validation_score_=[0.95, 0.7])
-    history = extract_loss_history("hist_gradient_boosting", with_validation)
-    assert history["series"]["validation"] == [0.95, 0.7]
-
-
 def test_extract_loss_history_lightgbm_reads_evals_result_rmse():
     model = _FakeModel(
         evals_result_={"train": {"rmse": [1.0, 0.5]}, "validation": {"rmse": [1.1, 0.6]}}
@@ -149,7 +125,9 @@ def test_extract_loss_history_xgboost_maps_validation_0_1_to_train_validation():
 def test_extract_loss_history_closed_form_algorithm_writes_nothing():
     # No artifact and no placeholder — a curve cannot be produced for a
     # closed-form fit, not "has not been produced yet."
-    for algorithm in ("ols", "ridge", "pls", "grp", "svm", "random_forest"):
+    for algorithm in (
+        "ols", "ridge", "pls", "grp", "svm", "random_forest", "extra_trees"
+    ):
         assert extract_loss_history(algorithm, _FakeModel()) is None
 
 
@@ -677,3 +655,67 @@ def test_svr_does_not_warn_on_a_new_format_spec_carrying_only_scaling():
         "scalingParams": {},
     }
     assert _svr_warnings(new_format) == []
+
+
+# ── MODEL-FLOW-033: extra_trees ────────────────────────────────────────────
+
+
+def test_extra_trees_builds_an_extra_trees_regressor_with_the_forest_knobs():
+    from sklearn.ensemble import ExtraTreesRegressor
+
+    from models import build_model
+
+    model = build_model(
+        algorithm="extra_trees",
+        hyperparameters={
+            "n_estimators": 50,
+            "max_depth": 8,
+            "max_leaf_nodes": 64,
+            "min_samples_leaf": 2,
+            "min_samples_split": 4,
+        },
+        seed=7,
+        n_train_rows=100,
+        feature_spec={},
+    )
+    assert isinstance(model, ExtraTreesRegressor)
+    assert model.n_estimators == 50
+    assert model.max_depth == 8
+    assert model.max_leaf_nodes == 64
+    assert model.min_samples_leaf == 2
+    assert model.min_samples_split == 4
+    assert model.random_state == 7
+    # sklearn's own default for extremely randomized trees, kept.
+    assert model.bootstrap is False
+
+
+def test_extra_trees_null_depth_and_leaves_mean_unlimited():
+    from models import build_model
+
+    model = build_model(
+        algorithm="extra_trees",
+        hyperparameters={"max_depth": None, "max_leaf_nodes": None},
+        seed=0,
+        n_train_rows=100,
+        feature_spec={},
+    )
+    assert model.max_depth is None
+    assert model.max_leaf_nodes is None
+    assert model.n_estimators == 100
+
+
+# ── MODEL-FLOW-034: hist_gradient_boosting removed ─────────────────────────
+
+
+@pytest.mark.parametrize("algorithm", ["hist_gradient_boosting", "hgb"])
+def test_hist_gradient_boosting_is_no_longer_built(algorithm):
+    from models import build_model
+
+    with pytest.raises(RuntimeError, match="Unsupported algorithm"):
+        build_model(
+            algorithm=algorithm,
+            hyperparameters={},
+            seed=0,
+            n_train_rows=100,
+            feature_spec={},
+        )

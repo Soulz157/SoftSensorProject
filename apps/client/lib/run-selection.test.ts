@@ -135,7 +135,7 @@ describe('modeAMetricLabel', () => {
       modeAMetricLabel(
         candidate({
           lossHistory: {
-            algorithm: 'hist_gradient_boosting',
+            algorithm: 'mlp',
             metric: 'loss',
             series: { train: [1] },
           },

@@ -7,8 +7,7 @@
  *
  * Every key here MUST match what `images/trainer/train.py`'s `build_model`
  * actually reads for that algorithm — including its deliberate vocabulary
- * mismatches: `hist_gradient_boosting` takes `n_estimators`/`num_leaves`
- * (mapped inside train.py to `max_iter`/`max_leaf_nodes`), `mlp` takes a
+ * mismatches: `mlp` takes a
  * SCALAR `hidden_layer_sizes`, `random_forest`'s `max_depth` may be `null`,
  * `lightgbm`'s `boosting_type` is one of `gbdt`/`dart`/`goss`. Values must
  * satisfy `HyperparametersSchema`
@@ -66,40 +65,6 @@ export const TUNING_GRID: Record<string, HyperparamRecord[]> = {
     { alpha: 10, fit_intercept: true, solver: 'auto' },
     { alpha: 100, fit_intercept: true, solver: 'auto' },
   ],
-  hist_gradient_boosting: [
-    {
-      learning_rate: 0.05,
-      n_estimators: 300,
-      num_leaves: 15,
-      max_depth: null,
-      min_samples_leaf: 20,
-      l2_regularization: 0,
-    },
-    {
-      learning_rate: 0.3,
-      n_estimators: 100,
-      num_leaves: 31,
-      max_depth: 6,
-      min_samples_leaf: 30,
-      l2_regularization: 1,
-    },
-    {
-      learning_rate: 0.05,
-      n_estimators: 500,
-      num_leaves: 63,
-      max_depth: null,
-      min_samples_leaf: 10,
-      l2_regularization: 0.5,
-    },
-    {
-      learning_rate: 0.1,
-      n_estimators: 200,
-      num_leaves: 7,
-      max_depth: 5,
-      min_samples_leaf: 50,
-      l2_regularization: 5,
-    },
-  ],
   // MODEL-FLOW-027. tol/max_iter are constants across every variant here —
   // this grid tunes C/kernel/epsilon only; the catalogue's other two svm
   // fields are not size-tiered or searched.
@@ -128,6 +93,38 @@ export const TUNING_GRID: Record<string, HyperparamRecord[]> = {
     { n_components: 3, max_iter: 250 },
   ],
   random_forest: [
+    {
+      n_estimators: 300,
+      max_depth: null,
+      max_leaf_nodes: null,
+      min_samples_leaf: 1,
+      min_samples_split: 2,
+    },
+    {
+      n_estimators: 200,
+      max_depth: 10,
+      max_leaf_nodes: 64,
+      min_samples_leaf: 2,
+      min_samples_split: 5,
+    },
+    {
+      n_estimators: 500,
+      max_depth: 20,
+      max_leaf_nodes: 256,
+      min_samples_leaf: 4,
+      min_samples_split: 10,
+    },
+    {
+      n_estimators: 100,
+      max_depth: 5,
+      max_leaf_nodes: 32,
+      min_samples_leaf: 8,
+      min_samples_split: 20,
+    },
+  ],
+  // MODEL-FLOW-033. Same declared priors as random_forest: the two share
+  // every knob, and none of these was tuned for extra trees specifically.
+  extra_trees: [
     {
       n_estimators: 300,
       max_depth: null,
@@ -322,40 +319,6 @@ export const TUNING_GRID_OVERRIDES: Record<
       { alpha: 30, fit_intercept: true, solver: 'auto' },
       { alpha: 100, fit_intercept: true, solver: 'auto' },
     ],
-    hist_gradient_boosting: [
-      {
-        learning_rate: 0.05,
-        n_estimators: 100,
-        num_leaves: 4,
-        max_depth: 3,
-        min_samples_leaf: 50,
-        l2_regularization: 10,
-      },
-      {
-        learning_rate: 0.1,
-        n_estimators: 60,
-        num_leaves: 7,
-        max_depth: 4,
-        min_samples_leaf: 30,
-        l2_regularization: 1,
-      },
-      {
-        learning_rate: 0.03,
-        n_estimators: 150,
-        num_leaves: 7,
-        max_depth: 2,
-        min_samples_leaf: 100,
-        l2_regularization: 0.1,
-      },
-      {
-        learning_rate: 0.3,
-        n_estimators: 30,
-        num_leaves: 3,
-        max_depth: 5,
-        min_samples_leaf: 20,
-        l2_regularization: 30,
-      },
-    ],
     svm: [
       { C: 0.03, kernel: 'rbf', epsilon: 0.1, tol: 0.001, max_iter: null },
       { C: 0.3, kernel: 'rbf', epsilon: 0.05, tol: 0.001, max_iter: null },
@@ -369,6 +332,38 @@ export const TUNING_GRID_OVERRIDES: Record<
       { hidden_layer_sizes: 64, alpha: 0.003, max_iter: 300 },
     ],
     random_forest: [
+      {
+        n_estimators: 100,
+        max_depth: 4,
+        max_leaf_nodes: 16,
+        min_samples_leaf: 4,
+        min_samples_split: 10,
+      },
+      {
+        n_estimators: 200,
+        max_depth: 6,
+        max_leaf_nodes: 32,
+        min_samples_leaf: 2,
+        min_samples_split: 8,
+      },
+      {
+        n_estimators: 50,
+        max_depth: 3,
+        max_leaf_nodes: 8,
+        min_samples_leaf: 8,
+        min_samples_split: 20,
+      },
+      {
+        n_estimators: 150,
+        max_depth: 8,
+        max_leaf_nodes: 64,
+        min_samples_leaf: 4,
+        min_samples_split: 4,
+      },
+    ],
+    // MODEL-FLOW-033. Same declared priors as random_forest: the two share
+    // every knob, and none of these was tuned for extra trees specifically.
+    extra_trees: [
       {
         n_estimators: 100,
         max_depth: 4,
@@ -474,40 +469,6 @@ export const TUNING_GRID_OVERRIDES: Record<
       { alpha: 10, fit_intercept: true, solver: 'auto' },
       { alpha: 30, fit_intercept: true, solver: 'auto' },
     ],
-    hist_gradient_boosting: [
-      {
-        learning_rate: 0.05,
-        n_estimators: 150,
-        num_leaves: 7,
-        max_depth: 5,
-        min_samples_leaf: 30,
-        l2_regularization: 5,
-      },
-      {
-        learning_rate: 0.1,
-        n_estimators: 100,
-        num_leaves: 15,
-        max_depth: 3,
-        min_samples_leaf: 50,
-        l2_regularization: 1,
-      },
-      {
-        learning_rate: 0.05,
-        n_estimators: 300,
-        num_leaves: 15,
-        max_depth: 8,
-        min_samples_leaf: 10,
-        l2_regularization: 0,
-      },
-      {
-        learning_rate: 0.2,
-        n_estimators: 50,
-        num_leaves: 4,
-        max_depth: 4,
-        min_samples_leaf: 20,
-        l2_regularization: 10,
-      },
-    ],
     svm: [
       { C: 0.1, kernel: 'rbf', epsilon: 0.1, tol: 0.001, max_iter: null },
       { C: 1, kernel: 'rbf', epsilon: 0.05, tol: 0.001, max_iter: null },
@@ -521,6 +482,38 @@ export const TUNING_GRID_OVERRIDES: Record<
       { hidden_layer_sizes: 16, alpha: 0.03, max_iter: 1000 },
     ],
     random_forest: [
+      {
+        n_estimators: 150,
+        max_depth: 6,
+        max_leaf_nodes: 32,
+        min_samples_leaf: 2,
+        min_samples_split: 5,
+      },
+      {
+        n_estimators: 300,
+        max_depth: 10,
+        max_leaf_nodes: 64,
+        min_samples_leaf: 1,
+        min_samples_split: 2,
+      },
+      {
+        n_estimators: 100,
+        max_depth: 4,
+        max_leaf_nodes: 16,
+        min_samples_leaf: 4,
+        min_samples_split: 10,
+      },
+      {
+        n_estimators: 200,
+        max_depth: null,
+        max_leaf_nodes: 128,
+        min_samples_leaf: 2,
+        min_samples_split: 20,
+      },
+    ],
+    // MODEL-FLOW-033. Same declared priors as random_forest: the two share
+    // every knob, and none of these was tuned for extra trees specifically.
+    extra_trees: [
       {
         n_estimators: 150,
         max_depth: 6,
@@ -626,40 +619,6 @@ export const TUNING_GRID_OVERRIDES: Record<
       { alpha: 0.1, fit_intercept: true, solver: 'auto' },
       { alpha: 10, fit_intercept: true, solver: 'auto' },
     ],
-    hist_gradient_boosting: [
-      {
-        learning_rate: 0.05,
-        n_estimators: 400,
-        num_leaves: 31,
-        max_depth: null,
-        min_samples_leaf: 20,
-        l2_regularization: 0,
-      },
-      {
-        learning_rate: 0.1,
-        n_estimators: 300,
-        num_leaves: 63,
-        max_depth: 10,
-        min_samples_leaf: 10,
-        l2_regularization: 0.5,
-      },
-      {
-        learning_rate: 0.03,
-        n_estimators: 800,
-        num_leaves: 63,
-        max_depth: null,
-        min_samples_leaf: 5,
-        l2_regularization: 0.1,
-      },
-      {
-        learning_rate: 0.05,
-        n_estimators: 200,
-        num_leaves: 127,
-        max_depth: 16,
-        min_samples_leaf: 30,
-        l2_regularization: 1,
-      },
-    ],
     svm: [
       { C: 1, kernel: 'rbf', epsilon: 0.1, tol: 0.001, max_iter: null },
       { C: 30, kernel: 'rbf', epsilon: 0.01, tol: 0.001, max_iter: null },
@@ -673,6 +632,38 @@ export const TUNING_GRID_OVERRIDES: Record<
       { hidden_layer_sizes: 100, alpha: 0.001, max_iter: 500 },
     ],
     random_forest: [
+      {
+        n_estimators: 400,
+        max_depth: null,
+        max_leaf_nodes: null,
+        min_samples_leaf: 1,
+        min_samples_split: 2,
+      },
+      {
+        n_estimators: 300,
+        max_depth: 15,
+        max_leaf_nodes: 256,
+        min_samples_leaf: 2,
+        min_samples_split: 5,
+      },
+      {
+        n_estimators: 800,
+        max_depth: 30,
+        max_leaf_nodes: 1024,
+        min_samples_leaf: 1,
+        min_samples_split: 2,
+      },
+      {
+        n_estimators: 200,
+        max_depth: 8,
+        max_leaf_nodes: 64,
+        min_samples_leaf: 4,
+        min_samples_split: 10,
+      },
+    ],
+    // MODEL-FLOW-033. Same declared priors as random_forest: the two share
+    // every knob, and none of these was tuned for extra trees specifically.
+    extra_trees: [
       {
         n_estimators: 400,
         max_depth: null,

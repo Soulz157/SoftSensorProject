@@ -165,25 +165,15 @@ def build_model(
     produced.
     """
     from sklearn.cross_decomposition import PLSRegression
-    from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+    from sklearn.ensemble import (
+        ExtraTreesRegressor,
+        RandomForestRegressor,
+    )
     from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.linear_model import LinearRegression, Ridge
     from sklearn.neural_network import MLPRegressor
     from sklearn.svm import SVR
 
-    if algorithm in ("hgb", "hist_gradient_boosting"):
-        max_depth = hyperparameters.get("max_depth")
-        return HistGradientBoostingRegressor(
-            learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
-            max_iter=int(hyperparameters.get("n_estimators", 200)),
-            max_leaf_nodes=int(hyperparameters.get("num_leaves", 31)),
-            max_depth=int(max_depth) if max_depth is not None else None,
-            min_samples_leaf=int(hyperparameters.get("min_samples_leaf", 20)),
-            l2_regularization=float(
-                hyperparameters.get("l2_regularization", 0.0)
-            ),
-            random_state=seed,
-        )
     if algorithm == "ridge":
         return Ridge(
             alpha=float(hyperparameters.get("alpha", 1.0)),
@@ -247,6 +237,22 @@ def build_model(
         max_depth = hyperparameters.get("max_depth")
         max_leaf_nodes = hyperparameters.get("max_leaf_nodes")
         return RandomForestRegressor(
+            n_estimators=int(hyperparameters.get("n_estimators", 100)),
+            max_depth=int(max_depth) if max_depth is not None else None,
+            max_leaf_nodes=(
+                int(max_leaf_nodes) if max_leaf_nodes is not None else None
+            ),
+            min_samples_leaf=int(hyperparameters.get("min_samples_leaf", 1)),
+            min_samples_split=int(hyperparameters.get("min_samples_split", 2)),
+            random_state=seed,
+        )
+    if algorithm == "extra_trees":
+        # Same knobs as random_forest. Extremely randomized trees draw split
+        # thresholds at random instead of searching for the best one, and do
+        # not bootstrap by default (sklearn's own default, kept).
+        max_depth = hyperparameters.get("max_depth")
+        max_leaf_nodes = hyperparameters.get("max_leaf_nodes")
+        return ExtraTreesRegressor(
             n_estimators=int(hyperparameters.get("n_estimators", 100)),
             max_depth=int(max_depth) if max_depth is not None else None,
             max_leaf_nodes=(

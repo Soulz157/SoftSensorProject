@@ -62,12 +62,12 @@ export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)
 export type Algorithm =
   | 'ols'
   | 'ridge'
-  | 'hist_gradient_boosting'
   | 'svm'
   | 'mlp'
   | 'grp'
   | 'pls'
   | 'random_forest'
+  | 'extra_trees'
   | 'lightgbm'
   | 'xgboost'
   | 'lstm'
@@ -75,26 +75,35 @@ export type Algorithm =
 export const ALGORITHMS: Algorithm[] = [
   'ols',
   'ridge',
-  'hist_gradient_boosting',
   'svm',
   'mlp',
   'grp',
   'pls',
   'random_forest',
+  'extra_trees',
   'lightgbm',
   'xgboost',
   'lstm',
   'gru',
 ]
+/**
+ * MODEL-FLOW-034. Ids no longer offered or accepted, kept here only so a
+ * stored run trained with one still reads by name in history (every display
+ * site falls back to the raw id when a label is missing).
+ */
+const RETIRED_ALGORITHM_LABELS: Record<string, string> = {
+  hist_gradient_boosting: 'Histogram Gradient Boosting (retired)',
+}
 export const ALGORITHM_LABELS: Record<Algorithm, string> = {
+  ...RETIRED_ALGORITHM_LABELS,
   ols: 'Linear Regression',
   ridge: 'Ridge Regression',
-  hist_gradient_boosting: 'Histogram Gradient Boosting',
   svm: 'Support Vector Machine',
   grp: 'Gaussian Process Regression',
   mlp: 'MLP (Neural Network)',
   pls: 'PLS Regression',
   random_forest: 'Random Forest',
+  extra_trees: 'Extra Trees',
   xgboost: 'XGBoost',
   lightgbm: 'LightGBM',
   lstm: 'LSTM',

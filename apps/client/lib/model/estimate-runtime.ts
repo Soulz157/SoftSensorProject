@@ -174,7 +174,7 @@ export function cvFitCount(input: RuntimeInput): CvFitCount | null {
  * algorithm times its own candidate count (the card plus added rows). Left
  * alone: `ALGO_COST` is keyed on ids this
  * catalogue does not have (rf, svr, gbr...), so `random_forest`, `svm`,
- * `hist_gradient_boosting`, `grp`, `pls`, `lstm` and `gru` all fall back to
+ * `grp`, `pls`, `lstm` and `gru` all fall back to
  * cost 1 — the numbers are invented, and inventing more is not this change.
  */
 export function estimateRuntimeSeconds({

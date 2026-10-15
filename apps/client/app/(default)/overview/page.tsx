@@ -174,7 +174,6 @@ export default function PlantsPage() {
           onWorkspaceDoubleClick={id => router.push(`/plants/${id}`)}
           highlightedIds={highlightedIds}
           failedDeploysByWorkspace={failedDeploysByWorkspace}
-          failedByEquipmentId={failedByEquipmentId}
           abnormalEquipmentIds={abnormalEquipmentIds}
         />
       </div>
