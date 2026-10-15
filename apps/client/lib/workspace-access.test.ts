@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest'
+import type { WorkspacePermission } from '@/types'
 import {
+  assignableRoleOptions,
+  canManageMemberRow,
+  FULL_MEMBER_ACCESS,
   grantedPermissionLabels,
+  invitableRoleOptions,
   isMonitoringDenied,
   memberCan,
+  memberManagementAccess,
   roleCanManageDatasets,
   toPermissionPayload,
 } from './workspace-access'
@@ -113,5 +119,86 @@ describe('roleCanManageDatasets', () => {
 
   it('is false for VIEWER', () => {
     expect(roleCanManageDatasets('VIEWER')).toBe(false)
+  })
+})
+
+describe('staff grants (MODEL-SERVE-034)', () => {
+  const owner = { role: 'OWNER' as const, permissions: [] }
+  const staff = (permissions: WorkspacePermission[] = []) => ({
+    role: 'STAFF' as const,
+    permissions,
+  })
+
+  it('keeps only staff grants for STAFF and only read grants for VIEWER', () => {
+    const all: WorkspacePermission[] = [
+      'MONITORING_VIEW',
+      'MEMBER_ROLE_ASSIGN',
+      'MEMBER_INVITE',
+    ]
+    expect(toPermissionPayload('STAFF', all)).toEqual([
+      'MEMBER_ROLE_ASSIGN',
+      'MEMBER_INVITE',
+    ])
+    expect(toPermissionPayload('VIEWER', all)).toEqual(['MONITORING_VIEW'])
+    expect(toPermissionPayload('OWNER', all)).toEqual([])
+  })
+
+  it('labels a STAFF member staff grants as row chips', () => {
+    expect(grantedPermissionLabels(staff(['MEMBER_INVITE']))).toEqual([
+      'Invite members',
+    ])
+  })
+
+  it('gives an owner full access, even with no member row', () => {
+    expect(memberManagementAccess(null, true)).toEqual(FULL_MEMBER_ACCESS)
+    expect(memberManagementAccess(owner, false)).toEqual(FULL_MEMBER_ACCESS)
+  })
+
+  it('gives a STAFF only the ticked grants, and a VIEWER nothing', () => {
+    expect(
+      memberManagementAccess(staff(['MEMBER_ROLE_ASSIGN']), false),
+    ).toEqual({ full: false, assignRoles: true, invite: false })
+    expect(
+      memberManagementAccess(
+        { role: 'VIEWER', permissions: ['MEMBER_ROLE_ASSIGN'] },
+        false,
+      ),
+    ).toEqual({ full: false, assignRoles: false, invite: false })
+  })
+
+  it('shows a delegate the menu only on other, non-owner rows', () => {
+    const delegate = { full: false, assignRoles: true, invite: false }
+    const row = (role: 'OWNER' | 'STAFF' | 'VIEWER', userId = 'other') => ({
+      role,
+      userId,
+    })
+    expect(canManageMemberRow(delegate, row('VIEWER'), 'me')).toBe(true)
+    expect(canManageMemberRow(delegate, row('STAFF'), 'me')).toBe(true)
+    expect(canManageMemberRow(delegate, row('OWNER'), 'me')).toBe(false)
+    expect(canManageMemberRow(delegate, row('STAFF', 'me'), 'me')).toBe(false)
+    expect(
+      canManageMemberRow(
+        { ...delegate, assignRoles: false },
+        row('VIEWER'),
+        'me',
+      ),
+    ).toBe(false)
+    expect(
+      canManageMemberRow(FULL_MEMBER_ACCESS, row('OWNER', 'me'), 'me'),
+    ).toBe(true)
+  })
+
+  it('never offers OWNER to a delegate', () => {
+    const delegate = { full: false, assignRoles: true, invite: true }
+    expect(assignableRoleOptions(delegate).map(o => o.value)).toEqual([
+      'STAFF',
+      'VIEWER',
+    ])
+    expect(invitableRoleOptions(delegate).map(o => o.value)).not.toContain(
+      'OWNER',
+    )
+    expect(
+      assignableRoleOptions(FULL_MEMBER_ACCESS).map(o => o.value),
+    ).toContain('OWNER')
   })
 })

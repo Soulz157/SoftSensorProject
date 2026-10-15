@@ -43,7 +43,7 @@ export function LoginForm() {
         error={errors.password?.message}
         aside={
           <Link
-            href="/reset-password"
+            href="/auth/reset-password"
             className="rounded-sm text-xs text-muted-foreground underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             Forgot password?

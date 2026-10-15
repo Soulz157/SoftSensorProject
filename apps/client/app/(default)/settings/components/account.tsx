@@ -294,7 +294,7 @@ export function AccountTab() {
           </p>
           <Button
             variant="outline"
-            onClick={() => router.push('/change-password')}
+            onClick={() => router.push('/auth/change-password')}
           >
             Change Password
           </Button>

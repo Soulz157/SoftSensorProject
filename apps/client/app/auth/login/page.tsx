@@ -10,7 +10,7 @@ export default function LoginPage() {
       footer={
         <>
           New to SoftSensor?{' '}
-          <TextLink href="/register">Create an account</TextLink>
+          <TextLink href="/auth/register">Create an account</TextLink>
         </>
       }
     >

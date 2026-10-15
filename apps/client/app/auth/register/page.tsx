@@ -9,7 +9,8 @@ export default function RegisterPage() {
       description="You can join or create a workspace after this."
       footer={
         <>
-          Already have an account? <TextLink href="/login">Sign in</TextLink>
+          Already have an account?{' '}
+          <TextLink href="/auth/login">Sign in</TextLink>
         </>
       }
     >

@@ -186,7 +186,7 @@ export const authConfig: NextAuthConfig = {
     maxAge: 7 * 24 * 60 * 60,
   },
   pages: {
-    signIn: '/login',
+    signIn: '/auth/login',
     error: '/dashboard',
   },
 }

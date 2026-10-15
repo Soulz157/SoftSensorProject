@@ -12,7 +12,13 @@ import type {
   UpdateMemberRoleDto,
 } from './dto/workspace.authorized.dto';
 import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
-import { normalizePermissions } from '@/lib/workspace-permission';
+import {
+  inviteBlocker,
+  memberManagement,
+  resolvePermissionsForChange,
+  roleChangeBlocker,
+  type MemberManagement,
+} from '@/lib/workspace-permission';
 
 @Injectable()
 export class WorkspaceAuthorizedService {
@@ -46,6 +52,43 @@ export class WorkspaceAuthorizedService {
         type: 'ERROR',
       });
     }
+  }
+
+  /**
+   * MODEL-SERVE-034. What the caller may do to this workspace's member list:
+   * the creator and OWNER rows have everything, a STAFF row what an owner
+   * granted (MEMBER_ROLE_ASSIGN / MEMBER_INVITE). 404 when the workspace is
+   * missing; the caller turns a refusal into a 403 with the reason.
+   */
+  private async resolveMemberManagement(
+    workspaceId: string,
+    userId: string,
+  ): Promise<MemberManagement> {
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { ownerId: true },
+    });
+
+    if (!workspace) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Workspace not found',
+        type: 'ERROR',
+      });
+    }
+
+    const member =
+      workspace.ownerId === userId
+        ? null
+        : await this.prisma.workspaceMember.findUnique({
+            where: { workspaceId_userId: { workspaceId, userId } },
+            select: { role: true, permissions: true },
+          });
+
+    return memberManagement({
+      isWorkspaceOwner: workspace.ownerId === userId,
+      member,
+    });
   }
 
   private async assertHasAccess(
@@ -303,7 +346,15 @@ export class WorkspaceAuthorizedService {
     actorId: string,
     dto: InviteMemberDto,
   ) {
-    await this.assertIsOwner(workspaceId, actorId);
+    const access = await this.resolveMemberManagement(workspaceId, actorId);
+    const blocker = inviteBlocker(access, dto.role);
+    if (blocker) {
+      throw new AppException({
+        statusCode: 403,
+        message: blocker,
+        type: 'ERROR',
+      });
+    }
 
     const target = await this.prisma.user.findUnique({
       where: { email: dto.email },
@@ -353,7 +404,7 @@ export class WorkspaceAuthorizedService {
     actorId: string,
     dto: UpdateMemberRoleDto,
   ) {
-    await this.assertIsOwner(workspaceId, actorId);
+    const access = await this.resolveMemberManagement(workspaceId, actorId);
 
     const member = await this.prisma.workspaceMember.findFirst({
       where: { id: memberId, workspaceId },
@@ -363,6 +414,20 @@ export class WorkspaceAuthorizedService {
       throw new AppException({
         statusCode: 404,
         message: 'Member not found',
+        type: 'ERROR',
+      });
+    }
+
+    const blocker = roleChangeBlocker({
+      access,
+      actorUserId: actorId,
+      target: member,
+      nextRole: dto.role,
+    });
+    if (blocker) {
+      throw new AppException({
+        statusCode: 403,
+        message: blocker,
         type: 'ERROR',
       });
     }
@@ -384,10 +449,12 @@ export class WorkspaceAuthorizedService {
       where: { id: memberId },
       data: {
         role: dto.role,
-        permissions: normalizePermissions(
-          dto.role,
-          dto.permissions ?? member.permissions,
-        ),
+        permissions: resolvePermissionsForChange({
+          access,
+          current: member.permissions,
+          requested: dto.permissions,
+          nextRole: dto.role,
+        }),
       },
       include: {
         user: {

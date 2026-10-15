@@ -4371,6 +4371,69 @@
         "tsc --noEmit: 0 errors. eslint on changed files: clean.",
         "Live /overview checked by the user 2026-10-15 (red-plant and all-green cases): pass. Still NOT DONE: a before/after badge snapshot (behaviour tests used instead); light-theme count colour has no unit test."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-034",
+      "title": "Workspace members: per-Staff grants 'Assign roles' and 'Invite members'",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-030"
+      ],
+      "description": "User request 2026-10-15. Only an OWNER could act on the member list (the row menu and Invite were gated by isOwner; the backend by assertIsOwner). An owner can now give individual STAFF members two member-management grants; a STAFF without them sees no row menu.",
+      "userDecisions": [
+        "2026-10-15: Assign roles = switch OTHER, non-owner members between STAFF and VIEWER only. Never make anyone OWNER, never change an OWNER or one's own role, never hand out staff grants. Same Manage access dialog, so a delegate also sets a VIEWER's read-only feature grants.",
+        "2026-10-15: Invite members is a SEPARATE staff grant: invite as STAFF or VIEWER only.",
+        "Remove stays owner-only (self-removal unchanged)."
+      ],
+      "findings": [
+        "Grants were VIEWER-only on both sides (backend normalizePermissions, client toPermissionPayload stored/sent [] for any other role), so a staff grant would have been wiped on save. Both are now per role: VIEWER keeps read grants, STAFF keeps staff grants, OWNER none.",
+        "canReadWithGrant (backend) and memberCan (client) return true for every non-VIEWER; passing them a staff grant would admit every STAFF. Their parameter is narrowed to ReadGrant so the compiler refuses that.",
+        "Known pre-existing gap, unchanged: the client's isOwner ignores a workspace creator with no member row (the backend admits them)."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-034-T01",
+          "title": "Enum + hand-written migration",
+          "status": "completed",
+          "progress": 100,
+          "result": "WorkspacePermission += MEMBER_ROLE_ASSIGN, MEMBER_INVITE. Migration 20261015090000_workspace_member_staff_grants (ALTER TYPE ... ADD VALUE IF NOT EXISTS) applied by hand to the local docker DB 2026-10-15 (enum_range shows all four); NOT recorded in _prisma_migrations. packages/prisma rebuilt (dist has the values)."
+        },
+        {
+          "id": "MODEL-SERVE-034-T02",
+          "title": "Backend rule + service",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/workspace-permission.ts: READ_GRANTS/STAFF_GRANTS, per-role normalizePermissions, memberManagement, roleChangeBlocker, resolvePermissionsForChange (a delegate cannot change staff grants), inviteBlocker. workspace.authorized.service: inviteMember/updateMemberRole use resolveMemberManagement + blockers (403 with the reason); last-owner guards and removeMember unchanged. DTO permissions enum widened (max 4)."
+        },
+        {
+          "id": "MODEL-SERVE-034-T03",
+          "title": "Client: access helpers, table, dialog",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/workspace-access.ts: STAFF_PERMISSION_OPTIONS, per-role toPermissionPayload, staff chips, memberManagementAccess, canManageMemberRow, assignable/invitableRoleOptions. workspace-member.tsx: Invite on access.invite (no OWNER option for a delegate); row menu only where canManageMemberRow; delegate menu has no Remove; trigger aria-label 'Actions for <name>'. member-access-dialog.tsx: access prop (defaults to owner), Owner hidden from a delegate, new 'Member management' fieldset for STAFF, editable by an owner only."
+        },
+        {
+          "id": "MODEL-SERVE-034-T04",
+          "title": "Live check",
+          "status": "pending",
+          "progress": 0,
+          "result": "NOT RUN. Needs servers: as owner tick Assign roles for a staff member; as that staff member, the menu shows on Viewer/Staff rows only, Viewer->Staff works, Owner is never offered, Invite appears only after Invite members is ticked; a staff member without grants sees no menu."
+        }
+      ],
+      "acceptance": [
+        "A STAFF member without grants sees no row menu and no Invite button.",
+        "With Assign roles, a STAFF member can switch other non-owner members between Staff and Viewer, and the backend refuses (403) owner targets, their own row, promotion to Owner, and changes to staff grants.",
+        "With Invite members, a STAFF member can invite as Staff or Viewer, never Owner.",
+        "Owner behaviour is unchanged."
+      ],
+      "verification": [
+        "Backend jest: lib/workspace-permission.spec 68 passed; workspace.authorized.member-permissions.spec 20 passed (delegate role changes, refusals, staff grants preserved, delegated invite). Full backend: 9 failed | 1619 passed; the 9 are DI 'should be defined', a swagger-mock suite failure and OAuth service tests in modules this feature does not touch (not re-run on a HEAD worktree).",
+        "Client vitest: workspace-access + settings components 42 passed; new workspace-member.test.tsx 5 passed. Full client: 25 failed | 3148 passed, the same 9 known failing files.",
+        "tsc --noEmit backend and client: 0 errors. eslint on changed files: clean.",
+        "Live: NOT YET RUN."
+      ]
     }
   ],
   "global_definition_of_done": [

@@ -54,10 +54,10 @@ export function LandingHero({
       </p>
       <div className="flex flex-wrap gap-3">
         <Button asChild className="h-10 px-5">
-          <Link href="/login">Sign in</Link>
+          <Link href="/auth/login">Sign in</Link>
         </Button>
         <Button asChild variant="outline" className="h-10 px-5">
-          <Link href="/register">Create account</Link>
+          <Link href="/auth/register">Create account</Link>
         </Button>
       </div>
     </div>
@@ -86,7 +86,7 @@ export function LandingHero({
           <nav className="flex items-center gap-1 text-sm">
             <ThemeSwitcher className="mr-2" />
             <Button asChild variant="ghost" size="sm">
-              <Link href="/login">Sign in</Link>
+              <Link href="/auth/login">Sign in</Link>
             </Button>
             <Button
               asChild
@@ -94,7 +94,7 @@ export function LandingHero({
               size="sm"
               className="hidden sm:inline-flex"
             >
-              <Link href="/register">Create account</Link>
+              <Link href="/auth/register">Create account</Link>
             </Button>
           </nav>
         </header>

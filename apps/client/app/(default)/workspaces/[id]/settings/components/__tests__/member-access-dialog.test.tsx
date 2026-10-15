@@ -18,6 +18,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 import { MemberAccessDialog } from '../member-access-dialog'
 import type { WorkspaceMember } from '@/types'
+import type { MemberManagementAccess } from '@/lib/workspace-access'
 
 function member(
   role: WorkspaceMember['role'],
@@ -40,7 +41,7 @@ function featureBoxes() {
   ).getAllByRole('checkbox')
 }
 
-function renderDialog(m: WorkspaceMember) {
+function renderDialog(m: WorkspaceMember, access?: MemberManagementAccess) {
   const onSaved = vi.fn()
   const onOpenChange = vi.fn()
   render(
@@ -51,6 +52,7 @@ function renderDialog(m: WorkspaceMember) {
       open
       onOpenChange={onOpenChange}
       onSaved={onSaved}
+      access={access}
     />,
   )
   return { onSaved, onOpenChange }
@@ -122,5 +124,61 @@ describe('MemberAccessDialog', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(onSaved).not.toHaveBeenCalled()
     expect(onOpenChange).not.toHaveBeenCalledWith(false)
+  })
+})
+
+/** MODEL-SERVE-034. Staff member-management grants in the same dialog. */
+describe('MemberAccessDialog — staff grants', () => {
+  beforeEach(() => {
+    h.updateMemberRole.mockReset().mockResolvedValue({ data: {} })
+  })
+
+  function staffBoxes() {
+    return within(
+      screen.getByRole('group', { name: 'Member management' }),
+    ).getAllByRole('checkbox')
+  }
+
+  it('lets an owner grant a STAFF member "Assign roles"', async () => {
+    renderDialog(member('STAFF'))
+    const [assign] = staffBoxes()
+    expect(assign).toBeEnabled()
+    await userEvent.click(assign!)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(h.updateMemberRole).toHaveBeenCalledWith('ws-1', 'm-1', 'STAFF', [
+      'MEMBER_ROLE_ASSIGN',
+    ])
+  })
+
+  it('has no Member management section for a VIEWER', () => {
+    renderDialog(member('VIEWER'))
+    expect(
+      screen.queryByRole('group', { name: 'Member management' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('locks staff grants for a delegate and says why', () => {
+    renderDialog(member('STAFF', ['MEMBER_INVITE']), {
+      full: false,
+      assignRoles: true,
+      invite: false,
+    })
+    for (const box of staffBoxes()) expect(box).toBeDisabled()
+    expect(staffBoxes()[1]).toBeChecked()
+    expect(
+      screen.getByText('Only an owner can change this.'),
+    ).toBeInTheDocument()
+  })
+
+  it('never offers Owner to a delegate', async () => {
+    renderDialog(member('VIEWER'), {
+      full: false,
+      assignRoles: true,
+      invite: false,
+    })
+    await userEvent.click(screen.getByRole('combobox'))
+    const names = screen.getAllByRole('option').map(o => o.textContent ?? '')
+    expect(names.some(n => n.startsWith('Owner'))).toBe(false)
+    expect(names.some(n => n.startsWith('Staff'))).toBe(true)
   })
 })

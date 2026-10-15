@@ -47,9 +47,14 @@ enum WorkspaceRole {
   VIEWER
 }
 
+/// MONITORING_VIEW / NOTIFICATIONS_VIEW: read-only grants for a VIEWER.
+/// MEMBER_ROLE_ASSIGN / MEMBER_INVITE: member-management grants for a STAFF
+/// (MODEL-SERVE-034). Stored per role — see normalizePermissions.
 enum WorkspacePermission {
   MONITORING_VIEW
   NOTIFICATIONS_VIEW
+  MEMBER_ROLE_ASSIGN
+  MEMBER_INVITE
 }
 
 enum NotificationChannelKind {

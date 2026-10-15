@@ -22,10 +22,13 @@ import {
 } from '@/components/ui/select'
 import { useUpdateMemberAccess } from '@/hooks/workspace/use-update-member-access'
 import {
+  assignableRoleOptions,
+  FULL_MEMBER_ACCESS,
   ROLE_ACCESS_OPTIONS,
   roleCanManageDatasets,
+  STAFF_PERMISSION_OPTIONS,
   WORKSPACE_PERMISSION_OPTIONS,
-  WORKSPACE_ROLE_OPTIONS,
+  type MemberManagementAccess,
 } from '@/lib/workspace-access'
 import { cn } from '@/lib/utils'
 import type {
@@ -42,6 +45,9 @@ interface MemberAccessDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved: () => void
+  /** What the signed-in member may change. Defaults to owner access; a STAFF with
+   *  "Assign roles" gets Staff/Viewer only and cannot touch staff grants. */
+  access?: MemberManagementAccess
 }
 
 export function MemberAccessDialog({
@@ -51,6 +57,7 @@ export function MemberAccessDialog({
   open,
   onOpenChange,
   onSaved,
+  access = FULL_MEMBER_ACCESS,
 }: MemberAccessDialogProps) {
   const [role, setRole] = useState<WorkspaceRole>(member.role)
   const [permissions, setPermissions] = useState<WorkspacePermission[]>(
@@ -59,6 +66,8 @@ export function MemberAccessDialog({
   const { updateMemberAccess, isSaving } = useUpdateMemberAccess(workspaceId)
 
   const grantsApply = role === 'VIEWER'
+  const roleOptions = assignableRoleOptions(access)
+  const canEditStaffGrants = access.full && !isSaving
 
   function toggle(permission: WorkspacePermission, on: boolean) {
     setPermissions(prev =>
@@ -97,7 +106,7 @@ export function MemberAccessDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {WORKSPACE_ROLE_OPTIONS.map(o => (
+                {roleOptions.map(o => (
                   <SelectItem key={o.value} value={o.value}>
                     {o.label}
                     <span className="ml-2 text-xs text-muted-foreground">
@@ -139,6 +148,47 @@ export function MemberAccessDialog({
               ))}
             </div>
           </fieldset>
+
+          {role === 'STAFF' && (
+            <fieldset className="space-y-2" disabled={!canEditStaffGrants}>
+              <legend className="text-xs font-medium text-foreground">
+                Member management
+              </legend>
+              <p className="text-xs text-muted-foreground">
+                {access.full
+                  ? 'Let this staff member help manage the team. They can never make anyone an owner.'
+                  : 'Only an owner can change this.'}
+              </p>
+              <div className="space-y-1">
+                {STAFF_PERMISSION_OPTIONS.map(o => (
+                  <label
+                    key={o.value}
+                    className={cn(
+                      'flex items-start gap-3 rounded-md px-2 py-2',
+                      canEditStaffGrants
+                        ? 'cursor-pointer hover:bg-muted'
+                        : 'cursor-not-allowed opacity-60',
+                    )}
+                  >
+                    <Checkbox
+                      checked={permissions.includes(o.value)}
+                      disabled={!canEditStaffGrants}
+                      className="mt-0.5"
+                      onCheckedChange={on => toggle(o.value, on === true)}
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm text-foreground">
+                        {o.label}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {o.description}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
 
           <fieldset className="space-y-2" disabled={!grantsApply || isSaving}>
             <legend className="text-xs font-medium text-foreground">

@@ -64,7 +64,10 @@ export default function SetNewPasswordPage() {
         title="Password updated"
         description="Sign in with your new password."
       >
-        <Button className="h-9 w-full" onClick={() => router.push('/login')}>
+        <Button
+          className="h-9 w-full"
+          onClick={() => router.push('/auth/login')}
+        >
           Sign in
         </Button>
       </AuthShell>
@@ -83,7 +86,7 @@ export default function SetNewPasswordPage() {
       }
       footer={
         <>
-          Back to <TextLink href="/login">Sign in</TextLink>
+          Back to <TextLink href="/auth/login">Sign in</TextLink>
         </>
       }
     >

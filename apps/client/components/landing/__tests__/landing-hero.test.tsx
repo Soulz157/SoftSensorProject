@@ -29,8 +29,8 @@ describe('LandingHero', () => {
     const create = screen.getAllByRole('link', { name: 'Create account' })
     expect(signIn.length).toBeGreaterThan(0)
     expect(create.length).toBeGreaterThan(0)
-    signIn.forEach(a => expect(a.getAttribute('href')).toBe('/login'))
-    create.forEach(a => expect(a.getAttribute('href')).toBe('/register'))
+    signIn.forEach(a => expect(a.getAttribute('href')).toBe('/auth/login'))
+    create.forEach(a => expect(a.getAttribute('href')).toBe('/auth/register'))
   })
 
   it('shows only mock tag names, never plant tags', () => {

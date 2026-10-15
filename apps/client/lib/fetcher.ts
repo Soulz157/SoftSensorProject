@@ -67,7 +67,7 @@ export async function fetchClient(endpoint: string, options: RequestInit = {}) {
     signOut({
       redirectTo:
         typeof window === 'undefined'
-          ? '/login'
+          ? '/auth/login'
           : loginUrlWithCallback(
               window.location.pathname + window.location.search,
             ),

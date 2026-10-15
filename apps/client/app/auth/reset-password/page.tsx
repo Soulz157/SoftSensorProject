@@ -27,7 +27,7 @@ export default function ResetPasswordPage() {
         }
         footer={
           <>
-            Back to <TextLink href="/login">Sign in</TextLink>
+            Back to <TextLink href="/auth/login">Sign in</TextLink>
           </>
         }
       >
@@ -49,7 +49,7 @@ export default function ResetPasswordPage() {
       description="Enter your account email. We'll send a link to set a new password."
       footer={
         <>
-          Remembered it? <TextLink href="/login">Sign in</TextLink>
+          Remembered it? <TextLink href="/auth/login">Sign in</TextLink>
         </>
       }
     >

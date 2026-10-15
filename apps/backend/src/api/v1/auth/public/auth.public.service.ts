@@ -325,7 +325,7 @@ export class AuthPublicService {
     const token = randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
     const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:3000';
-    const resetUrl = `${clientUrl}/reset-password/${token}?email=${encodeURIComponent(user.email)}`;
+    const resetUrl = `${clientUrl}/auth/reset-password/${token}?email=${encodeURIComponent(user.email)}`;
 
     await this.prisma.$transaction([
       this.prisma.passwordResetToken.deleteMany({ where: { userId: user.id } }),

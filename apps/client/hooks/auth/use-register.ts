@@ -26,7 +26,7 @@ export const useRegister = () => {
         toast.success('Account created', {
           description: 'Sign in to continue.',
         })
-        router.push('/login')
+        router.push('/auth/login')
       } else {
         toast.success('Account created')
         router.push('/')

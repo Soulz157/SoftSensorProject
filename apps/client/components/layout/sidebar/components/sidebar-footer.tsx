@@ -77,7 +77,7 @@ export function SidebarFooter({
             <HelpCircle className="h-4 w-4" />
           </Link>
           <button
-            onClick={() => signOut({ callbackUrl: '/login' })}
+            onClick={() => signOut({ callbackUrl: '/auth/login' })}
             title="Log Out"
             className="flex h-8 w-8 items-center justify-center rounded-md text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
           >

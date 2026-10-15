@@ -346,9 +346,16 @@ export interface AdminUser {
 
 export type WorkspaceRole = 'OWNER' | 'VIEWER' | 'STAFF'
 
-/** Read-only feature grants an OWNER can give a VIEWER. Always empty for
- *  OWNER and STAFF, who already have both. */
-export type WorkspacePermission = 'MONITORING_VIEW' | 'NOTIFICATIONS_VIEW'
+/** Read-only feature grants an OWNER can give a VIEWER (OWNER and STAFF
+ *  already have both). */
+export type ReadGrant = 'MONITORING_VIEW' | 'NOTIFICATIONS_VIEW'
+
+/** MODEL-SERVE-034. Member-management grants an OWNER can give a STAFF. */
+export type StaffGrant = 'MEMBER_ROLE_ASSIGN' | 'MEMBER_INVITE'
+
+/** Stored per role: read grants on a VIEWER, staff grants on a STAFF,
+ *  nothing on an OWNER. */
+export type WorkspacePermission = ReadGrant | StaffGrant
 
 export interface WorkspaceMember {
   id: string

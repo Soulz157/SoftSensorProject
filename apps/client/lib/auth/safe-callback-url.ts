@@ -2,15 +2,15 @@
  * DS-LAKE-037-D05. Where to send a user after they sign in again.
  *
  * `callbackUrl` arrives in a URL anyone can craft, so honouring it blindly is
- * an open redirect (`/login?callbackUrl=https://evil`). Only a same-origin
+ * an open redirect (`/auth/login?callbackUrl=https://evil`). Only a same-origin
  * RELATIVE path is accepted; anything else returns null and the caller falls
- * back to its default. Auth pages are refused too - returning to `/login` after
+ * back to its default. Auth pages are refused too - returning to `/auth/login` after
  * logging in would loop.
  *
  * Pure and free of next-auth imports so the edge `proxy.ts` and client
  * components can share it.
  */
-const AUTH_PREFIXES = ['/login', '/register', '/reset-password']
+const AUTH_PREFIXES = ['/auth/login', '/auth/register', '/auth/reset-password']
 const PROBE_ORIGIN = 'http://callback.invalid'
 
 export function safeCallbackUrl(raw: string | null | undefined): string | null {
@@ -38,10 +38,12 @@ export function safeCallbackUrl(raw: string | null | undefined): string | null {
 }
 
 /**
- * The `/login` URL that remembers `path` (pathname + search). An auth page
- * maps to a bare `/login`, since there is nothing worth coming back to.
+ * The `/auth/login` URL that remembers `path` (pathname + search). An auth page
+ * maps to a bare `/auth/login`, since there is nothing worth coming back to.
  */
 export function loginUrlWithCallback(path: string): string {
   const safe = safeCallbackUrl(path)
-  return safe ? `/login?callbackUrl=${encodeURIComponent(safe)}` : '/login'
+  return safe
+    ? `/auth/login?callbackUrl=${encodeURIComponent(safe)}`
+    : '/auth/login'
 }

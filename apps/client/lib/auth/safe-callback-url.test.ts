@@ -28,9 +28,9 @@ describe('safeCallbackUrl (DS-LAKE-037-D05)', () => {
   })
 
   it('refuses auth pages so a login cannot bounce back to /login', () => {
-    expect(safeCallbackUrl('/login')).toBeNull()
-    expect(safeCallbackUrl('/login?x=1')).toBeNull()
-    expect(safeCallbackUrl('/reset-password/token')).toBeNull()
+    expect(safeCallbackUrl('/auth/login')).toBeNull()
+    expect(safeCallbackUrl('/auth/login?x=1')).toBeNull()
+    expect(safeCallbackUrl('/auth/reset-password/token')).toBeNull()
     expect(safeCallbackUrl('/loginfoo')).toBe('/loginfoo')
   })
 })
@@ -38,12 +38,12 @@ describe('safeCallbackUrl (DS-LAKE-037-D05)', () => {
 describe('loginUrlWithCallback', () => {
   it('encodes the path so its own query survives', () => {
     expect(loginUrlWithCallback('/data-studio/create?draftId=a&x=1')).toBe(
-      '/login?callbackUrl=%2Fdata-studio%2Fcreate%3FdraftId%3Da%26x%3D1',
+      '/auth/login?callbackUrl=%2Fdata-studio%2Fcreate%3FdraftId%3Da%26x%3D1',
     )
   })
 
   it('falls back to a bare /login for an auth page or junk', () => {
-    expect(loginUrlWithCallback('/login')).toBe('/login')
-    expect(loginUrlWithCallback('https://evil')).toBe('/login')
+    expect(loginUrlWithCallback('/auth/login')).toBe('/auth/login')
+    expect(loginUrlWithCallback('https://evil')).toBe('/auth/login')
   })
 })

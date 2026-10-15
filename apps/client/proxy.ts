@@ -3,11 +3,11 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { safeCallbackUrl } from '@/lib/auth/safe-callback-url'
 
-// Guest-only pages: a logged-in user is sent to /overview. `/change-password`
+// Guest-only pages: a logged-in user is sent to /overview. `/auth/change-password`
 // is deliberately NOT here — it asks for the current password and calls the
 // JWT-guarded /authorized/auth/change-password, so it is a logged-in page and
-// falls under the protected rule below (guests go to /login?callbackUrl=…).
-const AUTH_PATHS = ['/login', '/register', '/reset-password']
+// falls under the protected rule below (guests go to /auth/login?callbackUrl=…).
+const AUTH_PATHS = ['/auth/login', '/auth/register', '/auth/reset-password']
 
 const PUBLIC_PATHS = ['/', ...AUTH_PATHS]
 
@@ -25,7 +25,7 @@ export async function proxy(req: NextRequest) {
   )
 
   if ((!isLoggedIn || hasError) && !isPublic) {
-    const loginUrl = new URL('/login', req.nextUrl)
+    const loginUrl = new URL('/auth/login', req.nextUrl)
     // Search included (DS-LAKE-037): `?draftId=` is what a resume needs.
     loginUrl.searchParams.set('callbackUrl', path + req.nextUrl.search)
     return NextResponse.redirect(loginUrl)
