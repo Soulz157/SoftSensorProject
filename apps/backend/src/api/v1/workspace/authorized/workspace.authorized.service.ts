@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { deriveNodeSummary, type NodeSummary } from '@/lib/node-summary';
 import { AppException } from '@softsensor/common';
+import { assertWorkspaceCapacity } from '@/lib/workspace-limits';
 import { PrismaService } from '@softsensor/prisma';
 import { deriveDeployStatuses, overlayDeployStatus } from '@/lib/deploy-status';
 import { writeFile, mkdir } from 'fs/promises';
@@ -196,6 +197,9 @@ export class WorkspaceAuthorizedService {
         name: true,
         icon: true,
         thumbnailUrl: true,
+        // MODEL-SERVE-035: read-only here, so the Members page can show 4 / 5.
+        maxModels: true,
+        maxMembers: true,
         createdAt: true,
         updatedAt: true,
         _count: { select: { members: true, models: true } },
@@ -381,13 +385,17 @@ export class WorkspaceAuthorizedService {
       });
     }
 
-    const member = await this.prisma.workspaceMember.create({
-      data: { workspaceId, userId: target.id, role: dto.role },
-      include: {
-        user: {
-          select: { id: true, firstName: true, lastName: true, email: true },
+    const member = await this.prisma.$transaction(async (tx) => {
+      // MODEL-SERVE-035: refuse when the workspace is at its member limit.
+      await assertWorkspaceCapacity(tx, workspaceId, 'members');
+      return tx.workspaceMember.create({
+        data: { workspaceId, userId: target.id, role: dto.role },
+        include: {
+          user: {
+            select: { id: true, firstName: true, lastName: true, email: true },
+          },
         },
-      },
+      });
     });
 
     return {

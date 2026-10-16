@@ -4434,6 +4434,67 @@
         "tsc --noEmit backend and client: 0 errors. eslint on changed files: clean.",
         "Live: NOT YET RUN."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-035",
+      "title": "Per-workspace limits: max Models and max Members, set on the admin workspace settings page",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [],
+      "description": "User request 2026-10-15. An admin caps how many models and members a workspace may have (Workspace.maxModels / maxMembers; null = no limit) on /admin/workspaces/[id]/settings.",
+      "userDecisions": [
+        "2026-10-15: hard limit for everyone, admin included: a full workspace refuses a new model/member whoever asks; the admin raises the cap first.",
+        "2026-10-15: a cap below the current count is allowed: saved with a note, nothing removed, only new adds refused.",
+        "2026-10-15: users see the count (Members 4 / 5) and Invite disabled with the reason; Save Model fails with the limit message."
+      ],
+      "findings": [
+        "Five add paths, each now checks inside a transaction that locks the Workspace row (SELECT ... FOR UPDATE) so two concurrent adds cannot both take the last slot: Save Model (model-draft save tx), legacy model.authorized create, owner/staff invite, admin invite, admin move-member (on the TARGET workspace).",
+        "The owner-facing PATCH /authorized/workspace/:id shares UpdateWorkspaceRequestDto with the admin PATCH; limits were kept OUT of it (own admin-only PATCH /admin/workspace/:id/limits) so an owner cannot raise their own cap. A spec asserts the shared DTO strips maxModels/maxMembers.",
+        "Save Model already surfaced the backend message (phase-6-deploy.tsx catch); the admin invite and move toasts were generic and now show it."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-035-T01",
+          "title": "Columns + hand-written migration",
+          "status": "completed",
+          "progress": 100,
+          "result": "Workspace.maxModels / maxMembers Int? (null = no limit). Migration 20261015120000_workspace_limits applied by hand to the local docker DB 2026-10-15; NOT recorded in _prisma_migrations. packages/prisma rebuilt."
+        },
+        {
+          "id": "MODEL-SERVE-035-T02",
+          "title": "Backend enforcement + admin route",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/workspace-limits.ts (limitUsage, limitBlocker, assertWorkspaceCapacity: row lock, 409 with the reason). Wired into the five add paths. PATCH /admin/workspace/:id/limits (@Roles ADMIN, in the roles spec list) with UpdateWorkspaceLimitsDto (int 1..10000 or null); returns usage. Admin and authorized getWorkspaceById select the caps."
+        },
+        {
+          "id": "MODEL-SERVE-035-T03",
+          "title": "Client",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/workspace-limits.ts (limitUsage, formatLimit, limitReachedNote, overLimitNote, parseLimitInput). Admin page: AdminLimitsCard (blank = No limit, below-count note, Save), Overview shows 3 / 5, Invite disabled with the reason when full, invite/move toasts show the backend reason. Members page (all four mounts): count chip 4 / 5 and Invite disabled with the reason when full."
+        },
+        {
+          "id": "MODEL-SERVE-035-T04",
+          "title": "Live check",
+          "status": "pending",
+          "progress": 0,
+          "result": "NOT RUN (servers down). The lock SQL itself was run against the local Postgres (BEGIN / SELECT ... FOR UPDATE / ROLLBACK) and works."
+        }
+      ],
+      "acceptance": [
+        "An admin sets or clears both caps on the workspace settings page; a cap below the current count saves with a note.",
+        "A full workspace refuses Save Model, invites (owner, staff, admin) and moving a member in, with the reason, and creates no row.",
+        "Members see 'n / cap' and a disabled Invite with the reason when full.",
+        "An owner cannot change the caps."
+      ],
+      "verification": [
+        "Backend jest: workspace-limits.spec, workspace.admin.limits.spec, admin roles spec (+updateWorkspaceLimits), model-draft save (+limit case, 42), member-permissions (+limit cases, 22). Full backend: 9 failed | 1640 passed; the 9 are the same pre-existing suites (DI 'should be defined', swagger mock, OAuth, plan admin).",
+        "Client vitest: workspace-limits lib, admin-limits-card, workspace-member (+3 limit cases): 35 passed in the targeted run. Full client: 25 failed | 3161 passed, the same 9 known failing files.",
+        "tsc --noEmit backend and client: 0 errors. eslint on changed files: clean.",
+        "Live UI: NOT YET RUN."
+      ]
     }
   ],
   "global_definition_of_done": [

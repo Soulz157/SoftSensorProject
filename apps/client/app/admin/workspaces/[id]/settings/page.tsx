@@ -62,6 +62,11 @@ import { workspaceColors, workspaceIcons } from '@/store/workspace'
 import { useAdminWorkspaceSettings } from '@/hooks/admin/use-admin-workspace-settings'
 import type { AdminWorkspace, WorkspaceMember, WorkspaceRole } from '@/types'
 import { AdminPlanCard } from './components/admin-plan-card'
+import {
+  AdminLimitsCard,
+  type WorkspaceLimitValues,
+} from './components/admin-limits-card'
+import { formatLimit, limitReachedNote } from '@/lib/workspace-limits'
 
 function roleBadgeVariant(
   role: WorkspaceRole,
@@ -90,6 +95,20 @@ export default function WorkspaceSettingsPage() {
   } = useAdminWorkspaceSettings(workspaceId)
 
   const [isSaving, setIsSaving] = useState(false)
+  // MODEL-SERVE-035. Limits saved on this page win over the loaded ones.
+  const [savedLimits, setSavedLimits] = useState<WorkspaceLimitValues | null>(
+    null,
+  )
+  const limits: WorkspaceLimitValues = savedLimits ?? {
+    maxModels: workspace?.maxModels ?? null,
+    maxMembers: workspace?.maxMembers ?? null,
+  }
+  const modelCount = workspace?._count.models ?? 0
+  const inviteBlocked = limitReachedNote(
+    'members',
+    limits.maxMembers,
+    members.length,
+  )
   const [searchQuery, setSearchQuery] = useState('')
   const [inviteOpen, setInviteOpen] = useState(false)
   const [inviteEmail, setInviteEmail] = useState('')
@@ -176,8 +195,11 @@ export default function WorkspaceSettingsPage() {
       setInviteEmail('')
       setInviteOpen(false)
       toast.success('Member invited')
-    } catch {
-      toast.error('Failed to invite member')
+    } catch (err: unknown) {
+      // MODEL-SERVE-035: a full workspace answers 409 with the reason.
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to invite member',
+      )
     } finally {
       setIsInviting(false)
     }
@@ -196,9 +218,9 @@ export default function WorkspaceSettingsPage() {
       toast.success('Member moved')
       setMovingMember(null)
       setMoveTarget('')
-    } catch (error) {
-      console.error(error)
-      toast.error('Failed to move member')
+    } catch (err: unknown) {
+      // MODEL-SERVE-035: a full target workspace answers 409 with the reason.
+      toast.error(err instanceof Error ? err.message : 'Failed to move member')
     } finally {
       setIsMoving(false)
     }
@@ -270,6 +292,15 @@ export default function WorkspaceSettingsPage() {
           {/* Left: General + Stats */}
           <div className="space-y-6 xl:col-span-1">
             <AdminPlanCard ownerUserId={owner?.userId} />
+            {workspace && (
+              <AdminLimitsCard
+                key={workspace.id}
+                workspaceId={workspaceId}
+                limits={limits}
+                usage={{ models: modelCount, members: members.length }}
+                onSaved={setSavedLimits}
+              />
+            )}
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">General Settings</CardTitle>
@@ -385,7 +416,7 @@ export default function WorkspaceSettingsPage() {
                     <Skeleton className="h-7 w-10" />
                   ) : (
                     <span className="text-2xl font-bold text-foreground">
-                      {workspace?._count.members ?? 0}
+                      {formatLimit(members.length, limits.maxMembers)}
                     </span>
                   )}
                 </div>
@@ -398,7 +429,7 @@ export default function WorkspaceSettingsPage() {
                     <Skeleton className="h-7 w-10" />
                   ) : (
                     <span className="text-2xl font-bold text-foreground">
-                      {workspace?._count.models ?? 0}
+                      {formatLimit(modelCount, limits.maxModels)}
                     </span>
                   )}
                 </div>
@@ -419,14 +450,22 @@ export default function WorkspaceSettingsPage() {
                     Manage workspace access and roles.
                   </CardDescription>
                 </div>
-                <Button
-                  size="sm"
-                  className="gap-2"
-                  onClick={() => setInviteOpen(true)}
-                >
-                  <UserPlus className="h-4 w-4" />
-                  Invite
-                </Button>
+                <div className="flex flex-col items-end gap-1">
+                  <Button
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => setInviteOpen(true)}
+                    disabled={inviteBlocked !== null}
+                  >
+                    <UserPlus className="h-4 w-4" />
+                    Invite
+                  </Button>
+                  {inviteBlocked && (
+                    <p className="max-w-56 text-right text-xs text-muted-foreground">
+                      {inviteBlocked}
+                    </p>
+                  )}
+                </div>
               </CardHeader>
               <CardContent className="flex flex-1 flex-col">
                 <div className="relative mb-4">

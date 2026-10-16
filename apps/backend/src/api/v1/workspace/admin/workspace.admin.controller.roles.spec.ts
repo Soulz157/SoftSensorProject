@@ -41,6 +41,7 @@ describe('WorkspaceAdminController — ADMIN enforcement', () => {
     'getSummary',
     'getWorkspaceById',
     'updateWorkspace',
+    'updateWorkspaceLimits',
     'inviteMember',
     'updateMemberRole',
     'moveMember',

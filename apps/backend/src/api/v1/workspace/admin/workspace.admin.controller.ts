@@ -26,6 +26,7 @@ import {
   CreateWorkspaceResponseDto,
   DeleteWorkspaceRequestDto,
   DeleteWorkspaceResponseDto,
+  UpdateWorkspaceLimitsDto,
   UpdateWorkspaceRequestDto,
 } from './dto/workspace.admin.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
@@ -88,6 +89,16 @@ export class WorkspaceAdminController {
     @Body() args: UpdateWorkspaceRequestDto,
   ) {
     return this.workspaceAdminService.updateWorkspace(id, user, args);
+  }
+
+  @Roles('ADMIN')
+  @Patch('/:id/limits')
+  @HttpCode(200)
+  async updateWorkspaceLimits(
+    @Param('id') id: string,
+    @Body() body: UpdateWorkspaceLimitsDto,
+  ) {
+    return this.workspaceAdminService.updateWorkspaceLimits(id, body);
   }
 
   @Roles('ADMIN')

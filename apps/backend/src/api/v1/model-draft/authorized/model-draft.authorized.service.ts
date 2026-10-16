@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
+import { assertWorkspaceCapacity } from '@/lib/workspace-limits';
 import { getRunManifest } from '@/lib/python-preprocess-client';
 import { buildModelVersionData } from '@/lib/model-version-from-run';
 import { ModelConfigSchema } from '@/api/v1/model/authorized/dto/model.authorized.dto';
@@ -636,6 +637,8 @@ export class ModelDraftAuthorizedService {
 
     try {
       const model = await this.prisma.$transaction(async (tx) => {
+        // MODEL-SERVE-035: refuse when the workspace is at its model limit.
+        await assertWorkspaceCapacity(tx, draft.workspaceId, 'models');
         const created = await tx.model.create({
           data: {
             workspaceId: draft.workspaceId,

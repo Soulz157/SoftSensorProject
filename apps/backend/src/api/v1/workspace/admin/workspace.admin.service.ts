@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
+import { assertWorkspaceCapacity, limitUsage } from '@/lib/workspace-limits';
 import { PrismaService } from '@softsensor/prisma';
 import {
   AdminInviteMemberDto,
@@ -9,6 +10,7 @@ import {
   CreateWorkspaceRequestDto,
   DeleteWorkspaceRequestDto,
   UpdateWorkspaceRequestDto,
+  UpdateWorkspaceLimitsDto,
 } from './dto/workspace.admin.dto';
 import { normalizePermissions } from '@/lib/workspace-permission';
 import {
@@ -153,6 +155,8 @@ export class WorkspaceAdminService {
         icon: true,
         color: true,
         description: true,
+        maxModels: true,
+        maxMembers: true,
         createdAt: true,
         updatedAt: true,
         _count: { select: { members: true, models: true } },
@@ -334,17 +338,21 @@ export class WorkspaceAdminService {
       });
     }
 
-    const member = await this.prisma.workspaceMember.create({
-      data: { workspaceId, userId: target.id, role: dto.role },
-      select: {
-        id: true,
-        userId: true,
-        role: true,
-        createdAt: true,
-        user: {
-          select: { id: true, firstName: true, lastName: true, email: true },
+    // MODEL-SERVE-035: the member limit binds an admin too (raise it first).
+    const member = await this.prisma.$transaction(async (tx) => {
+      await assertWorkspaceCapacity(tx, workspaceId, 'members');
+      return tx.workspaceMember.create({
+        data: { workspaceId, userId: target.id, role: dto.role },
+        select: {
+          id: true,
+          userId: true,
+          role: true,
+          createdAt: true,
+          user: {
+            select: { id: true, firstName: true, lastName: true, email: true },
+          },
         },
-      },
+      });
     });
 
     return {
@@ -446,6 +454,53 @@ export class WorkspaceAdminService {
     };
   }
 
+  /**
+   * MODEL-SERVE-035. Set the workspace's caps. A cap below the current count
+   * is saved as asked: nothing is removed, and `assertWorkspaceCapacity`
+   * refuses new adds until the count is under it. The response carries the
+   * usage so the page can say "8 of 5".
+   */
+  async updateWorkspaceLimits(
+    workspaceId: string,
+    dto: UpdateWorkspaceLimitsDto,
+  ) {
+    const existing = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Workspace not found',
+        type: 'ERROR',
+      });
+    }
+
+    const updated = await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { maxModels: dto.maxModels, maxMembers: dto.maxMembers },
+      select: {
+        maxModels: true,
+        maxMembers: true,
+        _count: { select: { members: true, models: true } },
+      },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Workspace limits updated',
+      type: 'SUCCESS' as const,
+      data: {
+        maxModels: updated.maxModels,
+        maxMembers: updated.maxMembers,
+        usage: {
+          models: limitUsage(updated.maxModels, updated._count.models),
+          members: limitUsage(updated.maxMembers, updated._count.members),
+        },
+      },
+    };
+  }
+
   async moveMember(
     sourceWorkspaceId: string,
     memberId: string,
@@ -513,19 +568,23 @@ export class WorkspaceAdminService {
       }
     }
 
-    const moved = await this.prisma.workspaceMember.update({
-      where: { id: memberId },
-      // Grants were given by the SOURCE workspace's owner; they do not travel.
-      data: { workspaceId: targetWorkspaceId, permissions: [] },
-      select: {
-        id: true,
-        userId: true,
-        role: true,
-        createdAt: true,
-        user: {
-          select: { id: true, firstName: true, lastName: true, email: true },
+    // MODEL-SERVE-035: the TARGET workspace gains a member, so its limit binds.
+    const moved = await this.prisma.$transaction(async (tx) => {
+      await assertWorkspaceCapacity(tx, targetWorkspaceId, 'members');
+      return tx.workspaceMember.update({
+        where: { id: memberId },
+        // Grants were given by the SOURCE workspace's owner; they do not travel.
+        data: { workspaceId: targetWorkspaceId, permissions: [] },
+        select: {
+          id: true,
+          userId: true,
+          role: true,
+          createdAt: true,
+          user: {
+            select: { id: true, firstName: true, lastName: true, email: true },
+          },
         },
-      },
+      });
     });
 
     return {

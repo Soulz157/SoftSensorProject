@@ -177,6 +177,10 @@ export interface Workspace {
   icon?: string
   color?: string
   thumbnailUrl?: string
+  /** MODEL-SERVE-035. Admin-set caps; null = no limit. Optional because not
+   *  every workspace endpoint selects them. */
+  maxModels?: number | null
+  maxMembers?: number | null
   createdAt: string
   updatedAt: string
   _count: {
@@ -264,6 +268,9 @@ export interface WorkspaceDetail {
   icon: string
   color: string
   description: string | null
+  /** MODEL-SERVE-035. Read-only for members; null = no limit. */
+  maxModels?: number | null
+  maxMembers?: number | null
   createdAt: string
   updatedAt: string
   _count: { members: number; models: number }
@@ -275,10 +282,27 @@ export interface AdminWorkspaceDetail {
   icon: string
   color: string
   description: string | null
+  /** MODEL-SERVE-035. null = no limit. */
+  maxModels: number | null
+  maxMembers: number | null
   createdAt: string
   updatedAt: string
   _count: { members: number; models: number }
   members: WorkspaceMember[]
+}
+
+/** MODEL-SERVE-035. One cap's state, as the admin limits route reports it. */
+export interface WorkspaceLimitUsage {
+  current: number
+  limit: number | null
+  full: boolean
+  over: boolean
+}
+
+export interface WorkspaceLimits {
+  maxModels: number | null
+  maxMembers: number | null
+  usage: { models: WorkspaceLimitUsage; members: WorkspaceLimitUsage }
 }
 
 export type AuthAction = 'LOGIN' | 'LOGOUT'

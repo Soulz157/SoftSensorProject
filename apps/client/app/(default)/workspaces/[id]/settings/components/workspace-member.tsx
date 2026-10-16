@@ -32,6 +32,8 @@ import {
 import { cn } from '@/lib/utils'
 import { workspaceService } from '@/services/workspace'
 import { useWorkspaceMembers } from '@/hooks/workspace/use-workspace-members'
+import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
+import { formatLimit, limitReachedNote } from '@/lib/workspace-limits'
 import {
   canManageMemberRow,
   grantedPermissionLabels,
@@ -108,6 +110,11 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
 
   const { members, loading, isFetching, isOwner, currentMember, fetchMembers } =
     useWorkspaceMembers(workspaceId, currentUserId)
+  // MODEL-SERVE-035. The admin-set member cap (null = none): shown as 4 / 5,
+  // and a full workspace disables Invite with the reason.
+  const { workspace } = useWorkspace(workspaceId)
+  const maxMembers = workspace?.maxMembers ?? null
+  const inviteBlocked = limitReachedNote('members', maxMembers, members.length)
   // MODEL-SERVE-034. Owners manage everyone; a STAFF member only what an
   // owner granted (Assign roles / Invite members). The backend enforces it.
   const access = memberManagementAccess(currentMember, isOwner)
@@ -165,7 +172,7 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
           <h3 className="text-sm font-medium text-foreground">Members</h3>
           {!loading && (
             <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground font-medium">
-              {members.length}
+              {formatLimit(members.length, maxMembers)}
             </span>
           )}
         </div>
@@ -175,12 +182,18 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
             variant="outline"
             className="gap-1.5 h-8 text-xs"
             onClick={() => setInviteOpen(true)}
+            disabled={inviteBlocked !== null}
           >
             <UserPlus className="h-3.5 w-3.5" />
             Invite
           </Button>
         )}
       </div>
+      {access.invite && inviteBlocked && !loading && (
+        <p className="text-right text-xs text-muted-foreground">
+          {inviteBlocked}
+        </p>
+      )}
 
       <div className="rounded-md border border-border overflow-hidden">
         <Table>

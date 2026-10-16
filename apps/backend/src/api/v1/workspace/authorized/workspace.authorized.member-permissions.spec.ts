@@ -195,13 +195,25 @@ describe('WorkspaceAuthorizedService.inviteMember — delegated invite', () => {
   function buildInvite(
     actorRole: Member['role'] | null,
     actorPermissions: string[] = [],
+    limits: { maxMembers: number | null; memberCount: number } = {
+      maxMembers: null,
+      memberCount: 0,
+    },
   ) {
     const create = jest.fn(({ data }: { data: Record<string, unknown> }) =>
       Promise.resolve({ id: 'new', ...data }),
     );
     const prisma = {
+      // MODEL-SERVE-035: the invite runs in a transaction that locks the
+      // workspace row and checks the member cap.
+      $transaction: jest.fn(),
+      $queryRaw: jest.fn().mockResolvedValue([]),
       workspace: {
-        findUnique: jest.fn().mockResolvedValue({ ownerId: 'someone-else' }),
+        findUnique: jest.fn().mockResolvedValue({
+          ownerId: 'someone-else',
+          maxModels: null,
+          maxMembers: limits.maxMembers,
+        }),
       },
       user: { findUnique: jest.fn().mockResolvedValue({ id: 'invitee' }) },
       workspaceMember: {
@@ -213,12 +225,42 @@ describe('WorkspaceAuthorizedService.inviteMember — delegated invite', () => {
                 : null,
             ),
         ),
+        count: jest.fn().mockResolvedValue(limits.memberCount),
         create,
       },
     };
+    prisma.$transaction.mockImplementation(
+      (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+    );
     const service = new WorkspaceAuthorizedService(prisma as never);
     return { service, create };
   }
+
+  it('refuses with 409 when the workspace is at its member limit, even for an OWNER (MODEL-SERVE-035)', async () => {
+    const { service, create } = buildInvite('OWNER', [], {
+      maxMembers: 5,
+      memberCount: 5,
+    });
+    const inviting = service.inviteMember('ws-1', 'actor', {
+      email: 'a@b.c',
+      role: 'VIEWER',
+    });
+    await expect(inviting).rejects.toMatchObject({ statusCode: 409 });
+    await expect(inviting).rejects.toThrow('member limit (5)');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('invites when the workspace is under its member limit', async () => {
+    const { service, create } = buildInvite('OWNER', [], {
+      maxMembers: 5,
+      memberCount: 4,
+    });
+    await service.inviteMember('ws-1', 'actor', {
+      email: 'a@b.c',
+      role: 'VIEWER',
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
 
   it.each(['STAFF', 'VIEWER'] as const)(
     'lets a STAFF with MEMBER_INVITE invite as %s',

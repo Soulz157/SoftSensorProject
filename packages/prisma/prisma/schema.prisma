@@ -155,6 +155,10 @@ model Workspace {
   color                String
   description          String?
   thumbnailUrl         String?
+  /// MODEL-SERVE-035. Admin-set caps; null = no limit. A cap below the
+  /// current count is allowed: nothing is removed, new adds are refused.
+  maxModels            Int?
+  maxMembers           Int?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   deletedAt            DateTime?

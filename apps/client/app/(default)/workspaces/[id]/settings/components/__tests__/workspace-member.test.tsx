@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   members: [] as WorkspaceMember[],
   isOwner: false,
   currentUserId: 'u-me',
+  maxMembers: null as number | null,
 }))
 
 vi.mock('next-auth/react', () => ({
@@ -28,6 +29,10 @@ vi.mock('@/hooks/workspace/use-workspace-members', () => ({
     currentMember: h.members.find(m => m.userId === h.currentUserId) ?? null,
     fetchMembers: vi.fn(),
   }),
+}))
+
+vi.mock('@/hooks/workspace/use-workspace-by', () => ({
+  useWorkspace: () => ({ workspace: { maxMembers: h.maxMembers } }),
 }))
 
 vi.mock('@/services/workspace', () => ({ workspaceService: {} }))
@@ -69,6 +74,7 @@ const menuFor = (name: string) =>
 describe('WorkspaceMembers — member management access', () => {
   beforeEach(() => {
     h.members = []
+    h.maxMembers = null
   })
 
   it('a STAFF without grants sees no menu and no Invite', () => {
@@ -111,5 +117,33 @@ describe('WorkspaceMembers — member management access', () => {
       expect(menuFor(name)).not.toBeNull()
     await userEvent.click(menuFor('Vic')!)
     expect(screen.getByRole('menuitem', { name: 'Remove' })).toBeInTheDocument()
+  })
+})
+
+/** MODEL-SERVE-035. The admin-set member cap, as members see it. */
+describe('WorkspaceMembers — member limit', () => {
+  beforeEach(() => {
+    h.maxMembers = null
+  })
+
+  it('shows the count against the cap', () => {
+    h.maxMembers = 5
+    setup(member('u-me', 'Me', 'OWNER'), true)
+    expect(screen.getByText('4 / 5')).toBeInTheDocument()
+  })
+
+  it('disables Invite with the reason when the workspace is full', () => {
+    h.maxMembers = 4
+    setup(member('u-me', 'Me', 'OWNER'), true)
+    expect(screen.getByRole('button', { name: 'Invite' })).toBeDisabled()
+    expect(
+      screen.getByText('Member limit reached (4). An admin can raise it.'),
+    ).toBeInTheDocument()
+  })
+
+  it('keeps Invite enabled with no cap', () => {
+    setup(member('u-me', 'Me', 'OWNER'), true)
+    expect(screen.getByRole('button', { name: 'Invite' })).toBeEnabled()
+    expect(screen.getByText('4')).toBeInTheDocument()
   })
 })

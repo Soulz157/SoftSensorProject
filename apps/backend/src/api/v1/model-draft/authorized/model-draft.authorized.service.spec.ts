@@ -77,7 +77,16 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
   // `tx` convention so a test can assert on exactly what each write inside
   // the transaction received.
   const tx = {
+    // MODEL-SERVE-035. assertWorkspaceCapacity locks the row and reads the
+    // cap; no cap by default, so every existing case saves as before.
+    $queryRaw: jest.fn().mockResolvedValue([]),
+    workspace: {
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ maxModels: null, maxMembers: null }),
+    },
     model: {
+      count: jest.fn().mockResolvedValue(0),
       create: jest
         .fn()
         .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
@@ -739,6 +748,25 @@ describe('ModelDraftAuthorizedService — saveDraftService (MODEL-FLOW-007)', ()
     await expect(
       service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('refuses with 409 and creates nothing when the workspace is at its model limit (MODEL-SERVE-035)', async () => {
+    const prisma = draftPrisma();
+    prisma.tx.workspace.findUnique.mockResolvedValue({
+      maxModels: 3,
+      maxMembers: null,
+    });
+    prisma.tx.model.count.mockResolvedValue(3);
+    const service = makeService(prisma);
+
+    const saving = service.saveDraftService(USER, 'draft-1', {
+      name: 'My Model',
+    });
+    await expect(saving).rejects.toMatchObject({ statusCode: 409 });
+    await expect(saving).rejects.toThrow('model limit (3)');
+    expect(prisma.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.tx.model.create).not.toHaveBeenCalled();
+    expect(prisma.tx.modelDraft.update).not.toHaveBeenCalled();
   });
 
   it('writes all four rows inside one $transaction, converts the split fraction to a percentage, and derives config from the run — not the request body', async () => {

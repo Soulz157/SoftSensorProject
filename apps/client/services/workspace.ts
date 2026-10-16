@@ -8,6 +8,7 @@ import type {
   UpdateWorkspacePayload,
   Workspace,
   WorkspaceDetail,
+  WorkspaceLimits,
   WorkspaceLog,
   WorkspaceMember,
   WorkspaceModel,
@@ -178,6 +179,16 @@ export const workspaceService = {
   ): Promise<unknown> =>
     fetchClient(`/api/v1/admin/workspace/${workspaceId}/members/${memberId}`, {
       method: 'DELETE',
+    }),
+
+  /** MODEL-SERVE-035. Admin only; null = no limit. */
+  adminUpdateWorkspaceLimits: (
+    workspaceId: string,
+    limits: { maxModels: number | null; maxMembers: number | null },
+  ): Promise<{ data: WorkspaceLimits }> =>
+    fetchClient(`/api/v1/admin/workspace/${workspaceId}/limits`, {
+      method: 'PATCH',
+      body: JSON.stringify(limits),
     }),
 
   adminMoveMember: (
