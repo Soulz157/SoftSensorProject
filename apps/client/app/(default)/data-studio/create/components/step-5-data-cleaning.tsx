@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
+  estimateGoldRowDrop,
   preprocessPipelines,
   tagFillPreview,
   type CleaningStep,
@@ -41,6 +42,7 @@ import { CutOffSection } from './cutoff-section'
 import { datasetHealth } from '@/lib/feature-preset'
 import { SdtaPresetCard } from './sdta-preset-card'
 import { PresetRangeCard } from './preset-range-card'
+import { GoldRowLossNotice } from './gold-row-loss-notice'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
@@ -245,10 +247,28 @@ export function Step5DataCleaning({ nav }: Props) {
     // batch — see `handleNext`, D4 forbids chaining batch-by-batch.
     if (isEditLocked && draft.length > 0) void applyClean(cleaningTags, draft)
   }
-  const preprocessed = useMemo(
-    () => preprocessPipelines(base, cleaningPipelines).rows.length,
+  // The full accumulated recipe applied locally — what Continue commits.
+  const finalDataset = useMemo(
+    () => preprocessPipelines(base, cleaningPipelines),
     [base, cleaningPipelines],
   )
+  const preprocessed = finalDataset.rows.length
+  // Rows GOLD will drop for still holding a non-Good reading (an Exclude range,
+  // or a source Bad with no fill step) — the server's `drop_bad_feature_rows`
+  // rule. CREATE MODE only: edit-mode saves do not send preset ranges, so the
+  // same count would overstate what an edit save drops.
+  const goldDrop = useMemo(
+    () =>
+      isEditLocked
+        ? null
+        : estimateGoldRowDrop(finalDataset, {
+            tags: committedTags,
+            targetTag,
+          }),
+    [isEditLocked, finalDataset, committedTags, targetTag],
+  )
+  const goldEmpty =
+    goldDrop !== null && goldDrop.total > 0 && goldDrop.kept === 0
 
   const allDropped = base.rows.length > 0 && preprocessed === 0
   // Step-by-step preview for the isolated tag: apply only the first
@@ -508,6 +528,8 @@ export function Step5DataCleaning({ nav }: Props) {
         </Alert>
       )}
 
+      {goldDrop && !allDropped && <GoldRowLossNotice estimate={goldDrop} />}
+
       {!isEditLocked && commitState.status === 'error' && (
         <Alert variant="destructive">
           <AlertTitle>Could not finish cleaning on the server</AlertTitle>
@@ -526,6 +548,7 @@ export function Step5DataCleaning({ nav }: Props) {
         onNext={() => void handleNext()}
         nextDisabled={
           preprocessed === 0 ||
+          goldEmpty ||
           (!isEditLocked && commitState.status === 'committing')
         }
       />

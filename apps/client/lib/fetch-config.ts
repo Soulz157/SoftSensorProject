@@ -69,3 +69,16 @@ export function clampBatchSize(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_FETCH_CONFIG.batchSize
   return Math.min(BATCH_SIZE_MAX, Math.max(BATCH_SIZE_MIN, Math.trunc(value)))
 }
+
+/**
+ * The Batch Size text box's own reading of what was typed: a whole number in
+ * BATCH_SIZE_MIN..BATCH_SIZE_MAX, or null. Unlike `clampBatchSize` it never
+ * rewrites the input — clamping on every keystroke turned a cleared field
+ * into "1" and made a new value impossible to type.
+ */
+export function parseBatchSizeInput(raw: string): number | null {
+  const t = raw.trim()
+  if (!/^\d+$/.test(t)) return null
+  const n = Number(t)
+  return n >= BATCH_SIZE_MIN && n <= BATCH_SIZE_MAX ? n : null
+}

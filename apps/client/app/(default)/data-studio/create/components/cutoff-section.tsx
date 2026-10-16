@@ -161,7 +161,13 @@ export function CutOffSection({
   // dataset alone, it now recomputes only when the preview actually changes —
   // inside the transition above, which is what makes the pending state real.
   // Mirrors what `data-analysis-card.tsx` already does for its own chartRows.
-  const chartRows = useMemo(() => toChartRows(previewDataset), [previewDataset])
+  // The cleaned view hides non-Good readings (an Exclude keeps the value but
+  // marks it Bad, and GOLD drops its row) so it matches the before/after
+  // preview; "Before Clean" stays as fetched, PI's own Bad readings included.
+  const chartRows = useMemo(
+    () => toChartRows(previewDataset, { goodOnly: preview !== 'raw' }),
+    [previewDataset, preview],
+  )
 
   // Anti-flicker: a spinner that shows for one frame is worse than none, so it
   // only appears once the deferred render has genuinely taken 150ms.

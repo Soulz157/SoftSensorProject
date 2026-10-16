@@ -864,15 +864,87 @@ export function datasetStats(
 }
 
 /** Wide rows for the time-series chart (`sensor-trend-chart`). */
-export function toChartRows(ds: Dataset): SensorChartRow[] {
+/**
+ * Chart rows, one series per tag.
+ *
+ * `goodOnly` turns every non-Good reading into a gap (`null`), the rule
+ * `tagFillPreview` already uses. A cleaned view needs it: an Exclude marks a
+ * reading Bad but KEEPS its value, so plotting `cell.value` blindly draws the
+ * excluded readings as if nothing happened — and GOLD drops every row that
+ * still holds one. Off by default, so a raw "as fetched" view keeps showing
+ * PI's own Bad readings.
+ */
+export function toChartRows(
+  ds: Dataset,
+  opts: { goodOnly?: boolean } = {},
+): SensorChartRow[] {
   return ds.rows.map(r => {
     const row: SensorChartRow = { timestamp: r.timestamp }
     for (const t of ds.tags) {
       const cell = r.cells[t]
-      if (cell) row[t] = cell.value
+      if (!cell) continue
+      row[t] = opts.goodOnly && cell.status !== 'Good' ? null : cell.value
     }
     return row
   })
+}
+
+/** One tag's share of the rows GOLD will drop. */
+export interface GoldRowDropTag {
+  tag: string
+  /** Rows where this tag's own reading is not Good. */
+  bad: number
+  /** `bad` as a percent of all rows. */
+  pct: number
+}
+
+export interface GoldRowDropEstimate {
+  total: number
+  dropped: number
+  kept: number
+  /** Tags with at least one non-Good reading, most damaging first. */
+  byTag: GoldRowDropTag[]
+}
+
+/**
+ * How many rows the server will drop when it builds GOLD.
+ *
+ * Mirrors `drop_bad_feature_rows` (apps/python/services/feature_service.py):
+ * a row is dropped when ANY saved feature tag's reading is not Good; the
+ * target is skipped (a missing lab value is handled at training, not here),
+ * and a tag the frame does not carry is ignored. So an Exclude range, or a
+ * PI Bad reading with no fill step after it, removes its whole row from the
+ * saved dataset — this is what the Step 5 notice warns about before Continue.
+ *
+ * An estimate of the train side: the server runs the same rule once on the
+ * training rows and again on the holdout before it is scaled.
+ */
+export function estimateGoldRowDrop(
+  ds: Dataset,
+  opts: { tags: readonly string[]; targetTag: string | null },
+): GoldRowDropEstimate {
+  const tags = opts.tags.filter(
+    t => t !== opts.targetTag && ds.tags.includes(t),
+  )
+  const badByTag = new Map<string, number>(tags.map(t => [t, 0]))
+  let dropped = 0
+  for (const r of ds.rows) {
+    let rowBad = false
+    for (const t of tags) {
+      const cell = r.cells[t]
+      if (cell && cell.status !== 'Good') {
+        rowBad = true
+        badByTag.set(t, badByTag.get(t)! + 1)
+      }
+    }
+    if (rowBad) dropped++
+  }
+  const total = ds.rows.length
+  const byTag = [...badByTag.entries()]
+    .filter(([, bad]) => bad > 0)
+    .map(([tag, bad]) => ({ tag, bad, pct: total ? (bad / total) * 100 : 0 }))
+    .sort((a, b) => b.bad - a.bad || a.tag.localeCompare(b.tag))
+  return { total, dropped, kept: total - dropped, byTag }
 }
 
 export interface TagFillPreviewRow {

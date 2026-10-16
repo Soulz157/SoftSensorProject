@@ -5088,6 +5088,64 @@
         "The local apps/python service must be restarted to load range_drop before the live check."
       ],
       "progress_note": "2026-10-12: implemented and unit-tested end to end (client engine, python op, parity incl. chained, mapper, commit, card). NOT verified live (V03). An advisor review caught two real defects before any live run - legacy 'mark' disagreeing between preview and server (D06) and a range on a deselected column failing the whole commit (D07) - and surfaced the known gaps recorded above. 2026-10-12 later: Drop replaced by Exclude (D08); preset ranges are editable in the Outlier Removal panel and the card shows 'Edited' with the preset's original and a Reset."
+    },
+    {
+      "id": "DS-LAKE-039",
+      "title": "Step 5: charts honour Bad readings, and a GOLD row-loss notice before Continue",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "DS-LAKE-038"
+      ],
+      "supersedes": [],
+      "description": "User report 2026-10-16: the Preset Range cutoff 'is not saved into GOLD', and the other Step 5 charts show different values from the before/after preview. Investigation (draft bde50a8a, job 955e460f): the 7 preset ranges DID reach the server as range_exclude and the job SUCCEEDED, but range_exclude marks readings Bad with the value kept, and drop_bad_feature_rows (apps/python/services/feature_service.py) then drops every row holding any non-Good feature reading before scaling. SILVER 36,480 rows -> GOLD 171 (droppedBadRows 36,309 = exactly the rows with any tag outside its range; AI602B 82%, AI602A 77%, LI602 47% outside). Separately toChartRows plotted cell.value ignoring status, so every chart except the before/after preview (tagFillPreview, Good-only) drew the excluded readings as if untouched.",
+      "decisions": [
+        "2026-10-16 user: keep the current GOLD behaviour (a row with any Bad feature reading is dropped). Fix the display and warn instead.",
+        "Charts: toChartRows gains { goodOnly } (default off). Step 5's cleaned views use it; 'Before Clean' stays as fetched (PI's own Bad readings shown). Step 4 and the holdout chart are unchanged; Step 6 already reads the server GOLD sample (all Good).",
+        "Notice: create mode only (edit-mode saves do not send preset ranges, known DS-LAKE-038 gap, so the count would overstate). Nothing at 0 rows; neutral note under 50%; warning at >=50%; Continue disabled when every row would go. Percent never rounds a partial loss up to 100%."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-039-T01",
+          "title": "toChartRows goodOnly + Step 5 cleaned charts",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/preprocessing.ts toChartRows(ds, { goodOnly }); cutoff-section.tsx (goodOnly when preview !== 'raw') and data-cropping-chart.tsx (chartDataset = cleaned frame, goodOnly)."
+        },
+        {
+          "id": "DS-LAKE-039-T02",
+          "title": "estimateGoldRowDrop + GoldRowLossNotice + Continue gate",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/preprocessing.ts estimateGoldRowDrop(ds, { tags, targetTag }) mirrors drop_bad_feature_rows (any non-Good saved feature tag, target skipped, missing tag ignored, Questionable counts). step-5-data-cleaning.tsx computes it on the full recipe (preprocessPipelines(base, cleaningPipelines)) over committedTags, renders gold-row-loss-notice.tsx above the footer, and disables Continue when kept === 0."
+        },
+        {
+          "id": "DS-LAKE-039-T03",
+          "title": "Live check in Step 5",
+          "status": "pending",
+          "progress": 0,
+          "result": "NOT RUN: dev servers down. Expect on draft bde50a8a with the 7 Exclude ranges: the warning 'Saving will remove 36,309 of 36,480 rows (99.5%)' and gaps in the Cut Off / cropping charts' cleaned view."
+        }
+      ],
+      "acceptance_criteria": [
+        "In Step 5 the cleaned views of the Cut Off and cropping charts show excluded (Bad) readings as gaps, matching the before/after preview.",
+        "Before Continue, Step 5 states how many rows GOLD will drop and which tags cause it, with the ways to keep rows (Clip, widen, fill).",
+        "Continue is disabled when every row would be dropped.",
+        "The GOLD drop rule itself is unchanged."
+      ],
+      "verification": [
+        "Unit: lib/__tests__/gold-row-drop.test.ts (8) and gold-row-loss-notice.test.tsx (5): 13 passed.",
+        "Real data: estimateGoldRowDrop on job 955e460f's SILVER frame (exported from MinIO, the 7 ranges applied as range_exclude) gave dropped 36,309 / kept 171 — exactly the server's droppedBadRows. Run as a throwaway test, then deleted.",
+        "tsc --noEmit: 0 errors; eslint on changed files: 0 errors (one pre-existing unused-function warning in lib/preprocessing.ts).",
+        "Full client suite: the 9 known failing files (25 tests); raw-readings-table and retrain-validation-window failed once each under full-suite load and passed twice in isolation (flaky, not this change).",
+        "Live Step 5: NOT YET RUN."
+      ],
+      "known_gaps": [
+        "Edit mode shows no notice (preset ranges are not sent on edit saves, DS-LAKE-038 gap).",
+        "The estimate covers the whole frame; the server applies the rule to the training rows and, separately, to the holdout before scaling."
+      ],
+      "progress_note": "90%: code and tests done, real-data parity verified; live Step 5 check pending."
     }
   ],
   "deferred": [
