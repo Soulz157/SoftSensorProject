@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
+import { wallClockToUtc } from '@/lib/plant-time';
 import { mintRunToken } from '@/lib/mint-run-token';
 import {
   presignInferenceWindowObject,
@@ -1483,11 +1484,11 @@ export class InferenceWindowAuthorizedService {
     const live = await this.scoreLive(modelId);
     if (!live.ok) return live;
     try {
-      const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(live.at);
-      const predictedAt = new Date(
-        hasZone ? live.at : `${live.at.replace(' ', 'T')}Z`,
-      );
-      if (Number.isNaN(predictedAt.getTime())) {
+      // `live.at` is the scored frame row's NAIVE Bangkok wall-clock stamp.
+      // Reading it as UTC (`…Z`) stored every press 7h in the future, so the
+      // "up to now" chart query never returned it (2026-10-16).
+      const predictedAt = wallClockToUtc(live.at);
+      if (!predictedAt) {
         throw new Error(`unparseable timestamp "${live.at}"`);
       }
       await this.prisma.manualPrediction.create({

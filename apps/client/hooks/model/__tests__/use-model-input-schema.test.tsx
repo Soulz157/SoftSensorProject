@@ -17,7 +17,7 @@ const SCHEMA: ModelInputSchema = {
   versionId: 'version-1',
   version: brandModelVersionNumber(2),
   stage: 'PRODUCTION',
-  metrics: { rmse: 0.42, r2: 0.91, mae: 0.3 },
+  metrics: { rmse: 0.42, r2: 0.91, mae: 0.3, sd: 0.4 },
   featureColumns: ['TI-101.PV', 'PI-204.PV'],
   unavailableReason: null,
   targetY: 'TI-900.PV',

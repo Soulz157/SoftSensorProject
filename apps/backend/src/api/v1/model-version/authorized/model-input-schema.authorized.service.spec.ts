@@ -23,7 +23,7 @@ const PRODUCTION_VERSION = {
   id: 'version-prod',
   version: 2,
   stage: 'PRODUCTION',
-  metrics: { rmse: 0.4211, r2: 0.9312, mae: 0.301 } as unknown,
+  metrics: { rmse: 0.4211, r2: 0.9312, mae: 0.301, sd: 0.4102 } as unknown,
   goldObjectKey: 'ds-1/artifacts/gold-2/data_gold.parquet',
   sourceRun: {
     targetY: 'TI-900.PV',
@@ -127,6 +127,7 @@ describe('ModelInputSchemaAuthorizedService.getInputSchemaService', () => {
       rmse: 0.4211,
       r2: 0.9312,
       mae: 0.301,
+      sd: 0.4102,
     });
   });
 
@@ -139,7 +140,12 @@ describe('ModelInputSchemaAuthorizedService.getInputSchemaService', () => {
 
     const result = await service.getInputSchemaService('model-1', EDITOR_USER);
 
-    expect(result.data.metrics).toEqual({ rmse: null, r2: null, mae: null });
+    expect(result.data.metrics).toEqual({
+      rmse: null,
+      r2: null,
+      mae: null,
+      sd: null,
+    });
   });
 
   it('refuses a non-finite recorded metric rather than publishing NaN', async () => {
@@ -153,7 +159,14 @@ describe('ModelInputSchemaAuthorizedService.getInputSchemaService', () => {
 
     const result = await service.getInputSchemaService('model-1', EDITOR_USER);
 
-    expect(result.data.metrics).toEqual({ rmse: null, r2: null, mae: 0.2 });
+    // sd has no `sd`/`residual_sd` and its rmse fallback is NaN, so it is
+    // null too — never a NaN band width.
+    expect(result.data.metrics).toEqual({
+      rmse: null,
+      r2: null,
+      mae: 0.2,
+      sd: null,
+    });
   });
 
   it('falls back to the latest version when there is no PRODUCTION version', async () => {

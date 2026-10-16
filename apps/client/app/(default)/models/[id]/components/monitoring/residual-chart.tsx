@@ -10,8 +10,17 @@ import {
   ReferenceLine,
   ResponsiveContainer,
   ReferenceArea,
+  ReferenceDot,
 } from 'recharts'
 import { formatAxisValue } from '@/lib/monitoring'
+import {
+  CLIP_SD,
+  MIN_BAND_POINTS,
+  bandCoverage,
+  beyondBandCounts,
+  residualBand,
+  type ResidualOutlier,
+} from '@/lib/residual-band'
 import type {
   BrushWindow,
   LiveOverlayRow,
@@ -19,6 +28,7 @@ import type {
 } from '@/lib/monitoring'
 import { MonitoringTooltip } from './monitoring-tooltip'
 import { useMemo } from 'react'
+import { TriangleAlert } from 'lucide-react'
 
 export type ResidualMode = 'abs' | 'pct'
 
@@ -46,6 +56,9 @@ interface Props {
    * basis has to be stated rather than inferred from the picture.
    */
   sdBasis?: 'residual' | 'held'
+  /** The serving version's own test-split residual SD. Draws the bands while
+   *  the range has too few points (or no spread) for a live SD of its own. */
+  referenceSd?: number | null
   mode: ResidualMode
 }
 
@@ -65,41 +78,6 @@ export const SD3_COLOR = 'var(--destructive)'
 const SYNC_ID = 'monitoring'
 const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
 
-function sdCoverage(
-  rows: Array<MonitoringRow | LiveOverlayRow>,
-  sd: number,
-  basis: 'residual' | 'held' = 'residual',
-): Record<number, { up: number; down: number }> | null {
-  if (!Number.isFinite(sd) || sd <= 0) return null
-
-  // MODEL-SERVE-011-T16. Reads the series the guardlines were computed FROM,
-  // never a mix: counting measured residuals against a held-based SD (or the
-  // reverse) would put a percentage under a line it does not describe.
-  const residuals = rows
-    .map(r =>
-      basis === 'held' ? (r as LiveOverlayRow).heldDeviation : r.residual,
-    )
-    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-  if (residuals.length === 0) return null
-
-  const n = residuals.length
-  const out: Record<number, { up: number; down: number }> = {}
-  for (const k of [1, 2, 3]) {
-    const limit = k * sd
-    // Counted from zero OUTWARD to the line, so each figure describes the
-    // region its own label sits in rather than everything inside it.
-    const inner = (k - 1) * sd
-    let up = 0
-    let down = 0
-    for (const r of residuals) {
-      if (r > inner && r <= limit) up++
-      else if (r < -inner && r >= -limit) down++
-    }
-    out[k] = { up: (up / n) * 100, down: (down / n) * 100 }
-  }
-  return out
-}
-
 /**
  * Room reserved to the RIGHT of the plot for the SD labels, which sit in the
  * margin rather than over the data. Wide enough for the longest string these
@@ -107,7 +85,7 @@ function sdCoverage(
  */
 const SD_LABEL_GUTTER = 104
 
-/** A ±k·SD guardline pair (absolute-error mode only). */
+/** A ±k·SD guardline pair around 0 (absolute-error mode only). */
 function SdGuard({
   sd,
   k,
@@ -149,7 +127,6 @@ function SdGuard({
         stroke={color}
         strokeDasharray="3 3"
         strokeOpacity={0.6}
-        ifOverflow="extendDomain"
         label={label(pct ? `+${k} SD  ${pct.up.toFixed(1)}%` : `+${k} SD`)}
       />
       <ReferenceLine
@@ -157,45 +134,75 @@ function SdGuard({
         stroke={color}
         strokeDasharray="3 3"
         strokeOpacity={0.6}
-        ifOverflow="extendDomain"
         label={label(pct ? `-${k} SD  ${pct.down.toFixed(1)}%` : `-${k} SD`)}
       />
     </>
   )
 }
 
+/** The ±1/2/3 SD bands around 0 — distance from a perfect prediction. */
 function SdBackground({ sd }: { sd: number }) {
+  const at = (k: number) => k * sd
   return (
     <>
       <ReferenceArea
-        y1={sd * 2}
-        y2={sd * 3}
+        y1={at(2)}
+        y2={at(3)}
         fill={SD3_COLOR}
         fillOpacity={0.15}
       />
-
-      {/* Positive: +1 SD → +2 SD */}
-      <ReferenceArea y1={sd} y2={sd * 2} fill={SD2_COLOR} fillOpacity={0.15} />
-
-      {/* Normal: -1 SD → +1 SD */}
-      <ReferenceArea y1={-sd} y2={sd} fill={SD1_COLOR} fillOpacity={0.25} />
-
-      {/* Negative: -2 SD → -1 SD */}
       <ReferenceArea
-        y1={-sd * 2}
-        y2={-sd}
+        y1={at(1)}
+        y2={at(2)}
         fill={SD2_COLOR}
         fillOpacity={0.15}
       />
-
-      {/* Negative: -3 SD → -2 SD */}
       <ReferenceArea
-        y1={-sd * 3}
-        y2={-sd * 2}
+        y1={at(-1)}
+        y2={at(1)}
+        fill={SD1_COLOR}
+        fillOpacity={0.25}
+      />
+      <ReferenceArea
+        y1={at(-2)}
+        y2={at(-1)}
+        fill={SD2_COLOR}
+        fillOpacity={0.15}
+      />
+      <ReferenceArea
+        y1={at(-3)}
+        y2={at(-2)}
         fill={SD3_COLOR}
         fillOpacity={0.15}
       />
     </>
+  )
+}
+
+/**
+ * A point beyond CLIP_SD·SD of the bulk of the data, drawn as an arrow at the
+ * clip limit so
+ * it cannot stretch the axis and squash the bands. Its real value is in the
+ * chart tooltip and in this marker's own title.
+ */
+function OutlierArrow({
+  cx,
+  cy,
+  outlier,
+}: {
+  cx?: number
+  cy?: number
+  outlier: ResidualOutlier
+}) {
+  if (cx === undefined || cy === undefined) return null
+  const up = outlier.edge === 'top'
+  const d = up
+    ? `M ${cx} ${cy - 6} L ${cx - 6} ${cy + 4} L ${cx + 6} ${cy + 4} Z`
+    : `M ${cx} ${cy + 6} L ${cx - 6} ${cy - 4} L ${cx + 6} ${cy - 4} Z`
+  return (
+    <path d={d} fill={SD3_COLOR} stroke="var(--background)" strokeWidth={1}>
+      <title>{`Off the scale: ${formatAxisValue(outlier.value)} (beyond ${CLIP_SD} SD)`}</title>
+    </path>
   )
 }
 
@@ -206,6 +213,7 @@ export function ResidualChart({
   tooltipFormatter,
   sd,
   sdBasis = 'residual',
+  referenceSd = null,
   mode,
 }: Props) {
   const isPct = mode === 'pct'
@@ -234,119 +242,219 @@ export function ResidualChart({
     !hasMeasuredResidual &&
     rows.some(r => typeof (r as LiveOverlayRow).heldDeviation === 'number')
 
-  const coverage = useMemo(
-    () => (isPct ? null : sdCoverage(rows, sd, sdBasis)),
-    [isPct, rows, sd, sdBasis],
+  // The series the guardrails describe — never a mix: counting measured
+  // residuals against a held-based SD (or the reverse) would put a figure
+  // under a line it does not describe (MODEL-SERVE-011-T16).
+  const series = useMemo(
+    () =>
+      visible
+        .map(r => ({
+          t: r.t,
+          value:
+            sdBasis === 'held'
+              ? (r as LiveOverlayRow).heldDeviation
+              : (r as MonitoringRow).residual,
+        }))
+        .filter(
+          (p): p is { t: number; value: number } =>
+            typeof p.value === 'number' && Number.isFinite(p.value),
+        ),
+    [visible, sdBasis],
   )
+  // 2026-10-16. Bands around 0, hidden with too few points, an axis that
+  // always shows them, far points clipped — see lib/residual-band.ts.
+  const band = useMemo(
+    () => (isPct ? null : residualBand(series, sd, referenceSd)),
+    [isPct, series, sd, referenceSd],
+  )
+  const coverage = useMemo(
+    () =>
+      band?.show
+        ? bandCoverage(
+            series.map(p => p.value),
+            band.sd,
+          )
+        : null,
+    [band, series],
+  )
+  const shownBand = band?.show ? band : null
+  // How far outside the bands the points sit, in words: a biased model can
+  // be so far beyond ±3 SD that the bands alone cannot show it.
+  const beyond = useMemo(
+    () =>
+      shownBand
+        ? beyondBandCounts(
+            series.map(p => p.value),
+            shownBand.sd,
+          )
+        : null,
+    [shownBand, series],
+  )
+  const beyondText =
+    beyond && beyond.above + beyond.below > 0
+      ? [
+          beyond.below > 0 &&
+            `${beyond.below} of ${beyond.n} points below −3 SD`,
+          beyond.above > 0 &&
+            `${beyond.above} of ${beyond.n} points above +3 SD`,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : null
 
   return (
-    // Structurally identical to `ActualVsPredictChart`'s root, deliberately:
-    // the two charts sit in the same card shape, share a `syncId`, and must
-    // size the same way at every breakpoint. This one returned a bare
-    // `ResponsiveContainer` into a `min-h-0 flex-1` parent, which is exactly
-    // the case where a percentage-sized SVG has no definite width to resolve
-    // against — so it did not fill the widened card while its twin did. The
-    // narrow-screen scroller is kept for the same reason as there: a
-    // time-series axis below ~375px is unreadable.
-    <div className="w-full overflow-x-auto overflow-y-hidden">
-      <div className="min-w-375 xl:w-full xl:min-w-0">
-        <ResponsiveContainer className="w-full" height={500}>
-          <ComposedChart
-            data={visible}
-            syncId={SYNC_ID}
-            // The right margin carries the SD labels in absolute mode. Percent
-            // mode draws no guardlines, so it keeps the narrow gutter and the
-            // plot stays as wide as it was.
-            margin={{
-              top: 8,
-              right: isPct ? 24 : SD_LABEL_GUTTER,
-              left: 0,
-              bottom: 0,
-            }}
-          >
-            <CartesianGrid
-              strokeDasharray="3 3"
-              stroke="var(--border)"
-              vertical={false}
-            />
-            <XAxis
-              dataKey="t"
-              type="number"
-              domain={['dataMin', 'dataMax']}
-              scale="time"
-              tickFormatter={tickFormatter}
-              tick={AXIS_TICK}
-              stroke="var(--border)"
-              minTickGap={40}
-            />
-            <YAxis
-              domain={['auto', 'auto']}
-              tick={AXIS_TICK}
-              stroke="var(--border)"
-              width={68}
-              tickFormatter={v =>
-                isPct
-                  ? `${formatAxisValue(Number(v))}%`
-                  : formatAxisValue(Number(v))
-              }
-            />
-            <Tooltip
-              content={
-                <MonitoringTooltip
-                  variant="residual"
-                  residualMode={mode}
-                  formatLabel={tooltipFormatter}
+    <div className="w-full">
+      {(beyondText || shownBand?.sdSource === 'reference') && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          {beyondText && (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/50 px-2 py-1 font-medium text-foreground">
+              <TriangleAlert className="h-3.5 w-3.5 text-muted-foreground" />
+              {beyondText}
+            </span>
+          )}
+          {shownBand?.sdSource === 'reference' && (
+            <span className="text-muted-foreground">
+              {`SD ${formatAxisValue(shownBand.sd)} from the training test set — this range has too few points for its own.`}
+            </span>
+          )}
+        </div>
+      )}
+      {band && !band.show && series.length > 0 && (
+        <p className="mb-2 text-xs text-muted-foreground">
+          {band.reason === 'few-points'
+            ? `SD guardrails appear once there are at least ${MIN_BAND_POINTS} points (${band.n} so far).`
+            : 'SD guardrails need some spread: every point here has the same value.'}
+        </p>
+      )}
+      {/* Structurally identical to `ActualVsPredictChart`'s root, deliberately:
+        the two charts sit in the same card shape, share a `syncId`, and must
+        size the same way at every breakpoint. This one returned a bare
+        `ResponsiveContainer` into a `min-h-0 flex-1` parent, which is exactly
+        the case where a percentage-sized SVG has no definite width to resolve
+        against — so it did not fill the widened card while its twin did. The
+        narrow-screen scroller is kept for the same reason as there: a
+        time-series axis below ~375px is unreadable. */}
+      <div className="w-full overflow-x-auto overflow-y-hidden">
+        <div className="min-w-375 xl:w-full xl:min-w-0">
+          <ResponsiveContainer className="w-full" height={500}>
+            <ComposedChart
+              data={visible}
+              syncId={SYNC_ID}
+              // The right margin carries the SD labels in absolute mode. Percent
+              // mode draws no guardlines, so it keeps the narrow gutter and the
+              // plot stays as wide as it was.
+              margin={{
+                top: 8,
+                right: isPct ? 24 : SD_LABEL_GUTTER,
+                left: 0,
+                bottom: 0,
+              }}
+            >
+              <CartesianGrid
+                strokeDasharray="3 3"
+                stroke="var(--border)"
+                vertical={false}
+              />
+              <XAxis
+                dataKey="t"
+                type="number"
+                domain={['dataMin', 'dataMax']}
+                scale="time"
+                tickFormatter={tickFormatter}
+                tick={AXIS_TICK}
+                stroke="var(--border)"
+                minTickGap={40}
+              />
+              <YAxis
+                domain={shownBand ? shownBand.domain : ['auto', 'auto']}
+                // With bands shown the domain is fixed on purpose: an outlier
+                // is clipped to the edge (and marked) instead of stretching it.
+                allowDataOverflow={shownBand !== null}
+                tick={AXIS_TICK}
+                stroke="var(--border)"
+                width={68}
+                tickFormatter={v =>
+                  isPct
+                    ? `${formatAxisValue(Number(v))}%`
+                    : formatAxisValue(Number(v))
+                }
+              />
+              <Tooltip
+                content={
+                  <MonitoringTooltip
+                    variant="residual"
+                    residualMode={mode}
+                    formatLabel={tooltipFormatter}
+                  />
+                }
+              />
+
+              {/* Perfect-prediction baseline. */}
+              <ReferenceLine
+                y={0}
+                stroke="var(--muted-foreground)"
+                strokeDasharray="5 5"
+                strokeOpacity={0.6}
+              />
+
+              {shownBand && (
+                <>
+                  <SdBackground sd={shownBand.sd} />
+
+                  {[1, 2, 3].map(k => (
+                    <SdGuard
+                      key={k}
+                      sd={shownBand.sd}
+                      k={k}
+                      color={[SD1_COLOR, SD2_COLOR, SD3_COLOR][k - 1]!}
+                      pct={coverage?.[k as 1 | 2 | 3]}
+                    />
+                  ))}
+                </>
+              )}
+
+              {showHeldDeviation && (
+                // Dashed and unfilled, unlike the measured residual's solid
+                // filled area: the two must never look like the same
+                // measurement. Its own key, so nothing that reads `residual`
+                // — the SD band, RMSE, R2 — can pick it up by accident.
+                <Area
+                  type="monotone"
+                  dataKey={isPct ? 'heldDeviationPct' : 'heldDeviation'}
+                  stroke={RESIDUAL_COLOR}
+                  strokeWidth={2}
+                  strokeDasharray="5 5"
+                  fill="none"
+                  isAnimationActive={false}
+                  dot={false}
                 />
-              }
-            />
+              )}
 
-            {/* Perfect-prediction baseline. */}
-            <ReferenceLine
-              y={0}
-              stroke="var(--muted-foreground)"
-              strokeDasharray="5 5"
-              strokeOpacity={0.6}
-            />
-
-            {!isPct && (
-              <>
-                <SdBackground sd={sd} />
-
-                <SdGuard sd={sd} k={1} color={SD1_COLOR} pct={coverage?.[1]} />
-                <SdGuard sd={sd} k={2} color={SD2_COLOR} pct={coverage?.[2]} />
-                <SdGuard sd={sd} k={3} color={SD3_COLOR} pct={coverage?.[3]} />
-              </>
-            )}
-
-            {showHeldDeviation && (
-              // Dashed and unfilled, unlike the measured residual's solid
-              // filled area: the two must never look like the same
-              // measurement. Its own key, so nothing that reads `residual`
-              // — the SD band, RMSE, R2 — can pick it up by accident.
               <Area
                 type="monotone"
-                dataKey={isPct ? 'heldDeviationPct' : 'heldDeviation'}
+                dataKey={dataKey}
                 stroke={RESIDUAL_COLOR}
                 strokeWidth={2}
-                strokeDasharray="5 5"
-                fill="none"
+                fill={RESIDUAL_COLOR}
+                fillOpacity={0.12}
                 isAnimationActive={false}
                 dot={false}
               />
-            )}
 
-            <Area
-              type="monotone"
-              dataKey={dataKey}
-              stroke={RESIDUAL_COLOR}
-              strokeWidth={2}
-              fill={RESIDUAL_COLOR}
-              fillOpacity={0.12}
-              isAnimationActive={false}
-              dot={false}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
+              {shownBand?.outliers.map(o => (
+                <ReferenceDot
+                  key={`outlier-${o.t}`}
+                  x={o.t}
+                  y={o.drawAt}
+                  r={0}
+                  shape={(props: { cx?: number; cy?: number }) => (
+                    <OutlierArrow cx={props.cx} cy={props.cy} outlier={o} />
+                  )}
+                />
+              ))}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   )

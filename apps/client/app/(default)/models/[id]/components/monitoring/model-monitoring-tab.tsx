@@ -160,6 +160,9 @@ interface Props {
    *  freshly scored live point is read without the user touching the range
    *  toggle. Defaults to 0 for every other caller. */
   refreshKey?: number
+  /** The serving version's test-split residual SD, for the Residual chart's
+   *  bands while the range is too thin for its own. */
+  referenceSd?: number | null
 }
 
 /**
@@ -180,7 +183,11 @@ interface Props {
  * looks like. Run Predict presses are drawn on Actual vs Predict as
  * markers; the dense /predict stream is no longer shown.
  */
-export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
+export function ModelMonitoringTab({
+  model,
+  refreshKey = 0,
+  referenceSd = null,
+}: Props) {
   const [range, setRange] = useState<TimeRange>('24h')
   const [brush, setBrush] = useState<BrushWindow>({})
   const [residualMode, setResidualMode] = useState<ResidualMode>('abs')
@@ -724,6 +731,7 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
               // uses, and say which basis is on screen rather than leaving
               // two different meanings behind one identical picture.
               sd={stats.sd > 0 ? stats.sd : heldSd}
+              referenceSd={referenceSd}
               sdBasis={stats.sd > 0 ? 'residual' : 'held'}
               mode={residualMode}
             />

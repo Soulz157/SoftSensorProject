@@ -2461,7 +2461,7 @@ describe('InferenceWindowAuthorizedService.runNowService — live score (MODEL-S
     });
   });
 
-  it('reads a timestamp with no timezone as UTC, like the client does', async () => {
+  it('reads a timestamp with no timezone as plant wall-clock (Bangkok, UTC+7)', async () => {
     const prisma = readyPrisma();
     const live = buildLivePredict({
       scoreOne: jest.fn().mockResolvedValue({
@@ -2472,12 +2472,15 @@ describe('InferenceWindowAuthorizedService.runNowService — live score (MODEL-S
     });
     await serviceWith(prisma, live).runNowService('model-1', user);
 
+    // A frame row's naive stamp is Bangkok wall-clock: 04:59 there is
+    // 21:59 UTC the day before. Reading it as UTC put presses 7h in the
+    // future and off the Actual vs Predict chart (2026-10-16).
     expect(prisma.manualPrediction.create).toHaveBeenCalledWith({
       data: {
         modelId: 'model-1',
         modelVersionId: 'ver-1',
         predicted: 1,
-        predictedAt: new Date('2026-09-17T04:59:00.000Z'),
+        predictedAt: new Date('2026-09-16T21:59:00.000Z'),
         requestedById: 'user-1',
       },
     });

@@ -248,6 +248,8 @@ export interface ModelInputSchema {
     rmse: number | null
     r2: number | null
     mae: number | null
+    /** Test-split residual SD (falls back to rmse on older versions). */
+    sd: number | null
   }
   /** Ordered exactly as model.predict expects. Null only alongside a set
    *  `unavailableReason`. */

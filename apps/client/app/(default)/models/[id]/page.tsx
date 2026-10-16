@@ -1015,7 +1015,11 @@ export default function ModelDetailPage({
             {monitoringDenied ? (
               <MonitoringAccessNotice />
             ) : (
-              <ModelMonitoringTab model={model} refreshKey={monitoringKey} />
+              <ModelMonitoringTab
+                model={model}
+                refreshKey={monitoringKey}
+                referenceSd={versionSchema?.metrics.sd ?? null}
+              />
             )}
           </TabsContent>
 
