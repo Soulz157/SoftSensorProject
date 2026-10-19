@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { CleaningTagSelect } from '../cleaning-tag-select'
 import {
   rowStampBounds,
@@ -135,5 +135,24 @@ describe('wallClockKey (DS-LAKE-032-T08)', () => {
     expect(wallClockKey('2026-01-01T06:00:00')).toBe(
       wallClockKey('2026-01-01 06:00:00'),
     )
+  })
+})
+
+describe('CleaningTagSelect — 100+ tags stay inside a bounded list (2026-10-19)', () => {
+  it('puts every tag in one capped, natively scrolling box', () => {
+    const many = Array.from({ length: 150 }, (_, i) => `TAG-${i + 1}`)
+    render(
+      <CleaningTagSelect
+        candidates={many}
+        selected={[]}
+        onChange={() => {}}
+        cleanedTags={[]}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Tags to clean' }))
+
+    const list = screen.getByTestId('cleaning-tag-list')
+    expect(list).toHaveClass('max-h-64', 'overflow-y-auto')
+    expect(within(list).getAllByRole('checkbox')).toHaveLength(150)
   })
 })

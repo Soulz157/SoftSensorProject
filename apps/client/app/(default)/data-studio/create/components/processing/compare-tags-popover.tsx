@@ -5,7 +5,6 @@ import { SlidersHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Popover,
   PopoverContent,
@@ -64,7 +63,10 @@ export function CompareTagsPopover({
           Compare Tags: {compareTags.length}/{MAX_COMPARE}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-0">
+      <PopoverContent
+        align="end"
+        className="flex max-h-(--radix-popover-content-available-height) w-72 flex-col p-0"
+      >
         <div className="border-b border-border p-2">
           <Input
             type="search"
@@ -74,8 +76,11 @@ export function CompareTagsPopover({
             className="h-8 text-xs"
           />
         </div>
-        <ScrollArea className="max-h-64">
-          <div className="space-y-0.5 p-1.5 max-h-64">
+        {/* Native scroll box, not ScrollArea: Radix's viewport only scrolls
+            inside a FIXED height, so under `max-h` alone the list grew with
+            every row and ran the popover off the page (2026-10-19). */}
+        <div className="max-h-64 min-h-0 overflow-y-auto overscroll-contain">
+          <div className="space-y-0.5 p-1.5">
             {ordered.length === 0 ? (
               <p className="px-2 py-3 text-center text-xs text-muted-foreground">
                 No tags match
@@ -120,7 +125,7 @@ export function CompareTagsPopover({
               })
             )}
           </div>
-        </ScrollArea>
+        </div>
       </PopoverContent>
     </Popover>
   )

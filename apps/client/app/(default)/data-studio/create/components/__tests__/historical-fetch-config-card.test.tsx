@@ -95,3 +95,59 @@ describe('HistoricalFetchConfigCard — Batch Size', () => {
     expect(box().value).toBe('120')
   })
 })
+
+describe('HistoricalFetchConfigCard — one Summary Type, override under Advanced (2026-10-19)', () => {
+  it('Summary Type is a single choice: picking one replaces the other', async () => {
+    const spy = vi.fn()
+    render(<Harness spy={spy} />)
+    const avg = screen.getByRole('button', { name: 'Average' })
+    expect(avg).toHaveAttribute('aria-pressed', 'true')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Maximum' }))
+    expect(spy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ summaryType: ['Maximum'] }),
+    )
+    expect(avg).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('an old multi-pick config shows its first aggregate, the one the fetch uses', () => {
+    render(
+      <Harness
+        spy={vi.fn()}
+        initial={{ ...DEFAULT_FETCH_CONFIG, summaryType: ['Maximum', 'Total'] }}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Maximum' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Total' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+  })
+
+  it('hides Summary Duration under Advanced until opened', async () => {
+    const spy = vi.fn()
+    render(<Harness spy={spy} />)
+    expect(screen.queryByLabelText('Summary Duration')).toBeNull()
+
+    const advanced = screen.getByRole('button', { name: /Advanced/ })
+    expect(advanced).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(advanced)
+    await userEvent.type(screen.getByLabelText('Summary Duration'), '30m')
+    expect(spy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ summaryDuration: '30m' }),
+    )
+  })
+
+  it('opens Advanced on arrival when an override is already set', () => {
+    render(
+      <Harness
+        spy={vi.fn()}
+        initial={{ ...DEFAULT_FETCH_CONFIG, summaryDuration: '30m' }}
+      />,
+    )
+    expect(screen.getByLabelText('Summary Duration')).toHaveValue('30m')
+  })
+})

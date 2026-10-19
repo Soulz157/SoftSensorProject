@@ -5,27 +5,7 @@ import {
   DEFAULT_FETCH_CONFIG,
   clampBatchSize,
   parseBatchSizeInput,
-  toggleSummaryType,
 } from './fetch-config'
-
-describe('toggleSummaryType', () => {
-  it('adds an aggregate that is not selected', () => {
-    expect(toggleSummaryType(['Average'], 'Maximum')).toEqual([
-      'Average',
-      'Maximum',
-    ])
-  })
-
-  it('removes an aggregate that is already selected', () => {
-    expect(toggleSummaryType(['Average', 'Maximum'], 'Average')).toEqual([
-      'Maximum',
-    ])
-  })
-
-  it('never empties the selection — removing the last item is a no-op', () => {
-    expect(toggleSummaryType(['Average'], 'Average')).toEqual(['Average'])
-  })
-})
 
 describe('clampBatchSize', () => {
   it('clamps below the minimum up to BATCH_SIZE_MIN', () => {

@@ -70,6 +70,7 @@ export const FeatureConfigSchema = z.object({
     'log',
     'datetime',
     'formula',
+    'group',
   ]),
   tag: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -153,6 +154,15 @@ export const CreateRawVersionSchema = z.object({
   startTime: z.string().min(1),
   endTime: z.string().min(1),
   summaryDuration: z.string().optional(),
+  /**
+   * PI summary parameters (2026-10-19). Step 2's Historical Fetch Settings
+   * used to reach only the browser's own fetch: the BRONZE that trains got
+   * python's defaults (TimeWeighted / Average / 300), so a Maximum picked on
+   * screen trained on averages. Same names and limits as `FetchParamsSchema`.
+   */
+  calBasis: z.string().optional(),
+  summaryType: z.array(z.string()).min(1).optional(),
+  batchSize: z.number().int().min(1).max(1000).optional(),
   /** SQL sources only — the canonical frame is built around a declared axis. */
   timestampColumn: z.string().optional(),
   table: z.string().optional(),

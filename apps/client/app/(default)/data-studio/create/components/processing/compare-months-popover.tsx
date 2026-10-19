@@ -3,7 +3,6 @@
 import { CalendarRange } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Popover,
   PopoverContent,
@@ -105,7 +104,10 @@ export function CompareMonthsPopover({
               : `Compare Months: ${picked.length}/${MAX_MONTHS}`}
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" className="w-60 p-0">
+        <PopoverContent
+          align="end"
+          className="flex max-h-(--radix-popover-content-available-height) w-60 flex-col p-0"
+        >
           <div className="border-b border-border p-1.5">
             <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium hover:bg-accent">
               <Checkbox
@@ -124,8 +126,11 @@ export function CompareMonthsPopover({
               </p>
             )}
           </div>
-          <ScrollArea className="max-h-64">
-            <div className="max-h-64 space-y-0.5 p-1.5">
+          {/* Native scroll box, not ScrollArea: Radix's viewport only scrolls
+              inside a FIXED height, so under `max-h` alone the list grew with
+              every row and ran the popover off the page (2026-10-19). */}
+          <div className="max-h-64 min-h-0 overflow-y-auto overscroll-contain">
+            <div className="space-y-0.5 p-1.5">
               {months.map(month => {
                 const position = picked.indexOf(month.key)
                 const isSelected = position >= 0
@@ -186,7 +191,7 @@ export function CompareMonthsPopover({
                 )
               })}
             </div>
-          </ScrollArea>
+          </div>
         </PopoverContent>
       </Popover>
     </div>

@@ -27,6 +27,7 @@ import {
   dwPresetRangeStaleAtom,
   dwTagUnitsAtom,
   dwTargetTagAtom,
+  dwCriticalTagsAtom,
 } from '@/store/dataset-studio'
 import { useImputationTagList } from '@/hooks/dataset/use-imputation-tag-list'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
@@ -41,6 +42,7 @@ import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipelin
 import { CutOffSection } from './cutoff-section'
 import { datasetHealth } from '@/lib/feature-preset'
 import { SdtaPresetCard } from './sdta-preset-card'
+import { zeroSuggestions } from '@/lib/zero-readings'
 import { PresetRangeCard } from './preset-range-card'
 import { GoldRowLossNotice } from './gold-row-loss-notice'
 
@@ -137,6 +139,10 @@ export function Step5DataCleaning({ nav }: Props) {
     ...cleaningTags,
   ])
   const [previewIndex, setPreviewIndex] = useState(0)
+  const zeroSuggestionList = useMemo(
+    () => zeroSuggestions(cropped, cleaningTags, draft),
+    [cropped, cleaningTags, draft],
+  )
   const [rawIsolated, setRawIsolated] = useState('')
 
   // Seed the draft from the first tag's saved pipeline when a batch starts
@@ -206,6 +212,7 @@ export function Step5DataCleaning({ nav }: Props) {
   const presetRangeStale = useAtomValue(dwPresetRangeStaleAtom)
   const tagUnits = useAtomValue(dwTagUnitsAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
+  const criticalTags = useAtomValue(dwCriticalTagsAtom)
   // Mirrors the sidebar's `cleanableTags` (dataset-tag-sidebar.tsx).
   const cleanableTags = useMemo(
     () => base.tags.filter(t => t !== targetTag),
@@ -425,6 +432,7 @@ export function Step5DataCleaning({ nav }: Props) {
               relock()
             }}
             targetTag={targetTag}
+            criticalTags={criticalTags}
             editMode={isEditLocked}
           />
           {/* DS-LAKE-032-D06. Same atom as the sidebar's cleaning boxes, and
@@ -461,6 +469,7 @@ export function Step5DataCleaning({ nav }: Props) {
                 onIsolate={setRawIsolated}
                 quality={isolatedQuality}
                 dataBounds={dataBounds}
+                zeroSuggestions={zeroSuggestionList}
               />
 
               {/* T01 hybrid: server-verified check, ONLY visible when the

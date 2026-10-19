@@ -200,20 +200,19 @@ const WALL_EXCLUDE = {
   excludeEnd: '2025-11-17 13:00:00',
 }
 
+type ModalProps = Parameters<typeof DatasetCompareModal>[0]
+
 function renderModal(
-  extra: {
-    rawArtifactId?: string | null
-    holdout?: typeof HOLDOUT | { holdoutTo: null } | null
-  } = {},
+  extra: Partial<Pick<ModalProps, 'rawArtifactId' | 'holdout'>> = {},
 ) {
-  const props = {
+  const props: Omit<ModalProps, 'open'> = {
     onOpenChange: () => {},
     datasetId: 'ds-1',
     artifactId: 'art-1',
     availableTags: ['T1', 'ENG'],
     holdout: HOLDOUT,
     ...extra,
-  } as Parameters<typeof DatasetCompareModal>[0]
+  }
   const view = render(<DatasetCompareModal {...props} open={false} />)
   view.rerender(<DatasetCompareModal {...props} open />)
   return view

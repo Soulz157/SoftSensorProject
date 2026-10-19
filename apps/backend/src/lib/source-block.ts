@@ -65,6 +65,9 @@ export function buildSourceBlock(
     startTime: string;
     endTime: string;
     summaryDuration?: string;
+    calBasis?: string;
+    summaryType?: string[];
+    batchSize?: number;
     timestampColumn?: string;
     table?: string;
   },
@@ -79,6 +82,9 @@ export function buildSourceBlock(
         start_time: dto.startTime,
         end_time: dto.endTime,
         ...(dto.summaryDuration && { summary_duration: dto.summaryDuration }),
+        ...(dto.calBasis && { cal_basis: dto.calBasis }),
+        ...(dto.summaryType && { summary_type: dto.summaryType }),
+        ...(dto.batchSize && { batch_size: dto.batchSize }),
       },
     };
   }

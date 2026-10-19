@@ -1,11 +1,28 @@
 'use client'
 
 import { useMemo, useState, type ReactNode } from 'react'
-import { Ban, Pencil, RotateCcw, Scissors, TriangleAlert } from 'lucide-react'
+import {
+  Ban,
+  Info,
+  Pencil,
+  RotateCcw,
+  Scissors,
+  TriangleAlert,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { SegmentedToggle } from '@/components/segmented-toggle'
+import {
+  suggestRangeAction,
+  type RangeActionSuggestion,
+} from '@/lib/critical-tags'
 import type { Dataset } from '@/lib/preprocessing'
 import type { ConditionalAction, ConditionalRule } from '@/lib/precleanse'
 import { cn } from '@/lib/utils'
@@ -161,6 +178,10 @@ function rowAction(rules: ConditionalRule[]): RangeAction | 'mixed' | null {
   return actions.has('clip') ? 'clip' : 'exclude'
 }
 
+function suggestedLabel(action: RangeAction): string {
+  return action === 'clip' ? 'Clip' : 'Exclude'
+}
+
 /**
  * One tag's preset-range proposal. Toggling reads/writes `conditionalRules`
  * directly - there is no separate "applied" state to keep in sync, so a rule
@@ -171,11 +192,16 @@ function PresetRangeRow({
   tagUnit,
   conditionalRules,
   onConditionalChange,
+  suggestion,
+  editMode,
 }: {
   candidate: PresetRangeCandidate
   tagUnit: string | null
   conditionalRules: ConditionalRule[]
   onConditionalChange: (rules: ConditionalRule[]) => void
+  /** Clip for a critical tag, Exclude otherwise (lib/critical-tags.ts). */
+  suggestion: RangeActionSuggestion
+  editMode: boolean
 }) {
   const reconciliation = useMemo(
     () => reconcileRangeUnit(candidate.parsed, tagUnit),
@@ -188,9 +214,17 @@ function PresetRangeRow({
     tagRules.length > 0 &&
     tagRules[0]?.presetRange?.quoted === candidate.quotedRange
   // The choice made before the row is enabled; once enabled, the rules ARE the
-  // state and this is ignored.
-  const [pendingAction, setPendingAction] = useState<RangeAction>('clip')
+  // state and this is ignored. `null` = untouched, so the row follows the
+  // suggestion (a tag starred in Step 1 later flips it) until the engineer
+  // picks an action themselves - an explicit pick is never overwritten.
+  const [pickedAction, setPickedAction] = useState<RangeAction | null>(null)
+  const pendingAction = pickedAction ?? suggestion.action
   const currentAction = isActive ? rowAction(tagRules) : pendingAction
+  const offSuggestion =
+    isActive &&
+    currentAction !== null &&
+    currentAction !== 'mixed' &&
+    currentAction !== suggestion.action
 
   const withoutThisTag = () =>
     conditionalRules.filter(r => !isPresetRangeRuleForTag(r, candidate.tag))
@@ -214,7 +248,7 @@ function PresetRangeRow({
   // Changing the action keeps the CURRENT bounds - rebuilding from the preset
   // would silently undo an edit made in the Outlier Removal panel.
   const chooseAction = (next: RangeAction) => {
-    setPendingAction(next)
+    setPickedAction(next)
     if (!isActive) return
     onConditionalChange(
       conditionalRules.map(r =>
@@ -282,7 +316,7 @@ function PresetRangeRow({
       className={cn(
         // One shared grid across rows (Law of Similarity): checkbox, tag and
         // window line up in columns, so the eye scans down, not across.
-        'grid grid-cols-[auto_minmax(0,9rem)_auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-md px-2 py-1 text-xs transition-colors',
+        'grid grid-cols-[auto_minmax(0,9rem)_auto_minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-1 rounded-md px-2 py-1 text-xs transition-colors',
         isActive ? 'bg-primary/5' : 'bg-background',
       )}
     >
@@ -321,6 +355,29 @@ function PresetRangeRow({
           }
         />
       </label>
+      {/* The suggestion sits beside the toggle it is about; the reason is in
+          the tooltip so the row stays one line. A button so the keyboard can
+          reach it. */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`Suggested for ${candidate.tag}: ${suggestedLabel(suggestion.action)}`}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <Info className="h-3 w-3" />
+            Suggested: {suggestedLabel(suggestion.action)}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-72">
+          <p>{suggestion.reason}</p>
+          <p className="mt-1 opacity-80">
+            {editMode
+              ? 'Critical tags are marked with the star in Step 1, which is locked while editing a saved dataset.'
+              : 'Mark critical tags with the star in Step 1.'}
+          </p>
+        </TooltipContent>
+      </Tooltip>
       {/* `mixed` is a state to SHOW (neither segment lit), never one to pick,
           so it is in the value type but not in the options. */}
       <SegmentedToggle<RangeAction | 'mixed'>
@@ -333,7 +390,7 @@ function PresetRangeRow({
       />
       {(refused || openEnded || currentAction === 'mixed') && (
         <p
-          className="col-span-4 col-start-2 flex items-center gap-1 pb-1 text-[11px] text-muted-foreground"
+          className="col-span-5 col-start-2 flex items-center gap-1 pb-1 text-[11px] text-muted-foreground"
           title={refused ? refusedReason : undefined}
         >
           <TriangleAlert className="h-3 w-3 shrink-0" />
@@ -344,10 +401,20 @@ function PresetRangeRow({
               : 'Operating window, not a validity range — confirm before enabling'}
         </p>
       )}
+      {/* Neutral, not a warning colour: going against the suggestion is a
+          legitimate engineering call, the note only says what it costs. */}
+      {offSuggestion && (
+        <p className="col-span-5 col-start-2 flex items-center gap-1 pb-1 text-[11px] text-muted-foreground">
+          <Info className="h-3 w-3 shrink-0" />
+          {suggestion.action === 'clip'
+            ? 'Critical tag set to Exclude: out-of-range readings become holes, which can cost rows this input needs.'
+            : 'Clip on a non-critical tag: bad readings are pinned to the bound instead of being imputed.'}
+        </p>
+      )}
       {/* Says WHERE the numbers changed and what the preset said, so an edit
           made further down the step is never a surprise here. */}
       {edited && presetWindow && (
-        <p className="col-span-4 col-start-2 flex items-center gap-1 pb-1 text-[11px] text-muted-foreground">
+        <p className="col-span-5 col-start-2 flex items-center gap-1 pb-1 text-[11px] text-muted-foreground">
           <Pencil className="h-3 w-3 shrink-0" />
           <span className="min-w-0 truncate">
             Edited in Outlier Removal · preset was{' '}
@@ -388,6 +455,11 @@ interface Props {
   /** Null until Step 4 - the labelled-row guard cannot run without it. */
   targetTag: string | null
   /**
+   * Tags starred critical in Step 1. Each row suggests - and, until the
+   * engineer picks, defaults to - Clip for these and Exclude for the rest.
+   */
+  criticalTags?: string[]
+  /**
    * Edit mode. Its per-batch server sync (`use-dataset-draft-pipeline.ts`) is
    * scoped to the batch's tags and sends no range operations, so the choice is
    * previewed and kept in the recipe but not written to the stored rows by an
@@ -419,6 +491,7 @@ export function PresetRangeCard({
   conditionalRules,
   onConditionalChange,
   targetTag,
+  criticalTags = [],
   editMode = false,
 }: Props) {
   // Every candidate for a tag in the frame, the isolated tag's first.
@@ -479,60 +552,66 @@ export function PresetRangeCard({
   ).length
 
   return (
-    <div className="space-y-3 rounded-xl border border-border bg-card p-4">
-      {/* Same header shape as the SD&TA card above (Jakob's Law); the count
+    <TooltipProvider delayDuration={100}>
+      <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+        {/* Same header shape as the SD&TA card above (Jakob's Law); the count
           sits next to the title it qualifies (Law of Proximity). */}
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <span className="text-[10px] font-semibold text-muted-foreground">
-            Imported Presets · Range
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <span className="text-[10px] font-semibold text-muted-foreground">
+              Imported Presets · Range
+            </span>
+            <h3 className="text-sm font-semibold text-foreground">
+              Preset range cutoff
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              From the preset&apos;s Range column. Off until you enable a row.
+              Suggests Clip for critical tags, Exclude for the rest.
+            </p>
+          </div>
+          <span className="shrink-0 pt-4 font-mono text-xs text-muted-foreground">
+            {enabled} of {relevant.length} enabled
           </span>
-          <h3 className="text-sm font-semibold text-foreground">
-            Preset range cutoff
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            From the preset&apos;s Range column. Off until you enable a row.
-          </p>
         </div>
-        <span className="shrink-0 pt-4 font-mono text-xs text-muted-foreground">
-          {enabled} of {relevant.length} enabled
-        </span>
-      </div>
-      {editMode && (
-        <p className="text-[11px] text-muted-foreground">
-          Editing a saved dataset: range cutoffs are previewed and kept in the
-          recipe, but saving an edit does not apply them to the stored rows yet.
-        </p>
-      )}
-      <ul className="space-y-1">
-        {relevant.map(candidate => (
-          <PresetRangeRow
-            key={`${candidate.presetId}:${candidate.rowLabel}`}
-            candidate={candidate}
-            tagUnit={tagUnits[candidate.tag] ?? null}
-            conditionalRules={conditionalRules}
-            onConditionalChange={onConditionalChange}
-          />
+        {editMode && (
+          <p className="text-[11px] text-muted-foreground">
+            Editing a saved dataset: range cutoffs are previewed and kept in the
+            recipe, but saving an edit does not apply them to the stored rows
+            yet.
+          </p>
+        )}
+        <ul className="space-y-1">
+          {relevant.map(candidate => (
+            <PresetRangeRow
+              key={`${candidate.presetId}:${candidate.rowLabel}`}
+              candidate={candidate}
+              tagUnit={tagUnits[candidate.tag] ?? null}
+              conditionalRules={conditionalRules}
+              onConditionalChange={onConditionalChange}
+              suggestion={suggestRangeAction(candidate.tag, criticalTags)}
+              editMode={editMode}
+            />
+          ))}
+        </ul>
+        {guard.refusals.map((text, i) => (
+          <p
+            key={`refusal-${i}`}
+            className="flex items-start gap-1 text-[11px] font-medium text-foreground"
+          >
+            <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+            {text}
+          </p>
         ))}
-      </ul>
-      {guard.refusals.map((text, i) => (
-        <p
-          key={`refusal-${i}`}
-          className="flex items-start gap-1 text-[11px] font-medium text-foreground"
-        >
-          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
-          {text}
-        </p>
-      ))}
-      {guard.warnings.map((text, i) => (
-        <p
-          key={`warning-${i}`}
-          className="flex items-start gap-1 text-[11px] text-muted-foreground"
-        >
-          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
-          {text}
-        </p>
-      ))}
-    </div>
+        {guard.warnings.map((text, i) => (
+          <p
+            key={`warning-${i}`}
+            className="flex items-start gap-1 text-[11px] text-muted-foreground"
+          >
+            <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+            {text}
+          </p>
+        ))}
+      </div>
+    </TooltipProvider>
   )
 }

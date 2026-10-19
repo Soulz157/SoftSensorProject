@@ -75,6 +75,7 @@ export function directSources(entry: FeatureSpecEntry): string[] | null {
       return typeof config.tag === 'string' ? [config.tag] : null;
     case 'arith':
     case 'ratio':
+    case 'group':
       return asStringArray(config.tags);
     case 'datetime':
       // Reads the timestamp, never a tag — always computable, so no tag's

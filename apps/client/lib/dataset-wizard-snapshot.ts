@@ -1,6 +1,7 @@
 import type { ExtractAtomValue } from 'jotai'
 import type {
   dwConditionalRulesAtom,
+  dwCriticalTagsAtom,
   dwCropRangeAtom,
   dwCsvFileNameAtom,
   dwCsvUploadTagsAtom,
@@ -82,6 +83,7 @@ export interface WizardSnapshotValues {
   featureConfigs: V<typeof dwFeatureConfigsAtom>
   featurePreset: V<typeof dwFeaturePresetAtom>
   targetTag: V<typeof dwTargetTagAtom>
+  criticalTags: V<typeof dwCriticalTagsAtom>
   sdtaPresets: V<typeof dwSdtaPresetsAtom>
   edaWindow: V<typeof dwEdaWindowAtom>
   cropRange: V<typeof dwCropRangeAtom>
@@ -151,6 +153,10 @@ const GUARDS: Record<keyof WizardSnapshotValues, Guard> = {
   featureConfigs: isArray,
   featurePreset: nullable(isRecord),
   targetTag: nullable(isString),
+  // Optional: snapshots written before critical tags existed carry no such
+  // key, and refusing them would strand every in-progress draft. Normalised
+  // to [] in parseWizardSnapshot.
+  criticalTags: v => v === undefined || isStringArray(v),
   sdtaPresets: isArray,
   edaWindow: nullable(isRecord),
   cropRange: nullable(isRecord),
@@ -286,7 +292,11 @@ export function parseWizardSnapshot(
   }
   // Every field passed its guard above, which is the narrowing; TypeScript
   // cannot follow a loop over keys, hence the single assertion.
-  return { ok: true, values: record as unknown as WizardSnapshotValues }
+  const values = record as unknown as WizardSnapshotValues
+  return {
+    ok: true,
+    values: { ...values, criticalTags: values.criticalTags ?? [] },
+  }
 }
 
 /** Step to land on once rows are back; clamped so a bad value cannot strand the user. */

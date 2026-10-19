@@ -216,3 +216,43 @@ describe('dataset-draft-bronze holdout wiring (DS-LAKE-018-T03)', () => {
     expect(call[1]).not.toHaveProperty('holdout')
   })
 })
+
+describe('dataset-draft-bronze PI summary settings (2026-10-19)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('sends the bucket AND the Historical Fetch Settings - the BRONZE is what trains', async () => {
+    vi.mocked(datasetDraftService.materialize).mockResolvedValue({
+      data: { id: 'artifact-3' },
+    } as never)
+
+    await ensureBronzeArtifactId(
+      {
+        workspaceId: 'ws-1',
+        selectedSources: [SOURCE],
+        customDateRange: { from: '2026-01-01T00:00', to: '2026-01-02T00:00' },
+        customInterval: null,
+        fetchConfig: {
+          summaryDuration: '',
+          calBasis: 'EventWeighted',
+          summaryType: ['Maximum'],
+          batchSize: 50,
+        },
+        period: '1h',
+        holdoutRange: null,
+      },
+      'draft-2',
+      null,
+      ['TI-103'],
+    )
+
+    const body = vi.mocked(datasetDraftService.materialize).mock.calls[0]![1]
+    expect(body).toMatchObject({
+      summaryDuration: '1h',
+      calBasis: 'EventWeighted',
+      summaryType: ['Maximum'],
+      batchSize: 50,
+    })
+  })
+})

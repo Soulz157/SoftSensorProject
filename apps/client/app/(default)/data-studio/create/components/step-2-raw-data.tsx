@@ -63,6 +63,7 @@ import {
   SourceFetchConfigCard,
   configFromSource,
   defaultConfigForKind,
+  refreshIdentityFields,
 } from './source-configs/source-fetch-config-card'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 
@@ -112,7 +113,7 @@ export function Step2RawData({ nav }: Props) {
   const verify = useSourceConnectionVerify()
   const [customInterval, setCustomInterval] = useAtom(dwCustomIntervalAtom)
 
-  const selectedSources = useAtomValue(dwSelectedSourcesAtom)
+  const [selectedSources, setSelectedSources] = useAtom(dwSelectedSourcesAtom)
 
   const [sourceConfigs, setSourceConfigs] = useAtom(dwSourceFetchConfigsAtom)
   const [fetchConfig, setFetchConfig] = useAtom(dwFetchConfigAtom)
@@ -343,13 +344,27 @@ export function Step2RawData({ nav }: Props) {
               onChange={cfg =>
                 setSourceConfigs(prev => ({ ...prev, [source.id]: cfg }))
               }
+              onSourceUpdate={updated => {
+                setSelectedSources(prev =>
+                  prev.map(s => (s.id === updated.id ? updated : s)),
+                )
+                setSourceConfigs(prev => ({
+                  ...prev,
+                  [updated.id]: refreshIdentityFields(
+                    prev[updated.id],
+                    updated,
+                  ),
+                }))
+              }}
               disabled={controlsDisabled}
             />
           ))}
         </div>
       )}
 
-      {/* ── Fetch Period + Interval — only for sources that need fetching ───── */}
+      {/* ── Interval (the PI bucket) — only for sources that need fetching.
+           Was titled "Fetch Period", which read as a date range; these
+           buttons set how far apart the rows are (2026-10-19). ─────────── */}
       {!csvBypass && (
         <div
           className={cn(
@@ -359,7 +374,10 @@ export function Step2RawData({ nav }: Props) {
         >
           <div className="flex items-center gap-2">
             <ClipboardClock className="h-4 w-4 text-muted-foreground" />
-            <p className="text-sm font-medium text-foreground">Fetch Period</p>
+            <p className="text-sm font-medium text-foreground">Interval</p>
+            <span className="text-xs text-muted-foreground">
+              How far apart the fetched rows are
+            </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {(['1min', '5min', '10min', '1h', '1d'] as const).map(p => (
@@ -797,8 +815,8 @@ export function Step2RawData({ nav }: Props) {
               {fetchTags.length === 1 ? '' : 's'}
             </p>
             <p className="text-xs text-muted-foreground">
-              Set the fetch period and interval above, then click “Fetch Data”
-              to load the raw readings.
+              Set the date range and interval above, then click “Fetch Data” to
+              load the raw readings.
             </p>
           </div>
         </div>

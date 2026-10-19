@@ -9,6 +9,7 @@ import {
   dwSelectedSourcesAtom,
   dwSelectedTagsAtom,
   dwSourceFetchConfigsAtom,
+  dwFetchConfigAtom,
   dwCustomDateRangeAtom,
   dwRawDatasetAtom,
   dwModeAtom,
@@ -221,11 +222,17 @@ describe('Step6ReviewSave — storing rows on save', () => {
     // The exact payload matters: `toPiTime` must turn the stored
     // 'YYYY-MM-DDTHH:mm' into the connector's 'YYYY-MM-DD HH:mm:ss', and the
     // tags must be baseTags (pre feature-engineering), not the saved `tags`.
+    // It also carries the interval and the Historical Fetch Settings: without
+    // them python fetched every minute with its own defaults (2026-10-19).
     expect(createRaw).toHaveBeenCalledWith('ds-1', {
       sourceId: 'src-1',
       tags: ['TI-101', 'PI-303'],
       startTime: '2026-06-22 00:00:00',
       endTime: '2026-06-22 01:00:00',
+      summaryDuration: '1h',
+      calBasis: 'TimeWeighted',
+      summaryType: ['Average'],
+      batchSize: 300,
     })
   })
 
@@ -337,6 +344,36 @@ describe('Step6ReviewSave — feature preset provenance', () => {
     expect(
       screen.queryByText(/is not in this dataset/i),
     ).not.toBeInTheDocument()
+  })
+
+  it('stamps the PI source config with the fetch settings inference will use', async () => {
+    // An inference schedule copies sourceFetchConfigs[id] and fetches with
+    // its intervalTime/calcBasis/calcType (2026-10-19) - they must be the
+    // dataset's own Interval and Historical Fetch Settings, not '1m'.
+    createDataset.mockResolvedValue(saved(null))
+    store.set(dwFetchConfigAtom, {
+      calBasis: 'EventWeighted',
+      summaryType: ['Maximum'],
+      summaryDuration: '',
+      batchSize: 300,
+    })
+
+    await clickSave()
+
+    await waitFor(() => expect(createDataset).toHaveBeenCalledTimes(1))
+    const body = createDataset.mock.calls[0]![0] as {
+      pipelineConfig: {
+        sourceFetchConfigs: Record<string, Record<string, unknown>>
+        fetchConfig?: { summaryType: string[] }
+      }
+    }
+    expect(body.pipelineConfig.sourceFetchConfigs['src-1']).toMatchObject({
+      type: 'pi',
+      intervalTime: '1h',
+      calcBasis: 'EventWeighted',
+      calcType: 'Maximum',
+    })
+    expect(body.pipelineConfig.fetchConfig?.summaryType).toEqual(['Maximum'])
   })
 
   it('persists preset provenance and target into the saved recipe', async () => {
@@ -583,8 +620,9 @@ describe('Step6ReviewSave — advisory gate (DS-LAKE-019-T04)', () => {
             passed: false,
             skipped: false,
             detail: '2 tag(s) over the outlier-fraction threshold.',
-            measured: 18.1,
-            threshold: 10,
+            // validation_service.check_statistical's own units: fractions.
+            measured: 0.181,
+            threshold: 0.1,
             offenders: ['TI-101', 'TI-207'],
             severity: 'advisory',
           },
@@ -617,8 +655,53 @@ describe('Step6ReviewSave — advisory gate (DS-LAKE-019-T04)', () => {
     expect(screen.getAllByText(/statistical outliers/i).length).toBeGreaterThan(
       0,
     )
-    expect(screen.getByText(/measured 18\.1, threshold 10/i)).toBeVisible()
+    expect(
+      screen.getByText(/worst 18\.1% outliers \(limit 10%\)/i),
+    ).toBeVisible()
     expect(screen.getByText(/TI-101, TI-207/)).toBeVisible()
+  })
+
+  it('names 8 tags, folds the rest behind "+N more", and expands on click', async () => {
+    const offenders = Array.from({ length: 120 }, (_, i) => `TAG-${i + 1}`)
+    validateArtifact.mockResolvedValue({
+      data: {
+        status: 'PASS',
+        quality_score: 90,
+        checks: [
+          {
+            name: 'statistical',
+            passed: false,
+            skipped: false,
+            detail: '120 over the 5% outlier-fraction threshold (worst 31.0%).',
+            measured: 0.31,
+            threshold: 0.05,
+            offenders,
+            severity: 'advisory',
+          },
+        ],
+        failed_checks: ['statistical'],
+        advisory_failures: ['statistical'],
+        validation_report_key: 'k',
+      },
+    })
+    withGateArtifact()
+
+    render(
+      <Provider store={store}>
+        <Step6ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    const more = await screen.findByRole('button', { name: '+112 more' })
+    expect(screen.getByText(/TAG-8$/)).toBeInTheDocument()
+    expect(screen.queryByText(/TAG-9,/)).toBeNull()
+
+    await userEvent.click(more)
+    expect(screen.getByText(/TAG-120/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show fewer' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
   })
 
   it('renders no advisory banner for a clean PASS with no advisory failures', async () => {

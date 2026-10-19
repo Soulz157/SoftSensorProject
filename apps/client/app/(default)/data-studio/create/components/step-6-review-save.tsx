@@ -1,6 +1,9 @@
 'use client'
 
+import { piSummaryParams, withPiFetchSettings } from '@/lib/fetch-config'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { cn } from '@/lib/utils'
+import { formatCheckMeasure } from '@/lib/validation-format'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -61,6 +64,8 @@ import {
   dwEditingDatasetIdAtom,
   dwFeaturePresetAtom,
   dwTargetTagAtom,
+  dwCriticalTagsAtom,
+  dwFetchConfigAtom,
   dwDraftGoldArtifactIdAtom,
   dwGoldWarmErrorAtom,
   resetDatasetWizardAtom,
@@ -100,6 +105,8 @@ export function Step6ReviewSave({ nav }: Props) {
   const editingDatasetId = useAtomValue(dwEditingDatasetIdAtom)
   const featurePreset = useAtomValue(dwFeaturePresetAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
+  const criticalTags = useAtomValue(dwCriticalTagsAtom)
+  const fetchConfig = useAtomValue(dwFetchConfigAtom)
   const resetWizard = useSetAtom(resetDatasetWizardAtom)
   const validation = useDatasetValidation()
   const goldArtifactId = useAtomValue(dwDraftGoldArtifactIdAtom)
@@ -365,7 +372,12 @@ export function Step6ReviewSave({ nav }: Props) {
       customDateRange,
       holdoutDateRange,
       customInterval,
-      sourceFetchConfigs,
+      // Stamped with the Interval + Historical Fetch Settings: an inference
+      // schedule fetches with these, not with the Step 2 controls.
+      sourceFetchConfigs: withPiFetchSettings(
+        sourceFetchConfigs,
+        piSummaryParams(fetchConfig, timeRange, customInterval),
+      ),
       features,
       cropRange,
       valueCrop,
@@ -383,6 +395,10 @@ export function Step6ReviewSave({ nav }: Props) {
       // the equations came from. Both undefined when no preset was applied.
       featurePreset: featurePreset ?? undefined,
       targetTag: targetTag ?? undefined,
+      // Omitted when empty, like the two above: most recipes mark none.
+      criticalTags: criticalTags.length > 0 ? criticalTags : undefined,
+      // So a re-fetch reads the source the way this dataset was built.
+      fetchConfig,
     }
 
     try {
@@ -538,6 +554,13 @@ export function Step6ReviewSave({ nav }: Props) {
         tags: config.baseTags!,
         startTime: toPiTime(config.customDateRange!.from),
         endTime: toPiTime(config.customDateRange!.to),
+        // The interval and summary settings the dataset was built with -
+        // absent, python fetched every minute.
+        ...piSummaryParams(
+          config.fetchConfig,
+          config.timeRange,
+          config.customInterval,
+        ),
       })
       toast.success('Rows stored')
     } catch (err) {
@@ -814,7 +837,10 @@ function ValidationReportCard({
             <span className="font-medium text-foreground">
               {CHECK_LABELS[check.name] ?? check.name}
             </span>
-            <span className="">{check.detail}</span>
+            {/* Older saved reports inline every tag in `detail`; clamp it. */}
+            <span className="line-clamp-2 min-w-0" title={check.detail}>
+              {check.detail}
+            </span>
           </div>
         ))}
       </div>
@@ -864,17 +890,24 @@ function ValidationAdvisoryBanner({
               <span className="font-medium">
                 {CHECK_LABELS[check.name] ?? check.name}
               </span>
-              {check.measured != null && check.threshold != null && (
+              {formatCheckMeasure(
+                check.name,
+                check.measured,
+                check.threshold,
+              ) && (
                 <span className="text-muted-foreground">
                   {' '}
-                  — measured {check.measured}, threshold {check.threshold}
+                  —{' '}
+                  {formatCheckMeasure(
+                    check.name,
+                    check.measured,
+                    check.threshold,
+                  )}
                 </span>
               )}
             </p>
             {check.offenders.length > 0 && (
-              <p className="font-mono text-muted-foreground">
-                {check.offenders.join(', ')}
-              </p>
+              <OffenderList offenders={check.offenders} />
             )}
           </div>
         ))}
@@ -883,6 +916,37 @@ function ValidationAdvisoryBanner({
           data.
         </p>
       </div>
+    </div>
+  )
+}
+
+/** Tags named inline before the rest fold behind "+N more" (2026-10-19). */
+const OFFENDERS_INLINE = 8
+
+function OffenderList({ offenders }: { offenders: string[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const more = offenders.length - OFFENDERS_INLINE
+  const shown = expanded ? offenders : offenders.slice(0, OFFENDERS_INLINE)
+  return (
+    <div className="space-y-1">
+      <p
+        className={cn(
+          'font-mono break-words text-muted-foreground',
+          expanded && 'max-h-40 overflow-y-auto overscroll-contain',
+        )}
+      >
+        {shown.join(', ')}
+      </p>
+      {more > 0 && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(e => !e)}
+          className="text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          {expanded ? 'Show fewer' : `+${more} more`}
+        </button>
+      )}
     </div>
   )
 }

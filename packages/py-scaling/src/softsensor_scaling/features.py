@@ -48,6 +48,9 @@ def feature_column_name(cfg: Mapping[str, Any]) -> str:
         return f"{cfg['tag']}__log"
     if kind == "datetime":
         return f"__dt_{cfg['part']}"
+    if kind == "group":
+        # `name` IS the column (e.g. AI602__grp_mean), as for a formula.
+        return cfg["name"].strip()
     if kind == "formula":
         name = (cfg.get("name") or "").strip()
         return name or cfg["expr"]

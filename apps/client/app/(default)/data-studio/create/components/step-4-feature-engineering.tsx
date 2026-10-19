@@ -1,16 +1,29 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
-import { Binary, Wrench } from 'lucide-react'
+import { Binary, Sparkles, Wrench, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   featureColumnName,
   type FeatureConfig,
 } from '@/lib/feature-engineering'
 import {
+  estimateRowCount,
+  isAutoFeature,
+  resolveFeatureInterval,
+  selectionWithFeatures,
+  withoutAutoFeatures,
+} from '@/lib/auto-features'
+import { resolveInterval } from '@/lib/dataset-fetch'
+import {
+  dwCriticalTagsAtom,
+  dwCustomDateRangeAtom,
+  dwCustomIntervalAtom,
   dwDraftArtifactIdAtom,
+  dwFetchConfigAtom,
   dwEditRootValidationRowCountAtom,
   dwFeaturedDatasetAtom,
   dwFeaturePresetAtom,
@@ -27,6 +40,7 @@ import { useDatasetGoldWarm } from '@/hooks/dataset/use-dataset-gold-warm'
 import { useDatasetFeaturePreviewSample } from '@/hooks/dataset/use-dataset-feature-preview-sample'
 import { useEdaWindowControl } from '@/hooks/dataset/use-eda-window-control'
 import { ExtractionPanel } from './feature-engineering/extraction-panel'
+import { AutoFeaturesDialog } from './feature-engineering/auto-features-dialog'
 import {
   CreationPanel,
   type FormulaPatch,
@@ -102,6 +116,11 @@ export function Step4FeatureEngineering({ nav }: Props) {
 
   const period = useAtomValue(dwTimeRangeAtom)
   const range = PERIOD_TO_RANGE[period]
+  const criticalTags = useAtomValue(dwCriticalTagsAtom)
+  const fetchConfig = useAtomValue(dwFetchConfigAtom)
+  const customInterval = useAtomValue(dwCustomIntervalAtom)
+  const customDateRange = useAtomValue(dwCustomDateRangeAtom)
+  const [autoOpen, setAutoOpen] = useState(false)
 
   // RESOLVED (DS-LAKE-024): an earlier version of this block called
   // `ensureDraft`/`ensureBronze` here to seed `dwDraftArtifactIdAtom` with a
@@ -177,6 +196,22 @@ export function Step4FeatureEngineering({ nav }: Props) {
     }
   }
 
+  // One write for the whole batch: `addFeature` reads `selectedColumns` from
+  // this render, so calling it N times would keep only the last column.
+  const addFeatures = (cfgs: FeatureConfig[]) => {
+    if (cfgs.length === 0) return
+    setFeatureConfigs(prev => [...prev, ...cfgs])
+    const next = selectionWithFeatures(selectedColumns, cfgs)
+    if (next !== null) setSelectedColumns(next)
+  }
+
+  const autoFeatureCount = featureConfigs.filter(isAutoFeature).length
+  const removeAutoFeatures = () => {
+    const next = withoutAutoFeatures(featureConfigs, selectedColumns)
+    setFeatureConfigs(next.configs)
+    if (next.selected !== null) setSelectedColumns(next.selected)
+  }
+
   const removeFeature = (id: string) => {
     setFeatureConfigs(prev => prev.filter(c => c.id !== id))
     const cfg = featureConfigs.find(c => c.id === id)
@@ -208,6 +243,21 @@ export function Step4FeatureEngineering({ nav }: Props) {
 
   const selectedCount =
     selectedColumns === null ? allColumns.length : selectedColumns.length
+
+  const featureInterval = useMemo(
+    () =>
+      resolveFeatureInterval(
+        featured.rows.map(r => r.timestamp),
+        fetchConfig.summaryDuration.trim() ||
+          resolveInterval(period, customInterval),
+      ),
+    [featured.rows, fetchConfig.summaryDuration, period, customInterval],
+  )
+  const autoRowCount = estimateRowCount(
+    customDateRange?.from,
+    customDateRange?.to,
+    featureInterval.ms,
+  )
 
   return (
     <div className="space-y-4">
@@ -254,8 +304,49 @@ export function Step4FeatureEngineering({ nav }: Props) {
           <Badge variant="secondary" className="tabular-nums">
             {selectedCount} / {allColumns.length} features
           </Badge>
+          {autoFeatureCount > 0 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={removeAutoFeatures}
+              className="h-7 gap-1 px-2 text-xs"
+            >
+              <X className="h-3.5 w-3.5" />
+              Remove auto-generated ({autoFeatureCount})
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setAutoOpen(true)}
+            disabled={originalColumns.length === 0}
+            title={
+              originalColumns.length === 0
+                ? 'No source tags to build features from yet.'
+                : undefined
+            }
+            className="h-7 gap-1 px-2 text-xs"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Auto-generate
+          </Button>
         </div>
       </div>
+
+      <AutoFeaturesDialog
+        open={autoOpen}
+        onOpenChange={setAutoOpen}
+        sourceColumns={originalColumns}
+        targetTag={targetTag}
+        criticalTags={criticalTags}
+        intervalMs={featureInterval.ms}
+        intervalSource={featureInterval.source}
+        rowCount={autoRowCount}
+        existingColumns={allColumns}
+        onAdd={addFeatures}
+      />
 
       {/* DS-LAKE-024-T07. Was: "Features and column selection are locked
           while editing preprocessing" — commented out, not corrected, when
@@ -368,6 +459,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
           dataset={featured}
           range={range}
           edaWindow={edaWindow}
+          readFeatureArtifact
         />
       </Tabs>
     </div>

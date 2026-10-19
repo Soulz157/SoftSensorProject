@@ -1,4 +1,10 @@
 import type { CalBasis, SummaryType } from '@/types/pi'
+import { resolveInterval } from '@/lib/dataset-fetch'
+import type {
+  CustomInterval,
+  DataSourceConfig,
+  FetchPeriod,
+} from '@/store/model-pipeline'
 
 /**
  * Historical-fetch configuration for the PI archive summary read (Step 5 of the
@@ -47,23 +53,6 @@ export const SUMMARY_TYPE_OPTIONS: { value: SummaryType; label: string }[] = [
 export const BATCH_SIZE_MIN = 1
 export const BATCH_SIZE_MAX = 1000
 
-/**
- * Toggle one summary aggregate in/out of the selection while guaranteeing at
- * least one stays selected (the fetch request requires a non-empty list, and an
- * empty aggregate set is never a meaningful request). Removing the last item is
- * a no-op.
- */
-export function toggleSummaryType(
-  current: SummaryType[],
-  value: SummaryType,
-): SummaryType[] {
-  if (current.includes(value)) {
-    const next = current.filter(t => t !== value)
-    return next.length === 0 ? current : next
-  }
-  return [...current, value]
-}
-
 /** Clamp a user-entered batch size into the connector's accepted range. */
 export function clampBatchSize(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_FETCH_CONFIG.batchSize
@@ -81,4 +70,64 @@ export function parseBatchSizeInput(raw: string): number | null {
   if (!/^\d+$/.test(t)) return null
   const n = Number(t)
   return n >= BATCH_SIZE_MIN && n <= BATCH_SIZE_MAX ? n : null
+}
+
+/** The PI summary parameters one raw fetch sends. */
+export interface PiSummaryParams {
+  summaryDuration: string
+  calBasis: CalBasis
+  summaryType: SummaryType[]
+  batchSize: number
+}
+
+/**
+ * What EVERY raw PI fetch of a dataset sends - the BRONZE materialize and a
+ * saved dataset's re-fetch (2026-10-19). Those used to send only the bucket
+ * (or nothing: python then fell back to "1m", so a re-fetched hourly dataset
+ * came back per-minute) and never the Historical Fetch Settings, so the rows
+ * that trained could differ from the ones on screen.
+ *
+ * A recipe saved before `fetchConfig` was stored gets DEFAULT_FETCH_CONFIG,
+ * which is exactly python's own defaults - how such a dataset was fetched.
+ */
+export function piSummaryParams(
+  fetchConfig: HistoricalFetchConfig | undefined,
+  period: FetchPeriod,
+  customInterval: CustomInterval | null,
+): PiSummaryParams {
+  const cfg = fetchConfig ?? DEFAULT_FETCH_CONFIG
+  return {
+    summaryDuration:
+      cfg.summaryDuration.trim() || resolveInterval(period, customInterval),
+    calBasis: cfg.calBasis,
+    summaryType: cfg.summaryType,
+    batchSize: cfg.batchSize,
+  }
+}
+
+/**
+ * Every PI source config stamped with the dataset's real fetch settings
+ * (2026-10-19). `pipelineConfig.sourceFetchConfigs[id]` is what an inference
+ * schedule copies (`resolveSourceBinding`) and fetches with - `intervalTime`
+ * as the bucket, `calcBasis` / `calcType` as `cal_basis` / `summary_type` -
+ * but nothing in the wizard set them from the Interval control, so a model
+ * trained on hourly rows scored per-minute ones. Non-PI configs pass through.
+ */
+export function withPiFetchSettings(
+  configs: Record<string, DataSourceConfig>,
+  params: PiSummaryParams,
+): Record<string, DataSourceConfig> {
+  const out: Record<string, DataSourceConfig> = {}
+  for (const [id, cfg] of Object.entries(configs)) {
+    out[id] =
+      cfg.type === 'pi'
+        ? {
+            ...cfg,
+            intervalTime: params.summaryDuration,
+            calcBasis: params.calBasis,
+            calcType: params.summaryType[0] ?? 'Average',
+          }
+        : cfg
+  }
+  return out
 }

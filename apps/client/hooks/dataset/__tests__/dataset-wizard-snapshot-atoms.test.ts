@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
 import type { WizardSnapshotValues } from '@/lib/dataset-wizard-snapshot'
 import {
+  SNAPSHOT_ATOMS,
   readWizardSnapshotValues,
   writeWizardSnapshotValues,
 } from '@/hooks/dataset/dataset-wizard-snapshot-atoms'
 import {
+  dwCriticalTagsAtom,
   dwDraftArtifactIdAtom,
   dwRawDatasetAtom,
   dwSelectedSourcesAtom,
@@ -26,6 +28,7 @@ function values(store: ReturnType<typeof createStore>): WizardSnapshotValues {
     selectedTagKeys: ['T1'],
     cleaningTags: ['T1'],
     targetTag: 'T2',
+    criticalTags: ['T1'],
     currentStep: 4,
     highestUnlocked: 5,
   }
@@ -40,6 +43,10 @@ describe('wizard snapshot <-> dw* atoms (DS-LAKE-037)', () => {
 
     expect(store.get(dwSelectedTagKeysAtom)).toEqual(new Set(['T1']))
     expect(readWizardSnapshotValues(store)).toEqual(v)
+  })
+
+  it('the sync hook watches the critical-tag atom, so a star toggle is saved', () => {
+    expect(SNAPSHOT_ATOMS).toContain(dwCriticalTagsAtom)
   })
 
   it('stores source ids only and restores the live source objects', () => {

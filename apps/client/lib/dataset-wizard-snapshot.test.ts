@@ -35,6 +35,7 @@ const VALUES: WizardSnapshotValues = {
   featureConfigs: [],
   featurePreset: null,
   targetTag: 'T2',
+  criticalTags: ['T1'],
   sdtaPresets: [],
   edaWindow: null,
   cropRange: null,
@@ -89,6 +90,24 @@ describe('dataset wizard snapshot (DS-LAKE-037)', () => {
     })
     expect(parseWizardSnapshot([], WIZARD_SNAPSHOT_VERSION).ok).toBe(false)
     expect(parseWizardSnapshot(null, WIZARD_SNAPSHOT_VERSION).ok).toBe(false)
+  })
+
+  it('resumes a snapshot written before critical tags existed, with none', () => {
+    const { criticalTags: _omit, ...older } = buildWizardSnapshot(VALUES)
+    const parsed = parseWizardSnapshot(older, WIZARD_SNAPSHOT_VERSION)
+    expect(parsed).toEqual({
+      ok: true,
+      values: { ...VALUES, criticalTags: [] },
+    })
+  })
+
+  it('refuses a criticalTags value that is not a string list', () => {
+    expect(
+      parseWizardSnapshot(
+        { ...buildWizardSnapshot(VALUES), criticalTags: 'T1' },
+        WIZARD_SNAPSHOT_VERSION,
+      ),
+    ).toMatchObject({ ok: false, field: 'criticalTags' })
   })
 
   it('carries no row data: the snapshot has no rows/dataset keys', () => {

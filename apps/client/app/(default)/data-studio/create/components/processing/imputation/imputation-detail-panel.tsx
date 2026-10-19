@@ -48,6 +48,8 @@ import { ImputationTrendChart } from './imputation-trend-chart'
 import { ImputationComparisonHistogram } from './imputation-comparison-histogram'
 import { StepTimeWindow } from './step-time-window'
 import type { StampBounds } from '@/lib/date-stamp'
+import { withZerosAsMissing, type ZeroReadingTag } from '@/lib/zero-readings'
+import { ZeroReadingsNotice } from './zero-readings-notice'
 
 interface Props {
   pipeline: CleaningStep[]
@@ -62,6 +64,8 @@ interface Props {
   quality?: TagQuality
   /** DS-LAKE-032. First/last loaded reading, for the step window pickers. */
   dataBounds: StampBounds | null
+  /** Batch tags with a high share of exact-zero readings not yet handled. */
+  zeroSuggestions?: ZeroReadingTag[]
 }
 
 interface ToolkitItem {
@@ -70,6 +74,10 @@ interface ToolkitItem {
   icon: React.ElementType
   /** Numeric param label (maps to `CleaningStep.param`). */
   paramLabel?: string
+  /** Shown while the param is blank - for a param that is optional. */
+  paramPlaceholder?: string
+  /** Tooltip on the param input. */
+  paramHint?: string
   /** Low-bound param label (maps to `CleaningStep.paramLow`) — clip only. */
   paramLowLabel?: string
   defaultParam?: number
@@ -97,7 +105,17 @@ const TOOLKIT: Record<CleaningCategory, ToolkitItem[]> = {
     { method: 'median', label: 'Fill Median', icon: Droplets },
     { method: 'forward', label: 'Forward Fill', icon: Droplets },
     { method: 'backward', label: 'Backward Fill', icon: Droplets },
-    { method: 'interpolate', label: 'Interpolate', icon: Droplets },
+    {
+      // No default: blank fills every gap, as Interpolate always has. A max
+      // gap leaves longer outages missing for a later step to decide.
+      method: 'interpolate',
+      label: 'Interpolate',
+      icon: Droplets,
+      paramLabel: 'Max gap',
+      paramPlaceholder: 'no limit',
+      paramHint:
+        'Longest run of missing rows to fill. Longer gaps stay missing, so a long outage is not bridged with a straight line. Blank or 0 = fill every gap.',
+    },
     {
       method: 'constant',
       label: 'Constant Value',
@@ -187,6 +205,7 @@ export function ImputationDetailPanel({
   onIsolate,
   quality,
   dataBounds,
+  zeroSuggestions = [],
 }: Props) {
   const label = resolveTagMeta(isolatedTag)?.label || 'Sensor Data'
   const severity = quality ? tagSeverity(quality) : 'clean'
@@ -210,6 +229,18 @@ export function ImputationDetailPanel({
       paramLow: item.defaultParamLow,
     }
     onPipelineChange([...pipeline, step])
+    onPreviewIndexChange(pipeline.length + 1)
+  }
+
+  // One step, FIRST, scoped to the suggested tags - see lib/zero-readings.ts.
+  const treatZerosAsMissing = () => {
+    onPipelineChange(
+      withZerosAsMissing(
+        pipeline,
+        zeroSuggestions.map(z => z.tag),
+        crypto.randomUUID(),
+      ),
+    )
     onPreviewIndexChange(pipeline.length + 1)
   }
 
@@ -308,8 +339,15 @@ export function ImputationDetailPanel({
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
         <div className="flex flex-col gap-6 xl:col-span-4">
+          {/* A suggestion, never applied on its own: 0 can be a real
+              reading (closed valve, stopped pump). */}
+          <ZeroReadingsNotice
+            suggestions={zeroSuggestions}
+            onTreatAsMissing={treatZerosAsMissing}
+          />
+
           {/* Cleaning Toolkit */}
-          <div className="w-full rounded-xl border border-border bg-card/50 p-4">
+          <div className="w-full  rounded-xl border border-border bg-card/50 p-4">
             <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <Settings2 className="h-4 w-4 text-primary" />
               Cleaning Toolkit
@@ -427,6 +465,9 @@ export function ImputationDetailPanel({
                               <Input
                                 type="number"
                                 value={step.param ?? ''}
+                                placeholder={item.paramPlaceholder}
+                                title={item.paramHint}
+                                aria-label={item.paramLabel}
                                 onChange={e =>
                                   setParam(
                                     step.uid,

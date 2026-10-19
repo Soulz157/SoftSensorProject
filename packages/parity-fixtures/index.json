@@ -111,6 +111,14 @@
       "engine": "preprocessPipelines"
     },
     {
+      "name": "interpolate_max_gap_2",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "interpolate_max_gap_0_is_no_limit",
+      "engine": "preprocessPipelines"
+    },
+    {
       "name": "range_exclude_then_crop",
       "engine": "preprocessPipelines"
     },
@@ -224,6 +232,14 @@
     },
     {
       "name": "feature_datetime_hour",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_datetime_cyclic",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_group_aggregates",
       "engine": "applyFeatures"
     },
     {

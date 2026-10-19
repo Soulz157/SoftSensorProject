@@ -1,5 +1,6 @@
 'use client'
 
+import { spansMultipleDays } from '@/lib/chart-format'
 import { useMemo, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import {
@@ -56,6 +57,7 @@ import {
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
   dwDraftGoldArtifactIdAtom,
+  dwDraftFeatureArtifactIdAtom,
   dwScalerConfigsAtom,
   dwEditingDatasetAtom,
   dwModeAtom,
@@ -153,6 +155,17 @@ interface Props {
    * and a one-line note says so when it does not.
    */
   defaultCompareMode?: CompareMode
+  /**
+   * Read Step 4's features-only artifact (`dwDraftFeatureArtifactIdAtom`)
+   * when no GOLD exists yet (2026-10-19). Since the DS-LAKE-022 reorder the
+   * create-mode feature warm writes THAT atom, not the GOLD one, so the card
+   * kept reading the raw BRONZE: the Correlation tab - the only tab that
+   * filters its tags by the artifact's own column list - silently dropped
+   * every feature added in Step 4, and the other tabs asked the BRONZE for
+   * columns it never had. Off by default: Step 3.1's EDA is about the raw
+   * fetch, and the features artifact already has the holdout cut out.
+   */
+  readFeatureArtifact?: boolean
 }
 type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
 
@@ -278,6 +291,7 @@ export function DataAnalysisCard({
   showTagSelector = false,
   edaWindow,
   defaultCompareMode = 'tag',
+  readFeatureArtifact = false,
 }: Props) {
   // Declared before the tag-selection hook because it also decides WHERE that
   // selection lives, not just which artifact routes are read: a caller naming
@@ -321,7 +335,11 @@ export function DataAnalysisCard({
   const draftId = useAtomValue(dwDraftIdAtom)
   const draftArtifactId = useAtomValue(dwDraftArtifactIdAtom)
   const goldArtifactId = useAtomValue(dwDraftGoldArtifactIdAtom)
-  const analysisArtifactId = goldArtifactId ?? draftArtifactId
+  const featureArtifactId = useAtomValue(dwDraftFeatureArtifactIdAtom)
+  const analysisArtifactId =
+    goldArtifactId ??
+    (readFeatureArtifact ? featureArtifactId : null) ??
+    draftArtifactId
   const editingDataset = useAtomValue(dwEditingDatasetAtom)
 
   // Route every server-backed tab to whichever leg can actually READ the
@@ -880,6 +898,9 @@ export function DataAnalysisCard({
               rows={trend.rows}
               tags={activeTags}
               range={range}
+              // `9 Jan` once the rows span days - the range-based ticks show
+              // only a weekday or a clock time (spansMultipleDays).
+              dateOnlyTicks={spansMultipleDays(trend.rows)}
               hideTagSelector={!showTagSelector}
               // Emphasis is only meaningful where something can change it.
               // `focusedTag` never returns empty — it falls back to the first

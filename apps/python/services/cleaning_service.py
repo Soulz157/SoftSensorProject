@@ -94,15 +94,56 @@ def _op_drop(values, statuses, step, precision, drop_rows) -> None:
             drop_rows.add(i)
 
 
+def _max_gap(raw: Any) -> int | None:
+    """`interpolate`'s optional max gap, read exactly as `interpolateMaxGap`
+    (preprocessing.ts): a whole number of rows >= 1, else no limit."""
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    rows = math.floor(value)
+    return rows if rows >= 1 else None
+
+
+def _long_gap_cells(statuses, max_gap: int) -> set[int]:
+    """Indices of non-Good cells in a run longer than `max_gap` (`longGapCells`)."""
+    skip: set[int] = set()
+    n = len(statuses)
+    i = 0
+    while i < n:
+        if statuses[i] == STATUS_GOOD:
+            i += 1
+            continue
+        end = i
+        while end < n and statuses[end] != STATUS_GOOD:
+            end += 1
+        if end - i > max_gap:
+            skip.update(range(i, end))
+        i = end
+    return skip
+
+
 def _op_interpolate(values, statuses, step, precision, drop_rows) -> None:
     """Linear interpolation between the nearest Good neighbours.
 
     With one neighbour the value is carried from it; with none it is left
     alone. Either way the cell becomes Good, matching `interpolateTag`.
+
+    `param`, when set, is a max gap in rows: a run of more consecutive
+    non-Good cells than that is left untouched (still non-Good), so a long
+    outage is not bridged with an invented straight line.
     """
     n = len(values)
+    max_gap = _max_gap(step.get("param"))
+    skip = _long_gap_cells(statuses, max_gap) if max_gap is not None else None
     for i in range(n):
         if statuses[i] == STATUS_GOOD:
+            continue
+        if skip is not None and i in skip:
             continue
 
         p = i - 1

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { SlidersHorizontal } from 'lucide-react'
+import { ChevronDown, SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Label } from '@/components/ui/label'
 import {
@@ -18,22 +18,27 @@ import {
   CAL_BASIS_OPTIONS,
   SUMMARY_TYPE_OPTIONS,
   parseBatchSizeInput,
-  toggleSummaryType,
   type HistoricalFetchConfig,
 } from '@/lib/fetch-config'
 
 interface Props {
   config: HistoricalFetchConfig
   onChange: (next: HistoricalFetchConfig) => void
-  /** Bucket size derived from the Fetch Period control — shown as the summary
-   * duration placeholder so an empty override reads as "use the period". */
+  /** Bucket size derived from the Interval control — shown as the summary
+   * duration placeholder so an empty override reads as "use the interval". */
   derivedDuration?: string
   disabled?: boolean
 }
 
 /**
- * PI historical-fetch summary settings (Step 5): calculation basis, summary
- * aggregate(s), bucket duration override, and tag batch size. The wizard holds
+ * PI historical-fetch summary settings (Step 2): calculation basis, summary
+ * aggregate, tag batch size, and - under Advanced - a bucket override.
+ *
+ * 2026-10-19: Summary Type is ONE choice. It was a multi-select, but the
+ * fetch reads only the first aggregate (`data_service.fetch`:
+ * `body.summary_type[0]`), so extra picks did nothing. The bucket override
+ * moved under Advanced: the Interval control above is the normal way to set
+ * it, and two visible bucket fields read as a duplicate. The wizard holds
  * the config in `dwFetchConfigAtom`; the only local state is the Batch Size
  * box's typed text, so a half-typed or invalid value never reaches the config.
  */
@@ -58,6 +63,11 @@ export function HistoricalFetchConfigCard({
     }
   }
   const batchInvalid = batchTouched && parseBatchSizeInput(batchText) === null
+  // Open on arrival when an override is already set, so it is never hidden.
+  const [advancedOpen, setAdvancedOpen] = useState(
+    config.summaryDuration.trim() !== '',
+  )
+  const summaryType = config.summaryType[0]
 
   return (
     <div
@@ -140,46 +150,26 @@ export function HistoricalFetchConfigCard({
           </p>
         </div>
 
-        {/* Summary Duration override */}
+        {/* Summary Type (one choice) */}
         <div className="grid gap-1.5">
-          <Label htmlFor="hf-summary-duration" className="text-xs">
-            Summary Duration
+          <Label id="hf-summary-type" className="text-xs">
+            Summary Type
           </Label>
-          <input
-            id="hf-summary-duration"
-            type="text"
-            value={config.summaryDuration}
-            disabled={disabled}
-            placeholder={derivedDuration ?? 'e.g. 1m, 10m, 1h'}
-            onChange={e =>
-              onChange({ ...config, summaryDuration: e.target.value.trim() })
-            }
-            className="h-9 rounded-md border border-border bg-background px-2.5 font-mono text-sm"
-          />
-          <p className="text-[11px] text-muted-foreground">
-            Bucket size. Blank uses the Fetch Period above.
-          </p>
-        </div>
-
-        {/* Summary Type (multi) */}
-        <div className="grid gap-1.5">
-          <Label className="text-xs">Summary Type</Label>
-          <div className="flex flex-wrap gap-1.5">
+          <div
+            role="group"
+            aria-labelledby="hf-summary-type"
+            className="flex flex-wrap gap-1.5"
+          >
             {SUMMARY_TYPE_OPTIONS.map(o => {
-              const active = config.summaryType.includes(o.value)
+              const active = summaryType === o.value
               return (
                 <button
                   key={o.value}
                   type="button"
                   disabled={disabled}
+                  aria-pressed={active}
                   onClick={() =>
-                    onChange({
-                      ...config,
-                      summaryType: toggleSummaryType(
-                        config.summaryType,
-                        o.value,
-                      ),
-                    })
+                    onChange({ ...config, summaryType: [o.value] })
                   }
                   className={cn(
                     'h-7 rounded-md px-2.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
@@ -194,6 +184,58 @@ export function HistoricalFetchConfigCard({
             })}
           </div>
         </div>
+      </div>
+
+      {/* Advanced: the bucket override. */}
+      <div className="space-y-3">
+        <button
+          type="button"
+          aria-expanded={advancedOpen}
+          aria-controls="hf-advanced"
+          onClick={() => setAdvancedOpen(o => !o)}
+          disabled={disabled}
+          className="flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <ChevronDown
+            className={cn(
+              'h-3.5 w-3.5 transition-transform',
+              !advancedOpen && '-rotate-90',
+            )}
+          />
+          Advanced
+          {config.summaryDuration.trim() && !advancedOpen && (
+            <span className="font-mono">
+              · Summary Duration {config.summaryDuration}
+            </span>
+          )}
+        </button>
+        {advancedOpen && (
+          <div id="hf-advanced">
+            <div className="grid max-w-xs gap-1.5">
+              <Label htmlFor="hf-summary-duration" className="text-xs">
+                Summary Duration
+              </Label>
+              <input
+                id="hf-summary-duration"
+                type="text"
+                value={config.summaryDuration}
+                disabled={disabled}
+                placeholder={derivedDuration ?? 'e.g. 1m, 10m, 1h'}
+                onChange={e =>
+                  onChange({
+                    ...config,
+                    summaryDuration: e.target.value.trim(),
+                  })
+                }
+                className="h-9 rounded-md border border-border bg-background px-2.5 font-mono text-sm"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Overrides the Interval above (e.g. 30m). Blank uses the
+                Interval.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -1,13 +1,9 @@
 import { datasetDraftService } from '@/services/dataset-draft'
-import {
-  piFetchInputError,
-  resolveInterval,
-  toPiTime,
-} from '@/lib/dataset-fetch'
+import { piFetchInputError, toPiTime } from '@/lib/dataset-fetch'
 import type { CustomInterval, FetchPeriod } from '@/store/model-pipeline'
 import type { CustomDateRange } from '@/store/data-visualize'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
-import type { HistoricalFetchConfig } from '@/lib/fetch-config'
+import { piSummaryParams, type HistoricalFetchConfig } from '@/lib/fetch-config'
 
 /**
  * Pure (no React, no atoms) draft/bronze creation logic, extracted from
@@ -139,16 +135,13 @@ export async function ensureBronzeArtifactId(
     )
     if (!guard.ok) throw new Error(guard.error)
 
-    const summaryDuration =
-      ctx.fetchConfig.summaryDuration.trim() ||
-      resolveInterval(ctx.period, ctx.customInterval)
-
     const res = await datasetDraftService.materialize(draftId, {
       sourceId: guard.source.id,
       tags,
       startTime: toPiTime(ctx.customDateRange!.from),
       endTime: toPiTime(ctx.customDateRange!.to),
-      summaryDuration,
+      // Bucket AND the Historical Fetch Settings: the BRONZE is what trains.
+      ...piSummaryParams(ctx.fetchConfig, ctx.period, ctx.customInterval),
       // DS-LAKE-018-T03: same toPiTime conversion as startTime/endTime — the
       // python side compares holdout timestamps directly against the
       // materialized frame's own, so both must speak the same format.

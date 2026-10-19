@@ -147,7 +147,46 @@ def _datetime_part(ts: pd.Series, part: str) -> np.ndarray:
         return ((parsed.dt.dayofweek + 1) % 7).to_numpy(dtype="float64")
     if part == "month":
         return parsed.dt.month.to_numpy(dtype="float64")
+    # Cyclic encoding (2026-10-19), from the same hour / JS-convention
+    # day-of-week as above, so `datetimePart` and this agree on the input.
+    if part in ("hourSin", "hourCos"):
+        angle = 2 * np.pi * parsed.dt.hour.to_numpy(dtype="float64") / 24
+        return np.sin(angle) if part == "hourSin" else np.cos(angle)
+    if part in ("dayOfWeekSin", "dayOfWeekCos"):
+        dow = ((parsed.dt.dayofweek + 1) % 7).to_numpy(dtype="float64")
+        angle = 2 * np.pi * dow / 7
+        return np.sin(angle) if part == "dayOfWeekSin" else np.cos(angle)
     raise FeatureError(f"Unknown datetime part {part!r}")
+
+
+def _group_aggregate(values: list[float], agg: str) -> float:
+    """One row's `group` aggregate - `groupAggregate` (feature-engineering.ts)
+    line for line: sums run left to right in member order, `std` is SAMPLE
+    std and 0 for a single member."""
+    n = len(values)
+    if agg == "mean":
+        total = 0.0
+        for v in values:
+            total += v
+        return total / n
+    if agg == "min":
+        return min(values)
+    if agg == "max":
+        return max(values)
+    if agg == "spread":
+        return max(values) - min(values)
+    if agg == "std":
+        if n < 2:
+            return 0.0
+        total = 0.0
+        for v in values:
+            total += v
+        mean = total / n
+        acc = 0.0
+        for v in values:
+            acc += (v - mean) * (v - mean)
+        return math.sqrt(acc / (n - 1))
+    raise FeatureError(f"Unknown group aggregate {agg!r}")
 
 
 # ── per-config column computation ─────────────────────────────────────────
@@ -293,6 +332,24 @@ def _compute_feature_column(
             else:
                 raise FeatureError(f"Unknown arith op {op!r}")
             values[i], statuses[i] = result, STATUS_GOOD
+        return values, statuses
+
+    if kind == "group":
+        # Bad when ANY member is not Good (2026-10-19), like arith/ratio.
+        srcs = [source(t) for t in cfg["tags"]]
+        agg = cfg["agg"]
+        for i in range(n):
+            vals: list[float] | None = [] if srcs else None
+            for s in srcs:
+                v = _good_value(s[0][i], s[1][i]) if s is not None else None
+                if v is None:
+                    vals = None
+                    break
+                vals.append(v)
+            if vals is None:
+                values[i], statuses[i] = 0.0, STATUS_BAD
+            else:
+                values[i], statuses[i] = _group_aggregate(vals, agg), STATUS_GOOD
         return values, statuses
 
     if kind == "log":

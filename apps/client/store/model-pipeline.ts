@@ -1,4 +1,5 @@
 import { atom } from 'jotai'
+import type { CalBasis, SummaryType } from '@/types/pi'
 import type { TimeRange } from '@/lib/mock-readings'
 import type { Dataset, FillStrategyConfig } from '@/lib/preprocessing'
 import type {
@@ -495,8 +496,15 @@ export interface PIConfig {
   type: 'pi'
   piName?: string
   piServerUrl: string
-  calcType: 'Average' | 'Interpolated' | 'Recorded'
-  calcBasis: 'TimeWeighted' | 'EventWeighted'
+  /**
+   * Read by the backend's inference-window scheduler as the LIVE fetch's
+   * `summary_type` / `cal_basis` / bucket (`asFetchConfig`). Since
+   * 2026-10-19 the Data Studio wizard writes them at Save from the Interval
+   * and Historical Fetch Settings (`withPiFetchSettings`), so inference reads
+   * the source the way the dataset was built.
+   */
+  calcType: 'Average' | 'Interpolated' | 'Recorded' | SummaryType
+  calcBasis: 'TimeWeighted' | 'EventWeighted' | CalBasis
   intervalTime: string
   userName?: string
   password?: string

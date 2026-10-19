@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  Star,
   Target,
   Trash2,
   Upload,
@@ -58,6 +59,7 @@ import {
 } from '@/hooks/dataset/use-dataset-tag-search'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import {
+  dwCriticalTagsAtom,
   dwFeaturePresetAtom,
   dwPresetRangeAtom,
   dwPresetRangeStaleAtom,
@@ -69,6 +71,12 @@ import {
   presetRangeCandidatesFromDocument,
 } from '@/store/dataset-studio'
 import { planPresetApplication } from '@/lib/feature-preset'
+import {
+  isCriticalTag,
+  renameCriticalTag,
+  toggleCriticalTag,
+  withoutCriticalTags,
+} from '@/lib/critical-tags'
 import { useStageSdtaPreset } from '@/hooks/use-sdta-preset'
 import { SourcePickerSheet } from './source-configs/source-picker-sheet'
 import { PresetApplyManager } from './preset-apply-modal'
@@ -372,6 +380,9 @@ export function UnifiedTagTable({ nav }: Props) {
   // dataset-tag-sidebar against the frame) and it reaches Python as the
   // `target_y` column name.
   const [targetTag, setTargetTag] = useAtom(dwTargetTagAtom)
+  // Names, like the target, so every side effect below that keeps the target
+  // honest (rename, delete, a new Y) keeps this list honest too.
+  const [criticalTags, setCriticalTags] = useAtom(dwCriticalTagsAtom)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -459,6 +470,8 @@ export function UnifiedTagTable({ nav }: Props) {
         return
       }
       setTargetTag(r.tagName)
+      // Y is never critical (lib/critical-tags.ts) - it has its own rules.
+      setCriticalTags(prev => withoutCriticalTags(prev, [r.tagName]))
       // A target has to be in the fetch to reach the artifact at all. Mirrors
       // what the preset path already does (`planPresetApplication` unions the
       // resolved target into its selection keys), and goes through the
@@ -468,7 +481,45 @@ export function UnifiedTagTable({ nav }: Props) {
         return prev.has(k) ? prev : new Set(prev).add(k)
       })
     },
-    [engineeredNames, isTargetRow, setTargetTag, setSelectedKeys, rowKey],
+    [
+      engineeredNames,
+      isTargetRow,
+      setTargetTag,
+      setCriticalTags,
+      setSelectedKeys,
+      rowKey,
+    ],
+  )
+
+  const isCriticalRow = useCallback(
+    (r: DatasetTagRow) => isCriticalTag(r.tagName, criticalTags),
+    [criticalTags],
+  )
+
+  /**
+   * Marks a tag critical. Like the target it also ticks the checkbox: a tag
+   * the model must keep has to be in the fetch. The target itself and
+   * engineered columns cannot be critical (the button is disabled for both).
+   */
+  const toggleCritical = useCallback(
+    (r: DatasetTagRow) => {
+      if (engineeredNames.has(r.tagName) || isTargetRow(r)) return
+      const wasCritical = isCriticalTag(r.tagName, criticalTags)
+      setCriticalTags(prev => toggleCriticalTag(prev, r.tagName))
+      if (wasCritical) return
+      setSelectedKeys(prev => {
+        const k = rowKey(r)
+        return prev.has(k) ? prev : new Set(prev).add(k)
+      })
+    },
+    [
+      engineeredNames,
+      isTargetRow,
+      criticalTags,
+      setCriticalTags,
+      setSelectedKeys,
+      rowKey,
+    ],
   )
 
   // Prune by source, not by row set: a key whose source is still selected is
@@ -659,6 +710,7 @@ export function UnifiedTagTable({ nav }: Props) {
   const commitEdit = useCallback(
     (row: DatasetTagRow) => {
       const wasTarget = isTargetRow(row)
+      const wasCritical = isCriticalRow(row)
       renameRow(row, editValue)
       setEditingId(null)
       // Follow the rename. The target is stored by NAME, so leaving the old
@@ -669,8 +721,19 @@ export function UnifiedTagTable({ nav }: Props) {
       if (wasTarget && trimmed !== '' && trimmed !== row.originalName) {
         setTargetTag(trimmed)
       }
+      // Same orphan, same guard, for the critical list.
+      if (wasCritical && trimmed !== '' && trimmed !== row.originalName) {
+        setCriticalTags(prev => renameCriticalTag(prev, row.tagName, trimmed))
+      }
     },
-    [editValue, renameRow, isTargetRow, setTargetTag],
+    [
+      editValue,
+      renameRow,
+      isTargetRow,
+      isCriticalRow,
+      setTargetTag,
+      setCriticalTags,
+    ],
   )
 
   const cancelEdit = useCallback(() => setEditingId(null), [])
@@ -683,6 +746,12 @@ export function UnifiedTagTable({ nav }: Props) {
     // Deleting the target's own row leaves the atom pointing at a tag the
     // dataset no longer has — same orphan the rename path guards against.
     if (selectedRows.some(isTargetRow)) setTargetTag(null)
+    setCriticalTags(prev =>
+      withoutCriticalTags(
+        prev,
+        selectedRows.map(r => r.tagName),
+      ),
+    )
     selectedRows.forEach(deleteRow)
     setSelectedKeys(prev => {
       const next = new Set(prev)
@@ -888,6 +957,9 @@ export function UnifiedTagTable({ nav }: Props) {
               return next
             })
             setTargetTag(plan.targetTag)
+            const presetTarget = plan.targetTag
+            if (presetTarget)
+              setCriticalTags(prev => withoutCriticalTags(prev, [presetTarget]))
             setFeaturePreset(summary)
 
             // DS-LAKE-020-T05: snapshot per-tag range proposals now — `document`
@@ -1143,9 +1215,10 @@ export function UnifiedTagTable({ nav }: Props) {
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 {/* Widened from w-10: this column now carries the target (Y)
-                    toggle beside the checkbox. Left-aligned rather than
-                    centred so the header checkbox lines up with the rows'. */}
-                <TableHead className="w-20 pl-4">
+                    and critical (star) toggles beside the checkbox.
+                    Left-aligned rather than centred so the header checkbox
+                    lines up with the rows'. */}
+                <TableHead className="w-28 pl-4">
                   <input
                     ref={headerCheckboxRef}
                     type="checkbox"
@@ -1178,6 +1251,7 @@ export function UnifiedTagTable({ nav }: Props) {
                   : undefined
 
                 const isTarget = isTargetRow(row)
+                const isCritical = isCriticalRow(row)
                 const isEngineered = engineeredNames.has(row.tagName)
 
                 return (
@@ -1231,6 +1305,41 @@ export function UnifiedTagTable({ nav }: Props) {
                           )}
                         >
                           <Target className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEngineered || isTarget}
+                          aria-pressed={isCritical}
+                          aria-label={
+                            isCritical
+                              ? `Unmark ${row.tagName} as critical`
+                              : `Mark ${row.tagName} as critical`
+                          }
+                          title={
+                            isEngineered
+                              ? `${row.tagName} is an engineered feature — only source tags can be critical.`
+                              : isTarget
+                                ? 'The target (Y) cannot be critical — it has its own rules.'
+                                : isCritical
+                                  ? 'Unmark critical'
+                                  : 'Mark as critical — a tag the model must not lose. Preset range cutoffs then suggest Clip for it instead of Exclude.'
+                          }
+                          onClick={() => toggleCritical(row)}
+                          className={cn(
+                            'flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors',
+                            isEngineered || isTarget
+                              ? 'cursor-not-allowed text-muted-foreground/40'
+                              : isCritical
+                                ? 'text-primary hover:bg-primary/10'
+                                : 'cursor-pointer text-muted-foreground/50 hover:bg-muted hover:text-primary',
+                          )}
+                        >
+                          <Star
+                            className={cn(
+                              'h-3.5 w-3.5',
+                              isCritical && 'fill-current',
+                            )}
+                          />
                         </button>
                       </div>
                     </TableCell>

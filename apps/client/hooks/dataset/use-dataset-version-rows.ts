@@ -1,5 +1,6 @@
 'use client'
 
+import { piSummaryParams } from '@/lib/fetch-config'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { buildRawDataset } from '@/lib/preprocessing'
 import type { Dataset } from '@/lib/preprocessing'
@@ -331,6 +332,13 @@ export function useDatasetVersionRows(
         tags: config.baseTags!,
         startTime: toPiTime(config.customDateRange!.from),
         endTime: toPiTime(config.customDateRange!.to),
+        // The interval and summary settings the dataset was built with -
+        // absent, python fetched every minute.
+        ...piSummaryParams(
+          config.fetchConfig,
+          config.timeRange,
+          config.customInterval,
+        ),
       })
       if (signal.aborted) return
       // `createRaw` always produces a BRONZE artifact

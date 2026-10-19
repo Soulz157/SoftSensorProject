@@ -366,7 +366,7 @@ export interface CleaningStep {
   uid: string
   category: CleaningCategory
   method: CleaningMethod
-  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip/crop/exclude high */
+  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip/crop/exclude high · interpolate max gap (rows) */
   param?: number
   /** clip/crop/exclude low bound only */
   paramLow?: number
@@ -443,11 +443,63 @@ const FILL_METHODS: Partial<Record<CleaningMethod, FillStrategy>> = {
   backward: 'backward',
 }
 
-/** Linear-interpolate every non-Good cell for a tag; flips them to Good. */
-function interpolateTag(rows: DataRow[], tag: string): void {
+/**
+ * `interpolate`'s optional max gap: a whole number of rows >= 1, else no
+ * limit (absent, blank-as-0, negative). Shared with `cleaning_service.py`'s
+ * `_max_gap` - same reading, so a saved recipe replays identically.
+ */
+export function interpolateMaxGap(param: number | undefined): number | null {
+  if (param === undefined || !Number.isFinite(param)) return null
+  const rows = Math.floor(param)
+  return rows >= 1 ? rows : null
+}
+
+/**
+ * Indices of non-Good cells in a run LONGER than `maxGap` consecutive cells.
+ * Interpolation leaves those alone (they stay non-Good, so a later fill or
+ * Drop Missing step decides) - bridging a long outage with a straight line
+ * invents data the model then trains on as real.
+ */
+function longGapCells(
+  rows: DataRow[],
+  tag: string,
+  maxGap: number,
+): Set<number> {
+  const skip = new Set<number>()
+  let i = 0
+  while (i < rows.length) {
+    if (!rows[i]?.cells[tag] || rows[i]?.cells[tag]?.status === 'Good') {
+      i++
+      continue
+    }
+    let end = i
+    while (
+      end < rows.length &&
+      rows[end]?.cells[tag] &&
+      rows[end]?.cells[tag]?.status !== 'Good'
+    )
+      end++
+    if (end - i > maxGap) for (let j = i; j < end; j++) skip.add(j)
+    i = end
+  }
+  return skip
+}
+
+/**
+ * Linear-interpolate every non-Good cell for a tag; flips them to Good. With
+ * `maxGap`, a run of more than that many consecutive non-Good cells is left
+ * untouched (see `longGapCells`).
+ */
+function interpolateTag(
+  rows: DataRow[],
+  tag: string,
+  maxGap: number | null = null,
+): void {
+  const skip = maxGap === null ? null : longGapCells(rows, tag, maxGap)
   for (let i = 0; i < rows.length; i++) {
     const cell = rows[i]?.cells[tag]
     if (!cell || cell.status === 'Good') continue
+    if (skip?.has(i)) continue
 
     let p = i - 1
     while (p >= 0 && rows[p]?.cells[tag]?.status !== 'Good') p--
@@ -487,7 +539,7 @@ function applyCleaningStep(
     return
   }
   if (method === 'interpolate') {
-    interpolateTag(rows, tag)
+    interpolateTag(rows, tag, interpolateMaxGap(step.param))
     return
   }
   const fill = FILL_METHODS[method]

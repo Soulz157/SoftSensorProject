@@ -41,3 +41,23 @@ export function formatDayMonth(value: string | number | Date): string {
   const month = MONTHS[d.getMonth()]
   return month ? `${d.getDate()} ${month}` : ''
 }
+
+/** Above this span a trend chart labels its X axis by day (`9 Jan`). */
+export const DAY_TICKS_FROM_MS = 36 * 3_600_000
+
+/**
+ * Whether a trend's rows span more than ~a day and a half (2026-10-19), so
+ * its X axis should read `9 Jan` rather than a clock time or weekday. The
+ * Line tab used to pick its tick format from the fetch INTERVAL
+ * (`PERIOD_TO_RANGE`: 1 h -> weekday, 1 min -> clock time), which on a
+ * months-long dataset showed "Fri, Sat, ..." with no date at all. Reads the
+ * first and last row only; naive stamps are compared as the same wall clock.
+ */
+export function spansMultipleDays(
+  rows: readonly { timestamp: string }[],
+): boolean {
+  if (rows.length < 2) return false
+  const t = (s: string) => new Date(s.replace(' ', 'T')).getTime()
+  const span = t(rows[rows.length - 1]!.timestamp) - t(rows[0]!.timestamp)
+  return Number.isFinite(span) && Math.abs(span) > DAY_TICKS_FROM_MS
+}

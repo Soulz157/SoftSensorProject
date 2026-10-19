@@ -5146,6 +5146,122 @@
         "The estimate covers the whole frame; the server applies the rule to the training rows and, separately, to the holdout before scaling."
       ],
       "progress_note": "90%: code and tests done, real-data parity verified; live Step 5 check pending."
+    },
+    {
+      "id": "DS-LAKE-040",
+      "title": "Feature-engineering assist: critical tags, auto-generated features, zeros-as-missing, interpolate max gap, cyclic time and loop aggregates",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "DS-LAKE-038"
+      ],
+      "description": "User request 2026-10-19: check whether an hourly feature-engineering recipe (zeros treated as missing, short-gap imputation, physical clipping, lags, rolling mean/std, differences, pairwise differences, analyzer-loop aggregates, time-cycle features, windows capped at 24 h) can be added to the Create Dataset flow as automatic features. Audit result: lags, rolling mean/std, differences, pairwise differences and hour/day-of-week already exist as feature kinds; clipping exists (clip, Preset range card); zeros-as-missing is reachable with exclude [0, 0]; interpolate had no gap limit; time-cycle sin/cos and analyzer-loop aggregates do not exist. Built in phases: 1.5 critical tags + Clip/Exclude suggestion, 1 Auto-generate in Step 4, 2 zeros-as-missing suggestion and interpolate max gap, 3 cyclic datetime parts and a new group feature kind for loop aggregates.",
+      "decisions": [
+        "2026-10-19 user: critical tags are picked in Step 1's tag table (star beside Target), not in the Preset range card.",
+        "2026-10-19 user: Preset range cutoff suggests Clip for a critical tag and Exclude otherwise; an untouched row DEFAULTS to the suggestion (previously every row defaulted to Clip) and the reason is in a tooltip. An explicit pick or an enabled row is never rewritten.",
+        "Auto-generate uses only existing feature kinds (lag, rolling, delta, arith sub, datetime), so feature_spec.json, holdout replay and inference lookback (max_replay_lookback) need no change.",
+        "Windows are stated in hours and converted to rows at the data's own cadence (median timestamp gap of the preview sample), falling back to the configured fetch bucket; the Step 2 summaryDuration override is not part of the saved recipe, so edit mode cannot rely on it.",
+        "Rolling windows are capped at 240 rows: the server computes rolling row by row at about 150 ns per window cell (measured 2026-10-19), so 24 h of 1-minute data is about a minute per feature. Lags are not row-capped.",
+        "The target is never a source for auto features (a lag of Y makes the model target-derived).",
+        "Zeros-as-missing is a suggestion only (0 can be a real reading): one ordinary exclude step with band [0, 0], scoped to the suggested tags and inserted FIRST in the pipeline. No new cleaning op.",
+        "Interpolate max gap rides on the step's existing param: whole rows >= 1, otherwise no limit, so every saved recipe replays byte-identically (existing parity fixtures unchanged).",
+        "2026-10-19 user: loop aggregates group tags automatically by name - same ISA letters + loop number, any trailing letter, same attribute (AI602A.PV + AI602B.PV -> AI602; FIC114A..C -> FIC114). A value and its setpoint, or different letters (FIC107 vs FY107), are never grouped. Each loop can be left out in the dialog.",
+        "2026-10-19 user: a group aggregate is Bad when ANY member is not Good (same rule as arith/ratio).",
+        "2026-10-19 user: aggregates are mean, spread (max - min), min, max, and sample std (only for loops of 3+ tags in Auto-generate).",
+        "Cyclic time is new datetime parts (hourSin/hourCos/dayOfWeekSin/dayOfWeekCos), not a new kind; Auto-generate's Time cycle family now emits the sin/cos pairs instead of the raw hour/day-of-week.",
+        "A group config's `name` IS its output column (e.g. AI602__grp_mean), the meaning `name` already has in feature_spec.json, the holdout replay rebuild and max_replay_lookback; a bare loop label there would be misread as the column."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-040-T01",
+          "title": "Critical tags (Phase 1.5)",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/critical-tags.ts; dwCriticalTagsAtom (store/dataset-studio.ts, cleared by both resets, hydrated from pipelineConfig.criticalTags in edit mode); PipelineConfig.criticalTags written by Step 6; wizard snapshot field (optional guard, old drafts resume with []); Step 1 star in unified-tag-table.tsx follows target/rename/delete/preset-target; PresetRangeCard suggestion badge + tooltip + off-suggestion note."
+        },
+        {
+          "id": "DS-LAKE-040-T02",
+          "title": "Auto-generate features in Step 4 (Phase 1)",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/auto-features.ts (planAutoFeatures, resolveFeatureInterval, inferIntervalMs, estimateRowCount, selectionWithFeatures, withoutAutoFeatures; ids prefixed auto:); feature-engineering/auto-features-dialog.tsx; Step 4 header Auto-generate and Remove auto-generated (N)."
+        },
+        {
+          "id": "DS-LAKE-040-T03",
+          "title": "Zeros-as-missing suggestion in Step 5 (Phase 2)",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/zero-readings.ts (Good readings exactly 0 at >= 5% of the loaded sample); notice + Treat zeros as missing in imputation-detail-panel.tsx, fed by step-5-data-cleaning.tsx."
+        },
+        {
+          "id": "DS-LAKE-040-T04",
+          "title": "Interpolate max gap (Phase 2)",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/preprocessing.ts interpolateMaxGap/longGapCells; apps/python/services/cleaning_service.py _max_gap/_long_gap_cells; Max gap input (placeholder no limit) on the Interpolate step; parity fixtures interpolate_max_gap_2 and interpolate_max_gap_0_is_no_limit."
+        },
+        {
+          "id": "DS-LAKE-040-T06",
+          "title": "Cyclic datetime parts (Phase 3)",
+          "status": "completed",
+          "progress": 100,
+          "result": "DatetimePart hourSin/hourCos/dayOfWeekSin/dayOfWeekCos in lib/feature-engineering.ts and feature_service._datetime_part; Extraction panel options; Auto-generate Time cycle emits the sin/cos pairs; parity fixture feature_datetime_cyclic (rows 5 h apart)."
+        },
+        {
+          "id": "DS-LAKE-040-T07",
+          "title": "group feature kind + loop aggregates (Phase 3)",
+          "status": "completed",
+          "progress": 100,
+          "result": "kind 'group' {name, tags, agg} in lib/feature-engineering.ts, feature_service (_group_aggregate), schemas FeatureConfigRequest, backend FeatureConfigSchema + feature-sources directSources, softsensor_scaling.feature_column_name; findLoopGroups + Loop aggregates family in lib/auto-features.ts and the dialog; parity fixture feature_group_aggregates."
+        },
+        {
+          "id": "DS-LAKE-040-T08",
+          "title": "Every non-formula feature listed in the Extraction panel",
+          "status": "completed",
+          "progress": 100,
+          "result": "extraction-panel.tsx listed only lag/rolling/datetime, so the delta, pairwise arith and group configs Auto-generate adds could only be removed as a batch; the list now shows every non-formula kind (scrolls)."
+        },
+        {
+          "id": "DS-LAKE-040-T05",
+          "title": "Live check in the wizard",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Star tags in Step 1, enable a preset range row, run Auto-generate on an hourly dataset and a 1-minute one, apply zeros-as-missing and a max gap, save; confirm the GOLD row loss in Step 5's notice is acceptable and pipelineConfig.criticalTags persists. Also check loop aggregates on Dataset-s611water (AI602A/B) and the 6-month dataset (FIC114A-D), and that an inference window computes the group columns."
+        }
+      ],
+      "acceptance_criteria": [
+        "A critical tag's preset range row suggests and defaults to Clip; any other tag's to Exclude; the tooltip says why; the target cannot be critical.",
+        "Critical tags survive a rename, drop on delete, and persist through Save, edit-mode hydrate and draft resume.",
+        "Auto-generate never reads the target, never duplicates an existing column, caps every window at 24 h and rolling at 240 rows, and states anything it left out.",
+        "Auto-generated features can be removed as one batch without touching hand-made ones.",
+        "Zero-heavy tags are named with their share; nothing changes until the user clicks; the inserted step runs before any fill.",
+        "Interpolate with a max gap leaves longer runs non-Good in both the browser and Python; without one, behaviour is unchanged.",
+        "Loop aggregates are offered only for loops with 2+ chosen non-target tags, agree between the browser and Python, and are Bad whenever any member is.",
+        "A group column survives feature_spec.json -> holdout replay with the same name, and a lag of it compounds lookback.",
+        "Every auto-generated feature can be removed one by one."
+      ],
+      "verification": [
+        "Client unit/component (vitest): critical-tags 5, store critical-tags 3, wizard snapshot back-compat 2 + atom watch 1, preset-range-card suggestion block 8, unified-tag-table star 4, auto-features 18, auto-features-dialog 6, zero-readings 6, interpolate-max-gap 4, imputation-detail-panel phase 2 3: all passed.",
+        "Parity: packages/parity-fixtures regenerated, only the 2 new fixtures + index.json changed; apps/python tests/test_parity.py test_matches_client_output and test_apply_operations_matches_client_output pass for both new cases.",
+        "Python: tests/test_cleaning_interpolate_max_gap.py 6 passed; full apps/python suite 1116 passed, 96 skipped.",
+        "Auto feature kinds run through apps/python apply_features: column names match the client's featureColumnName and max_replay_lookback reports 24 for a 24-row recipe.",
+        "Client: tsc clean; full suite 25 failed / 3275 passed in the same 9 baseline files.",
+        "Phase 3 parity: feature_datetime_cyclic and feature_group_aggregates - test_matches_client_output passes (16 of 40 group rows Bad from the grid's ragged missingness; 7 distinct days of week).",
+        "Python tests/test_feature_group.py 5 passed (Bad propagation, every aggregate, name through spec/replay rebuild, lookback compounding, cyclic values); full apps/python suite 1131 passed, 100 skipped; apps/serving 47 passed.",
+        "Backend: feature-sources.spec group case; tsc clean; feature-sources + dataset-version specs 102 passed.",
+        "Client: auto-features 22 + dialog 8 + extraction-panel list 1 passed; tsc clean; full suite 25 failed / 3282 passed in the same 9 baseline files."
+      ],
+      "known_gaps": [
+        "Not exercised in a live browser (T05).",
+        "Step 4 and Step 6 wiring are covered by tsc and the lib helpers only; no full-page render test.",
+        "Zero share is measured on the loaded preview sample, not the whole artifact.",
+        "Pairwise differences pair only critical tags (at most 10).",
+        "Loop grouping is by name only; a plant whose tags do not follow ISA letters+number+suffix gets no loop groups (no manual grouping UI).",
+        "The browser preview's datetime parts parse a naive timestamp in the viewer's local zone before reading UTC hours (pre-existing for hour/dayOfWeek); the server value is authoritative and parity fixtures use UTC stamps.",
+        "apps/python must be restarted to pick up the new kind; the serving image needs no rebuild (it never names group columns)."
+      ],
+      "progress_note": "90%: code and tests done (client, python, parity); live wizard check pending."
     }
   ],
   "deferred": [

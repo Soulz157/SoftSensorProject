@@ -5,7 +5,6 @@ import { CheckCircle2, Tags } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Popover,
   PopoverContent,
@@ -77,7 +76,11 @@ export function CleaningTagSelect({
               : `${selected.length} of ${candidates.length} selected`}
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-72 p-0">
+        {/* Never taller than the room the popover has on screen. */}
+        <PopoverContent
+          align="start"
+          className="flex max-h-(--radix-popover-content-available-height) w-72 flex-col p-0"
+        >
           <div className="space-y-2 border-b border-border p-2">
             <Input
               type="search"
@@ -105,8 +108,15 @@ export function CleaningTagSelect({
               </button>
             </div>
           </div>
-          <ScrollArea className="max-h-64">
-            <div className="max-h-64 space-y-0.5 p-1.5">
+          {/* A native scroll box, not ScrollArea: Radix's viewport only
+              scrolls inside a FIXED height, so under `max-h` alone the list
+              grew with every tag - 100+ tags ran the popover off the page
+              (2026-10-19). */}
+          <div
+            data-testid="cleaning-tag-list"
+            className="max-h-64 min-h-0 overflow-y-auto overscroll-contain"
+          >
+            <div className="space-y-0.5 p-1.5">
               {ordered.length === 0 ? (
                 <p className="px-2 py-3 text-center text-xs text-muted-foreground">
                   No tags match
@@ -133,7 +143,7 @@ export function CleaningTagSelect({
                 ))
               )}
             </div>
-          </ScrollArea>
+          </div>
         </PopoverContent>
       </Popover>
     </div>

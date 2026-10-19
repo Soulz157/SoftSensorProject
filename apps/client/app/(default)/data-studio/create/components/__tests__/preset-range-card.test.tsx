@@ -228,9 +228,15 @@ describe('PresetRangeCard — how a row reads', () => {
 })
 
 describe('PresetRangeCard — enabling and the action', () => {
-  it('V03: enabling emits two strict rules with the resolved bound, defaulting to Clip', async () => {
+  // A CRITICAL tag defaults to Clip; a non-critical one to Exclude (see the
+  // critical-tag suggestion block below).
+  it('V03: enabling emits two strict rules with the resolved bound, defaulting to Clip for a critical tag', async () => {
     const onConditionalChange = vi.fn()
-    render(<PresetRangeCard {...baseProps({ onConditionalChange })} />)
+    render(
+      <PresetRangeCard
+        {...baseProps({ onConditionalChange, criticalTags: ['TI-101'] })}
+      />,
+    )
     await userEvent.click(checkbox())
 
     expect(onConditionalChange).toHaveBeenCalledTimes(1)
@@ -249,7 +255,11 @@ describe('PresetRangeCard — enabling and the action', () => {
 
   it('picking Exclude BEFORE enabling carries into the rules it emits', async () => {
     const onConditionalChange = vi.fn()
-    render(<PresetRangeCard {...baseProps({ onConditionalChange })} />)
+    render(
+      <PresetRangeCard
+        {...baseProps({ onConditionalChange, criticalTags: ['TI-101'] })}
+      />,
+    )
     await userEvent.click(screen.getByRole('button', { name: 'Exclude' }))
     // Not enabled yet, so choosing an action writes nothing.
     expect(onConditionalChange).not.toHaveBeenCalled()
@@ -415,7 +425,126 @@ describe('PresetRangeCard — header and guards', () => {
     render(<PresetRangeCard {...baseProps()} />)
     const row = screen.getByRole('listitem')
     expect(within(row).getByText('TI-101')).toBeInTheDocument()
-    expect(within(row).getAllByRole('button')).toHaveLength(2)
+    // Clip, Exclude and the suggestion's tooltip trigger.
+    expect(within(row).getAllByRole('button')).toHaveLength(3)
+  })
+})
+
+describe('PresetRangeCard — critical-tag suggestion', () => {
+  const suggestion = () =>
+    screen.getByRole('button', { name: /^Suggested for TI-101:/ })
+  const enabledActions = (fn: ReturnType<typeof vi.fn>) =>
+    (fn.mock.calls[0]![0] as ConditionalRule[]).map(r => r.action)
+
+  it('suggests and defaults to Exclude for a tag that is not critical', async () => {
+    const onConditionalChange = vi.fn()
+    render(<PresetRangeCard {...baseProps({ onConditionalChange })} />)
+    expect(suggestion()).toHaveTextContent('Suggested: Exclude')
+    expect(screen.getByRole('button', { name: 'Exclude' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await userEvent.click(checkbox())
+    expect(enabledActions(onConditionalChange)).toEqual(['mark', 'mark'])
+  })
+
+  it('suggests and defaults to Clip for a critical tag', async () => {
+    const onConditionalChange = vi.fn()
+    render(
+      <PresetRangeCard
+        {...baseProps({ onConditionalChange, criticalTags: ['TI-101'] })}
+      />,
+    )
+    expect(suggestion()).toHaveTextContent('Suggested: Clip')
+    await userEvent.click(checkbox())
+    expect(enabledActions(onConditionalChange)).toEqual(['clip', 'clip'])
+  })
+
+  it('explains the suggestion in a tooltip, and where critical tags are set', async () => {
+    render(<PresetRangeCard {...baseProps({ criticalTags: ['TI-101'] })} />)
+    await userEvent.hover(suggestion())
+    const tips = await screen.findAllByRole('tooltip')
+    expect(tips[0]).toHaveTextContent(/Critical tag: Clip clamps/)
+    expect(tips[0]).toHaveTextContent(/star in Step 1/)
+  })
+
+  it('an untouched row follows a tag starred later; an explicit pick is kept', async () => {
+    const { rerender } = render(<PresetRangeCard {...baseProps()} />)
+    rerender(<PresetRangeCard {...baseProps({ criticalTags: ['TI-101'] })} />)
+    expect(screen.getByRole('button', { name: 'Clip' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'Exclude' }))
+    rerender(<PresetRangeCard {...baseProps({ criticalTags: [] })} />)
+    rerender(<PresetRangeCard {...baseProps({ criticalTags: ['TI-101'] })} />)
+    expect(screen.getByRole('button', { name: 'Exclude' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('never rewrites an ENABLED row when the critical list changes', () => {
+    const onConditionalChange = vi.fn()
+    const rules = [presetRule('min', 'mark'), presetRule('max', 'mark')]
+    const { rerender } = render(
+      <PresetRangeCard
+        {...baseProps({ onConditionalChange, conditionalRules: rules })}
+      />,
+    )
+    rerender(
+      <PresetRangeCard
+        {...baseProps({
+          onConditionalChange,
+          conditionalRules: rules,
+          criticalTags: ['TI-101'],
+        })}
+      />,
+    )
+    expect(onConditionalChange).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Exclude' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('says what going against the suggestion costs, without a warning icon', () => {
+    render(
+      <PresetRangeCard
+        {...baseProps({
+          conditionalRules: [
+            presetRule('min', 'mark'),
+            presetRule('max', 'mark'),
+          ],
+          criticalTags: ['TI-101'],
+        })}
+      />,
+    )
+    expect(screen.getByText(/Critical tag set to Exclude/)).toBeInTheDocument()
+  })
+
+  it('says nothing extra when the row follows the suggestion', () => {
+    render(
+      <PresetRangeCard
+        {...baseProps({
+          conditionalRules: [
+            presetRule('min', 'clip'),
+            presetRule('max', 'clip'),
+          ],
+          criticalTags: ['TI-101'],
+        })}
+      />,
+    )
+    expect(screen.queryByText(/Critical tag set to Exclude/)).toBeNull()
+    expect(screen.queryByText(/Clip on a non-critical tag/)).toBeNull()
+  })
+
+  it('does not point at Step 1 as editable in edit mode', async () => {
+    render(<PresetRangeCard {...baseProps({ editMode: true })} />)
+    await userEvent.hover(suggestion())
+    const tips = await screen.findAllByRole('tooltip')
+    expect(tips[0]).toHaveTextContent(/locked while editing/)
   })
 })
 

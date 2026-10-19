@@ -309,9 +309,9 @@ export function Phase2DatasetReview({ nav }: Props) {
             onValueChange={v =>
               setReviewTab(v === 'validation' ? 'validation' : 'training')
             }
-            className="w-full gap-4"
+            className="grid grid-cols-1 w-full gap-4"
           >
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border space-y-2">
               <TabsList className="inline-flex flex-wrap gap-4">
                 <TabsTrigger value="training" className="cursor-pointer gap-2">
                   <Database className="h-3.5 w-3.5" /> Training data

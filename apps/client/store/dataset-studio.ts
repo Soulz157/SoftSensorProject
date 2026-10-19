@@ -193,7 +193,14 @@ export const dwPresetRangeAtom = atom<PresetRangeCandidate[]>([])
 export const dwPresetRangeStaleAtom = atom<boolean>(false)
 
 export const dwFetchTagsAtom = atom<string[] | null>(null)
-export const dwTimeRangeAtom = atom<FetchPeriod>('1min')
+/**
+ * The PI bucket a new dataset fetches at (2026-10-19 user request: 1 hour).
+ * Soft-sensor features are built on an hourly grid (lags/rolling in hours,
+ * lib/auto-features.ts) and lab targets are hours apart, so 1-minute rows were
+ * 60x the data for no gain. Saved recipes keep their own `timeRange`.
+ */
+export const DEFAULT_FETCH_PERIOD: FetchPeriod = '1h'
+export const dwTimeRangeAtom = atom<FetchPeriod>(DEFAULT_FETCH_PERIOD)
 export const dwCustomDateRangeAtom = atom<CustomDateRange | null>(null)
 export const dwCustomIntervalAtom = atom<CustomInterval | null>(null)
 /**
@@ -323,6 +330,12 @@ export const dwFeaturePresetAtom = atom<PresetSummary | null>(null)
 // it would block every preset — see canApply() in lib/feature-preset.ts. Its
 // absence is instead surfaced as a loud, non-blocking warning at Step 5.
 export const dwTargetTagAtom = atom<string | null>(null)
+
+// Critical tags, marked with the star in Step 1's tag table. Names, like the
+// target, so lib/critical-tags.ts can follow a rename or drop a deleted row.
+// Persisted in pipelineConfig.criticalTags and the wizard snapshot; drives the
+// Preset range cutoff's Clip/Exclude suggestion.
+export const dwCriticalTagsAtom = atom<string[]>([])
 
 // SD&TA (shutdown/turnaround) cut configs from imported workbooks. Staged
 // here by the preset manager; nothing is cut until the user selects presets
@@ -642,7 +655,7 @@ export const initDatasetWizardAtom = atom(
     set(dwPresetRangeAtom, [])
     set(dwPresetRangeStaleAtom, false)
     set(dwFetchTagsAtom, null)
-    set(dwTimeRangeAtom, '1min')
+    set(dwTimeRangeAtom, DEFAULT_FETCH_PERIOD)
     set(dwCustomDateRangeAtom, null)
     set(dwHoldoutRangeAtom, null)
     set(dwFromRetrainAtom, false)
@@ -656,6 +669,7 @@ export const initDatasetWizardAtom = atom(
     set(dwFeatureConfigsAtom, [])
     set(dwFeaturePresetAtom, null)
     set(dwTargetTagAtom, null)
+    set(dwCriticalTagsAtom, [])
     set(dwSdtaPresetsAtom, [])
     set(dwCropRangeAtom, null)
     set(dwExclusionsAtom, [])
@@ -730,7 +744,7 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
 
   // Step 2
   set(dwFetchTagsAtom, null)
-  set(dwTimeRangeAtom, '1min')
+  set(dwTimeRangeAtom, DEFAULT_FETCH_PERIOD)
   set(dwCustomDateRangeAtom, null)
   set(dwHoldoutRangeAtom, null)
   set(dwFromRetrainAtom, false)
@@ -758,6 +772,7 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwFeatureConfigsAtom, [])
   set(dwFeaturePresetAtom, null)
   set(dwTargetTagAtom, null)
+  set(dwCriticalTagsAtom, [])
   set(dwSdtaPresetsAtom, [])
   set(dwSelectedColumnsAtom, null)
   set(dwScalerConfigsAtom, {})
@@ -891,10 +906,9 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwRetrainCutTimestampAtom, null)
     set(dwCustomIntervalAtom, config.customInterval)
     set(dwSourceFetchConfigsAtom, config.sourceFetchConfigs)
-    // Fetch is locked in edit mode (raw query is rebuilt deterministically, not
-    // re-fetched), so summary params are not persisted in the recipe — reset to
-    // defaults rather than reading a field that older recipes never stored.
-    set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
+    // The recipe's own summary settings (2026-10-19); a recipe saved before
+    // they were stored was fetched with the defaults, so it gets those.
+    set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG, ...config.fetchConfig })
     // Rows are NOT seeded here any more. This used to call `buildRawDataset`,
     // which regenerates synthetic readings from a seed — so editing a dataset
     // showed invented numbers that merely resembled the saved one.
@@ -933,6 +947,7 @@ export const initDatasetWizardForEditAtom = atom(
     // recipes predate both fields and hydrate to null, same as baseTags above.
     set(dwFeaturePresetAtom, config.featurePreset ?? null)
     set(dwTargetTagAtom, config.targetTag ?? null)
+    set(dwCriticalTagsAtom, config.criticalTags ?? [])
     // Not persisted (see the atom's own comment) — nothing to hydrate.
     set(dwSdtaPresetsAtom, [])
 

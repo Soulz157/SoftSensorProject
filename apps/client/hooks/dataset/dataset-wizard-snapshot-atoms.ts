@@ -6,6 +6,7 @@ import {
   dwCleaningPipelinesAtom,
   dwCleaningTagsAtom,
   dwConditionalRulesAtom,
+  dwCriticalTagsAtom,
   dwCropRangeAtom,
   dwCsvFileNameAtom,
   dwCsvUploadTagsAtom,
@@ -83,6 +84,7 @@ export const SNAPSHOT_ATOMS: readonly Atom<unknown>[] = [
   dwFeatureConfigsAtom,
   dwFeaturePresetAtom,
   dwTargetTagAtom,
+  dwCriticalTagsAtom,
   dwSdtaPresetsAtom,
   dwEdaWindowAtom,
   dwCropRangeAtom,
@@ -129,6 +131,7 @@ export function readWizardSnapshotValues(store: Store): WizardSnapshotValues {
     featureConfigs: store.get(dwFeatureConfigsAtom),
     featurePreset: store.get(dwFeaturePresetAtom),
     targetTag: store.get(dwTargetTagAtom),
+    criticalTags: store.get(dwCriticalTagsAtom),
     sdtaPresets: store.get(dwSdtaPresetsAtom),
     edaWindow: store.get(dwEdaWindowAtom),
     cropRange: store.get(dwCropRangeAtom),
@@ -184,6 +187,7 @@ export function writeWizardSnapshotValues(
   store.set(dwFeatureConfigsAtom, values.featureConfigs)
   store.set(dwFeaturePresetAtom, values.featurePreset)
   store.set(dwTargetTagAtom, values.targetTag)
+  store.set(dwCriticalTagsAtom, values.criticalTags)
   store.set(dwSdtaPresetsAtom, values.sdtaPresets)
   store.set(dwEdaWindowAtom, values.edaWindow)
   store.set(dwCropRangeAtom, values.cropRange)

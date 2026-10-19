@@ -25,8 +25,26 @@ export type RollingAgg = 'mean' | 'std' | 'min' | 'max' | 'ROC'
 /** Elementwise math op combining two source tags (Divide is `ratio`, not here). */
 export type ArithOp = 'add' | 'sub' | 'mul'
 
-/** Calendar component extracted from a row's timestamp. */
-export type DatetimePart = 'hour' | 'dayOfWeek' | 'month'
+/**
+ * Calendar component extracted from a row's timestamp. The Sin/Cos pairs are
+ * the cyclic encoding (2026-10-19): hour 23 sits next to hour 0 instead of 23
+ * units away, which a raw `hour` cannot express.
+ */
+export type DatetimePart =
+  | 'hour'
+  | 'dayOfWeek'
+  | 'month'
+  | 'hourSin'
+  | 'hourCos'
+  | 'dayOfWeekSin'
+  | 'dayOfWeekCos'
+
+/**
+ * Row-wise aggregate across a GROUP of tags (2026-10-19) - e.g. the redundant
+ * analyzers of one loop (AI602A, AI602B). `spread` is max - min; `std` is the
+ * SAMPLE std, the same convention as `rolling`'s.
+ */
+export type GroupAgg = 'mean' | 'min' | 'max' | 'spread' | 'std'
 
 export interface FormulaFeature {
   id: string
@@ -54,6 +72,14 @@ export type FeatureConfig =
   | { id: string; kind: 'ratio'; tags: string[] }
   | { id: string; kind: 'log'; tag: string }
   | { id: string; kind: 'datetime'; part: DatetimePart }
+  /**
+   * Bad when ANY member is not Good (2026-10-19 user decision), like
+   * `arith`/`ratio`: the value never shifts because one analyzer dropped out.
+   * `name` IS the output column (e.g. `AI602__grp_mean`), the same meaning
+   * `name` has everywhere server-side (feature_spec.json, holdout replay,
+   * `max_replay_lookback`) - a bare label there would be read as the column.
+   */
+  | { id: string; kind: 'group'; name: string; tags: string[]; agg: GroupAgg }
   | FormulaFeature
 
 /** Deterministic column name for a feature. */
@@ -73,6 +99,8 @@ export function featureColumnName(cfg: FeatureConfig): string {
       return `${cfg.tag}__log`
     case 'datetime':
       return `__dt_${cfg.part}`
+    case 'group':
+      return cfg.name
     case 'formula':
       return cfg.name?.trim() || cfg.expr
   }
@@ -184,6 +212,15 @@ function computeColumn(rows: DataRow[], cfg: FeatureConfig): Cell[] {
         // Derived from the row's own timestamp — always defined (Good).
         return { value: datetimePart(row.timestamp, cfg.part), status: GOOD }
       }
+      case 'group': {
+        const vals = cfg.tags.map(t => goodValue(row.cells[t]))
+        if (vals.length === 0 || vals.some(v => v === null))
+          return { value: 0, status: BAD }
+        return {
+          value: groupAggregate(vals as number[], cfg.agg),
+          status: GOOD,
+        }
+      }
       case 'formula': {
         if (!compiled) return { value: 0, status: BAD }
         // scope จากเฉพาะ source cell ที่ Good (กติกาเดียวกับ goodValue)
@@ -220,6 +257,40 @@ function datetimePart(timestamp: string, part: DatetimePart): number {
       return d.getUTCDay()
     case 'month':
       return d.getUTCMonth() + 1
+    case 'hourSin':
+      return Math.sin((2 * Math.PI * d.getUTCHours()) / 24)
+    case 'hourCos':
+      return Math.cos((2 * Math.PI * d.getUTCHours()) / 24)
+    case 'dayOfWeekSin':
+      return Math.sin((2 * Math.PI * d.getUTCDay()) / 7)
+    case 'dayOfWeekCos':
+      return Math.cos((2 * Math.PI * d.getUTCDay()) / 7)
+  }
+}
+
+/**
+ * One row's group aggregate, summed LEFT TO RIGHT in member order -
+ * `feature_service._group_aggregate` loops the same way so the two agree to
+ * the last bit. `std` of one member is 0, matching `aggregate`'s rule.
+ */
+function groupAggregate(values: number[], agg: GroupAgg): number {
+  const n = values.length
+  switch (agg) {
+    case 'mean':
+      return values.reduce((a, b) => a + b, 0) / n
+    case 'min':
+      return Math.min(...values)
+    case 'max':
+      return Math.max(...values)
+    case 'spread':
+      return Math.max(...values) - Math.min(...values)
+    case 'std': {
+      if (n < 2) return 0
+      const mean = values.reduce((a, b) => a + b, 0) / n
+      const variance =
+        values.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (n - 1)
+      return Math.sqrt(variance)
+    }
   }
 }
 

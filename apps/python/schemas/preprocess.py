@@ -1301,7 +1301,15 @@ class FeatureConfigRequest(BaseModel):
 
     id: str
     kind: Literal[
-        "lag", "rolling", "delta", "arith", "ratio", "log", "datetime", "formula"
+        "lag",
+        "rolling",
+        "delta",
+        "arith",
+        "ratio",
+        "log",
+        "datetime",
+        "formula",
+        "group",
     ]
     tag: Optional[str] = None
     tags: Optional[list[str]] = None

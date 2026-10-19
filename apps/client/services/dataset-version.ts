@@ -1,4 +1,5 @@
 import { fetchClient } from '@/lib/fetcher'
+import type { CalBasis, SummaryType } from '@/types/pi'
 import {
   brandBoundedSample,
   type BoundedSample,
@@ -207,6 +208,10 @@ export interface CreateRawVersionInput {
   startTime: string
   endTime: string
   summaryDuration?: string
+  /** PI summary parameters - see `piSummaryParams` (lib/fetch-config.ts). */
+  calBasis?: CalBasis
+  summaryType?: SummaryType[]
+  batchSize?: number
   /** SQL sources only. */
   timestampColumn?: string
   table?: string

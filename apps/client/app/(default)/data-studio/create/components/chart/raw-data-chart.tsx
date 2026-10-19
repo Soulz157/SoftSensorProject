@@ -14,7 +14,6 @@ import {
 import {
   ChartContainer,
   ChartTooltip,
-  ChartTooltipContent,
   type ChartConfig,
 } from '@/components/ui/chart'
 import {
@@ -26,6 +25,7 @@ import {
 import { formatDayMonth } from '@/lib/chart-format'
 import type { SensorChartRow } from '@/hooks/use-sensor-readings'
 import { RangeDisplay } from './range-display'
+import { TrendTooltip } from './trend-tooltip'
 import { TagsSelector } from './tags-selector'
 import { Button } from '@/components/ui/button'
 import { SegmentedToggle } from '@/components/segmented-toggle'
@@ -397,9 +397,12 @@ export function RawTrendChart({
                   : ''
               }
             />
+            {/* Bounded tooltip: with ~100 tags the stock one grew past the
+                chart and the window (and cannot be scrolled). */}
             <ChartTooltip
               content={
-                <ChartTooltipContent
+                <TrendTooltip
+                  focused={isViewAll ? [] : (focusedTag ?? [])}
                   labelFormatter={value =>
                     new Date(String(value)).toLocaleString()
                   }
