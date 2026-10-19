@@ -235,11 +235,25 @@ export class ModelCandidateJobAuthorizedService {
    * `rmse`, so a sweep's or a retrain's ranking cannot change.
    */
   private extractRmse(metrics: unknown, isCvJob = false): number | null {
+    return this.extractScore(metrics, 'rmse', isCvJob);
+  }
+
+  /**
+   * MODEL-FLOW-035. The same figure for the metric the job ranks by (`rmse`
+   * or `mae`, the wizard's Loss function): the run's own `<metric>`, or the
+   * fold mean `cv_<metric>_mean` for a CV job. Both are errors, so lower is
+   * better for either.
+   */
+  private extractScore(
+    metrics: unknown,
+    metric: string,
+    isCvJob = false,
+  ): number | null {
     if (!metrics || typeof metrics !== 'object') return null;
-    const rmse = (metrics as Record<string, unknown>)[
-      isCvJob ? 'cv_rmse_mean' : 'rmse'
+    const value = (metrics as Record<string, unknown>)[
+      isCvJob ? `cv_${metric}_mean` : metric
     ];
-    return typeof rmse === 'number' && Number.isFinite(rmse) ? rmse : null;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
   }
 
   /** MODEL-FLOW-019-T02. `metrics`/`holdoutMetrics` are untyped Json columns,
@@ -587,6 +601,8 @@ export class ModelCandidateJobAuthorizedService {
           // MODEL-FLOW-029. Null = not CV. The DTO already refused it for a
           // sweep and together with trainTestSplit.
           nSplits: dto.nSplits ?? null,
+          // MODEL-FLOW-035. Absent = RMSE, the ranking every job had before.
+          rankingMetric: dto.rankingMetric ?? 'rmse',
           // MODEL-FLOW-020-T04. Captured verbatim from what the client saw,
           // never recomputed — see this pair's own note on
           // CreateCandidateJobSchema for why the client is the one that has
@@ -713,7 +729,31 @@ export class ModelCandidateJobAuthorizedService {
 
     if (run.status !== 'SUCCEEDED') return; // still QUEUED/RUNNING — nothing to do yet.
 
-    const rmse = this.extractRmse(run.metrics, job.nSplits != null);
+    const isCvJob = job.nSplits != null;
+    const rmse = this.extractRmse(run.metrics, isCvJob);
+    // MODEL-FLOW-035. The score bestRunId is chosen by. For RMSE it is the
+    // figure already kept on the row (`bestRmse`); for any other metric the
+    // job keeps no running score, so the incumbent winner's own metrics are
+    // read. Runs of one job finish one at a time, so the incumbent cannot
+    // change under this read.
+    const score =
+      job.rankingMetric === 'rmse'
+        ? rmse
+        : this.extractScore(run.metrics, job.rankingMetric, isCvJob);
+    let incumbentScore: number | null = job.bestRmse;
+    if (job.rankingMetric !== 'rmse') {
+      const incumbent = job.bestRunId
+        ? await this.prisma.modelTrainingRun.findUnique({
+            where: { id: job.bestRunId },
+            select: { metrics: true },
+          })
+        : null;
+      incumbentScore = this.extractScore(
+        incumbent?.metrics,
+        job.rankingMetric,
+        isCvJob,
+      );
+    }
     const completedRuns = job.completedRuns + 1;
     // rmse, never r2: always present and well-behaved even for a degenerate
     // fit — an observed real run scored r2 = -1,110,858 while rmse stayed a
@@ -722,7 +762,7 @@ export class ModelCandidateJobAuthorizedService {
     // comparing RMSE across algorithms on one artifact/target/split is
     // exactly what makes them comparable at all.
     const isBetter =
-      rmse !== null && (job.bestRmse === null || rmse < job.bestRmse);
+      score !== null && (incumbentScore === null || score < incumbentScore);
     const candidates = job.candidates as unknown as Candidate[];
 
     if (completedRuns < candidates.length) {

@@ -19,6 +19,7 @@ import {
   mpTrainStateAtom,
   mpPerAlgorithmHyperparamsAtom,
   mpNSplitsAtom,
+  mpLossFunctionAtom,
   mpTrainTestSplitAtom,
 } from '@/store/model-pipeline'
 import type { SavedDataset } from '@/store/datasets'
@@ -77,6 +78,10 @@ function renderTraining(
   return { ...rendered, store, ensureDraftId }
 }
 
+// MODEL-FLOW-035. A fine-tune's base is the chosen run's values laid over the
+// algorithm's defaults; ridge's defaults, here, stand in for that record.
+const RIDGE_BASE = { alpha: 1.0, fit_intercept: true, solver: 'auto' } as const
+
 describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -111,7 +116,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
   // selected; it sends a direct HYPERPARAMETER_SEARCH job instead, expanded
   // server-side from this ONE candidate via tuning-grid.ts's curated
   // shortlist (never built client-side).
-  it('creates a HYPERPARAMETER_SEARCH job with one candidate when Find Best Parameters is on, Find Best Model is off, and exactly one algorithm is selected', async () => {
+  it('Fine-tune with the curated variants sends a one-candidate HYPERPARAMETER_SEARCH, ranked by the Loss function', async () => {
     vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
       statusCode: 201,
       message: 'ok',
@@ -131,12 +136,16 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result, store } = renderTraining(s => {
-      s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['ridge'])
     })
 
     await act(async () => {
-      result.current.start()
+      result.current.fineTune({
+        algorithm: 'ridge',
+        base: RIDGE_BASE,
+        rows: [],
+        useGrid: true,
+      })
       await vi.advanceTimersByTimeAsync(0)
     })
 
@@ -144,6 +153,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       'draft-1',
       expect.objectContaining({
         kind: 'HYPERPARAMETER_SEARCH',
+        rankingMetric: 'rmse',
         targetY: 'TI-101',
         candidates: [
           {
@@ -170,7 +180,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     [3, { nSplits: 3 }, 'trainTestSplit'],
     [undefined, { trainTestSplit: 0.7 }, 'nSplits'],
   ] as const)(
-    'a direct search with nSplits=%s sends %o and never %s',
+    'a fine-tune with nSplits=%s sends %o and never %s',
     async (nSplits, expected, absent) => {
       vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
         statusCode: 201,
@@ -191,14 +201,18 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
         } as never,
       })
       const { result } = renderTraining(s => {
-        s.set(mpFindBestParamsAtom, true)
         s.set(mpAlgorithmsAtom, ['ridge'])
         s.set(mpNSplitsAtom, nSplits)
         s.set(mpTrainTestSplitAtom, 70)
       })
 
       await act(async () => {
-        result.current.start()
+        result.current.fineTune({
+          algorithm: 'ridge',
+          base: RIDGE_BASE,
+          rows: [],
+          useGrid: true,
+        })
         await vi.advanceTimersByTimeAsync(0)
       })
 
@@ -235,7 +249,6 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result } = renderTraining(s => {
-      s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['ridge'])
       s.set(mpExtraVariantsAtom, {
         ridge: [{ alpha: 7 }],
@@ -245,7 +258,12 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     })
 
     await act(async () => {
-      result.current.start()
+      result.current.fineTune({
+        algorithm: 'ridge',
+        base: RIDGE_BASE,
+        rows: [{ alpha: 7 }],
+        useGrid: true,
+      })
       await vi.advanceTimersByTimeAsync(0)
     })
 
@@ -275,12 +293,16 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result } = renderTraining(s => {
-      s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['ridge'])
     })
 
     await act(async () => {
-      result.current.start()
+      result.current.fineTune({
+        algorithm: 'ridge',
+        base: RIDGE_BASE,
+        rows: [],
+        useGrid: true,
+      })
       await vi.advanceTimersByTimeAsync(0)
     })
 
@@ -307,7 +329,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
   // 2026-10-14. One algorithm plus the user's own rows, Find Best Parameters
   // off: a search over exactly those rows. Several candidates means the
   // server expands no grid, so nothing beyond what the user typed runs.
-  it('trains one algorithm and its added rows as a HYPERPARAMETER_SEARCH of exactly those candidates', async () => {
+  it('Fine-tune without the curated variants trains the run and its added rows as a HYPERPARAMETER_SEARCH of exactly those candidates', async () => {
     vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
       statusCode: 201,
       message: 'ok',
@@ -328,11 +350,15 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     })
     const { result } = renderTraining(s => {
       s.set(mpAlgorithmsAtom, ['ridge'])
-      s.set(mpExtraVariantsAtom, { ridge: [{ alpha: 7 }] })
     })
 
     await act(async () => {
-      result.current.start()
+      result.current.fineTune({
+        algorithm: 'ridge',
+        base: RIDGE_BASE,
+        rows: [{ alpha: 7 }],
+        useGrid: false,
+      })
       await vi.advanceTimersByTimeAsync(0)
     })
 
@@ -499,7 +525,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     expect(store.get(mpCandidateJobIdAtom)).toBe('job-1')
   })
 
-  it('creates a SWEEP_THEN_TUNE candidate job when both toggles are on (MODEL-FLOW-013-T11)', async () => {
+  it('never sends SWEEP_THEN_TUNE any more: two algorithms with the old toggle on are an ALGORITHM_SWEEP (MODEL-FLOW-035)', async () => {
     vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
       statusCode: 201,
       message: 'ok',
@@ -530,7 +556,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
 
     expect(modelDraftCandidateJobService.create).toHaveBeenCalledWith(
       'draft-1',
-      expect.objectContaining({ kind: 'SWEEP_THEN_TUNE' }),
+      expect.objectContaining({ kind: 'ALGORITHM_SWEEP' }),
     )
     expect(store.get(mpTrainStateAtom).status).toBe('training')
   })
@@ -572,26 +598,29 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
         (s: ReturnType<typeof createStore>) => {
           s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
         },
-      ],
-      [
-        'SWEEP_THEN_TUNE',
-        (s: ReturnType<typeof createStore>) => {
-          s.set(mpFindBestParamsAtom, true)
-          s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
-        },
+        false,
       ],
       [
         'HYPERPARAMETER_SEARCH',
         (s: ReturnType<typeof createStore>) => {
-          s.set(mpFindBestParamsAtom, true)
           s.set(mpAlgorithmsAtom, ['ridge'])
         },
+        true,
       ],
-    ])('sends both figures on a %s job', async (kind, configure) => {
+    ])('sends both figures on a %s job', async (kind, configure, fine) => {
       const { result } = renderTraining(configure)
 
       await act(async () => {
-        result.current.start()
+        if (fine) {
+          result.current.fineTune({
+            algorithm: 'ridge',
+            base: RIDGE_BASE,
+            rows: [],
+            useGrid: true,
+          })
+        } else {
+          result.current.start()
+        }
         await vi.advanceTimersByTimeAsync(0)
       })
 
@@ -755,7 +784,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
    * which now exists. The job goes out as a HYPERPARAMETER_SEARCH of ONE lstm
    * candidate, expanded server-side like any other.
    */
-  it('launches a HYPERPARAMETER_SEARCH for lstm with Find Best Parameters alone', async () => {
+  it('Fine-tunes lstm on its own as a HYPERPARAMETER_SEARCH', async () => {
     vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
       statusCode: 201,
       message: 'ok',
@@ -775,12 +804,16 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as never,
     })
     const { result, store } = renderTraining(s => {
-      s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['lstm'])
     }, null)
 
     await act(async () => {
-      result.current.start()
+      result.current.fineTune({
+        algorithm: 'lstm',
+        base: { sequence_length: 24 },
+        rows: [],
+        useGrid: true,
+      })
       await vi.advanceTimersByTimeAsync(0)
     })
 
@@ -818,12 +851,16 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
         ...DATASET,
         rowCount: 400,
       } as SavedDataset)
-      s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['gru'])
     }, null)
 
     await act(async () => {
-      result.current.start()
+      result.current.fineTune({
+        algorithm: 'gru',
+        base: { sequence_length: 24 },
+        rows: [],
+        useGrid: true,
+      })
       await vi.advanceTimersByTimeAsync(0)
     })
 
@@ -845,19 +882,20 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     [
       'a tabular HYPERPARAMETER_SEARCH',
       (s: ReturnType<typeof createStore>) => {
-        s.set(mpFindBestParamsAtom, true)
         s.set(mpAlgorithmsAtom, ['ridge'])
       },
+      true,
     ],
     [
       'an ALGORITHM_SWEEP',
       (s: ReturnType<typeof createStore>) => {
         s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
       },
+      false,
     ],
   ])(
     'sends the dataset row count ALONE for %s before Apply, the same figure the form sizes from',
-    async (_label, configure) => {
+    async (_label, configure, fine) => {
       const { result } = renderTraining(s => {
         s.set(mpSelectedDatasetAtom, {
           ...DATASET,
@@ -867,7 +905,16 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       }, null)
 
       await act(async () => {
-        result.current.start()
+        if (fine) {
+          result.current.fineTune({
+            algorithm: 'ridge',
+            base: RIDGE_BASE,
+            rows: [],
+            useGrid: true,
+          })
+        } else {
+          result.current.start()
+        }
         await vi.advanceTimersByTimeAsync(0)
       })
 
@@ -884,12 +931,16 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
         ...DATASET,
         rowCount: 400,
       } as SavedDataset)
-      s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['ridge'])
     })
 
     await act(async () => {
-      result.current.start()
+      result.current.fineTune({
+        algorithm: 'ridge',
+        base: RIDGE_BASE,
+        rows: [],
+        useGrid: true,
+      })
       await vi.advanceTimersByTimeAsync(0)
     })
 
@@ -897,5 +948,81 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       .calls[0]!
     expect(body).toHaveProperty('sizedRowCount', 8350)
     expect(body).toHaveProperty('sizedDistinctLabelled', 32)
+  })
+
+  /**
+   * MODEL-FLOW-035. Round 1 trains each algorithm once with its card values.
+   * The pre-existing "Find Best Parameters" atom and the added-rows atom are
+   * still persisted, but Start Training no longer reads either.
+   */
+  describe('MODEL-FLOW-035: Start Training is Round 1 — card values only', () => {
+    beforeEach(() => {
+      vi.mocked(modelDraftRunService.create).mockResolvedValue({
+        statusCode: 201,
+        message: 'ok',
+        type: 'SUCCESS',
+        data: { id: 'run-1' } as never,
+      })
+      vi.mocked(modelDraftRunService.get).mockResolvedValue({
+        statusCode: 200,
+        message: 'ok',
+        type: 'SUCCESS',
+        data: { id: 'run-1', status: 'RUNNING', logs: [] } as never,
+      })
+    })
+
+    it('one algorithm with added rows and the old toggle on is still a single run', async () => {
+      const { result } = renderTraining(s => {
+        s.set(mpFindBestParamsAtom, true)
+        s.set(mpAlgorithmsAtom, ['ridge'])
+        s.set(mpExtraVariantsAtom, { ridge: [{ alpha: 7 }] })
+      })
+
+      await act(async () => {
+        result.current.start()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(modelDraftRunService.create).toHaveBeenCalledTimes(1)
+      expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
+    })
+
+    it('sends the Loss function as the job ranking metric', async () => {
+      vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+        statusCode: 201,
+        message: 'ok',
+        type: 'SUCCESS',
+        data: { id: 'job-1' } as never,
+      })
+      vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+        statusCode: 200,
+        message: 'ok',
+        type: 'SUCCESS',
+        data: {
+          id: 'job-1',
+          status: 'RUNNING',
+          completedRuns: 0,
+          totalRuns: 2,
+          candidates: [],
+        } as never,
+      })
+      const { result } = renderTraining(s => {
+        s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
+        s.set(mpLossFunctionAtom, 'mae')
+      })
+
+      await act(async () => {
+        result.current.start()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(modelDraftCandidateJobService.create).toHaveBeenCalledWith(
+        'draft-1',
+        expect.objectContaining({
+          kind: 'ALGORITHM_SWEEP',
+          rankingMetric: 'mae',
+        }),
+      )
+    })
   })
 })

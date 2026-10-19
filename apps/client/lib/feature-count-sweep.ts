@@ -384,8 +384,8 @@ export function sweepRuleText(
   return (
     `Decided on ${label} (${sense} is better). The highlighted row is the ` +
     `${sense} fold mean. At these fold counts the gap between adjacent rows ` +
-    `is often smaller than their own spread, so read the ± beside each ` +
-    `figure before treating the order as settled. R² is shown as a column ` +
+    `is often smaller than their fold-to-fold spread, so do not treat the ` +
+    `order as settled. R² is shown as a column ` +
     `but cannot decide the ladder — it is a fold average of ratios whose ` +
     `denominator changes per fold, so one quiet fold can move it without ` +
     `limit.`

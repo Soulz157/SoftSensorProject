@@ -13,12 +13,6 @@ import {
   mpSelectedMetricsAtom,
 } from '@/store/model-pipeline'
 import { DEFAULT_RANK_METRIC, type RankMetricKey } from '@/lib/metric-ranking'
-import {
-  holdoutGroupMissingRateText,
-  groupAbsenceText,
-  holdoutSeriesAbsenceOf,
-  scoreableRunIds,
-} from '@/lib/metric-source'
 // MODEL-FLOW-021-T01. These two moved out of this file unchanged so Step 3's
 // own run comparison obeys the SAME comparability rules — see the module's
 // own doc comment for why a second derivation would be a defect.
@@ -32,8 +26,7 @@ import { modelDraftRunService, modelDraftService } from '@/services/model-draft'
 import type { ModelTrainingRunListItem } from '@/services/model-draft'
 import { candidateFromRun } from '@/lib/candidate-from-run'
 import { EmptyPanel } from './empty-panel'
-import { CandidateOverlayChart } from './candidate-overlay-chart'
-import { OwnPopulationOverlays } from './own-population-overlays'
+import { CandidateCharts } from './candidate-charts'
 import { CandidateTable } from './candidate-table'
 import { MetricsPicker } from './metrics-picker'
 
@@ -239,13 +232,6 @@ function StandaloneComparison({
         const groupCandidates = groupRuns.map(run =>
           candidateFromRun(run, datasetHasHoldout),
         )
-        // Structural view `groupAbsenceText` needs, computed once per group
-        // so both charts below read the SAME per-candidate verdict.
-        const groupAbsenceCandidates = groupCandidates.map(c => ({
-          cvFoldsKey: c.cvFoldsKey,
-          holdoutSeriesAbsence: holdoutSeriesAbsenceOf(c),
-        }))
-        const toScoreIds = scoreableRunIds(groupCandidates)
         return (
           <div key={targetY} className="space-y-4">
             {multiTarget && (
@@ -253,35 +239,17 @@ function StandaloneComparison({
                 y = {targetY}
               </p>
             )}
-            {/* MODEL-FLOW-019-T08 part 4. The overlay chart the job path
-                already gets (`CandidateGroups`' own `section()`), now on
-                every path — including a single-run group, which renders one
-                prediction series against actual rather than no chart at
-                all. */}
-            <OwnPopulationOverlays
+            {/* MODEL-FLOW-019-T08 part 4: every path gets the overlay charts,
+                including a single-run group. Now through the shared
+                CandidateCharts, which adds the per-model chart filter. */}
+            <CandidateCharts
               candidates={groupCandidates}
               byRunId={byRunId}
+              holdoutByRunId={holdoutByRunId}
               oofByRunId={oofByRunId}
               oofError={oofError}
-            />
-            <CandidateOverlayChart
-              candidates={groupCandidates}
-              byRunId={holdoutByRunId}
-              population="holdout"
-              note={holdoutGroupMissingRateText(
-                groupCandidates.map(c => c.sourcedMetrics),
-              )}
-              absenceNote={groupAbsenceText('holdout', groupAbsenceCandidates)}
-              onScore={
-                toScoreIds.length > 0
-                  ? () => void handleScoreGroup(toScoreIds)
-                  : undefined
-              }
-              scoreCount={toScoreIds.length}
-              scoring={
-                scoreSubmitting ||
-                groupCandidates.some(c => c.scoringContainerId)
-              }
+              onScore={ids => void handleScoreGroup(ids)}
+              scoreSubmitting={scoreSubmitting}
             />
             <CandidateTable
               candidates={groupCandidates}

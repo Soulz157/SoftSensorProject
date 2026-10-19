@@ -12,17 +12,21 @@ import {
 import type { DraftSplitStatsResult } from '@/services/dataset-version'
 import { datasetSizeFrom } from '@/lib/hyperparam-ranges'
 import { baseHyperparamsFor } from '@/lib/tuning-preview'
-import { planTrainingLaunch } from '@/lib/training-launch'
+import {
+  planFineTuneLaunch,
+  planTrainingLaunch,
+  type FineTuneInput,
+  type LaunchPlan,
+} from '@/lib/training-launch'
+import { scoreMetricOf } from '@/lib/run-params'
 import { isSequenceAlgorithm } from '@/lib/metric-source'
 import {
   mpTrainStateAtom,
   mpServerDraftIdAtom,
   mpTargetVariableAtom,
   mpAlgorithmsAtom,
-  mpFindBestParamsAtom,
   mpHyperparamsAtom,
   mpPerAlgorithmHyperparamsAtom,
-  mpExtraVariantsAtom,
   mpTrainTestSplitAtom,
   mpSplitStatsTagsAtom,
   mpSeedAtom,
@@ -30,6 +34,7 @@ import {
   mpSelectedDatasetAtom,
   mpTrainingResultAtom,
   mpCandidateJobIdAtom,
+  mpLossFunctionAtom,
   mpArtifactRefAtom,
   ALGORITHM_LABELS,
   type TrainState,
@@ -42,7 +47,10 @@ const POLL_MS = 2500
 const MAX_CONSECUTIVE_POLL_FAILURES = 3
 
 export interface UseModelTrainingResult extends TrainState {
+  /** Round 1: train every selected algorithm once with its card values. */
   start: () => void
+  /** Round 2 (MODEL-FLOW-035): a hyperparameter search over one algorithm. */
+  fineTune: (input: FineTuneInput) => void
   retry: () => void
   reset: () => void
 }
@@ -124,16 +132,15 @@ export function useModelTraining({
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const targetVariables = useAtomValue(mpTargetVariableAtom)
   const algorithms = useAtomValue(mpAlgorithmsAtom)
-  const findBestParams = useAtomValue(mpFindBestParamsAtom)
   const hyperparameters = useAtomValue(mpHyperparamsAtom)
   const perAlgorithmHyperparameters = useAtomValue(
     mpPerAlgorithmHyperparamsAtom,
   )
-  const extraVariants = useAtomValue(mpExtraVariantsAtom)
   const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
   const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
   const seed = useAtomValue(mpSeedAtom)
   const nSplits = useAtomValue(mpNSplitsAtom)
+  const lossFunction = useAtomValue(mpLossFunctionAtom)
   const selectedDataset = useAtomValue(mpSelectedDatasetAtom)
   const setTrainingResult = useSetAtom(mpTrainingResultAtom)
   const setArtifactRef = useSetAtom(mpArtifactRefAtom)
@@ -422,163 +429,178 @@ export function useModelTraining({
     [algorithms, hyperparameters, perAlgorithmHyperparameters],
   )
 
-  const run = useCallback(async () => {
-    if (runningRef.current || trainState.status === 'training') return
-    runningRef.current = true
-    setTrainState({ status: 'training', progress: 0 })
+  const launch = useCallback(
+    async (buildPlan: () => LaunchPlan) => {
+      if (runningRef.current || trainState.status === 'training') return
+      runningRef.current = true
+      setTrainState({ status: 'training', progress: 0 })
 
-    try {
-      if (!selectedDataset) {
-        throw new Error('No dataset selected — go back to Step 1.')
-      }
-      if (
-        selectedDataset.currentArtifactType !== 'FINAL' ||
-        !selectedDataset.currentArtifactId
-      ) {
-        throw new Error(
-          `"${selectedDataset.name}" has no saved FINAL artifact yet — save the dataset in Data Studio first.`,
-        )
-      }
-      // Narrowed with an explicit undefined check, not just a length
-      // comparison — noUncheckedIndexedAccess means `arr[0]` stays
-      // `T | undefined` to the type checker regardless of a prior
-      // `arr.length === 1` check on a *different* expression.
-      const [targetY] = targetVariables
-      if (targetVariables.length !== 1 || !targetY) {
-        throw new Error(
-          targetVariables.length === 0
-            ? 'Select a target variable before training.'
-            : 'Select exactly one target — a run fits one target per model.',
-        )
-      }
-      // What to launch is decided by `planTrainingLaunch` alone (user decision
-      // 2026-10-14: training every selected algorithm and every added row is
-      // the default, Find Best Model is gone, Find Best Parameters only adds
-      // the curated grid). It throws the refusals the controls already
-      // prevent — CV or LSTM/GRU beside another algorithm, more than 20
-      // candidates — so stale draft state still cannot reach the server.
-      const plan = planTrainingLaunch({
-        algorithms,
-        baseFor: hyperparametersFor,
-        extraVariants,
-        findBestParams,
-        nSplits,
-      })
+      try {
+        if (!selectedDataset) {
+          throw new Error('No dataset selected — go back to Step 1.')
+        }
+        if (
+          selectedDataset.currentArtifactType !== 'FINAL' ||
+          !selectedDataset.currentArtifactId
+        ) {
+          throw new Error(
+            `"${selectedDataset.name}" has no saved FINAL artifact yet — save the dataset in Data Studio first.`,
+          )
+        }
+        // Narrowed with an explicit undefined check, not just a length
+        // comparison — noUncheckedIndexedAccess means `arr[0]` stays
+        // `T | undefined` to the type checker regardless of a prior
+        // `arr.length === 1` check on a *different* expression.
+        const [targetY] = targetVariables
+        if (targetVariables.length !== 1 || !targetY) {
+          throw new Error(
+            targetVariables.length === 0
+              ? 'Select a target variable before training.'
+              : 'Select exactly one target — a run fits one target per model.',
+          )
+        }
+        // What to launch is decided by the pure planners in
+        // lib/training-launch.ts alone (`planTrainingLaunch` for Round 1,
+        // `planFineTuneLaunch` for Round 2). They throw the refusals the
+        // controls already prevent — CV or LSTM/GRU beside another algorithm,
+        // more than 20 candidates — so stale draft state still cannot reach
+        // the server.
+        const plan = buildPlan()
 
-      const draftId = await ensureDraftId()
-      if (!draftId) {
-        throw new Error("Model draft isn't ready yet — check Step 1.")
-      }
+        const draftId = await ensureDraftId()
+        if (!draftId) {
+          throw new Error("Model draft isn't ready yet — check Step 1.")
+        }
 
-      if (plan.type === 'job') {
-        // A sweep refuses LSTM/GRU (scope decision, MODEL-FLOW-024); a
-        // one-algorithm search may tune one.
-        const forSweep = plan.kind !== 'HYPERPARAMETER_SEARCH'
-        const candidates = plan.candidates.map(c => {
-          const backendAlgorithm = toBackendAlgorithm(c.algorithm, forSweep)
-          if (!backendAlgorithm) {
-            throw new Error(
-              `"${ALGORITHM_LABELS[c.algorithm]}" isn't supported by the training service yet — remove it.`,
-            )
-          }
-          return {
-            algorithm: backendAlgorithm,
-            hyperparameters: c.hyperparameters,
-          }
-        })
-        const created = await modelDraftCandidateJobService.create(draftId, {
+        if (plan.type === 'job') {
+          // A sweep refuses LSTM/GRU (scope decision, MODEL-FLOW-024); a
+          // one-algorithm search may tune one.
+          const forSweep = plan.kind !== 'HYPERPARAMETER_SEARCH'
+          const candidates = plan.candidates.map(c => {
+            const backendAlgorithm = toBackendAlgorithm(c.algorithm, forSweep)
+            if (!backendAlgorithm) {
+              throw new Error(
+                `"${ALGORITHM_LABELS[c.algorithm]}" isn't supported by the training service yet — remove it.`,
+              )
+            }
+            return {
+              algorithm: backendAlgorithm,
+              hyperparameters: c.hyperparameters,
+            }
+          })
+          const created = await modelDraftCandidateJobService.create(draftId, {
+            goldArtifactId: selectedDataset.currentArtifactId,
+            targetY,
+            kind: plan.kind,
+            // MODEL-FLOW-035. The Loss function ranks the job's winner.
+            rankingMetric: scoreMetricOf(lossFunction),
+            // MODEL-FLOW-029. EXACTLY ONE of the two. Only a one-algorithm
+            // search can be cross-validated; `planTrainingLaunch` has already
+            // refused CV for every other kind.
+            ...(nSplits !== undefined && plan.kind === 'HYPERPARAMETER_SEARCH'
+              ? { nSplits }
+              : { trainTestSplit: trainTestSplit / 100 }),
+            candidates,
+            // MODEL-FLOW-026. Only a grid search on one algorithm carries them
+            // separately; everywhere else the rows are already candidates.
+            ...(plan.extraVariants
+              ? { extraVariants: plan.extraVariants }
+              : {}),
+            ...sizedFigures,
+          })
+
+          pollJob(draftId, created.data.id)
+          return
+        }
+
+        const { algorithm } = plan.candidate
+        const backendAlgorithm = toBackendAlgorithm(algorithm, false)
+        if (!backendAlgorithm) {
+          throw new Error(
+            `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick Linear Regression.`,
+          )
+        }
+
+        // A single-run launch — clear any PREVIOUS sweep's job id so Step 4
+        // doesn't show a stale candidate table for this new, unrelated run.
+        setCandidateJobId(null)
+
+        const created = await modelDraftRunService.create(draftId, {
           goldArtifactId: selectedDataset.currentArtifactId,
           targetY,
-          kind: plan.kind,
-          // MODEL-FLOW-029. EXACTLY ONE of the two. Only a one-algorithm
-          // search can be cross-validated; `planTrainingLaunch` has already
-          // refused CV for every other kind.
-          ...(nSplits !== undefined && plan.kind === 'HYPERPARAMETER_SEARCH'
+          algorithm: backendAlgorithm,
+          hyperparameters,
+          // MODEL-FLOW-016-T10. EXACTLY ONE of the two, mirroring
+          // CreateTrainingRunSchema's own .refine() server-side — sending
+          // both would 400 a run the UI otherwise built correctly.
+          // trainTestSplit is a FRACTION, never a percentage — converted
+          // once, here, at the client boundary (same rule
+          // useModelDraftSync's PATCH follows).
+          ...(nSplits !== undefined
             ? { nSplits }
             : { trainTestSplit: trainTestSplit / 100 }),
-          candidates,
-          // MODEL-FLOW-026. Only a grid search on one algorithm carries them
-          // separately; everywhere else the rows are already candidates.
-          ...(plan.extraVariants ? { extraVariants: plan.extraVariants } : {}),
-          ...sizedFigures,
+          // MODEL-FLOW-014-T06. The Split Distribution panel's own tag
+          // selection, so the frozen sidecar matches what was displayed.
+          // Omitted (undefined) when the panel never seeded a selection —
+          // the backend's own default is [targetY] either way.
+          ...(splitStatsTags.length > 0 && { splitStatsTags }),
+          // MODEL-FLOW-014-T07. Omitted when the user never set one — the
+          // server generates its own random seed in that case. Undefined and
+          // "explicitly 42" must stay distinguishable for reproducibility.
+          ...(seed !== undefined && { seed }),
         })
 
-        pollJob(draftId, created.data.id)
-        return
+        pollRun(draftId, created.data.id)
+      } catch (err) {
+        runningRef.current = false
+        setTrainState({
+          status: 'error',
+          progress: 0,
+          error:
+            err instanceof Error && err.message
+              ? err.message
+              : 'Failed to start training.',
+        })
       }
+    },
+    [
+      trainState.status,
+      selectedDataset,
+      targetVariables,
+      hyperparameters,
+      trainTestSplit,
+      nSplits,
+      lossFunction,
+      splitStatsTags,
+      seed,
+      sizedFigures,
+      ensureDraftId,
+      pollRun,
+      pollJob,
+      setCandidateJobId,
+      setTrainState,
+    ],
+  )
 
-      const { algorithm } = plan.candidate
-      const backendAlgorithm = toBackendAlgorithm(algorithm, false)
-      if (!backendAlgorithm) {
-        throw new Error(
-          `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick Linear Regression.`,
-        )
-      }
+  // Round 1. Card values only; the deps are what the planner reads.
+  const run = useCallback(
+    () =>
+      launch(() =>
+        planTrainingLaunch({
+          algorithms,
+          baseFor: hyperparametersFor,
+          nSplits,
+        }),
+      ),
+    [launch, algorithms, hyperparametersFor, nSplits],
+  )
 
-      // A single-run launch — clear any PREVIOUS sweep's job id so Step 4
-      // doesn't show a stale candidate table for this new, unrelated run.
-      setCandidateJobId(null)
-
-      const created = await modelDraftRunService.create(draftId, {
-        goldArtifactId: selectedDataset.currentArtifactId,
-        targetY,
-        algorithm: backendAlgorithm,
-        hyperparameters,
-        // MODEL-FLOW-016-T10. EXACTLY ONE of the two, mirroring
-        // CreateTrainingRunSchema's own .refine() server-side — sending
-        // both would 400 a run the UI otherwise built correctly.
-        // trainTestSplit is a FRACTION, never a percentage — converted
-        // once, here, at the client boundary (same rule
-        // useModelDraftSync's PATCH follows).
-        ...(nSplits !== undefined
-          ? { nSplits }
-          : { trainTestSplit: trainTestSplit / 100 }),
-        // MODEL-FLOW-014-T06. The Split Distribution panel's own tag
-        // selection, so the frozen sidecar matches what was displayed.
-        // Omitted (undefined) when the panel never seeded a selection —
-        // the backend's own default is [targetY] either way.
-        ...(splitStatsTags.length > 0 && { splitStatsTags }),
-        // MODEL-FLOW-014-T07. Omitted when the user never set one — the
-        // server generates its own random seed in that case. Undefined and
-        // "explicitly 42" must stay distinguishable for reproducibility.
-        ...(seed !== undefined && { seed }),
-      })
-
-      pollRun(draftId, created.data.id)
-    } catch (err) {
-      runningRef.current = false
-      setTrainState({
-        status: 'error',
-        progress: 0,
-        error:
-          err instanceof Error && err.message
-            ? err.message
-            : 'Failed to start training.',
-      })
-    }
-  }, [
-    trainState.status,
-    selectedDataset,
-    targetVariables,
-    findBestParams,
-    algorithms,
-    hyperparameters,
-    // MODEL-FLOW-026. Without this the callback closes over the rows as they
-    // were when the algorithm list last changed, so a variant added just
-    // before Start Training would silently not be sent.
-    extraVariants,
-    hyperparametersFor,
-    trainTestSplit,
-    nSplits,
-    splitStatsTags,
-    seed,
-    sizedFigures,
-    ensureDraftId,
-    pollRun,
-    pollJob,
-    setCandidateJobId,
-    setTrainState,
-  ])
+  // Round 2 (MODEL-FLOW-035). The section hands in the chosen run's base and
+  // the rows; one-algorithm HYPERPARAMETER_SEARCH, CV allowed.
+  const fineTune = useCallback(
+    (input: FineTuneInput) => launch(() => planFineTuneLaunch(input)),
+    [launch],
+  )
 
   const reset = useCallback(() => {
     stopPolling()
@@ -586,5 +608,5 @@ export function useModelTraining({
     setTrainState({ status: 'idle', progress: 0 })
   }, [setTrainState, stopPolling])
 
-  return { ...trainState, start: run, retry: run, reset }
+  return { ...trainState, start: run, fineTune, retry: run, reset }
 }

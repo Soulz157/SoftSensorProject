@@ -7,19 +7,11 @@ import {
   mpAcceptanceCriteriaAtom,
   mpCompareRunIdsAtom,
   mpSelectedMetricsAtom,
-  ALGORITHM_LABELS,
-  type Algorithm,
 } from '@/store/model-pipeline'
 import type { AcceptanceCriterion } from '@/lib/acceptance-criteria'
 import { useCandidateJob } from '@/hooks/model/use-candidate-job'
 import { useCandidatePredictions } from '@/hooks/model/use-candidate-predictions'
 import type { MetricKey } from '@/lib/model-metrics'
-import {
-  holdoutGroupMissingRateText,
-  groupAbsenceText,
-  holdoutSeriesAbsenceOf,
-  scoreableRunIds,
-} from '@/lib/metric-source'
 import { DEFAULT_RANK_METRIC, type RankMetricKey } from '@/lib/metric-ranking'
 import {
   modelDraftCandidateJobService,
@@ -31,13 +23,13 @@ import type {
   RunPredictionsBatchItem,
 } from '@/services/model-draft'
 import { EmptyPanel } from './empty-panel'
-import { OwnPopulationOverlays } from './own-population-overlays'
-import { CandidateOverlayChart } from './candidate-overlay-chart'
+import { CandidateCharts } from './candidate-charts'
 import { CandidateTable } from './candidate-table'
 import { MetricsPicker } from './metrics-picker'
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import { useDraftSelection } from '@/hooks/model/use-draft-selection'
 import { candidateFromRun } from '@/lib/candidate-from-run'
+import { rankingBasisText } from '@/lib/run-params'
 import { modelDraftService } from '@/services/model-draft'
 
 function resolvedRunIdFor(job: ModelCandidateJob): string | null {
@@ -60,8 +52,12 @@ export function CandidateComparison({
   // about what a metric is called. `sortMetric` is local — an ephemeral
   // view preference for this screen, not a value worth persisting past it.
   const selectedMetrics = useAtomValue(mpSelectedMetricsAtom)
-  const [sortMetric, setSortMetric] =
-    useState<RankMetricKey>(DEFAULT_RANK_METRIC)
+  // MODEL-FLOW-035. Opens on the metric the job ranked by, until the user
+  // picks another; `null` = not chosen yet.
+  const [pickedSortMetric, setSortMetric] = useState<RankMetricKey | null>(null)
+  const sortMetric: RankMetricKey =
+    pickedSortMetric ??
+    (job?.rankingMetric === 'mae' ? 'mae' : DEFAULT_RANK_METRIC)
   // MODEL-FLOW-019-T07. Same shared-atom pattern as `mpSelectedMetricsAtom`
   // above — read independently at each surface that renders CandidateTable.
   const acceptanceCriteria = useAtomValue(mpAcceptanceCriteriaAtom)
@@ -279,13 +275,14 @@ export function CandidateComparison({
         sortMetric={sortMetric}
         onSortMetric={setSortMetric}
         criteria={acceptanceCriteria}
-        // The server's own pick (lowest Test RMSE, or lowest mean CV RMSE
-        // for a cross-validated search) — badged, never forced: the user's
+        // The server's own pick (lowest Test or mean-CV metric of the job's
+        // rankingMetric) — badged, never forced: the user's
         // Select still wins (`resolvedRunIdFor`).
         recommendedRunId={job.bestRunId}
-        recommendedBasis={
-          job.nSplits != null ? 'lowest mean CV RMSE' : 'lowest Test RMSE'
-        }
+        recommendedBasis={rankingBasisText(
+          job.rankingMetric,
+          job.nSplits != null,
+        )}
         onScoreGroup={ids => void handleScoreGroup(ids)}
         scoreSubmitting={scoreSubmitting}
       />
@@ -294,12 +291,18 @@ export function CandidateComparison({
 }
 
 /**
- * MODEL-FLOW-013-T11. A SWEEP_THEN_TUNE job's candidates carry a `phase` —
- * 1 (the sweep) or 2 (tuning phase 1's winner, appended server-side once
- * phase 1 exhausts). Grouped into two headed sections ONLY once a phase-2
- * group actually exists; an ALGORITHM_SWEEP job (no `phase: 2` candidate
- * ever) or a SWEEP_THEN_TUNE job still mid-phase-1 renders the exact same
- * flat, unheaded grid it always has — no empty "Tuning" header.
+ * ONE table and one set of charts for every model of this draft, whichever
+ * training produced it (user decision 2026-10-19, MODEL-FLOW-035): this job's
+ * candidates first, then runs from EARLIER trainings (other jobs, or single
+ * runs), ranked together by the chosen metric.
+ *
+ * It replaces the per-group layout (a "Sweep" / "Tuning <winner>" pair for a
+ * two-phase job, plus an "Earlier runs" section), which ranked each group on
+ * its own and, with Round 1 and Round 2 always being separate trainings, put
+ * the two rounds a user wants to compare in separate tables. A row from an
+ * earlier training says so under its name, since it may have run on another
+ * split or configuration; a tuning-phase row of an older two-phase job says
+ * "Tuning". The ★ Recommended badge stays this job's own winner.
  */
 function CandidateGroups({
   candidates,
@@ -349,119 +352,58 @@ function CandidateGroups({
   criteria?: AcceptanceCriterion[]
   recommendedRunId: string | null
   recommendedBasis: string
-  /** MODEL-FLOW-019-T20 follow-up. Fires with every runId in ONE phase
-   *  group that `scoreableRunIds` names — never the whole job, so a
-   *  Sweep-phase click cannot spawn containers for the Tuning phase too. */
+  /** Score the given runs against the validation holdout. */
   onScoreGroup: (runIds: string[]) => void
   scoreSubmitting: boolean
 }) {
-  const phase1 = candidates.filter(c => c.phase !== 2)
-  const phase2 = candidates.filter(c => c.phase === 2)
-  const tunedAlgorithm = phase2[0]?.algorithm
-  const tunedLabel = tunedAlgorithm
-    ? (ALGORITHM_LABELS[tunedAlgorithm as Algorithm] ?? tunedAlgorithm)
-    : null
-
-  // MODEL-FLOW-019-T04. Sorting stays WITHIN one phase group (openDecisions
-  // item 1, resolved 2026-09-05) — a tuning phase's candidates share one
-  // algorithm and are directly comparable in a way the sweep phase's are
-  // not (MODEL-FLOW-013-T11), and ranking them against each other would
-  // lose that. Each group gets its own `CandidateTable` call, its own
-  // ranking, its own summary sentence.
-  const section = (group: CandidateResult[]) => {
-    // Structural view `groupAbsenceText` needs, computed once per group so
-    // both charts below read the SAME per-candidate verdict.
-    const groupAbsenceCandidates = group.map(c => ({
-      cvFoldsKey: c.cvFoldsKey,
-      holdoutSeriesAbsence: holdoutSeriesAbsenceOf(c),
-    }))
-    const toScoreIds = scoreableRunIds(group)
-    return (
-      <div className="space-y-4">
-        <OwnPopulationOverlays
-          candidates={group}
-          byRunId={byRunId}
-          oofByRunId={oofByRunId}
-          oofError={oofError}
-        />
-        {/* MODEL-FLOW-019-T20. Beside the test-split overlay, never merged
-            into it — the two windows are genuinely different data (the
-            holdout is raw rows split off at BRONZE that no fit ever saw)
-            and mistaking one for the other is what produced T19's report.
-
-            STATES its absence rather than vanishing when no candidate here
-            has a holdout series. It vanished at first, on the reasoning that
-            a chart must not claim an absence it has not checked — but the
-            absence IS checked: `groupAbsenceText` reads each candidate's own
-            `holdoutSeriesAbsence`, the same field AC11 already refuses to
-            leave blank in the table below (as `holdoutAbsence`). Vanishing
-            was not modesty, it was the one state a reader cannot tell apart
-            from a bug. */}
-        <CandidateOverlayChart
-          candidates={group}
-          byRunId={holdoutByRunId}
-          population="holdout"
-          note={holdoutGroupMissingRateText(group.map(c => c.sourcedMetrics))}
-          absenceNote={groupAbsenceText('holdout', groupAbsenceCandidates)}
-          onScore={
-            toScoreIds.length > 0 ? () => onScoreGroup(toScoreIds) : undefined
-          }
-          scoreCount={toScoreIds.length}
-          scoring={scoreSubmitting || group.some(c => c.scoringContainerId)}
-        />
-        <CandidateTable
-          candidates={group}
-          resolvedRunId={resolvedRunId}
-          selecting={selecting}
-          onSelect={onSelect}
-          selectedMetrics={selectedMetrics}
-          sortMetric={sortMetric}
-          onSortMetric={onSortMetric}
-          byRunId={byRunId}
-          holdoutByRunId={holdoutByRunId}
-          oofByRunId={oofByRunId}
-          oofError={oofError}
-          draftId={draftId}
-          predictionsLoading={predictionsLoading}
-          holdoutLoading={holdoutLoading}
-          oofLoading={oofLoading}
-          criteria={criteria}
-          recommendedRunId={recommendedRunId}
-          recommendedBasis={recommendedBasis}
-        />
-      </div>
-    )
-  }
-
-  // Ranked in their own group, never against this job's rows — an earlier
-  // training may differ in split or config, so one ranking would mislead.
-  const earlierSection =
-    earlier.length > 0 ? (
-      <>
-        <p className="text-xs font-medium text-muted-foreground">
-          Earlier runs
-        </p>
-        {section(earlier)}
-      </>
+  const all = useMemo(() => [...candidates, ...earlier], [candidates, earlier])
+  const earlierIds = new Set(earlier.map(c => c.runId))
+  const tuningIds = new Set(
+    candidates.filter(c => c.phase === 2).map(c => c.runId),
+  )
+  const rowNote = (runId: string) => {
+    const note = earlierIds.has(runId)
+      ? 'Earlier training — may use another split or configuration.'
+      : tuningIds.has(runId)
+        ? 'Tuning'
+        : null
+    return note ? (
+      <p className="text-[10px] text-muted-foreground">{note}</p>
     ) : null
-
-  if (phase2.length === 0 && !earlierSection) return section(phase1)
+  }
 
   return (
     <div className="space-y-4">
-      {phase2.length === 0 ? (
-        section(phase1)
-      ) : (
-        <>
-          <p className="text-xs font-medium text-muted-foreground">Sweep</p>
-          {section(phase1)}
-          <p className="text-xs font-medium text-muted-foreground">
-            Tuning {tunedLabel}
-          </p>
-          {section(phase2)}
-        </>
-      )}
-      {earlierSection}
+      <CandidateCharts
+        candidates={all}
+        byRunId={byRunId}
+        holdoutByRunId={holdoutByRunId}
+        oofByRunId={oofByRunId}
+        oofError={oofError}
+        onScore={onScoreGroup}
+        scoreSubmitting={scoreSubmitting}
+      />
+      <CandidateTable
+        candidates={all}
+        resolvedRunId={resolvedRunId}
+        selecting={selecting}
+        onSelect={onSelect}
+        selectedMetrics={selectedMetrics}
+        sortMetric={sortMetric}
+        onSortMetric={onSortMetric}
+        byRunId={byRunId}
+        holdoutByRunId={holdoutByRunId}
+        oofByRunId={oofByRunId}
+        oofError={oofError}
+        draftId={draftId}
+        predictionsLoading={predictionsLoading}
+        holdoutLoading={holdoutLoading}
+        oofLoading={oofLoading}
+        rowNote={rowNote}
+        criteria={criteria}
+        recommendedRunId={recommendedRunId}
+        recommendedBasis={recommendedBasis}
+      />
     </div>
   )
 }

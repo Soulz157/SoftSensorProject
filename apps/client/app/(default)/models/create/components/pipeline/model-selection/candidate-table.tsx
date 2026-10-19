@@ -462,14 +462,12 @@ function CvEstimateCell({
   metric: CvFoldEstimate
   metricKey: RankMetricKey
 }) {
+  // The fold mean alone — the ± std beside it was dropped (2026-10-19).
   const mean = metric.mean[metricKey]
-  const std = metric.std[metricKey]
   return (
     <TableCell className="border-l text-right">
       <p className="font-mono text-xs tabular-nums text-foreground">
-        {mean === null
-          ? '—'
-          : `${mean.toFixed(3)}${std !== null ? ` ± ${std.toFixed(3)}` : ''}`}
+        {mean === null ? '—' : mean.toFixed(3)}
       </p>
       <p className="text-[9px] text-muted-foreground">
         {METRIC_SOURCE_LABELS['cv-fold-estimate']}

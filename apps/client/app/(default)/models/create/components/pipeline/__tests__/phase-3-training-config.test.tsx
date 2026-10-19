@@ -326,3 +326,86 @@ describe('Phase3TrainingConfig — V08: Evaluation reachability gates on Apply, 
     })
   })
 })
+
+/**
+ * MODEL-FLOW-035. Step 3 has ONE Start button for both rounds; the Fine-tune
+ * switch inside Algorithm & hyperparameters decides what it does, and the
+ * algorithm cards fold to a summary while it is on (Start reads none of them).
+ */
+describe('Phase3TrainingConfig — one Start button for both rounds (MODEL-FLOW-035)', () => {
+  const SUCCEEDED_RUN = {
+    id: 'run-1',
+    status: 'SUCCEEDED',
+    failureReason: null,
+    datasetId: 'ds-1',
+    goldArtifactId: 'art-1',
+    artifactChecksum: 'sha256:abc',
+    featureSpecKey: 'feature_spec.json',
+    featureColumns: null,
+    sweepId: null,
+    sweepSeedRunId: null,
+    targetY: 'TI-101',
+    algorithm: 'ols',
+    hyperparameters: { fit_intercept: true },
+    seed: 4242,
+    splitSpec: { method: 'chronological', ratio: 0.8 },
+    imageDigest: 'sha256:0123456789abcdef',
+    modelKey: 'model.joblib',
+    metrics: { r2: 0.9, rmse: 1.234, mae: 1 },
+    holdoutMetrics: null,
+    cvFoldsKey: null,
+    featureImportanceKey: null,
+    permutationImportanceKey: null,
+    predictionsKey: null,
+    holdoutPredictionsKey: null,
+    scoringContainerId: null,
+    lossHistoryKey: null,
+    splitStats: null,
+    candidateJobId: null,
+    createdAt: '2026-08-27T00:00:00.000Z',
+    startedAt: '2026-08-27T00:00:01.000Z',
+    finishedAt: '2026-08-27T00:00:30.000Z',
+  }
+
+  it('the Fine-tune switch turns Start Training into Start Fine-tune and back', async () => {
+    h.runsList.mockResolvedValue({
+      data: [SUCCEEDED_RUN],
+      statusCode: 200,
+      message: 'ok',
+      type: 'success',
+    })
+    renderStep3()
+
+    const fineTune = await screen.findByRole('switch', { name: 'Fine-tune' })
+    await waitFor(() => expect(fineTune).toBeEnabled(), { timeout: 2000 })
+    expect(
+      screen.getByRole('button', { name: /Start Training/ }),
+    ).toBeInTheDocument()
+
+    fireEvent.click(fineTune)
+
+    expect(
+      await screen.findByRole('button', { name: /Start Fine-tune/ }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /Start Training/ }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText(/not used while fine-tuning/)).toBeInTheDocument()
+
+    // Edit on the folded algorithm summary turns Fine-tune off again.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(
+      await screen.findByRole('button', { name: /Start Training/ }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Fine-tune' })).not.toBeChecked()
+  })
+
+  it('before any run succeeds the switch is disabled and Start trains the algorithms', async () => {
+    renderStep3()
+    const fineTune = await screen.findByRole('switch', { name: 'Fine-tune' })
+    expect(fineTune).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: /Start Training/ }),
+    ).toBeInTheDocument()
+  })
+})

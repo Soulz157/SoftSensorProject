@@ -192,11 +192,9 @@ export function EvaluationPopulationPanel({
     if (key === 'r2' && !isR2Meaningful(metrics.targetDistinct)) {
       return R2_NOT_MEANINGFUL
     }
-    const mean = metrics[key]
-    const std = metrics.std?.[key]
-    return std !== undefined && isOof
-      ? `${mean.toFixed(3)} ± ${std.toFixed(3)}`
-      : mean.toFixed(3)
+    // A CV run's tile is the fold mean alone; the ± std is no longer
+    // printed beside it (2026-10-19).
+    return metrics[key].toFixed(3)
   }
   const accentFor = (key: MetricKey): string | undefined => {
     if (key === 'sd' || !metrics) return undefined
@@ -210,7 +208,7 @@ export function EvaluationPopulationPanel({
       return R2_NOT_MEANINGFUL_REASON
     }
     if (isOof && metrics?.std) {
-      return `mean ± std across ${metrics.nSplits ?? cvFolds?.n_splits ?? 'k'} folds`
+      return `mean across ${metrics.nSplits ?? cvFolds?.n_splits ?? 'k'} folds`
     }
     return METRIC_META[key].hint
   }

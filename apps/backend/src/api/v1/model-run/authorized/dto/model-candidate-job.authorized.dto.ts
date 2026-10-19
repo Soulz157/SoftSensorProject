@@ -42,6 +42,10 @@ export const CreateCandidateJobSchema = z
     // SEARCH only, and exclusive with trainTestSplit — both refined below.
     nSplits: z.coerce.number().int().min(2).max(10).optional(),
     kind: CandidateJobKindEnum,
+    // MODEL-FLOW-035. The metric the winner (bestRunId) is chosen by — the
+    // wizard's Loss function. Omitted = 'rmse', so retrain and every older
+    // client rank exactly as before.
+    rankingMetric: z.enum(['rmse', 'mae']).optional(),
 
     // At least 1 for HYPERPARAMETER_SEARCH — a single algorithm + its
     // current hyperparameters, expanded server-side into the curated

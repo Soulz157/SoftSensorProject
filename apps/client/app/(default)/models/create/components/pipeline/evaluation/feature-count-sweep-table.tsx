@@ -53,10 +53,13 @@ function formatR2(value: number): string {
 }
 
 /**
- * AC67, and V42's whole point. A row without a spread renders its mean but NO
- * interval — and `selectByOverlap` never places it, because a row that cannot
- * be shown to overlap or miss anything would be ordered by its mean alone,
- * which is the argmin this table exists to refuse.
+ * A row without a spread is marked "no spread": `selectByOverlap` (the
+ * overlap note under the table) never places it, since a row that cannot be
+ * shown to overlap anything would be ordered by its mean alone.
+ *
+ * The fold mean alone is printed (2026-10-19, user decision: no ± std beside
+ * a CV score anywhere). The spread is still recorded and still read by the
+ * overlap note; it is just no longer shown beside the figure.
  */
 function IntervalCell({
   stat,
@@ -71,12 +74,10 @@ function IntervalCell({
   return (
     <span className="font-mono tabular-nums">
       {format(stat.mean)}
-      {stat.std === null ? (
+      {stat.std === null && (
         <span className="ml-1 font-sans text-[11px] text-muted-foreground">
           no spread
         </span>
-      ) : (
-        <span className="text-muted-foreground"> ± {format(stat.std)}</span>
       )}
     </span>
   )
@@ -178,7 +179,7 @@ export function FeatureCountSweepTable({
               <TableRow className="bg-muted/40 hover:bg-muted/40">
                 <TableHead className="h-9 px-3">Features (X)</TableHead>
                 <TableHead className="h-9 px-3 text-right">
-                  RMSE (fold mean ± SD)
+                  RMSE (fold mean)
                   {metric === 'rmse' && (
                     <span className="ml-1 font-normal text-muted-foreground">
                       · decides
@@ -186,7 +187,7 @@ export function FeatureCountSweepTable({
                   )}
                 </TableHead>
                 <TableHead className="h-9 px-3 text-right">
-                  MAE (fold mean ± SD)
+                  MAE (fold mean)
                   {metric === 'mae' && (
                     <span className="ml-1 font-normal text-muted-foreground">
                       · decides
@@ -197,7 +198,7 @@ export function FeatureCountSweepTable({
                   className="h-9 px-3 text-right"
                   title="R² is shown for reference and cannot decide the ladder — a fold average of ratios whose denominator changes per fold"
                 >
-                  R² (fold mean ± SD)
+                  R² (fold mean)
                 </TableHead>
                 <TableHead className="h-9 px-3" />
               </TableRow>

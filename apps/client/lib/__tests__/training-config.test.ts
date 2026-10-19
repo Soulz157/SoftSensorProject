@@ -155,7 +155,7 @@ describe('MODEL-FLOW-019-T37: the loss default is a value the control offers', (
     // option was the resolution. DEFAULT_RANK_METRIC is the same choice
     // MODEL-FLOW-005 made after a real run scored r2 = -1,110,858.
     expect(DEFAULT_LOSS_FUNCTION).toBe(DEFAULT_RANK_METRIC)
-    expect([...optionValues].sort()).toEqual(['mae', 'r2', 'rmse'])
+    expect([...optionValues].sort()).toEqual(['mae', 'rmse'])
   })
 })
 
@@ -172,6 +172,10 @@ describe('normaliseLossFunction', () => {
     // Asserted as its own case so a future blanket fallback cannot quietly
     // absorb it — the mapping is a decision, and it is recorded as one.
     expect(normaliseLossFunction('mse')).toBe('rmse')
+  })
+
+  it("maps the legacy 'r2' to 'rmse' (MODEL-FLOW-035: R² is displayed, not chosen)", () => {
+    expect(normaliseLossFunction('r2')).toBe('rmse')
   })
 
   it('resolves absent and empty to the default', () => {

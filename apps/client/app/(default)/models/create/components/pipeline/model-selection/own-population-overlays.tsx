@@ -9,6 +9,7 @@ import type {
   CandidateResult,
   RunPredictionsBatchItem,
 } from '@/services/model-draft'
+import type { SeriesStyle } from '@/lib/chart-model-filter'
 import { CandidateOverlayChart } from './candidate-overlay-chart'
 
 interface Props {
@@ -21,6 +22,8 @@ interface Props {
   /** The out-of-fold fetch's own error. Set, an empty map means "could not
    *  load", NOT "none stored" — the two need different sentences. */
   oofError?: string | null
+  /** Fixed label + colour per model (Phase 4's chart filter). */
+  seriesStyles?: Map<string, SeriesStyle>
 }
 
 /**
@@ -42,6 +45,7 @@ export function OwnPopulationOverlays({
   byRunId,
   oofByRunId,
   oofError,
+  seriesStyles,
 }: Props) {
   const ordinary = candidates.filter(c => !c.cvFoldsKey)
   const crossValidated = candidates.filter(c => c.cvFoldsKey)
@@ -59,6 +63,7 @@ export function OwnPopulationOverlays({
           candidates={ordinary}
           byRunId={byRunId}
           population="test-split"
+          seriesStyles={seriesStyles}
           absenceNote={groupAbsenceText('test-split', structural(ordinary))}
         />
       )}
@@ -67,6 +72,7 @@ export function OwnPopulationOverlays({
           candidates={crossValidated}
           byRunId={oofByRunId}
           population="cv-oof"
+          seriesStyles={seriesStyles}
           absenceNote={
             oofError
               ? OOF_LOAD_FAILED_TEXT

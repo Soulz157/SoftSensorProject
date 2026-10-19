@@ -22,9 +22,7 @@ import {
 import { ineligibleReason } from '@/lib/algorithm-eligibility'
 import { isSequenceAlgorithm } from '@/lib/metric-source'
 import type { DatasetSize } from '@/lib/hyperparam-ranges'
-import { baseHyperparamsFor } from '@/lib/tuning-preview'
 import { DynamicHyperparameters } from './dynamic-hyperparameters'
-import { VariantPreview, type VariantPreviewMode } from './variant-preview'
 
 const MAX = 3
 
@@ -43,7 +41,6 @@ interface Props {
     key: string,
     value: HyperparamValue,
   ) => void
-  findBestParams: boolean
   /**
    * MODEL-FLOW-024. The two size figures from the split stats Step 3 fetched;
    * sizes the suggested ranges under each field. Omitted (or unresolved) shows
@@ -59,7 +56,6 @@ export function AlgorithmStack({
   perAlgorithmHyperparameters,
   hyperparameters,
   onHyperparameterChange,
-  findBestParams,
   datasetSize,
 }: Props) {
   const atCap = algorithms.length >= MAX
@@ -137,16 +133,6 @@ export function AlgorithmStack({
 
   const addable = ALGORITHMS.filter(a => !algorithms.includes(a))
 
-  // MODEL-FLOW-025/026. Every open card lists the rows the user added (each
-  // trains as its own candidate). With Find Best Parameters on it also lists
-  // the curated variants: on one algorithm they are searched directly; on two
-  // or more only the candidate that wins the first round is tuned with them.
-  const variantMode: VariantPreviewMode = findBestParams
-    ? onlyOne
-      ? 'direct'
-      : 'sweep-then-tune'
-    : 'manual'
-
   return (
     <div className="space-y-2.5 rounded-lg border border-border p-3">
       <div className="space-y-1">
@@ -158,12 +144,8 @@ export function AlgorithmStack({
         </div>
         <p className="text-[11px] text-muted-foreground">
           {onlyOne
-            ? 'Trains one model, plus one per row you add below. Add a second algorithm to compare them.'
-            : `Trains every algorithm below, plus every row you add on a card, one at a time. Step 4 compares them and recommends the lowest Test RMSE${
-                findBestParams
-                  ? ', then Find Best Parameters tunes that winner with a curated set of variants'
-                  : ''
-              }.`}
+            ? 'Trains one model with these values. Add a second algorithm to compare them, then fine-tune the one you pick.'
+            : 'Trains every algorithm below once, with its values. Compare them in Run parameters, then fine-tune the one you pick.'}
         </p>
       </div>
 
@@ -179,15 +161,8 @@ export function AlgorithmStack({
             onRemove={() => remove(a)}
             removeDisabled={onlyOne}
             hyperparameters={paramsFor(a, i)}
-            launchHyperparameters={baseHyperparamsFor(
-              a,
-              algorithms,
-              hyperparameters,
-              perAlgorithmHyperparameters,
-            )}
             onChange={(key, value) => onHyperparameterChange(a, key, value)}
             datasetSize={datasetSize}
-            variantMode={variantMode}
           />
         ))}
       </ul>
@@ -268,10 +243,8 @@ function AlgorithmCard({
   onRemove,
   removeDisabled,
   hyperparameters,
-  launchHyperparameters,
   onChange,
   datasetSize,
-  variantMode,
 }: {
   algorithm: Algorithm
   index: number
@@ -281,12 +254,8 @@ function AlgorithmCard({
   onRemove: () => void
   removeDisabled: boolean
   hyperparameters: Record<string, HyperparamValue>
-  /** What a launch would send for this algorithm — the base a search excludes
-   *  variants against. Not `hyperparameters`: see `baseHyperparamsFor`. */
-  launchHyperparameters: Record<string, HyperparamValue>
   onChange: (key: string, value: HyperparamValue) => void
   datasetSize: DatasetSize | undefined
-  variantMode: VariantPreviewMode | undefined
 }) {
   const label = ALGORITHM_LABELS[algorithm]
   const panelId = `algorithm-params-${algorithm}`
@@ -374,16 +343,49 @@ function AlgorithmCard({
             onChange={onChange}
             size={datasetSize}
           />
-          {variantMode && (
-            <VariantPreview
-              algorithm={algorithm}
-              base={launchHyperparameters}
-              size={datasetSize}
-              mode={variantMode}
-            />
-          )}
         </div>
       )}
     </li>
+  )
+}
+
+/**
+ * MODEL-FLOW-035. What the algorithm cards fold into while Fine-tune is on:
+ * Start Training then tunes one picked run and reads none of the cards, so
+ * showing them open and editable would suggest otherwise. Edit turns
+ * Fine-tune off and brings the cards back.
+ */
+export function AlgorithmStackSummary({
+  algorithms,
+  onEdit,
+}: {
+  algorithms: Algorithm[]
+  onEdit: () => void
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-border p-3">
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex items-baseline gap-3">
+          <Label className="text-xs font-medium">Algorithms</Label>
+          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+            {algorithms.length}/{MAX}
+          </span>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          <span className="font-medium text-foreground">
+            {algorithms.map(a => ALGORITHM_LABELS[a]).join(' · ')}
+          </span>{' '}
+          — not used while fine-tuning.
+        </p>
+      </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 shrink-0 cursor-pointer px-2 text-xs"
+        onClick={onEdit}
+      >
+        Edit
+      </Button>
+    </div>
   )
 }

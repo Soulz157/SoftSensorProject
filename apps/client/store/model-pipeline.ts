@@ -165,6 +165,35 @@ export const mpExtraVariantsAtom = atom<
   Partial<Record<Algorithm, Record<string, HyperparamValue>[]>>
 >({})
 /**
+ * MODEL-FLOW-035. Step 3's fine-tune section (Round 2): the run the user chose
+ * to tune. `null` = not chosen, so the section opens on the best run. View
+ * state only — nothing is written to the draft by choosing, and an id that no
+ * longer names a run of this draft is ignored.
+ */
+export const mpFineTuneSourceRunIdAtom = atom<string | null>(null)
+/**
+ * MODEL-FLOW-035. The Fine-tune switch: decides what Step 3's single Start
+ * button does — off, train every selected algorithm once (Round 1); on,
+ * fine-tune the picked run (Round 2). Only takes effect once a run has
+ * succeeded. Not run-config draft state, so it does not ask for an Apply.
+ */
+export const mpFineTuneEnabledAtom = atom<boolean>(false)
+/**
+ * MODEL-FLOW-035. Fine-tune's Find Best Parameters switch: whether it also tries the curated hyperparameter
+ * variants (on) or only the base and the rows the user added (off). Not
+ * run-config draft state, so toggling it does not ask for an Apply.
+ */
+export const mpFineTuneUseGridAtom = atom<boolean>(true)
+/**
+ * MODEL-FLOW-035. Hyperparameter edits the user made on the fine-tune
+ * selector's open card, keyed by the run they edit. Laid over that run's own
+ * values to form the fine-tune's base, so switching cards keeps each card's
+ * edits and an untouched card tunes from the run exactly as trained.
+ */
+export const mpFineTuneBaseEditsAtom = atom<
+  Record<string, Record<string, HyperparamValue>>
+>({})
+/**
  * Evaluation metric recorded on the saved model. See `LOSS_OPTIONS` in
  * `lib/training-config`.
  *
@@ -446,6 +475,10 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   // MODEL-FLOW-026. Hand-added variant rows belong to the draft that was
   // being configured; a fresh wizard must not inherit them.
   set(mpExtraVariantsAtom, {})
+  set(mpFineTuneEnabledAtom, false)
+  set(mpFineTuneSourceRunIdAtom, null)
+  set(mpFineTuneUseGridAtom, true)
+  set(mpFineTuneBaseEditsAtom, {})
   // MODEL-FLOW-019-T37. Was 'mse' — not a `LOSS_OPTIONS` member, so a reset
   // wizard rendered an empty Loss control. Same inlined literal as the atom's
   // own default above, held equal to `DEFAULT_LOSS_FUNCTION` by test.

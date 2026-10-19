@@ -7,7 +7,8 @@ import type { CandidateResult } from '@/services/model-draft'
  * MODEL-FLOW-029-T05. A cross-validated HYPERPARAMETER_SEARCH puts CV runs on
  * the JOB path of Step 4 for the first time — every variant is a CV run with
  * no bare rmse, and the server picks the lowest fold-mean RMSE. The table
- * must show each variant's own `Est. CV` mean ± std and rank on that same
+ * must show each variant's own `Est. CV` fold mean (no ± std since
+ * 2026-10-19) and rank on that same
  * mean, so the server's winner is the row ranked first.
  */
 function cvCandidate(
@@ -67,8 +68,9 @@ describe('CandidateTable with a cross-validated search job (MODEL-FLOW-029)', ()
       [cvCandidate('run-a', 0.6, 0.01), cvCandidate('run-b', 0.4, 0.05)],
       'run-b',
     )
-    expect(screen.getByText('0.600 ± 0.010')).toBeTruthy()
-    expect(screen.getByText('0.400 ± 0.050')).toBeTruthy()
+    expect(screen.getByText('0.600')).toBeTruthy()
+    expect(screen.getByText('0.400')).toBeTruthy()
+    expect(screen.queryByText(/±/)).toBeNull()
     expect(screen.getAllByText('Est. CV').length).toBeGreaterThanOrEqual(2)
   })
 
@@ -77,10 +79,8 @@ describe('CandidateTable with a cross-validated search job (MODEL-FLOW-029)', ()
       [cvCandidate('run-a', 0.6, 0.01), cvCandidate('run-b', 0.4, 0.05)],
       'run-b',
     )
-    const scores = screen
-      .getAllByText(/^0\.\d{3} ± 0\.\d{3}$/)
-      .map(el => el.textContent)
-    expect(scores).toEqual(['0.400 ± 0.050', '0.600 ± 0.010'])
+    const scores = screen.getAllByText(/^0\.[46]00$/).map(el => el.textContent)
+    expect(scores).toEqual(['0.400', '0.600'])
   })
 
   it('headers the first metric column "Test / CV" when a group has a CV row', () => {

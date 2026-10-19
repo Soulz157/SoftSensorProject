@@ -3,16 +3,19 @@ import { ALGORITHM_LABELS } from '@/store/model-pipeline'
 import { isSequenceAlgorithm } from '@/lib/metric-source'
 
 /**
- * What Start Training sends, decided from Step 3's settings alone — no React,
- * no request. `use-model-training` builds the request from this and nothing
- * else, so every branch here is table-tested (`training-launch.test.ts`).
+ * What each training button sends, decided from Step 3's settings alone — no
+ * React, no request. `use-model-training` builds the request from these and
+ * nothing else, so every branch is table-tested (`training-launch.test.ts`).
  *
- * Training several candidates at once is the default (user decision
- * 2026-10-14, which removed Find Best Model): every selected algorithm with
- * its card values, plus every row the user added on that card. Step 4 then
- * compares them and recommends the lowest score. Find Best Parameters only
- * ADDS the curated grid: on one algorithm it searches that algorithm, on two
- * or more it tunes whichever candidate wins the first round.
+ * MODEL-FLOW-035 (user decision 2026-10-19) splits training in two rounds:
+ *
+ * - Round 1, Start Training (`planTrainingLaunch`): every selected algorithm
+ *   trains ONCE, with its card values. Step 4 / Run parameters then compare
+ *   them and the user decides which to fine-tune. Nothing is tuned
+ *   automatically any more (the 2026-10-14 SWEEP_THEN_TUNE launch is gone).
+ * - Round 2, Fine-tune (`planFineTuneLaunch`): a hyperparameter search over
+ *   the ONE algorithm the user picked — the curated grid, the rows they added
+ *   by hand, or both — starting from that run's values.
  */
 
 export type HyperparamRecord = Record<string, HyperparamValue>
@@ -46,8 +49,6 @@ export interface LaunchInput {
   algorithms: Algorithm[]
   /** The record each algorithm's card would launch with (`baseHyperparamsFor`). */
   baseFor: (algorithm: Algorithm) => HyperparamRecord
-  extraVariants: Partial<Record<Algorithm, HyperparamRecord[]>>
-  findBestParams: boolean
   /** Set when Cross-Validation is on. */
   nSplits: number | undefined
 }
@@ -86,11 +87,11 @@ export function candidatesFor(
 }
 
 /**
- * Throws with the sentence Step 3 shows when the settings cannot launch.
- * Defense in depth: the controls already prevent each of these.
+ * Round 1. Throws with the sentence Step 3 shows when the settings cannot
+ * launch. Defense in depth: the controls already prevent each of these.
  */
 export function planTrainingLaunch(input: LaunchInput): LaunchPlan {
-  const { algorithms, findBestParams, nSplits } = input
+  const { algorithms, nSplits } = input
   const [first] = algorithms
   if (!first) throw new Error('Select an algorithm before training.')
 
@@ -98,6 +99,7 @@ export function planTrainingLaunch(input: LaunchInput): LaunchPlan {
 
   // MODEL-FLOW-016, kept by the user on 2026-10-14: a CV run fits one
   // algorithm, and the server refuses CV on anything but a one-algorithm job.
+  // CV stays available for Round 2, which is one algorithm by construction.
   if (multiAlgorithm && nSplits !== undefined) {
     throw new Error(
       'Cross-Validation fits one algorithm — remove the others, or turn off Cross-Validation to compare algorithms.',
@@ -112,24 +114,13 @@ export function planTrainingLaunch(input: LaunchInput): LaunchPlan {
     }
   }
 
-  // One algorithm with Find Best Parameters: the server expands the card into
-  // the curated grid and appends the user's rows after it — unchanged.
-  if (!multiAlgorithm && findBestParams) {
-    const rows = input.extraVariants[first] ?? []
-    return {
-      type: 'job',
-      kind: 'HYPERPARAMETER_SEARCH',
-      candidates: [{ algorithm: first, hyperparameters: input.baseFor(first) }],
-      ...(rows.length > 0 ? { extraVariants: rows } : {}),
-    }
-  }
-
-  const candidates = algorithms.flatMap(a =>
-    candidatesFor(a, input.baseFor(a), input.extraVariants[a]),
-  )
+  const candidates = algorithms.map(a => ({
+    algorithm: a,
+    hyperparameters: input.baseFor(a),
+  }))
   if (candidates.length > MAX_LAUNCH_CANDIDATES) {
     throw new Error(
-      `${candidates.length} candidates is more than the ${MAX_LAUNCH_CANDIDATES} one training can run — remove some added rows or algorithms.`,
+      `${candidates.length} candidates is more than the ${MAX_LAUNCH_CANDIDATES} one training can run — remove some algorithms.`,
     )
   }
 
@@ -137,17 +128,52 @@ export function planTrainingLaunch(input: LaunchInput): LaunchPlan {
   if (candidates.length === 1 && only) {
     return { type: 'single', candidate: only }
   }
+  return { type: 'job', kind: 'ALGORITHM_SWEEP', candidates }
+}
 
-  if (!multiAlgorithm) {
-    // One algorithm, several rows, no grid: a search over exactly these rows.
-    // With more than one candidate the server does not expand the grid, and
-    // it is the one job kind that accepts Cross-Validation.
-    return { type: 'job', kind: 'HYPERPARAMETER_SEARCH', candidates }
+export interface FineTuneInput {
+  algorithm: Algorithm
+  /** The chosen run's values, sanitised and laid over the algorithm's
+   *  defaults (`fineTuneBaseFor`). Always the first candidate that runs. */
+  base: HyperparamRecord
+  /** The rows the user added to the variants table. */
+  rows: HyperparamRecord[]
+  /** Find Best Parameters: also try the curated hyperparameter variants. */
+  useGrid: boolean
+}
+
+/** A fine-tune is always a one-algorithm HYPERPARAMETER_SEARCH job. */
+export type FineTunePlan = Extract<LaunchPlan, { type: 'job' }>
+
+/**
+ * Round 2. With the curated variants on, the server expands the base into its
+ * grid and appends the user's rows after it. With them off, the base and the
+ * rows ARE the candidates (the server does not expand a job that already
+ * carries more than one) — so there must be at least one row, else it would
+ * only repeat the run being tuned.
+ */
+export function planFineTuneLaunch(input: FineTuneInput): FineTunePlan {
+  const { algorithm, base, rows, useGrid } = input
+
+  if (useGrid) {
+    return {
+      type: 'job',
+      kind: 'HYPERPARAMETER_SEARCH',
+      candidates: [{ algorithm, hyperparameters: base }],
+      ...(rows.length > 0 ? { extraVariants: rows } : {}),
+    }
   }
 
-  return {
-    type: 'job',
-    kind: findBestParams ? 'SWEEP_THEN_TUNE' : 'ALGORITHM_SWEEP',
-    candidates,
+  const candidates = candidatesFor(algorithm, base, rows)
+  if (candidates.length < 2) {
+    throw new Error(
+      'Add a variant that differs from the run being tuned, or turn on Find Best Parameters.',
+    )
   }
+  if (candidates.length > MAX_LAUNCH_CANDIDATES) {
+    throw new Error(
+      `${candidates.length} candidates is more than the ${MAX_LAUNCH_CANDIDATES} one training can run — remove some added rows.`,
+    )
+  }
+  return { type: 'job', kind: 'HYPERPARAMETER_SEARCH', candidates }
 }

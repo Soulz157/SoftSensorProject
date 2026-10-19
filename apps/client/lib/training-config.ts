@@ -690,6 +690,12 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
 /**
  * Available loss / evaluation functions. Wire value ↔ display label.
  *
+ * MODEL-FLOW-035. RMSE and MAE only: this is the metric Step 3 ranks and
+ * displays runs by (Run parameters headline, best badge, sort, Step 4
+ * Recommended, the job's `rankingMetric`). R² is no longer a choice — it is
+ * shown beside the chosen metric on every run instead, and a saved `'r2'`
+ * opens as `'rmse'` (`LEGACY_LOSS_ALIASES`).
+ *
  * Recorded on the saved Model's config (Model.data.config.lossFunction) —
  * MODEL-FLOW-012's audit found this is NEVER sent to the trainer:
  * images/trainer/train.py has no loss/objective/criterion read anywhere, and
@@ -699,7 +705,6 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
  * regression-only.
  */
 export const LOSS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'r2', label: 'R2' },
   { value: 'rmse', label: 'RMSE' },
   { value: 'mae', label: 'MAE' },
 ]
@@ -744,6 +749,8 @@ export const DEFAULT_LOSS_FUNCTION = 'rmse'
  */
 const LEGACY_LOSS_ALIASES: Record<string, string> = {
   mse: 'rmse',
+  // MODEL-FLOW-035: R² left LOSS_OPTIONS; it is displayed beside the metric.
+  r2: 'rmse',
 }
 
 /**

@@ -1,30 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AlgorithmStack } from '../algorithm-stack'
 import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
 import { ineligibleReason } from '@/lib/algorithm-eligibility'
-import { SIZE_TIER_LOWER_BOUNDS } from '@/lib/hyperparam-ranges'
-import type { TuningGridResponse } from '@/services/tuning-grid'
-import {
-  TUNE_VARIANTS_PER_JOB,
-  tuningVariantsFor,
-} from '../../../../../../../../../backend/src/lib/tuning-grid'
-
-// MODEL-FLOW-025. A card with Find Best Parameters on mounts the variant table,
-// which fetches through this hook; without the mock every such case would try a
-// real request. Default to "still loading" so cases that do not care stay inert.
-vi.mock('@/hooks/model/use-tuning-grid', () => ({ useTuningGrid: vi.fn() }))
-import { useTuningGrid } from '@/hooks/model/use-tuning-grid'
-
-beforeEach(() => {
-  vi.mocked(useTuningGrid).mockReset()
-  vi.mocked(useTuningGrid).mockReturnValue({
-    grid: null,
-    loading: true,
-    error: null,
-  })
-})
 
 /**
  * MODEL-FLOW-019-T30. MERGED FROM TWO ORPHANED FILES, not written fresh.
@@ -63,7 +42,6 @@ function stackProps(overrides: Partial<StackProps> = {}): StackProps {
     >,
     hyperparameters: {} as Record<string, HyperparamValue>,
     onHyperparameterChange: vi.fn(),
-    findBestParams: false,
     ...overrides,
   }
 }
@@ -219,7 +197,7 @@ describe('AlgorithmStack — sequence algorithms train on their own', () => {
   }
 
   it('leaves lstm selectable in the picker beside another algorithm', async () => {
-    renderStack({ findBestParams: false })
+    renderStack()
     await openAddMenu()
 
     expect(lstmItem()).not.toHaveAttribute('aria-disabled', 'true')
@@ -239,20 +217,6 @@ describe('AlgorithmStack — sequence algorithms train on their own', () => {
     expect(
       screen.queryByText(/LSTM and GRU train on their own/i),
     ).not.toBeInTheDocument()
-  })
-
-  it('does not drop lstm when Find Best Parameters turns on', () => {
-    const onAlgorithmsChange = vi.fn()
-    const props = stackProps({
-      algorithms: ['lstm', 'ridge'] as Algorithm[],
-      onAlgorithmsChange,
-      findBestParams: false,
-    })
-    const { rerender } = render(<AlgorithmStack {...props} />)
-
-    rerender(<AlgorithmStack {...props} findBestParams={true} />)
-
-    expect(onAlgorithmsChange).not.toHaveBeenCalled()
   })
 })
 
@@ -332,17 +296,6 @@ describe('AlgorithmStack — per-algorithm hyperparameters', () => {
     // 100 is XGBoost's own catalog default, not anything the flat dict holds.
     expect(screen.getByLabelText(/n_estimators|estimators/i)).toHaveValue(100)
   })
-
-  it('says every algorithm and every added row trains, and that Step 4 recommends one', () => {
-    renderStack({ algorithms: ['ols', 'ridge', 'xgboost'] as Algorithm[] })
-
-    expect(
-      screen.getByText(/plus every row you add on a card, one at a time/i),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/recommends the lowest Test RMSE/i),
-    ).toBeInTheDocument()
-  })
 })
 
 /**
@@ -418,123 +371,22 @@ describe('AlgorithmStack — suggested ranges follow the dataset size (MODEL-FLO
 })
 
 /**
- * MODEL-FLOW-025. Each open card shows the variants Find Best Parameters will
- * try for it. The list is the endpoint's grid minus what the LAUNCH's base
- * covers, so these cases check the wiring: when it appears, what it is labelled,
- * which cards fetch, and that the base is the job's and not the card's own.
+ * MODEL-FLOW-035. Round 1 trains each algorithm once with its card values, so
+ * a card carries no variants table; the table lives in the fine-tune section
+ * (fine-tune-section.test.tsx).
  */
-describe('AlgorithmStack — Find Best Parameters variant preview (MODEL-FLOW-025)', () => {
-  function serveGrid(algorithm: Algorithm, size?: { rows: number }) {
-    const grid: TuningGridResponse = {
-      algorithm,
-      variants: tuningVariantsFor(algorithm, size),
-      maxVariantsPerJob: TUNE_VARIANTS_PER_JOB,
-      tier: 'medium',
-      sized: false,
-    }
-    vi.mocked(useTuningGrid).mockReturnValue({
-      grid,
-      loading: false,
-      error: null,
-    })
-  }
-
-  const fetchedAlgorithms = () =>
-    vi.mocked(useTuningGrid).mock.calls.map(([algorithm]) => algorithm)
-
-  it('with Find Best Parameters off: lists only the user rows, and fetches no grid', () => {
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestParams: false,
-    })
-
-    expect(screen.queryByText(/Hyperparameter Tuning/)).not.toBeInTheDocument()
-    expect(screen.getByText('Hyperparameter variants')).toBeInTheDocument()
-    // The hook still mounts (hooks cannot be skipped) but is handed no
-    // algorithm, which disables its request.
-    expect(fetchedAlgorithms().every(a => a === null)).toBe(true)
-  })
-
-  it('direct search (one algorithm, Find Best Parameters only): a table titled "Hyperparameter Tuning"', () => {
-    serveGrid('ridge')
-    renderStack({
-      algorithms: ['ridge'] as Algorithm[],
-      findBestParams: true,
-    })
-
-    expect(screen.getByText('Hyperparameter Tuning')).toBeInTheDocument()
-    expect(screen.getByRole('table')).toBeInTheDocument()
-  })
-
-  it('sweep then tune: titled "if this wins", and only the OPEN card fetches', () => {
-    serveGrid('ridge')
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestParams: true,
-    })
-
-    expect(screen.getByText('Hyperparameter Tuning')).toBeInTheDocument()
-    // Ridge is primary and therefore open; SVM's card is folded, so it must not
-    // be asking the server for a grid nobody can see.
-    expect(new Set(fetchedAlgorithms())).toEqual(new Set(['ridge']))
-  })
-
-  it('moves the table, and the fetch, to whichever card is opened', async () => {
-    serveGrid('svm')
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestParams: true,
-    })
-
-    await userEvent.setup().click(cardToggle(/support vector|svm/i))
-
-    expect(fetchedAlgorithms()).toContain('svm')
-    expect(screen.getAllByText('Hyperparameter Tuning')).toHaveLength(1)
-  })
-
-  it('hands the hook the dataset size the form already sized its ranges with', () => {
-    serveGrid('ridge')
-    const datasetSize = { rows: 6_000 }
-    renderStack({
-      algorithms: ['ridge'] as Algorithm[],
-      findBestParams: true,
-      datasetSize,
-    })
-
-    expect(useTuningGrid).toHaveBeenCalledWith('ridge', datasetSize)
-  })
-
-  it('excludes against the base the LAUNCH sends, not the card’s display record', async () => {
-    // At the large tier SVM's default record IS one of its four variants. With
-    // no entry the card's own record is {} (the wizard's draft pre-fills
-    // defaults, but nothing at this boundary guarantees it), while the job
-    // sends the full defaults — so the search would run three, and the table
-    // must say three.
-    const rows = SIZE_TIER_LOWER_BOUNDS.large * 2
-    serveGrid('svm', { rows })
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestParams: true,
-      datasetSize: { rows },
-    })
-
-    await userEvent.setup().click(cardToggle(/support vector|svm/i))
-
-    const table = screen.getByRole('table')
-    expect(within(table).getAllByRole('row').slice(1)).toHaveLength(
-      TUNE_VARIANTS_PER_JOB - 1,
-    )
-    expect(screen.getByText(/1 variant skipped/i)).toBeInTheDocument()
-  })
-
-  it('says in the stack’s summary line that Find Best Parameters tunes the winner', () => {
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestParams: true,
-    })
-
+describe('AlgorithmStack — no variants table on a card (MODEL-FLOW-035)', () => {
+  it('shows hyperparameter fields but no variants table, with one or several algorithms', () => {
+    renderStack({ algorithms: ['ridge'] as Algorithm[] })
     expect(
-      screen.getByText(/Find Best Parameters tunes that winner/i),
+      screen.queryByText('Hyperparameter variants'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('says each algorithm trains once and points to Run parameters', () => {
+    renderStack({ algorithms: ['ols', 'ridge'] as Algorithm[] })
+    expect(
+      screen.getByText(/trains every algorithm below once/i),
     ).toBeInTheDocument()
   })
 })

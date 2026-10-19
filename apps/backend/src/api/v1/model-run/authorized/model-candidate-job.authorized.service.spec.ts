@@ -82,6 +82,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
     currentRunId: 'run-1',
     bestRunId: null as string | null,
     bestRmse: null as number | null,
+    // MODEL-FLOW-035. 'rmse' is what every pre-existing job ranks by.
+    rankingMetric: 'rmse' as string,
     selectedRunId: null as string | null,
     createdById: 'user-1',
     createdAt: new Date(),
@@ -209,6 +211,28 @@ describe('ModelCandidateJobAuthorizedService', () => {
         kind: 'HYPERPARAMETER_SEARCH',
       });
       expect(result.success).toBe(true);
+    });
+
+    it('accepts rankingMetric rmse or mae, or none (MODEL-FLOW-035)', () => {
+      for (const rankingMetric of ['rmse', 'mae', undefined]) {
+        const result = CreateCandidateJobSchema.safeParse({
+          ...BASE,
+          kind: 'HYPERPARAMETER_SEARCH',
+          rankingMetric,
+        });
+        expect(result.success).toBe(true);
+      }
+    });
+
+    it('refuses a rankingMetric the job cannot rank by, r2 included (MODEL-FLOW-035)', () => {
+      for (const rankingMetric of ['r2', 'mse', '']) {
+        const result = CreateCandidateJobSchema.safeParse({
+          ...BASE,
+          kind: 'HYPERPARAMETER_SEARCH',
+          rankingMetric,
+        });
+        expect(result.success).toBe(false);
+      }
     });
 
     it('refuses a single candidate for ALGORITHM_SWEEP', () => {
@@ -527,6 +551,36 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const { data } = createCalls(prisma)[0][0];
       expect(data.sizedRowCount).toBe(8350);
       expect(data.sizedDistinctLabelled).toBe(32);
+    });
+
+    it('records the ranking metric, defaulting to rmse (MODEL-FLOW-035)', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 0.01 }]);
+      for (const [sent, stored] of [
+        ['mae', 'mae'],
+        [undefined, 'rmse'],
+      ] as const) {
+        const prisma = makePrisma();
+        const service = new ModelCandidateJobAuthorizedService(
+          prisma as never,
+          makeRunLaunch() as never,
+          makeAutoScore() as never,
+          makeNotifications() as never,
+        );
+        await service.createJob(
+          'draft-1',
+          {
+            goldArtifactId: 'gold-1',
+            targetY: 'TI-101',
+            kind: 'HYPERPARAMETER_SEARCH',
+            candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+            ...(sent ? { rankingMetric: sent } : {}),
+          } as never,
+          'user-1',
+          'ADMIN',
+        );
+        const { data } = createCalls(prisma)[0][0];
+        expect(data.rankingMetric).toBe(stored);
+      }
     });
 
     /**
@@ -1303,6 +1357,175 @@ describe('ModelCandidateJobAuthorizedService', () => {
       expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 0.9 }),
+        }),
+      );
+    });
+  });
+
+  describe('MODEL-FLOW-035 — a job ranked by MAE', () => {
+    /** Resolves a run lookup by id, so the incumbent read sees ITS metrics. */
+    function withRuns(
+      prisma: ReturnType<typeof makePrisma>,
+      byId: Record<string, Record<string, unknown>>,
+    ) {
+      prisma.modelTrainingRun.findUnique.mockImplementation(
+        ({ where }: { where: { id: string } }) =>
+          Promise.resolve(byId[where.id] ?? null),
+      );
+    }
+
+    function serviceFor(prisma: ReturnType<typeof makePrisma>) {
+      return new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
+      );
+    }
+
+    it('picks the lower MAE even when its RMSE is worse, and still records the winner’s RMSE', async () => {
+      const incumbent = {
+        id: 'run-1',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 1, mae: 0.9 },
+      };
+      const current = {
+        id: 'run-2',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 2, mae: 0.5 },
+      };
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          currentRunId: 'run-2',
+          rankingMetric: 'mae',
+          bestRunId: 'run-1',
+          bestRmse: 1,
+        },
+        run: current,
+      });
+      withRuns(prisma, { 'run-1': incumbent, 'run-2': current });
+
+      await serviceFor(prisma).advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'SUCCEEDED',
+            bestRunId: 'run-2',
+            bestRmse: 2,
+          }),
+        }),
+      );
+    });
+
+    it('keeps the incumbent when the new run has a worse MAE but a better RMSE', async () => {
+      const incumbent = {
+        id: 'run-1',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 2, mae: 0.5 },
+      };
+      const current = {
+        id: 'run-2',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 1, mae: 0.9 },
+      };
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          currentRunId: 'run-2',
+          rankingMetric: 'mae',
+          bestRunId: 'run-1',
+          bestRmse: 2,
+        },
+        run: current,
+      });
+      withRuns(prisma, { 'run-1': incumbent, 'run-2': current });
+
+      await serviceFor(prisma).advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 2 }),
+        }),
+      );
+    });
+
+    it('makes the first scored run the winner when nothing is incumbent yet', async () => {
+      const current = {
+        id: 'run-1',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 1, mae: 0.7 },
+      };
+      const prisma = makePrisma({
+        job: { completedRuns: 0, totalRuns: 2, rankingMetric: 'mae' },
+        run: current,
+      });
+      withRuns(prisma, { 'run-1': current });
+
+      await serviceFor(prisma).advanceJobForRun('run-1', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 1 }),
+        }),
+      );
+    });
+
+    it('ranks a CV job on cv_mae_mean', async () => {
+      const incumbent = {
+        id: 'run-1',
+        status: 'SUCCEEDED',
+        metrics: { cv_rmse_mean: 1, cv_mae_mean: 0.9, n_splits: 3 },
+      };
+      const current = {
+        id: 'run-2',
+        status: 'SUCCEEDED',
+        metrics: { cv_rmse_mean: 2, cv_mae_mean: 0.4, n_splits: 3 },
+      };
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          currentRunId: 'run-2',
+          nSplits: 3,
+          rankingMetric: 'mae',
+          bestRunId: 'run-1',
+          bestRmse: 1,
+        },
+        run: current,
+      });
+      withRuns(prisma, { 'run-1': incumbent, 'run-2': current });
+
+      await serviceFor(prisma).advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-2', bestRmse: 2 }),
+        }),
+      );
+    });
+
+    it('an rmse job never reads the incumbent run — bestRmse stays its running score', async () => {
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          currentRunId: 'run-2',
+          bestRunId: 'run-1',
+          bestRmse: 0.5,
+        },
+        run: { id: 'run-2', status: 'SUCCEEDED', metrics: { rmse: 0.7 } },
+      });
+      prisma.modelTrainingRun.findUnique.mockClear();
+
+      await serviceFor(prisma).advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 0.5 }),
         }),
       );
     });

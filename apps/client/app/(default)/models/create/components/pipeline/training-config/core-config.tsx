@@ -174,8 +174,9 @@ export function CoreConfig({
             </SelectContent>
           </Select>
           <p className="text-[11px] text-muted-foreground">
-            Recorded on the saved model. Not sent to the trainer — the
-            estimator&apos;s own objective is used.
+            Ranks and displays runs by this metric (R² is shown beside it).
+            Not sent to the trainer — the estimator&apos;s own objective is
+            used.
           </p>
         </div>
 

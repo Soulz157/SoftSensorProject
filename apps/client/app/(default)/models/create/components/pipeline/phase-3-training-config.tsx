@@ -11,21 +11,23 @@ import { useArtifactSplitStats } from '@/hooks/dataset/artifact/use-artifact-spl
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import {
-  mpExtraVariantsAtom,
   mpServerDraftIdAtom,
   mpSplitStatsTagsAtom,
 } from '@/store/model-pipeline'
 import { sourcedMetricsOf } from '@/lib/metric-source'
 import { datasetSizeFrom } from '@/lib/hyperparam-ranges'
-import { useTuningVariantCounts } from '@/hooks/model/use-tuning-variant-counts'
-import { candidatesFor, planTrainingLaunch } from '@/lib/training-launch'
+import { planTrainingLaunch } from '@/lib/training-launch'
+import { useFineTune } from '@/hooks/model/use-fine-tune'
 import { baseHyperparamsFor } from '@/lib/tuning-preview'
 import { CoreConfig } from './training-config/core-config'
-import { AutoMlToggles } from './training-config/automl-toggles'
 import { RuntimeEstimate } from './training-config/runtime-estimate'
 import { RunParamsPanel } from './training-config/run-params-panel'
 import { SplitDistributionPanel } from './training-config/split-distribution-panel'
-import { AlgorithmStack } from './training-config/algorithm-stack'
+import {
+  AlgorithmStack,
+  AlgorithmStackSummary,
+} from './training-config/algorithm-stack'
+import { FineTuneSection } from './training-config/fine-tune-section'
 
 interface Props {
   nav: UsePipelineNavResult
@@ -39,7 +41,6 @@ export function Phase3TrainingConfig({ nav }: Props) {
   const tags = selectedDataset?.tags ?? []
 
   const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
-  const extraVariants = useAtomValue(mpExtraVariantsAtom)
   const targetY = targetVariables.length === 1 ? targetVariables[0]! : null
   const hasSequenceAlgorithm = nav.algorithms.some(
     a => a === 'lstm' || a === 'gru',
@@ -81,52 +82,6 @@ export function Phase3TrainingConfig({ nav }: Props) {
     [splitStats.splitStats, selectedDataset?.rowCount, featureCount],
   )
 
-  // MODEL-FLOW-025-T06. The variants a search would actually run per
-  // algorithm, so the runtime estimate prices that rather than the cap.
-  const tuningVariants = useTuningVariantCounts({
-    enabled: draft.findBestParams,
-    algorithms: draft.algorithms,
-    hyperparameters: draft.hyperparameters,
-    perAlgorithmHyperparameters: draft.perAlgorithmHyperparameters,
-    // MODEL-FLOW-026. Hand-added variants are extra fits, so the estimate
-    // must price them — read from the atom, not the draft, because they are
-    // not Apply-gated configuration (see `mpExtraVariantsAtom`). Counted here
-    // only for a grid search on one algorithm, where the server appends them
-    // after the grid; everywhere else they are first-round candidates,
-    // priced by `candidatesPerAlgorithm` below.
-    extraVariants: draft.algorithms.length === 1 ? extraVariants : undefined,
-    size: datasetSize,
-  })
-
-  // Each algorithm's first-round candidates: its card plus the added rows
-  // that survive de-duplication — the same rule the launch applies
-  // (`candidatesFor`, lib/training-launch.ts). Omitted for a grid search on
-  // one algorithm, where the rows are already in `tuningVariants`.
-  const candidatesPerAlgorithm = useMemo(() => {
-    if (draft.algorithms.length === 1 && draft.findBestParams) return undefined
-    return Object.fromEntries(
-      draft.algorithms.map(a => [
-        a,
-        candidatesFor(
-          a,
-          baseHyperparamsFor(
-            a,
-            draft.algorithms,
-            draft.hyperparameters,
-            draft.perAlgorithmHyperparameters,
-          ),
-          extraVariants[a],
-        ).length,
-      ]),
-    )
-  }, [
-    draft.algorithms,
-    draft.findBestParams,
-    draft.hyperparameters,
-    draft.perAlgorithmHyperparameters,
-    extraVariants,
-  ])
-
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const { runs: draftRuns } = useDraftRuns(serverDraftId)
   const mostRecentRun = draftRuns
@@ -146,8 +101,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
   const rowCount = selectedDataset?.rowCount ?? 0
 
   // The same refusals Start would raise (LSTM/GRU beside another algorithm,
-  // CV with two algorithms, more than 20 candidates), stated before the
-  // click rather than after it. Read off the draft the user is editing.
+  // CV with two algorithms), stated before the click rather than after it. Read off the draft the user is editing.
   const launchRefusal = useMemo(() => {
     try {
       planTrainingLaunch({
@@ -159,22 +113,34 @@ export function Phase3TrainingConfig({ nav }: Props) {
             draft.hyperparameters,
             draft.perAlgorithmHyperparameters,
           ),
-        extraVariants,
-        findBestParams: draft.findBestParams,
         nSplits: draft.nSplits,
       })
       return null
     } catch (err) {
       return err instanceof Error ? err.message : 'These settings cannot start.'
     }
-  }, [draft, extraVariants])
+  }, [draft])
+
+  // MODEL-FLOW-035. ONE Start button for both rounds: the Fine-tune switch
+  // (inside Algorithm & hyperparameters) decides whether it trains every
+  // algorithm once or fine-tunes the picked run.
+  const fineTune = useFineTune({
+    nav,
+    training: training.status === 'training',
+    datasetSize,
+  })
+  const fineTuning = fineTune.active
+  const refusal = fineTuning ? fineTune.refusal : launchRefusal
 
   const canTrain =
     targetVariables.length > 0 &&
     training.status !== 'training' &&
     tags.length > 0 &&
     !dirty &&
-    launchRefusal === null
+    refusal === null
+  const startTraining = fineTuning
+    ? () => training.fineTune(fineTune.input)
+    : training.start
 
   return (
     <div className="space-y-6">
@@ -264,24 +230,31 @@ export function Phase3TrainingConfig({ nav }: Props) {
           <h3 className="text-sm font-medium text-foreground">
             Algorithm &amp; hyperparameters
           </h3>
-          <AlgorithmStack
-            algorithms={draft.algorithms}
-            onAlgorithmsChange={runConfigDraft.setAlgorithms}
-            trainLabelledRows={
-              splitStats.splitStats?.train_labelled_rows ?? null
-            }
-            perAlgorithmHyperparameters={draft.perAlgorithmHyperparameters}
-            hyperparameters={draft.hyperparameters}
-            onHyperparameterChange={runConfigDraft.setHyperparameter}
-            findBestParams={draft.findBestParams}
+          {fineTuning ? (
+            <AlgorithmStackSummary
+              algorithms={draft.algorithms}
+              onEdit={() => fineTune.setEnabled(false)}
+            />
+          ) : (
+            <AlgorithmStack
+              algorithms={draft.algorithms}
+              onAlgorithmsChange={runConfigDraft.setAlgorithms}
+              trainLabelledRows={
+                splitStats.splitStats?.train_labelled_rows ?? null
+              }
+              perAlgorithmHyperparameters={draft.perAlgorithmHyperparameters}
+              hyperparameters={draft.hyperparameters}
+              onHyperparameterChange={runConfigDraft.setHyperparameter}
+              datasetSize={datasetSize}
+            />
+          )}
+          {/* MODEL-FLOW-035. Round 2 in the same section as the algorithms it
+              tunes, so the Start button below reads its mode from one place
+              and Run parameters (which grows per run) is never in the way. */}
+          <FineTuneSection
+            fineTune={fineTune}
+            nSplits={nav.nSplits}
             datasetSize={datasetSize}
-          />
-
-          <AutoMlToggles
-            findBestParams={draft.findBestParams}
-            onFindBestParams={runConfigDraft.setFindBestParams}
-            cvEnabled={draft.nSplits !== undefined}
-            algorithms={draft.algorithms}
           />
         </section>
 
@@ -326,13 +299,24 @@ export function Phase3TrainingConfig({ nav }: Props) {
           <RuntimeEstimate
             rows={rowCount}
             features={featureCount}
-            algorithms={draft.algorithms}
             targets={draft.targetVariables.length}
-            findBestParams={draft.findBestParams}
-            candidatesPerAlgorithm={candidatesPerAlgorithm}
-            nEstimators={nEstimators}
-            tuningVariants={tuningVariants}
             nSplits={draft.nSplits}
+            {...(fineTuning
+              ? {
+                  algorithms: [fineTune.algorithm],
+                  findBestParams: fineTune.useGrid,
+                  tuningVariants: fineTune.tuningVariants,
+                  candidatesPerAlgorithm: fineTune.candidatesPerAlgorithm,
+                  nEstimators:
+                    typeof fineTune.base.n_estimators === 'number'
+                      ? fineTune.base.n_estimators
+                      : undefined,
+                }
+              : {
+                  algorithms: draft.algorithms,
+                  findBestParams: false,
+                  nEstimators,
+                })}
             status={training.status}
             progress={training.progress}
           />
@@ -341,7 +325,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
       read first by position, not by hoping the user looks right. */}
           <div className="flex flex-col gap-3 border-t border-border/50 pt-4 sm:flex-row-reverse sm:items-center sm:justify-between">
             <Button
-              onClick={training.start}
+              onClick={startTraining}
               disabled={!canTrain}
               className="w-full shrink-0 cursor-pointer gap-2 sm:w-auto"
             >
@@ -352,14 +336,16 @@ export function Phase3TrainingConfig({ nav }: Props) {
               )}
               {training.status === 'training'
                 ? 'Training…'
-                : training.status === 'done'
-                  ? 'Retrain'
-                  : 'Start Training'}
+                : fineTuning
+                  ? 'Start Fine-tune'
+                  : training.status === 'done'
+                    ? 'Retrain'
+                    : 'Start Training'}
             </Button>
 
             <div className="min-w-0 flex-1 space-y-1">
-              {launchRefusal && training.status !== 'training' && (
-                <p className="text-xs text-destructive">{launchRefusal}</p>
+              {refusal && training.status !== 'training' && (
+                <p className="text-xs text-destructive">{refusal}</p>
               )}
               {dirty && training.status !== 'training' && (
                 <p className="text-xs text-muted-foreground">
@@ -379,7 +365,8 @@ export function Phase3TrainingConfig({ nav }: Props) {
               )}
               {training.status === 'done' && (
                 <p className="text-xs text-emerald-600 dark:text-emerald-400">
-                  Training complete — continue to Results.
+                  Training complete — turn on Fine-tune above to tune a run, or
+                  continue to Model Selection.
                 </p>
               )}
             </div>

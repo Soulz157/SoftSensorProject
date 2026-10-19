@@ -68,7 +68,6 @@ enum NotificationSeverity {
   CRITICAL
 }
 
-
 enum NotificationDeliveryStatus {
   PENDING
   SENDING
@@ -1588,6 +1587,11 @@ model ModelCandidateJob {
   /// MODEL-FLOW-005-T01's own note on why.
   bestRunId     String?
   bestRmse      Float?
+  /// MODEL-FLOW-035. The metric bestRunId is chosen by: 'rmse' or 'mae'
+  /// (the wizard's Loss function). Existing rows and retrain jobs are 'rmse'.
+  /// For a cross-validated job it is the fold mean of this metric. bestRmse
+  /// still holds the winner's RMSE, whichever metric chose it.
+  rankingMetric String  @default("rmse")
   /// MODEL-FLOW-013-T08. A user's override of bestRunId, written only once
   /// the job is terminal and only to one of its own SUCCEEDED runs — never
   /// bestRunId itself, which stays the metric's own answer even when
@@ -2615,7 +2619,7 @@ model PiWriteValue {
   beforeValue   Float?
 
   /// Null on a ROLLBACK row that REMOVED the point (nothing is sent).
-  sentValue Float?
+  sentValue  Float?
   /// Read back after the write; can differ from sentValue (compression).
   afterValue Float?
 

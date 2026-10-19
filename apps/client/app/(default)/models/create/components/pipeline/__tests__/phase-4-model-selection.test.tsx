@@ -558,7 +558,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
     expect(h.result.refetch).toHaveBeenCalled()
   })
 
-  it('lists the draft’s runs from an EARLIER training under "Earlier runs", selected at draft level', async () => {
+  it('lists the draft’s runs from an EARLIER training in the SAME table, marked as such, selected at draft level (MODEL-FLOW-035)', async () => {
     const { modelDraftService, modelDraftCandidateJobService } =
       await import('@/services/model-draft')
     h.result.job = job({
@@ -581,7 +581,10 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
 
-    expect(screen.getByText('Earlier runs')).toBeInTheDocument()
+    // One table for every training — no separate "Earlier runs" section.
+    expect(screen.queryByText('Earlier runs')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('table')).toHaveLength(1)
+    expect(screen.getByText(/^Earlier training/)).toBeInTheDocument()
     // The job's winner stays Selected; only the earlier run offers Select.
     expect(screen.getByText('Selected')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Select'))
@@ -641,7 +644,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
     expect(screen.getByText(/1 of 3/)).toBeInTheDocument()
   })
 
-  it('renders both groups, headed "Sweep" and "Tuning <winner>", for a two-phase job (MODEL-FLOW-013-T11)', () => {
+  it('a two-phase job lists sweep and tuning rows in ONE table, tuning rows marked (MODEL-FLOW-035)', () => {
     h.result.job = job({
       kind: 'SWEEP_THEN_TUNE',
       bestRunId: 'run-3',
@@ -663,8 +666,9 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
 
-    expect(screen.getByText('Sweep')).toBeInTheDocument()
-    expect(screen.getByText('Tuning Ridge Regression')).toBeInTheDocument()
+    expect(screen.queryByText('Sweep')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('table')).toHaveLength(1)
+    expect(screen.getAllByText('Tuning')).toHaveLength(2)
   })
 
   it('renders no "Tuning" header for a one-phase job — an ALGORITHM_SWEEP, or a SWEEP_THEN_TUNE still mid-sweep', () => {
@@ -1458,8 +1462,8 @@ describe('Phase4ModelSelection — standalone comparison (MODEL-FLOW-018-T04)', 
     // `StandaloneRunRow`'s own correct rendering; neither run has a
     // `predictionsKey` (awaiting scoring), so the estimate is never
     // mistaken for the shipped model's own score.
-    expect(screen.getByText('0.400 ± 0.050')).toBeInTheDocument()
-    expect(screen.getByText('0.600 ± 0.080')).toBeInTheDocument()
+    expect(screen.getAllByText('0.400').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('0.600').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Est. CV').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Select')).toHaveLength(2)
   })
@@ -1769,7 +1773,7 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     ]
     renderStep(store => setupNoJob(store))
 
-    expect(screen.getByText('0.400 ± 0.050')).toBeInTheDocument()
+    expect(screen.getAllByText('0.400').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Est. CV').length).toBeGreaterThan(0)
     expect(
       screen.getByText(
@@ -1851,7 +1855,7 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     // — the Test column reads a plain dash instead of the estimate
     // (MODEL-FLOW-019-T08's own inherited rule, checked structurally in
     // the next test's "renders an em dash" case).
-    expect(screen.queryByText('0.400 ± 0.050')).not.toBeInTheDocument()
+    expect(screen.queryByText('0.400')).not.toBeInTheDocument()
     expect(
       screen.queryByText(/estimate of the configuration/),
     ).not.toBeInTheDocument()
@@ -1875,7 +1879,7 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     expect(screen.getAllByText('—').length).toBeGreaterThan(0)
     expect(screen.getByText('0.600')).toBeInTheDocument()
     expect(screen.getByText('0.910')).toBeInTheDocument()
-    expect(screen.queryByText('0.400 ± 0.050')).not.toBeInTheDocument()
+    expect(screen.queryByText('0.400')).not.toBeInTheDocument()
   })
 
   // Advisor-found gap, 2026-09-04, closed by MODEL-FLOW-019-T08 part 4: the
@@ -1901,7 +1905,7 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     expect(
       screen.queryByText(/estimate of the configuration/),
     ).not.toBeInTheDocument()
-    expect(screen.queryByText('0.400 ± 0.050')).not.toBeInTheDocument()
+    expect(screen.queryByText('0.400')).not.toBeInTheDocument()
   })
 })
 
@@ -2063,5 +2067,81 @@ describe('Phase4ModelSelection — residual SD, tagged with its population (MODE
     expect(screen.getAllByText('Awaiting scoring').length).toBeGreaterThan(0)
     expect(screen.getByText('No predictions series')).toBeInTheDocument()
     expect(screen.getByText(/Unreadable — NoSuchKey/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * MODEL-FLOW-035. The overlay charts carry a filter to draw only the models
+ * the user picks; the table is never filtered by it.
+ */
+describe('Phase4ModelSelection — chart model filter (MODEL-FLOW-035)', () => {
+  function renderTwo() {
+    h.result.job = job({
+      bestRunId: 'run-1',
+      candidates: [
+        candidate({ runId: 'run-1', algorithm: 'ridge' }),
+        candidate({ runId: 'run-2', algorithm: 'svm' }),
+        candidate({
+          runId: 'run-3',
+          algorithm: 'ols',
+          status: 'FAILED',
+          failureReason: 'container OOM',
+          metrics: null,
+          trainMetrics: null,
+        }),
+      ],
+    })
+    renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ridge',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+    })
+    return screen.getByRole('group', { name: 'Models shown in the charts' })
+  }
+
+  it('offers one chip per succeeded model, all shown by default', () => {
+    const filter = renderTwo()
+    const chips = within(filter).getAllByRole('button', { pressed: true })
+    expect(chips.map(c => c.textContent)).toEqual([
+      'Ridge Regression',
+      'Support Vector Machine',
+    ])
+  })
+
+  it('hides a model from the charts, never from the table, and Show all restores it', () => {
+    const filter = renderTwo()
+    fireEvent.click(
+      within(filter).getByRole('button', { name: 'Support Vector Machine' }),
+    )
+    expect(
+      within(filter).getByRole('button', { name: 'Support Vector Machine' }),
+    ).toHaveAttribute('aria-pressed', 'false')
+    // Still a row in the table.
+    expect(
+      within(screen.getByRole('table')).getByText('Support Vector Machine'),
+    ).toBeInTheDocument()
+
+    fireEvent.click(within(filter).getByRole('button', { name: 'Show all' }))
+    expect(
+      within(filter).getAllByRole('button', { pressed: true }),
+    ).toHaveLength(2)
+  })
+
+  it('will not hide the last model left in the charts', () => {
+    const filter = renderTwo()
+    fireEvent.click(
+      within(filter).getByRole('button', { name: 'Support Vector Machine' }),
+    )
+    fireEvent.click(
+      within(filter).getByRole('button', { name: 'Ridge Regression' }),
+    )
+    expect(
+      within(filter).getByRole('button', { name: 'Ridge Regression' }),
+    ).toHaveAttribute('aria-pressed', 'true')
   })
 })

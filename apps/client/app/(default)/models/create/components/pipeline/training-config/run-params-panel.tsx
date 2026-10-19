@@ -26,6 +26,7 @@ import {
   mpAlgorithmsAtom,
   mpCandidateJobIdAtom,
   mpCompareRunIdsAtom,
+  mpLossFunctionAtom,
   mpSelectedDatasetAtom,
   mpServerDraftIdAtom,
   mpTrainStateAtom,
@@ -36,15 +37,20 @@ import { useDraftSelection } from '@/hooks/model/use-draft-selection'
 import { useCandidateJob } from '@/hooks/model/use-candidate-job'
 import { useApplyRunParams } from '@/hooks/model/use-apply-run-params'
 import { RunComparisonPanel } from './run-comparison-panel'
-import { CvRunSection, cvEstimateOf, formatCvScore } from './cv-results-section'
+import { CvRunSection, formatCvScore } from './cv-results-section'
 import { cvFoldCountOf } from '@/lib/run-comparison'
 import {
   classifyHyperparams,
   seedConsumedBy,
   splitPercentFromRun,
   sortRuns,
+  runHeadlineOf,
+  runSortLabel,
+  scoreMetricOf,
+  SCORE_METRIC_LABELS,
   RUN_SORT_LABELS,
   type RunSortKey,
+  type ScoreMetric,
 } from '@/lib/run-params'
 import {
   Select,
@@ -90,6 +96,35 @@ const STATUS_META: Record<
   },
 }
 
+function metricLabelOf(metric: ScoreMetric): string {
+  return SCORE_METRIC_LABELS[metric].toLowerCase()
+}
+
+/** One labelled figure in a card header: `—` unless the run succeeded and
+ *  recorded it; a CV run's figure is the fold mean. */
+function HeadlineFigure({
+  label,
+  value,
+  succeeded,
+  format,
+}: {
+  label: string
+  value: number | null
+  succeeded: boolean
+  format: (v: number) => string
+}) {
+  return (
+    <span className="flex items-baseline gap-1">
+      <span className="text-[9px] uppercase text-muted-foreground">
+        {label}
+      </span>
+      <span className="font-mono text-sm font-medium tabular-nums text-foreground">
+        {succeeded ? formatCvScore(value, format) : '—'}
+      </span>
+    </span>
+  )
+}
+
 function shortDigest(digest: string): string {
   const bare = digest.startsWith('sha256:') ? digest.slice(7) : digest
   return bare.length > 12 ? `${bare.slice(0, 12)}…` : bare
@@ -116,6 +151,12 @@ function formatRunTimestamp(iso: string): string {
  * read below (`mpAlgorithmsAtom`, `mpSelectedDatasetAtom`) are only COMPARED
  * against the row to warn about what an action will do; they are never
  * displayed as if they were the run's own values.
+ *
+ * MODEL-FLOW-035 adds one wizard-atom read that IS displayed, and why it is
+ * not that failure: the Loss function (`mpLossFunctionAtom`) only chooses
+ * WHICH of the run's own recorded figures leads the card (RMSE or MAE, R²
+ * always beside it) and how the list sorts. Every number shown still comes
+ * from the run row; the card never claims the run was fit to that metric.
  *
  * MODEL-FLOW-021 replaced MODEL-FLOW-018-T03's per-card Select with a
  * Compare checkbox — distinct from Apply, which seeds the NEXT run's
@@ -165,10 +206,17 @@ export function RunParamsPanel() {
     candidateJobId,
   )
   const bestRunId = candidateJob?.bestRunId ?? null
+  // MODEL-FLOW-035. The Loss function setting is the ranking metric; the
+  // headline of every card and the sort follow it, R² always beside it.
+  const metric: ScoreMetric = scoreMetricOf(useAtomValue(mpLossFunctionAtom))
+  // The badge states the rule the JOB used, which can differ from the form's
+  // current Loss function if that changed after the search ran.
+  const jobMetricLabel =
+    SCORE_METRIC_LABELS[scoreMetricOf(candidateJob?.rankingMetric)]
   const bestTitle =
     candidateJob?.nSplits != null
-      ? 'Lowest mean cross-validated RMSE in this search.'
-      : 'Lowest test RMSE in this search.'
+      ? `Lowest mean cross-validated ${jobMetricLabel} in this search.`
+      : `Lowest test ${jobMetricLabel} in this search.`
 
   const [appliedMessage, setAppliedMessage] = useState<string | null>(null)
   /**
@@ -266,6 +314,7 @@ export function RunParamsPanel() {
     runs,
     sortKey,
     algorithm => ALGORITHM_LABELS[algorithm as Algorithm] ?? algorithm,
+    metric,
   )
 
   return (
@@ -292,7 +341,7 @@ export function RunParamsPanel() {
                   value={key}
                   className="cursor-pointer text-[11px]"
                 >
-                  {RUN_SORT_LABELS[key]}
+                  {runSortLabel(key, metric)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -320,6 +369,7 @@ export function RunParamsPanel() {
             isCompared={activeCompareIds.has(run.id)}
             isCarryForward={run.id === selectedRunId}
             bestTitle={run.id === bestRunId ? bestTitle : null}
+            metric={metric}
             onApply={handleApply}
             onToggleCompare={toggleCompare}
           />
@@ -427,6 +477,7 @@ function RunCard({
   isCompared,
   isCarryForward,
   bestTitle,
+  metric,
   onApply,
   onToggleCompare,
 }: {
@@ -439,6 +490,8 @@ function RunCard({
   isCarryForward: boolean
   /** Non-null on the current search's winner — the rule it won by. */
   bestTitle: string | null
+  /** MODEL-FLOW-035. The Loss function metric the headline leads with. */
+  metric: ScoreMetric
   onApply: (run: ModelTrainingRunListItem) => void
   onToggleCompare: (run: ModelTrainingRunListItem) => void
 }) {
@@ -458,11 +511,10 @@ function RunCard({
   const runFailed = run.status === 'FAILED' || run.status === 'CANCELED'
   const rows = classifyHyperparams(run.algorithm, run.hyperparameters)
   const seedUsed = seedConsumedBy(run.algorithm)
-  const rmse = typeof run.metrics?.rmse === 'number' ? run.metrics.rmse : null
-  // MODEL-FLOW-029. A CV run has no bare `rmse` — its headline is the fold
-  // mean ± std, labelled as CV so it is never read as a test-split figure.
-  const isCv = run.cvFoldsKey !== null
-  const cvEstimate = isCv ? cvEstimateOf(run) : undefined
+  const headline = runHeadlineOf(run, metric)
+  // MODEL-FLOW-029. A CV run has no bare test-split figure — its headline is
+  // the fold mean, labelled as CV so it is never read as a test figure.
+  const isCv = headline.isCv
   const cvFolds = cvFoldCountOf(run)
 
   // Guarded, not assumed finite: a CV run's splitSpec is
@@ -561,23 +613,21 @@ function RunCard({
             {targetMismatch && !nonTerminal && !open && (
               <AlertTriangle className="h-3 w-3 shrink-0 text-amber-500" />
             )}
-            <span className="ml-auto flex shrink-0 items-baseline gap-1">
-              <span className="text-[9px] uppercase text-muted-foreground">
-                {isCv ? 'cv rmse' : 'rmse'}
-              </span>
-              <span className="font-mono text-sm font-medium tabular-nums text-foreground">
-                {run.status !== 'SUCCEEDED'
-                  ? '—'
-                  : isCv
-                    ? formatCvScore(
-                        cvEstimate?.mean.rmse ?? null,
-                        cvEstimate?.std.rmse ?? null,
-                        METRIC_META.rmse.format,
-                      )
-                    : rmse !== null
-                      ? METRIC_META.rmse.format(rmse)
-                      : '—'}
-              </span>
+            <span className="ml-auto flex shrink-0 items-baseline gap-2">
+              <HeadlineFigure
+                label={
+                  isCv ? `cv ${metricLabelOf(metric)}` : metricLabelOf(metric)
+                }
+                value={headline.value}
+                succeeded={run.status === 'SUCCEEDED'}
+                format={METRIC_META[metric].format}
+              />
+              <HeadlineFigure
+                label={isCv ? 'cv r²' : 'r²'}
+                value={headline.r2}
+                succeeded={run.status === 'SUCCEEDED'}
+                format={METRIC_META.r2.format}
+              />
             </span>
           </div>
 

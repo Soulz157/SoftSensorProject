@@ -11,6 +11,7 @@
  */
 import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
 import { HYPERPARAMS } from '@/lib/training-config'
+import { sourcedMetricsOf, type MetricSourceRun } from '@/lib/metric-source'
 import type {
   ModelRunSplitSpec,
   ModelRunStatus,
@@ -193,14 +194,97 @@ export function toApplyPatch(
  * card actually renders, compared with `localeCompare` so the order matches
  * what is on screen rather than the raw enum key.
  */
-export type RunSortKey = 'recent' | 'oldest' | 'name' | 'rmse' | 'status'
+export type RunSortKey = 'recent' | 'oldest' | 'name' | 'score' | 'status'
+
+/**
+ * MODEL-FLOW-035. The metric Step 3 ranks and displays runs by — the Loss
+ * function setting, narrowed to the two choices it offers. Never sent to the
+ * trainer; it only picks which of a run's own recorded figures is the
+ * headline.
+ */
+export type ScoreMetric = 'rmse' | 'mae'
+
+export const SCORE_METRIC_LABELS: Record<ScoreMetric, string> = {
+  rmse: 'RMSE',
+  mae: 'MAE',
+}
+
+/** Any Loss function value -> the metric it ranks by. Absent or unrecognised
+ *  is RMSE, the same default `normaliseLossFunction` resolves to. */
+export function scoreMetricOf(loss: string | null | undefined): ScoreMetric {
+  return loss === 'mae' ? 'mae' : 'rmse'
+}
 
 export const RUN_SORT_LABELS: Record<RunSortKey, string> = {
   recent: 'Newest first',
   oldest: 'Oldest first',
   name: 'Name (A–Z)',
-  rmse: 'Best RMSE',
+  score: 'Best score',
   status: 'Status',
+}
+
+/** "Best RMSE" / "Best MAE" for the score sort; the static label otherwise. */
+export function runSortLabel(key: RunSortKey, metric: ScoreMetric): string {
+  return key === 'score'
+    ? `Best ${SCORE_METRIC_LABELS[metric]}`
+    : RUN_SORT_LABELS[key]
+}
+
+/**
+ * MODEL-FLOW-035. What a job's `bestRunId` was chosen by, in words: "lowest
+ * Test MAE", or "lowest mean CV RMSE" for a cross-validated search. Reads the
+ * JOB's metric, not the form's current Loss function, so a badge never
+ * describes a rule the job did not use.
+ */
+export function rankingBasisText(
+  rankingMetric: string | null | undefined,
+  isCv: boolean,
+): string {
+  const label = SCORE_METRIC_LABELS[scoreMetricOf(rankingMetric)]
+  return isCv ? `lowest mean CV ${label}` : `lowest Test ${label}`
+}
+
+export interface RunHeadline {
+  /** The chosen metric's figure: the test split's, or a CV run's fold mean. */
+  value: number | null
+  /** Fold standard deviation; null for a non-CV run or an unrecorded std. */
+  std: number | null
+  r2: number | null
+  r2Std: number | null
+  isCv: boolean
+}
+
+/**
+ * The figures a Run parameters card leads with: the chosen metric and R²,
+ * both from the run's OWN recorded metrics (a CV run: mean ± std over its
+ * folds). Choosing the metric is a view choice over what the run recorded —
+ * it does not say the run was fit to that metric.
+ */
+export function runHeadlineOf(
+  run: MetricSourceRun,
+  metric: ScoreMetric,
+): RunHeadline {
+  const own = sourcedMetricsOf(run).find(
+    m => m.source === 'test-split' || m.source === 'cv-fold-estimate',
+  )
+  if (!own)
+    return { value: null, std: null, r2: null, r2Std: null, isCv: false }
+  if (own.source === 'cv-fold-estimate') {
+    return {
+      value: own.mean[metric],
+      std: own.std[metric],
+      r2: own.mean.r2,
+      r2Std: own.std.r2,
+      isCv: true,
+    }
+  }
+  return {
+    value: own[metric],
+    std: null,
+    r2: own.r2,
+    r2Std: null,
+    isCv: false,
+  }
 }
 
 /** Terminal-and-useful first, so a Status sort surfaces what can be compared
@@ -215,12 +299,12 @@ const STATUS_ORDER: Record<ModelRunStatus, number> = {
 
 type SortableRun = Pick<
   ModelTrainingRun,
-  'algorithm' | 'createdAt' | 'status' | 'metrics'
->
+  'algorithm' | 'createdAt' | 'status'
+> &
+  MetricSourceRun
 
-function rmseOf(run: SortableRun): number | null {
-  const value = run.metrics?.rmse
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
+function scoreOf(run: SortableRun, metric: ScoreMetric): number | null {
+  return runHeadlineOf(run, metric).value
 }
 
 /**
@@ -229,13 +313,14 @@ function rmseOf(run: SortableRun): number | null {
  *
  * `createdAt desc` is the tiebreak on every key, so equal names/metrics keep
  * a stable, meaningful order instead of jittering between renders. A run
- * with no RMSE (queued, running, failed) sorts last under `rmse` rather than
+ * with no RMSE (queued, running, failed) sorts last under `score` rather than
  * pretending to a score.
  */
 export function sortRuns<T extends SortableRun>(
   runs: readonly T[],
   key: RunSortKey,
   labelOf: (algorithm: string) => string,
+  metric: ScoreMetric = 'rmse',
 ): T[] {
   const byRecency = (a: SortableRun, b: SortableRun) =>
     b.createdAt.localeCompare(a.createdAt)
@@ -250,9 +335,9 @@ export function sortRuns<T extends SortableRun>(
         const cmp = labelOf(a.algorithm).localeCompare(labelOf(b.algorithm))
         return cmp !== 0 ? cmp : byRecency(a, b)
       }
-      case 'rmse': {
-        const x = rmseOf(a)
-        const y = rmseOf(b)
+      case 'score': {
+        const x = scoreOf(a, metric)
+        const y = scoreOf(b, metric)
         if (x === null && y === null) return byRecency(a, b)
         if (x === null) return 1
         if (y === null) return -1

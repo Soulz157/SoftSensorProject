@@ -23,6 +23,7 @@ import {
 } from '@/lib/metric-source'
 import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
 import type { RunPredictionsBatchItem } from '@/services/model-draft'
+import type { SeriesStyle } from '@/lib/chart-model-filter'
 import { AXIS_TICK } from '../evaluation/actual-vs-predicted-chart'
 
 /**
@@ -125,6 +126,13 @@ interface Props {
    *  the button reads "Scoring…" and disables, rather than offering a
    *  second click that would spawn a second container for the same run. */
   scoring?: boolean
+  /**
+   * Phase 4's model filter. Each series' label and colour, computed by the
+   * caller from the FULL candidate list (`seriesStylesFor`), so a model keeps
+   * both when the filter hides its neighbours. Absent: numbered and coloured
+   * by position among the series drawn, as before.
+   */
+  seriesStyles?: Map<string, SeriesStyle>
 }
 
 const OVERLAY_COLORS = [
@@ -205,6 +213,7 @@ export function CandidateOverlayChart({
   onScore,
   scoreCount,
   scoring,
+  seriesStyles,
 }: Props) {
   const entries = candidates
     .filter(c => c.runId && byRunId.has(c.runId))
@@ -220,9 +229,9 @@ export function CandidateOverlayChart({
     return (
       <div className="space-y-1.5 rounded-xl border border-dashed border-border/60 p-3">
         <p className="text-xs font-medium text-foreground">
-            {populationTitle(population)} {' - '}
+          {populationTitle(population)} {' - '}
           <span className="font-normal text-muted-foreground">
-          (Overall candidate comparison)
+            (Overall candidate comparison)
           </span>
         </p>
         <p className="text-[10px] text-muted-foreground">{absenceNote}</p>
@@ -261,10 +270,18 @@ export function CandidateOverlayChart({
         (other, j) =>
           j !== i && other.candidate.algorithm === candidate.algorithm,
       )
-      return [`pred_${runId}`, duplicate ? `${label} #${i + 1}` : label]
+      const fixed = seriesStyles?.get(runId)?.label
+      return [
+        `pred_${runId}`,
+        fixed ?? (duplicate ? `${label} #${i + 1}` : label),
+      ]
     }),
   )
   seriesLabels.set('actual', 'Actual')
+  const colorOf = (runId: string, i: number) =>
+    OVERLAY_COLORS[
+      (seriesStyles?.get(runId)?.colorIndex ?? i) % OVERLAY_COLORS.length
+    ]
 
   // MODEL-FLOW-019-T20 follow-up. A PARTIALLY drawn group says which
   // candidates it left out. Silently dropping them is worse than the empty
@@ -282,9 +299,9 @@ export function CandidateOverlayChart({
     <div className="space-y-1.5 rounded-xl border border-border/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <p className="text-xs font-medium text-foreground">
-            {populationTitle(population)} {' - '}
+          {populationTitle(population)} {' - '}
           <span className="font-normal text-muted-foreground">
-          (Overall candidate comparison)
+            (Overall candidate comparison)
           </span>
         </p>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
@@ -295,9 +312,7 @@ export function CandidateOverlayChart({
             <span key={runId} className="flex items-center gap-1">
               <span
                 className="h-1.5 w-1.5 rounded-full"
-                style={{
-                  backgroundColor: OVERLAY_COLORS[i % OVERLAY_COLORS.length],
-                }}
+                style={{ backgroundColor: colorOf(runId, i) }}
               />
               {seriesLabels.get(`pred_${runId}`)}
             </span>
@@ -354,7 +369,7 @@ export function CandidateOverlayChart({
               connectNulls
               type="monotone"
               dataKey={`pred_${runId}`}
-              stroke={OVERLAY_COLORS[i % OVERLAY_COLORS.length]}
+              stroke={colorOf(runId, i)}
               strokeWidth={1.5}
               strokeDasharray="4 3"
               dot={false}

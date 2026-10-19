@@ -9,6 +9,11 @@ import {
   classifyHyperparams,
   splitPercentFromRun,
   toApplyPatch,
+  runHeadlineOf,
+  rankingBasisText,
+  runSortLabel,
+  scoreMetricOf,
+  sortRuns,
 } from './run-params'
 
 /**
@@ -342,5 +347,113 @@ describe('toApplyPatch', () => {
     })
     expect(hyperparameters).toEqual({ alpha: 1 })
     expect(dropped).toEqual(['weird'])
+  })
+})
+
+/**
+ * MODEL-FLOW-035. The Loss function (RMSE | MAE) picks which recorded figure
+ * leads a Run parameters card; R² is always shown beside it.
+ */
+describe('MODEL-FLOW-035: run headline and score sort', () => {
+  const testRun = (metrics: Record<string, unknown> | null) => ({
+    metrics,
+    holdoutMetrics: null,
+    cvFoldsKey: null,
+    predictionsKey: null,
+    scoringContainerId: null,
+  })
+  const cvRun = (metrics: Record<string, unknown>) => ({
+    metrics,
+    holdoutMetrics: null,
+    cvFoldsKey: 'cv/folds.json',
+    predictionsKey: null,
+    scoringContainerId: null,
+  })
+
+  it('scoreMetricOf resolves anything but mae to rmse', () => {
+    expect(scoreMetricOf('mae')).toBe('mae')
+    expect(scoreMetricOf('rmse')).toBe('rmse')
+    expect(scoreMetricOf('r2')).toBe('rmse')
+    expect(scoreMetricOf(undefined)).toBe('rmse')
+  })
+
+  it('a test-split run leads with the chosen metric and carries R²', () => {
+    const run = testRun({ r2: 0.9, rmse: 2, mae: 1.5 })
+    expect(runHeadlineOf(run, 'rmse')).toEqual({
+      value: 2,
+      std: null,
+      r2: 0.9,
+      r2Std: null,
+      isCv: false,
+    })
+    expect(runHeadlineOf(run, 'mae').value).toBe(1.5)
+  })
+
+  it('a CV run reads the fold mean ± std for the metric and for R²', () => {
+    const run = cvRun({
+      cv_r2_mean: 0.8,
+      cv_r2_std: 0.05,
+      cv_rmse_mean: 3,
+      cv_rmse_std: 0.4,
+      cv_mae_mean: 2.2,
+      cv_mae_std: 0.3,
+      n_splits: 5,
+    })
+    expect(runHeadlineOf(run, 'mae')).toEqual({
+      value: 2.2,
+      std: 0.3,
+      r2: 0.8,
+      r2Std: 0.05,
+      isCv: true,
+    })
+  })
+
+  it('a run with no metrics has no figures rather than zeros', () => {
+    expect(runHeadlineOf(testRun(null), 'rmse')).toEqual({
+      value: null,
+      std: null,
+      r2: null,
+      r2Std: null,
+      isCv: false,
+    })
+  })
+
+  it('the score sort follows the metric, CV runs sort by fold mean, unscored last', () => {
+    const base = { algorithm: 'ols', status: 'SUCCEEDED' as const }
+    const a = {
+      ...base,
+      id: 'a',
+      createdAt: '2026-01-03',
+      ...testRun({ rmse: 2, mae: 3 }),
+    }
+    const b = {
+      ...base,
+      id: 'b',
+      createdAt: '2026-01-02',
+      ...testRun({ rmse: 3, mae: 1 }),
+    }
+    const c = {
+      ...base,
+      id: 'c',
+      createdAt: '2026-01-01',
+      ...cvRun({ cv_rmse_mean: 1, cv_mae_mean: 2 }),
+    }
+    const d = { ...base, id: 'd', createdAt: '2026-01-04', ...testRun(null) }
+    const ids = (metric: 'rmse' | 'mae') =>
+      sortRuns([a, b, c, d], 'score', x => x, metric).map(r => r.id)
+    expect(ids('rmse')).toEqual(['c', 'a', 'b', 'd'])
+    expect(ids('mae')).toEqual(['b', 'c', 'a', 'd'])
+  })
+
+  it('names the score sort after the metric', () => {
+    expect(runSortLabel('score', 'mae')).toBe('Best MAE')
+    expect(runSortLabel('score', 'rmse')).toBe('Best RMSE')
+    expect(runSortLabel('recent', 'mae')).toBe('Newest first')
+  })
+
+  it("states the JOB's ranking rule in words, CV or not", () => {
+    expect(rankingBasisText('mae', false)).toBe('lowest Test MAE')
+    expect(rankingBasisText('rmse', true)).toBe('lowest mean CV RMSE')
+    expect(rankingBasisText(undefined, false)).toBe('lowest Test RMSE')
   })
 })

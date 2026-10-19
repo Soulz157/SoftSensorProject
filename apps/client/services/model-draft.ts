@@ -677,6 +677,9 @@ export interface CreateCandidateJobInput {
    *  HYPERPARAMETER_SEARCH only and exclusive with `trainTestSplit` — the
    *  server refuses either violation. */
   nSplits?: number
+  /** MODEL-FLOW-035. The metric `bestRunId` is chosen by — the wizard's Loss
+   *  function. Omitted = RMSE. */
+  rankingMetric?: 'rmse' | 'mae'
   kind: ModelCandidateJobKind
   candidates: CandidateInput[]
   /** MODEL-FLOW-020-T04/T02. The two dataset size figures as this form saw
@@ -781,6 +784,9 @@ export interface ModelCandidateJob {
   /** MODEL-FLOW-029. k for a cross-validated search, whose `bestRunId` is
    *  the lowest mean CV RMSE rather than test RMSE. Null/absent = not CV. */
   nSplits?: number | null
+  /** MODEL-FLOW-035. The metric `bestRunId` was chosen by ('rmse' | 'mae';
+   *  a CV job uses the fold mean). Absent on a payload from before it. */
+  rankingMetric?: string
   kind: ModelCandidateJobKind
   totalRuns: number
   completedRuns: number

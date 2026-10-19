@@ -171,12 +171,13 @@ beforeEach(() => {
 })
 
 describe('CvRunSection (MODEL-FLOW-028, in the card since MODEL-FLOW-029)', () => {
-  it('shows fold score as mean ± std, the OOF chart and the per-fold table', () => {
+  it('shows the fold mean (no ± std), the OOF chart and the per-fold table', () => {
     render(<CvRunSection draftId="d" run={run()} />)
 
     expect(screen.getByText('Cross-validation — 3 folds')).toBeTruthy()
-    expect(screen.getByText('0.812 ± 0.041')).toBeTruthy()
-    expect(screen.getByText('1.500 ± 0.250')).toBeTruthy()
+    expect(screen.getByText('0.812')).toBeTruthy()
+    expect(screen.getAllByText('1.500').length).toBeGreaterThan(0)
+    expect(screen.queryByText(/±/)).toBeNull()
     expect(screen.getByTestId('oof-chart')).toBeTruthy()
     expect(screen.getByText('Per-fold configuration metrics')).toBeTruthy()
   })
@@ -207,7 +208,7 @@ describe('CvRunSection (MODEL-FLOW-028, in the card since MODEL-FLOW-029)', () =
 
     expect(screen.queryByTestId('oof-chart')).toBeNull()
     expect(screen.getByText(/Retrain to see this chart/)).toBeTruthy()
-    expect(screen.getByText('0.812 ± 0.041')).toBeTruthy()
+    expect(screen.getByText('0.812')).toBeTruthy()
     expect(screen.getByText('Per-fold configuration metrics')).toBeTruthy()
   })
 
@@ -218,7 +219,7 @@ describe('CvRunSection (MODEL-FLOW-028, in the card since MODEL-FLOW-029)', () =
     expect(screen.queryByText('Per-fold configuration metrics')).toBeNull()
     expect(screen.getByText(/Per-fold figures could not be read/)).toBeTruthy()
     expect(screen.queryByTestId('oof-chart')).toBeNull()
-    expect(screen.getByText('0.812 ± 0.041')).toBeTruthy()
+    expect(screen.getByText('0.812')).toBeTruthy()
   })
 
   it('uses no status colours on the fold scores (red/amber are reserved)', () => {
@@ -244,7 +245,8 @@ describe('A CV run in the normal run card (MODEL-FLOW-029-T03)', () => {
     renderPanel([run()])
     expect(screen.getByText('cv rmse')).toBeTruthy()
     // METRIC_META.rmse.format: two decimals.
-    expect(screen.getByText('1.50 ± 0.25')).toBeTruthy()
+    expect(screen.getByText('1.50')).toBeTruthy()
+    expect(screen.queryByText(/±/)).toBeNull()
     expect(screen.getByText('3-fold CV')).toBeTruthy()
   })
 
