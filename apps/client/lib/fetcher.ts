@@ -41,9 +41,11 @@ export class ApiError extends Error {
   }
 }
 
-export async function fetchClient(endpoint: string, options: RequestInit = {}) {
-  const session = await sharedSession()
-
+function sendAs(
+  endpoint: string,
+  options: RequestInit,
+  accessToken: string | undefined,
+) {
   const headers = new Headers(options.headers)
   // Only advertise a JSON body when one is actually sent. Fastify rejects a
   // bodyless request (e.g. DELETE) that carries `Content-Type: application/json`
@@ -51,27 +53,48 @@ export async function fetchClient(endpoint: string, options: RequestInit = {}) {
   if (options.body != null && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  return fetch(`${BASE_URL}${endpoint}`, { ...options, headers })
+}
 
-  if (session?.user?.accessToken) {
-    headers.set('Authorization', `Bearer ${session.user.accessToken}`)
+function signOutToLogin() {
+  // DS-LAKE-037: remember where the user was so signing in again returns
+  // them there (a half-built dataset wizard, say) instead of /overview.
+  signOut({
+    redirectTo:
+      typeof window === 'undefined'
+        ? '/auth/login'
+        : loginUrlWithCallback(
+            window.location.pathname + window.location.search,
+          ),
+  })
+}
+
+export async function fetchClient(endpoint: string, options: RequestInit = {}) {
+  const session = await sharedSession()
+  const sentToken = session?.user?.accessToken
+  let response = await sendAs(endpoint, options, sentToken)
+
+  // One 401 is not yet "signed out". The access token can expire, or be
+  // refreshed by another request, while this one is in flight — a screen
+  // polling a training run every 2.5 s meets that boundary every half hour.
+  // Ask for the session again (which refreshes it if due) and, if that yields
+  // a DIFFERENT token, try once more. Only a refused refresh, an unchanged
+  // token, or a second 401 signs the user out.
+  if (response.status === 401) {
+    const fresh = await sharedSession()
+    const freshToken = fresh?.user?.accessToken
+    if (
+      fresh?.error !== 'RefreshTokenExpired' &&
+      freshToken &&
+      freshToken !== sentToken
+    ) {
+      response = await sendAs(endpoint, options, freshToken)
+    }
   }
 
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
-    ...options,
-    headers,
-  })
-
   if (response.status === 401) {
-    // DS-LAKE-037: remember where the user was so signing in again returns
-    // them there (a half-built dataset wizard, say) instead of /overview.
-    signOut({
-      redirectTo:
-        typeof window === 'undefined'
-          ? '/auth/login'
-          : loginUrlWithCallback(
-              window.location.pathname + window.location.search,
-            ),
-    })
+    signOutToLogin()
     throw new Error('Session expired')
   }
 

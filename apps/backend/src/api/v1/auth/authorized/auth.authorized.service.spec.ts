@@ -32,19 +32,54 @@ jest.mock('@softsensor/prisma', () => ({
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
-function buildPrismaMock() {
-  return {
+interface PrismaMock {
+  refreshToken: Record<
+    'findUnique' | 'delete' | 'create' | 'deleteMany' | 'updateMany',
+    jest.Mock
+  >;
+  authLog: { create: jest.Mock };
+  $transaction: jest.Mock;
+}
+
+/** Typed first arguments of a mock's calls — `mock.calls` is `any`. */
+function argsOf<T>(fn: jest.Mock): T[] {
+  return (fn.mock.calls as [T][]).map(([arg]) => arg);
+}
+
+interface RotateArgs {
+  where: { token: string; revokedAt: null };
+  data: { revokedAt: Date; replacedById: string };
+}
+interface CreateArgs {
+  data: { id: string; token: string; userId: string; expiresAt: Date };
+}
+interface CleanupArgs {
+  where: { userId: string; revokedAt: { lt: Date } };
+}
+
+function buildPrismaMock(): PrismaMock {
+  const mock: PrismaMock = {
     refreshToken: {
       findUnique: jest.fn(),
       delete: jest.fn(),
       create: jest.fn(),
       deleteMany: jest.fn(),
+      // The rotation's compare-and-swap. Default: this request wins it.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     authLog: {
       create: jest.fn(),
     },
-    $transaction: jest.fn((ops: unknown[]) => Promise.resolve(ops)),
+    // Array form (logout) resolves the ops; callback form (refresh rotation)
+    // runs against this same mock as `tx`.
+    $transaction: jest.fn(
+      (arg: unknown): Promise<unknown> =>
+        typeof arg === 'function'
+          ? (arg as (tx: PrismaMock) => Promise<unknown>)(mock)
+          : Promise.resolve(arg),
+    ),
   };
+  return mock;
 }
 
 function buildUser(overrides: Partial<Auth.UserPayload & { id: string }> = {}) {
@@ -66,6 +101,7 @@ function buildRecord(overrides: Record<string, unknown> = {}) {
     userId: user.id,
     expiresAt: new Date(Date.now() + SEVEN_DAYS_MS),
     revokedAt: null,
+    replacedById: null,
     user,
     ...overrides,
   };
@@ -120,7 +156,6 @@ describe('AuthAuthorizedService', () => {
       // Arrange
       const record = buildRecord();
       prismaMock.refreshToken.findUnique.mockResolvedValue(record);
-      prismaMock.$transaction.mockResolvedValue([undefined, undefined]);
 
       // Act
       const result = await service.refreshService('valid-refresh-token');
@@ -134,20 +169,38 @@ describe('AuthAuthorizedService', () => {
       expect(result.refreshToken).toHaveLength(128); // 64 bytes → 128 hex chars
     });
 
-    it('TC-02: should delete old token and create new token via $transaction (token rotation)', async () => {
+    it('TC-02: rotates by revoking the old token (compare-and-swap) and creating its successor, never deleting it', async () => {
       // Arrange
-      const record = buildRecord();
-      prismaMock.refreshToken.findUnique.mockResolvedValue(record);
-      prismaMock.$transaction.mockResolvedValue([undefined, undefined]);
+      prismaMock.refreshToken.findUnique.mockResolvedValue(buildRecord());
 
       // Act
-      await service.refreshService('valid-refresh-token');
+      const result = await service.refreshService('valid-refresh-token');
 
       // Assert
-      expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
-      const [ops] = prismaMock.$transaction.mock.calls[0];
-      expect(Array.isArray(ops)).toBe(true);
-      expect(ops).toHaveLength(2);
+      expect(prismaMock.refreshToken.delete).not.toHaveBeenCalled();
+      const [cas] = argsOf<RotateArgs>(prismaMock.refreshToken.updateMany);
+      expect(cas.where).toEqual({
+        token: 'valid-refresh-token',
+        revokedAt: null,
+      });
+      const [created] = argsOf<CreateArgs>(prismaMock.refreshToken.create);
+      expect(cas.data.replacedById).toBe(created.data.id);
+      expect(cas.data.revokedAt).toBeInstanceOf(Date);
+      expect(created.data.token).toBe(result.refreshToken);
+      expect(created.data.userId).toBe('user-id-1');
+    });
+
+    it('TC-02b: drops this user’s tokens revoked before the grace window', async () => {
+      prismaMock.refreshToken.findUnique.mockResolvedValue(buildRecord());
+      const before = Date.now();
+
+      await service.refreshService('valid-refresh-token');
+
+      const [cleanup] = argsOf<CleanupArgs>(prismaMock.refreshToken.deleteMany);
+      expect(cleanup.where.userId).toBe('user-id-1');
+      const cutoff = cleanup.where.revokedAt.lt.getTime();
+      expect(cutoff).toBeLessThanOrEqual(before - 30_000 + 1000);
+      expect(cutoff).toBeGreaterThanOrEqual(before - 30_000 - 1000);
     });
 
     it('TC-03: should call jwtService.sign with correct user fields and the configured access expiry', async () => {
@@ -223,43 +276,102 @@ describe('AuthAuthorizedService', () => {
     });
 
     it('TC-07: should set expiresAt on new refresh token within 5 seconds of 7-day TTL', async () => {
-      // Arrange
-      const record = buildRecord();
-      prismaMock.refreshToken.findUnique.mockResolvedValue(record);
-
-      let capturedCreateArg: Record<string, unknown> = {};
-      prismaMock.$transaction.mockImplementation((ops: unknown[]) => {
-        // ops[1] is the create call — we need to intercept the data arg
-        return Promise.resolve(ops);
-      });
-
-      // We override create to capture the data argument
-      prismaMock.refreshToken.create.mockImplementation(
-        (args: {
-          data: { expiresAt: Date; token: string; userId: string };
-        }) => {
-          capturedCreateArg = args.data;
-          return Promise.resolve(args.data);
-        },
-      );
-
+      prismaMock.refreshToken.findUnique.mockResolvedValue(buildRecord());
       const beforeCall = Date.now();
 
-      // Act
+      await service.refreshService('valid-refresh-token');
+
+      const [created] = argsOf<CreateArgs>(prismaMock.refreshToken.create);
+      const actualExpiry = created.data.expiresAt.getTime();
+      const expectedExpiry = beforeCall + SEVEN_DAYS_MS;
+      expect(actualExpiry).toBeGreaterThanOrEqual(expectedExpiry - 5000);
+      expect(actualExpiry).toBeLessThanOrEqual(expectedExpiry + 5000);
+    });
+
+    // --- Rotation grace window: concurrent refreshes with one token -------
+
+    it('TC-07b: a token rotated seconds ago returns its live successor, not a 401', async () => {
+      const revoked = buildRecord({
+        revokedAt: new Date(Date.now() - 5_000),
+        replacedById: 'next-id',
+      });
+      prismaMock.refreshToken.findUnique.mockImplementation(
+        (args: { where: { token?: string; id?: string } }) =>
+          Promise.resolve(
+            args.where.id === 'next-id'
+              ? buildRecord({ token: 'next-token', revokedAt: null })
+              : revoked,
+          ),
+      );
+
       const result = await service.refreshService('valid-refresh-token');
 
-      // Assert — rebuild the transaction calls to see what create was called with
-      // Since $transaction receives an array of promises, verify via the result
-      const expectedExpiry = beforeCall + SEVEN_DAYS_MS;
-      // The new refresh token is a 128-char hex string
-      expect(result.refreshToken).toHaveLength(128);
+      expect(result.refreshToken).toBe('next-token');
+      expect((result.response as Record<string, unknown>).statusCode).toBe(200);
+      // No second rotation from the grace path.
+      expect(prismaMock.refreshToken.updateMany).not.toHaveBeenCalled();
+      expect(prismaMock.refreshToken.create).not.toHaveBeenCalled();
+    });
 
-      // If capturedCreateArg was populated (mock called create directly):
-      if (capturedCreateArg['expiresAt']) {
-        const actualExpiry = (capturedCreateArg['expiresAt'] as Date).getTime();
-        expect(actualExpiry).toBeGreaterThanOrEqual(expectedExpiry - 5000);
-        expect(actualExpiry).toBeLessThanOrEqual(expectedExpiry + 5000);
-      }
+    it('TC-07c: reuse after the grace window is refused', async () => {
+      prismaMock.refreshToken.findUnique.mockResolvedValue(
+        buildRecord({
+          revokedAt: new Date(Date.now() - 31_000),
+          replacedById: 'next-id',
+        }),
+      );
+
+      await expect(
+        service.refreshService('valid-refresh-token'),
+      ).rejects.toMatchObject({ statusCode: 401 });
+    });
+
+    it('TC-07d: refused when the successor is itself revoked or gone', async () => {
+      const revoked = buildRecord({
+        revokedAt: new Date(Date.now() - 5_000),
+        replacedById: 'next-id',
+      });
+      prismaMock.refreshToken.findUnique.mockImplementation(
+        (args: { where: { id?: string } }) =>
+          Promise.resolve(
+            args.where.id === 'next-id'
+              ? buildRecord({ token: 'next-token', revokedAt: new Date() })
+              : revoked,
+          ),
+      );
+
+      await expect(
+        service.refreshService('valid-refresh-token'),
+      ).rejects.toMatchObject({ statusCode: 401 });
+    });
+
+    it('TC-07e: losing the compare-and-swap race answers with the winner’s token', async () => {
+      let reads = 0;
+      prismaMock.refreshToken.findUnique.mockImplementation(
+        (args: { where: { token?: string; id?: string } }) => {
+          if (args.where.id === 'winner-id') {
+            return Promise.resolve(
+              buildRecord({ token: 'winner-token', revokedAt: null }),
+            );
+          }
+          reads += 1;
+          // First read: still live. Re-read after losing: rotated by the winner.
+          return Promise.resolve(
+            reads === 1
+              ? buildRecord()
+              : buildRecord({
+                  revokedAt: new Date(),
+                  replacedById: 'winner-id',
+                }),
+          );
+        },
+      );
+      prismaMock.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+
+      const result = await service.refreshService('valid-refresh-token');
+
+      expect(result.refreshToken).toBe('winner-token');
+      expect(prismaMock.refreshToken.create).not.toHaveBeenCalled();
     });
   });
 

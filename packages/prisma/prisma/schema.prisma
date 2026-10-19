@@ -297,13 +297,19 @@ model Subscription {
 }
 
 model RefreshToken {
-  id        String    @id @default(uuid())
-  token     String    @unique
-  userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
+  id           String    @id @default(uuid())
+  token        String    @unique
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  /// The id of the token this one was rotated into. Set together with
+  /// `revokedAt`; lets a refresh that raced the rotation (same old token, a
+  /// few seconds later) receive the SAME new token instead of a 401 — see
+  /// `refreshService`'s grace window. An id, not the token value, so the
+  /// secret is never stored twice; no FK, so cleanup deletes never cascade.
+  replacedById String?
+  createdAt    DateTime  @default(now())
 
   @@index([userId])
   @@index([token])

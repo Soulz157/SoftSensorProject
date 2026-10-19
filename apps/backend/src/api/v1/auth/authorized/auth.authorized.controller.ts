@@ -34,7 +34,6 @@ import {
   REFRESH_TOKEN_COOKIE,
   CLEAR_REFRESH_TOKEN_COOKIE,
 } from '@/config/cookie.config';
-import { JwtRefreshGuard } from '@/guards/jwt-refresh.guard';
 
 @ApiBearerAuth()
 @ApiTags('Authorized Authentication')
@@ -103,9 +102,13 @@ export class AuthAuthorizedController {
     return result;
   }
 
+  // No passport guard: the refresh token is an opaque value checked against
+  // the RefreshToken table by `refreshService`. The `jwt-refresh` strategy this
+  // route used to carry read a `refreshToken` cookie and verified it as a JWT,
+  // so it rejected every real request (401 before the service ran) and no
+  // session ever refreshed — each one ended when its access token expired.
   @Post('refresh')
   @HttpCode(200)
-  @UseGuards(JwtRefreshGuard)
   @ApiOperation({ summary: 'Rotate refresh token and issue new access token' })
   @ApiOkResponse({ type: RefreshResponseDto, description: 'Token refreshed' })
   @ApiUnauthorizedResponse({
