@@ -1018,3 +1018,134 @@ describe('DatasetVersionAuthorizedService — startExportService / getExportDown
     expect(res.data.resultArtifactId).toBe('export-1');
   });
 });
+
+describe('DatasetVersionAuthorizedService — exclude window (Raw vs Validation compare)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const EXCLUDE = {
+    excludeStart: '2025-11-06 19:00:00',
+    excludeEnd: '2025-11-17 13:00:00',
+  };
+  const CHART_DTO = {
+    operations: [],
+    precision: {},
+    tags: ['T1'],
+    ...EXCLUDE,
+  };
+
+  function bronzeService() {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({
+      objectKey: 'ds-1/artifacts/bronze-1/data.parquet',
+    });
+    return makeService(prisma).service;
+  }
+
+  function lastBody(): Record<string, unknown> {
+    const [, body] = post.mock.calls[0] as [string, Record<string, unknown>];
+    return body;
+  }
+
+  it('rows forwards the pair to python as exclude_start/exclude_end', async () => {
+    post.mockResolvedValueOnce({
+      source_key: 'ds-1/artifacts/bronze-1/data.parquet',
+      total_row_count: 0,
+      offset: 0,
+      tags: [],
+      filtered: true,
+      start_time: null,
+      end_time: null,
+      rows: [],
+    });
+    await bronzeService().listRowsService(USER, 'ds-1', 'bronze-1', {
+      offset: 0,
+      limit: 100,
+      format: 'json',
+      ...EXCLUDE,
+    } as never);
+    expect(lastBody()).toMatchObject({
+      exclude_start: EXCLUDE.excludeStart,
+      exclude_end: EXCLUDE.excludeEnd,
+    });
+  });
+
+  it('rows sends no exclude keys when none are given', async () => {
+    post.mockResolvedValueOnce({
+      source_key: 'k',
+      total_row_count: 0,
+      offset: 0,
+      tags: [],
+      filtered: false,
+      start_time: null,
+      end_time: null,
+      rows: [],
+    });
+    await bronzeService().listRowsService(USER, 'ds-1', 'bronze-1', {
+      offset: 0,
+      limit: 100,
+      format: 'json',
+    } as never);
+    expect(lastBody()).not.toHaveProperty('exclude_start');
+    expect(lastBody()).not.toHaveProperty('exclude_end');
+  });
+
+  it('histogram forwards the pair', async () => {
+    post.mockResolvedValueOnce({
+      source_key: 'k',
+      domain_min: null,
+      domain_max: null,
+      tags: [],
+      insufficient_tags: ['T1'],
+    });
+    await bronzeService().getArtifactHistogramService(
+      USER,
+      'ds-1',
+      'bronze-1',
+      CHART_DTO as never,
+    );
+    expect(lastBody()).toMatchObject({
+      exclude_start: EXCLUDE.excludeStart,
+      exclude_end: EXCLUDE.excludeEnd,
+    });
+  });
+
+  it('boxplot forwards the pair', async () => {
+    post.mockResolvedValueOnce({
+      source_key: 'k',
+      tags: [],
+      insufficient_tags: ['T1'],
+    });
+    await bronzeService().getArtifactBoxplotService(
+      USER,
+      'ds-1',
+      'bronze-1',
+      CHART_DTO as never,
+    );
+    expect(lastBody()).toMatchObject({
+      exclude_start: EXCLUDE.excludeStart,
+      exclude_end: EXCLUDE.excludeEnd,
+    });
+  });
+
+  it('correlation forwards the pair', async () => {
+    post.mockResolvedValueOnce({
+      source_key: 'k',
+      tags: [],
+      matrix: [],
+      column_metrics: {},
+      insufficient_tags: ['T1'],
+      near_constant_tags: [],
+      total_candidates: 1,
+    });
+    await bronzeService().getArtifactCorrelationService(
+      USER,
+      'ds-1',
+      'bronze-1',
+      CHART_DTO as never,
+    );
+    expect(lastBody()).toMatchObject({
+      exclude_start: EXCLUDE.excludeStart,
+      exclude_end: EXCLUDE.excludeEnd,
+    });
+  });
+});

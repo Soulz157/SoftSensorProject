@@ -6,7 +6,7 @@ import {
   type Dataset,
   type DataRow,
 } from '@/lib/preprocessing'
-import { timeQuery } from '@/lib/time-window'
+import { excludeQuery, timeQuery, type ExcludeWindow } from '@/lib/time-window'
 import {
   DraftArtifactMetadata,
   DraftBoxplotResult,
@@ -288,7 +288,7 @@ export const datasetArtifactService = {
       /** Inclusive bounds, applied BEFORE `offset`/`limit`. See `TimeWindow`. */
       startTime?: string
       endTime?: string
-    },
+    } & Partial<ExcludeWindow>,
   ): Promise<ApiResponse<DraftRowsPage>> =>
     fetchClient(
       `${artifact(datasetId, artifactId)}/rows` +
@@ -296,7 +296,8 @@ export const datasetArtifactService = {
         (params.tags?.length
           ? `&tags=${params.tags.map(encodeURIComponent).join(',')}`
           : '') +
-        timeQuery(params),
+        timeQuery(params) +
+        excludeQuery(params),
       { method: 'GET' },
     ),
 
@@ -312,7 +313,7 @@ export const datasetArtifactService = {
       sampleRows?: number
       startTime?: string
       endTime?: string
-    },
+    } & Partial<ExcludeWindow>,
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftCorrelationResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/correlation`, {
@@ -331,7 +332,7 @@ export const datasetArtifactService = {
       sampleRows?: number
       startTime?: string
       endTime?: string
-    },
+    } & Partial<ExcludeWindow>,
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftHistogramResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/histogram`, {
@@ -349,7 +350,7 @@ export const datasetArtifactService = {
       sampleRows?: number
       startTime?: string
       endTime?: string
-    },
+    } & Partial<ExcludeWindow>,
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftBoxplotResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/boxplot`, {

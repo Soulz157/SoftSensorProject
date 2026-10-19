@@ -1694,7 +1694,32 @@ class ValidateRequest(BaseModel):
     max_outlier_fraction: Optional[float] = None
 
 
-class RowsRequest(BaseModel):
+class ExcludeWindowFields(BaseModel):
+    """2026-10-18. One inner window to DROP from a read, on top of
+    `start_time`/`end_time` — the validation holdout, which can sit in the
+    middle of a dataset with training rows on both sides. Both bounds or
+    neither, inclusive, naive wall-clock like `start_time`/`end_time`. See
+    `services/frame_window.py`."""
+
+    exclude_start: Optional[str] = None
+    exclude_end: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _exclude_window_is_a_pair(self):
+        if (self.exclude_start is None) != (self.exclude_end is None):
+            raise ValueError("exclude_start and exclude_end must be given together")
+        if self.exclude_start is not None and self.exclude_end is not None:
+            try:
+                lo = datetime.fromisoformat(self.exclude_start)
+                hi = datetime.fromisoformat(self.exclude_end)
+            except ValueError as exc:
+                raise ValueError(f"exclude window is not a timestamp: {exc}") from exc
+            if lo.replace(tzinfo=None) > hi.replace(tzinfo=None):
+                raise ValueError("exclude_start must not be after exclude_end")
+        return self
+
+
+class RowsRequest(ExcludeWindowFields):
     """Paginated read of a committed artifact, for client hydration.
 
     `limit` is bounded (`MAX_SAMPLE_ROWS`) regardless of artifact size — the
@@ -2198,7 +2223,7 @@ DEFAULT_HISTOGRAM_KDE_SAMPLES = 100
 DEFAULT_HISTOGRAM_BIN_COUNT = 12
 
 
-class HistogramRequest(BaseModel):
+class HistogramRequest(ExcludeWindowFields):
     """DS-LAKE-005B-D-T01. Reuses `PreviewRequest`'s exact payload shape
     (TRANSPORT decision, DS-LAKE-005B-D.userDecisions) — a NEW endpoint, not
     an extension of `/preview`'s response, so chart cadence stays independent
@@ -2266,7 +2291,7 @@ class HistogramResponse(BaseModel):
 DEFAULT_BOXPLOT_OUTLIER_CAP = 50
 
 
-class BoxplotRequest(BaseModel):
+class BoxplotRequest(ExcludeWindowFields):
     """DS-LAKE-005B-D-T03. Same payload shape as `HistogramRequest`
     (TRANSPORT decision, DS-LAKE-005B-D.userDecisions) — reuses the identical
     operations/precision/tags/sample_rows/start_time/end_time fields so this
@@ -2541,7 +2566,7 @@ DEFAULT_CORRELATION_TOP_K = 20
 MAX_CORRELATION_TOP_K = 100
 
 
-class CorrelationRequest(BaseModel):
+class CorrelationRequest(ExcludeWindowFields):
     """DS-LAKE-005B-D-T05b. Same operations/precision/sample_rows/
     start_time/end_time fields as Histogram/Boxplot/ScatterRequest —
     proven reactivity mechanism, not a second implementation of it.

@@ -98,6 +98,7 @@ from schemas.preprocess import (
     TagCatalogRequest,
     ValidateRequest,
 )
+from services.frame_window import filter_time_window, is_window_filtered
 from services.cleaning_service import apply_operations
 from services.column_stats_service import build_column_stats
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
@@ -1633,13 +1634,16 @@ def _paginate(store: ObjectStore, request: RowsRequest) -> tuple[pd.DataFrame, p
 
     frame = store.get_frame(request.source_key, columns=columns)
 
-    is_filtered = request.start_time is not None or request.end_time is not None
-    if request.start_time is not None:
-        frame = frame[frame[TIMESTAMP_COLUMN]
-                      >= pd.Timestamp(request.start_time)]
-    if request.end_time is not None:
-        frame = frame[frame[TIMESTAMP_COLUMN]
-                      <= pd.Timestamp(request.end_time)]
+    is_filtered = is_window_filtered(
+        request.start_time, request.end_time, request.exclude_start, request.exclude_end
+    )
+    frame = filter_time_window(
+        frame,
+        start_time=request.start_time,
+        end_time=request.end_time,
+        exclude_start=request.exclude_start,
+        exclude_end=request.exclude_end,
+    )
     if is_filtered:
         frame = frame.reset_index(drop=True)
 

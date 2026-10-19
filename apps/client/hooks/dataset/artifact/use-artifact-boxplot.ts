@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { datasetArtifactService } from '@/services/dataset-version'
 import type { DraftBoxplotResult } from '@/services/dataset-draft'
-import type { TimeWindow } from '@/lib/time-window'
+import type { ExcludeWindow, TimeWindow } from '@/lib/time-window'
 
 export interface ArtifactBoxplotState {
   boxplot: DraftBoxplotResult | null
@@ -34,6 +34,9 @@ export function useArtifactBoxplot(
   sampleRows?: number,
   /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
   timeWindow?: TimeWindow | null,
+  /** One inner window DROPPED server-side — the validation holdout, when
+   * the compare modal reads a raw (BRONZE) artifact. */
+  excludeWindow?: ExcludeWindow | null,
 ): ArtifactBoxplotState {
   // Settled result tagged with the request it answers. `loading` and the
   // reset-to-null on a new request are DERIVED from a key mismatch rather
@@ -51,6 +54,8 @@ export function useArtifactBoxplot(
   // Primitives, not the object: a `TimeWindow` is a fresh identity per render.
   const startTime = timeWindow?.startTime
   const endTime = timeWindow?.endTime
+  const excludeStart = excludeWindow?.excludeStart
+  const excludeEnd = excludeWindow?.excludeEnd
 
   const requestKey =
     datasetId && artifactId && tagsKey
@@ -61,6 +66,8 @@ export function useArtifactBoxplot(
           sampleRows,
           startTime,
           endTime,
+          excludeStart,
+          excludeEnd,
         ])
       : null
 
@@ -79,6 +86,7 @@ export function useArtifactBoxplot(
           ...(sampleRows && { sampleRows }),
           ...(startTime && { startTime }),
           ...(endTime && { endTime }),
+          ...(excludeStart && excludeEnd && { excludeStart, excludeEnd }),
         },
         ac.signal,
       )
@@ -105,6 +113,8 @@ export function useArtifactBoxplot(
     sampleRows,
     startTime,
     endTime,
+    excludeStart,
+    excludeEnd,
   ])
 
   const current = settled?.key === requestKey ? settled : null

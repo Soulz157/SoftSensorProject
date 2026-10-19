@@ -7,7 +7,11 @@ import type {
   DraftHistogramResult,
 } from '@/services/dataset-draft'
 import { datasetArtifactService } from '@/services/dataset-version'
-import { windowParams, type MonthOption } from '@/lib/time-window'
+import {
+  windowParams,
+  type ExcludeWindow,
+  type MonthOption,
+} from '@/lib/time-window'
 import { settleWithConcurrency, type MonthResult } from '@/lib/monthly-compare'
 import { useDebouncedAbortableRequest } from './internal/use-debounced-abortable-request'
 
@@ -20,7 +24,14 @@ import { useDebouncedAbortableRequest } from './internal/use-debounced-abortable
  */
 export type ArtifactLeg =
   | { kind: 'draft'; draftId: string | null; artifactId: string | null }
-  | { kind: 'dataset'; datasetId: string | null; artifactId: string | null }
+  | {
+      kind: 'dataset'
+      datasetId: string | null
+      artifactId: string | null
+      /** One inner window dropped from every month — the validation
+       * holdout, when the leg is a raw (BRONZE) artifact that still holds it. */
+      excludeWindow?: ExcludeWindow | null
+    }
 
 export interface MonthlyCompareState<T> {
   /** One entry per picked month, in picked order. Null until the first
@@ -64,7 +75,7 @@ function fetchOne(
         : datasetDraftService.boxplot(ownerId!, artifactId!, body, signal)
     ).then(res => res.data)
   }
-  const body = { tags, ...window }
+  const body = { tags, ...window, ...(leg.excludeWindow ?? {}) }
   return (
     kind === 'histogram'
       ? datasetArtifactService.histogram(ownerId!, artifactId!, body, signal)
@@ -99,10 +110,14 @@ function useMonthlyCompare<T extends DraftHistogramResult | DraftBoxplotResult>(
 
   const [ownerId, artifactId] = legIds(leg)
   const monthsKey = months.map(m => m.key).join(',')
+  const excludeKey =
+    leg.kind === 'dataset' && leg.excludeWindow
+      ? `${leg.excludeWindow.excludeStart}|${leg.excludeWindow.excludeEnd}`
+      : ''
   const active =
     enabled && !!ownerId && !!artifactId && !!tag && months.length > 0
   const cacheKey = active
-    ? `monthly-${kind}|${leg.kind}|${ownerId}|${artifactId}|${tag}|${monthsKey}`
+    ? `monthly-${kind}|${leg.kind}|${ownerId}|${artifactId}|${tag}|${monthsKey}|${excludeKey}`
     : null
 
   useDebouncedAbortableRequest<MonthResult<T>[]>({

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { datasetArtifactService } from '@/services/dataset-version'
 import type { DraftHistogramResult } from '@/services/dataset-draft'
-import type { TimeWindow } from '@/lib/time-window'
+import type { ExcludeWindow, TimeWindow } from '@/lib/time-window'
 
 export interface ArtifactHistogramState {
   histogram: DraftHistogramResult | null
@@ -37,6 +37,9 @@ export function useArtifactHistogram(
   sampleRows?: number,
   /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
   timeWindow?: TimeWindow | null,
+  /** One inner window DROPPED server-side — the validation holdout, when
+   * the compare modal reads a raw (BRONZE) artifact. */
+  excludeWindow?: ExcludeWindow | null,
 ): ArtifactHistogramState {
   // Settled result tagged with the request it answers. `loading` and the
   // reset-to-null on a new request are DERIVED from a key mismatch rather
@@ -54,6 +57,8 @@ export function useArtifactHistogram(
   // Primitives, not the object: a `TimeWindow` is a fresh identity per render.
   const startTime = timeWindow?.startTime
   const endTime = timeWindow?.endTime
+  const excludeStart = excludeWindow?.excludeStart
+  const excludeEnd = excludeWindow?.excludeEnd
   const requestKey =
     datasetId && artifactId && tagsKey
       ? JSON.stringify([
@@ -63,6 +68,8 @@ export function useArtifactHistogram(
           sampleRows,
           startTime,
           endTime,
+          excludeStart,
+          excludeEnd,
         ])
       : null
 
@@ -81,6 +88,7 @@ export function useArtifactHistogram(
           ...(sampleRows && { sampleRows }),
           ...(startTime && { startTime }),
           ...(endTime && { endTime }),
+          ...(excludeStart && excludeEnd && { excludeStart, excludeEnd }),
         },
         ac.signal,
       )
@@ -108,6 +116,8 @@ export function useArtifactHistogram(
     sampleRows,
     startTime,
     endTime,
+    excludeStart,
+    excludeEnd,
   ])
 
   const current = settled?.key === requestKey ? settled : null

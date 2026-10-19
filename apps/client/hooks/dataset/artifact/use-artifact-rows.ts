@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { datasetArtifactService } from '@/services/dataset-version'
 import type { Dataset } from '@/lib/preprocessing'
 import { previewRowLimit } from '@/lib/downsample'
-import type { TimeWindow } from '@/lib/time-window'
+import type { ExcludeWindow, TimeWindow } from '@/lib/time-window'
 import { set } from 'zod'
 
 /** Bounded preview window, not the artifact. 200 rows is what the Data
@@ -28,6 +28,9 @@ export interface ArtifactRowsOptions {
   maxRows?: number
   /** Inclusive window, applied server-side BEFORE paging. */
   timeWindow?: TimeWindow | null
+  /** One inner window DROPPED server-side, also before paging — the
+   * validation holdout, when the compare modal reads a raw (BRONZE) artifact. */
+  excludeWindow?: ExcludeWindow | null
 }
 
 export function useArtifactRows(
@@ -63,6 +66,8 @@ export function useArtifactRows(
   // Primitives, not the object: a `TimeWindow` is a fresh identity per render.
   const startTime = options.timeWindow?.startTime
   const endTime = options.timeWindow?.endTime
+  const excludeStart = options.excludeWindow?.excludeStart
+  const excludeEnd = options.excludeWindow?.excludeEnd
 
   // A different SOURCE (dataset, artifact or tags) must never show the old
   // rows under the new one. A different WINDOW of the same source keeps them
@@ -71,7 +76,14 @@ export function useArtifactRows(
   const source = `${datasetId}|${artifactId}|${boundedTagsKey}`
   const requestKey =
     datasetId && artifactId
-      ? JSON.stringify([source, limit, startTime, endTime])
+      ? JSON.stringify([
+          source,
+          limit,
+          startTime,
+          endTime,
+          excludeStart,
+          excludeEnd,
+        ])
       : null
 
   useEffect(() => {
@@ -86,6 +98,7 @@ export function useArtifactRows(
           tags: boundedTags,
           ...(startTime && { startTime }),
           ...(endTime && { endTime }),
+          ...(excludeStart && excludeEnd && { excludeStart, excludeEnd }),
         })
         if (tokenRef.current !== token) return
         // `/rows` returns a page envelope; `DataTableView` wants a Dataset.
@@ -111,7 +124,17 @@ export function useArtifactRows(
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `boundedTags`
     // deliberately excluded (array reference changes every render);
     // `boundedTagsKey` (inside `source`) is its stable stand-in.
-  }, [requestKey, datasetId, artifactId, source, limit, startTime, endTime])
+  }, [
+    requestKey,
+    datasetId,
+    artifactId,
+    source,
+    limit,
+    startTime,
+    endTime,
+    excludeStart,
+    excludeEnd,
+  ])
 
   const sameSource = settled?.source === source
   const current = settled?.key === requestKey ? settled : null
