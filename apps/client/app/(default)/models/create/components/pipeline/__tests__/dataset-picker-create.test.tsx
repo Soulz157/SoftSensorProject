@@ -82,3 +82,57 @@ describe('DatasetPicker — Create dataset (MODEL-FLOW-032)', () => {
     ).toBeNull()
   })
 })
+
+/**
+ * Step 1's tag chips list the tags a dataset was built FROM, never the
+ * columns its feature engineering added (lag, rolling, delta, formula…).
+ */
+describe('DatasetPicker — tag chips skip engineered features', () => {
+  function dataset(
+    id: string,
+    tags: string[],
+    features: unknown[],
+  ): SavedDataset {
+    return {
+      id,
+      name: `Dataset ${id}`,
+      description: '',
+      tags,
+      sourceIds: ['src-1'],
+      rowCount: 100,
+      missingPct: 0,
+      pipelineConfig: { features },
+    } as unknown as SavedDataset
+  }
+
+  it('shows source tags as chips and no lag / rolling chips', () => {
+    h.datasets = [
+      dataset(
+        'a',
+        ['TI-101', 'TI-101__lag1', 'TI-101__roll24_mean'],
+        [
+          { id: '1', kind: 'lag', tag: 'TI-101', k: 1 },
+          { id: '2', kind: 'rolling', tag: 'TI-101', window: 24, agg: 'mean' },
+        ],
+      ),
+      dataset(
+        'b',
+        ['PI-201', 'PI-201__delta'],
+        [{ id: '3', kind: 'delta', tag: 'PI-201' }],
+      ),
+    ]
+    render(
+      <DatasetPicker
+        workspaceId="ws-1"
+        selectedDataset={null}
+        onSelectDataset={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'TI-101' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'PI-201' })).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /__lag|__roll|__delta/ }),
+    ).not.toBeInTheDocument()
+  })
+})

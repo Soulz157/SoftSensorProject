@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { useDatasets } from '@/hooks/dataset/use-datasets'
+import { sourceTagsOf } from '@/lib/dataset-source-tags'
 import type { SavedDataset } from '@/store/datasets'
 import { DatasetCard } from '../dataset-card'
 
@@ -54,11 +55,19 @@ export function DatasetPicker({
   const [sort, setSort] = useState<SortKey>('name')
   const gridRef = useRef<HTMLDivElement>(null)
 
+  // Source tags only: engineered columns (lag, rolling, delta, formula…)
+  // would otherwise multiply the chip row by every feature a dataset adds,
+  // and no one picks a dataset by its lag column.
+  const tagsById = useMemo(
+    () => new Map(datasets.map(d => [d.id, sourceTagsOf(d)])),
+    [datasets],
+  )
+
   const distinctTags = useMemo(() => {
     const set = new Set<string>()
-    for (const d of datasets) for (const t of d.tags) set.add(t)
+    for (const tags of tagsById.values()) for (const t of tags) set.add(t)
     return Array.from(set).sort((a, b) => a.localeCompare(b))
-  }, [datasets])
+  }, [tagsById])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -69,12 +78,14 @@ export function DatasetPicker({
         d =>
           d.name.toLowerCase().includes(q) ||
           (d.description ?? '').toLowerCase().includes(q) ||
-          d.tags.some(t => t.toLowerCase().includes(q)),
+          (tagsById.get(d.id) ?? []).some(t => t.toLowerCase().includes(q)),
       )
     }
 
     if (activeTags.length > 0) {
-      result = result.filter(d => activeTags.every(t => d.tags.includes(t)))
+      result = result.filter(d =>
+        activeTags.every(t => (tagsById.get(d.id) ?? []).includes(t)),
+      )
     }
 
     const sorted = [...result]
@@ -90,7 +101,7 @@ export function DatasetPicker({
         break
     }
     return sorted
-  }, [datasets, query, activeTags, sort])
+  }, [datasets, tagsById, query, activeTags, sort])
 
   const filterActive = query.trim() !== '' || activeTags.length > 0
   // The selection can fall out of the filtered set without disappearing —
