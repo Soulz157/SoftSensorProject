@@ -395,6 +395,73 @@ export type InferenceWindowMetricsSeriesResult = z.infer<
   typeof InferenceWindowMetricsSeriesSchema
 >;
 
+const InputSeriesColumnSchema = z.object({
+  resolution: z.enum(['raw', 'bucketed']),
+  bucket_minutes: z.number().int().nullable(),
+  points: z.array(
+    z.object({
+      t: z.string(),
+      value: z.number(),
+      min: z.number(),
+      max: z.number(),
+      out_of_range: z.number().int(),
+    }),
+  ),
+  windows: z.array(
+    z.object({
+      window_start: z.string(),
+      window_end: z.string(),
+      n: z.number().int(),
+      min: z.number().nullable(),
+      max: z.number().nullable(),
+      mean: z.number().nullable(),
+      below: z.number().int(),
+      above: z.number().int(),
+    }),
+  ),
+  total: z.number().int(),
+  below: z.number().int(),
+  above: z.number().int(),
+  counts: z.array(z.number().int()).nullable(),
+  live_min: z.number().nullable(),
+  live_max: z.number().nullable(),
+  live_mean: z.number().nullable(),
+  last_out_of_range_at: z.string().nullable(),
+});
+
+const InferenceWindowInputSeriesSchema = z.object({
+  columns: z.record(z.string(), InputSeriesColumnSchema),
+  missing: z.number().int(),
+});
+
+export type InputSeriesColumn = z.infer<typeof InputSeriesColumnSchema>;
+export type InferenceWindowInputSeriesResult = z.infer<
+  typeof InferenceWindowInputSeriesSchema
+>;
+
+/**
+ * MODEL-SERVE-036. Raw input values per tag across scheduled windows, read
+ * from each window's input Parquet: the trend, per-window stats, and
+ * below/above counts against the training edges (same bucket primitive as
+ * the window histograms). `columns` empty = every feature column found.
+ */
+export async function inferenceWindowInputSeries(input: {
+  windows: Array<{ key: string; window_start: string; window_end: string }>;
+  columns: string[];
+  references: Record<
+    string,
+    { edges: number[]; bin_mode: 'continuous' | 'categorical' }
+  >;
+  max_points?: number;
+}): Promise<InferenceWindowInputSeriesResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/input-series',
+    input,
+    PYTHON_TIMEOUT.metadata,
+  );
+  return InferenceWindowInputSeriesSchema.parse(res);
+}
+
 /**
  * MODEL-SERVE-011-T12. One point per SCHEDULED window, read from the
  * metrics.json the infer container already wrote — never from
@@ -1070,7 +1137,7 @@ const FeatureSpecSchema = z
          * population per bin — never assumed uniform. A quantile
          * (continuous) split is equal-frequency by construction, but a
          * categorical split is NOT (a valve closed 90% of the time has a
-         * 90/10 reference split, not 50/50) — `computePsi`'s expected% term
+         * 90/10 reference split, not 50/50) — `computeRangeDrift`'s expected% term
          * reads this directly rather than deriving it from `psiBinCount`.
          * Same per-tag, per-bin-index keying/ordering as `psiRefEdges`.
          */

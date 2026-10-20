@@ -31,7 +31,7 @@ const PredictionLogRowSchema = z
 /**
  * MODEL-SERVE-001-T13. One column's live histogram, bucketed at WRITE time
  * in apps/serving against that column's frozen `psiRefEdges` — matches
- * `apps/backend/src/lib/prediction-psi.ts`'s own `FeatureHistogram`.
+ * `apps/backend/src/lib/input-range-drift.ts`'s own `FeatureHistogram`.
  */
 const FeatureHistogramSchema = z
   .object({
@@ -86,7 +86,7 @@ export class IngestPredictionLogDto extends createZodDto(
 ) {}
 
 /**
- * MODEL-SERVE-005. Shared by GET .../predictions and GET .../psi — both
+ * MODEL-SERVE-005. Shared by GET .../predictions and GET .../input-drift — both
  * read PredictionLog over the same [from, to] window, just aggregated
  * differently.
  */

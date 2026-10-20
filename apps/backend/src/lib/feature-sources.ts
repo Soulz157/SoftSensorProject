@@ -18,7 +18,7 @@
  * `feature_spec_service._derived_from_target` computes a transitive closure
  * rather than a direct-read check.
  *
- * Pure functions, no I/O — same discipline as `prediction-psi.ts`.
+ * Pure functions, no I/O — same discipline as `input-range-drift.ts`.
  */
 
 /** One `feature_spec.json` `features[]` entry, kept deliberately loose:

@@ -17,7 +17,7 @@ const health = (status: string, reason: string | null) => ({
     baselineSd: null,
     n: 0,
   },
-  psiSummary: { worstColumn: 'FI-1', worstPsi: 0.31, maxOutOfRangePct: 24 },
+  driftSummary: { worstColumn: 'FI-1', worstPsi: 0.31, maxOutOfRangePct: 24 },
 });
 
 function build(opts: {

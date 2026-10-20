@@ -190,7 +190,7 @@ describe('monitoringTransitionDetail — five-word vocabulary (D02/D09)', () => 
   it('omits the "from" side on a first-ever notified transition', () => {
     expect(
       monitoringTransitionDetail(null, 'WARN', 'DRIFT_WARN', 'running'),
-    ).toBe('warning (PSI input drift)');
+    ).toBe('warning (Input outside training range)');
   });
 });
 
@@ -203,8 +203,6 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     frozenCount: 0,
     offlineCount: 0,
     legend: {
-      warn: 0.1,
-      critical: 0.25,
       outOfRangeWarnPct: 5,
       outOfRangeCriticalPct: 20,
     },
@@ -222,8 +220,6 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
         status: 'alert' as const,
         reason: 'Drift',
         worstInput: 'FI-1001',
-        psi: 0.31,
-        psiBand: 'crit' as const,
         outOfRangePct: 24,
         outOfRangeBand: 'crit' as const,
         sdRatio: null,
@@ -239,8 +235,6 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
         status: 'warning' as const,
         reason: 'Residual SD',
         worstInput: null,
-        psi: 0.14,
-        psiBand: 'warn' as const,
         outOfRangePct: 6.5,
         outOfRangeBand: 'warn' as const,
         sdRatio: 2.1,
@@ -260,10 +254,13 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
 
   it('states how many models need attention, with the cutoffs in the legend', () => {
     expect(msg.title).toContain('2 of 12 models need attention');
-    expect(msg.bodyText).toContain('0.31 CRIT');
+    expect(msg.bodyText).toContain('24.0 CRIT');
     expect(msg.bodyText).toContain('2.1x WARN');
     expect(msg.bodyText).toContain('1.5x / 3.0x');
-    expect(msg.bodyText).toContain('PSI: green < 0.1, yellow 0.1-0.25');
+    expect(msg.bodyText).toContain(
+      'OoR % (live values outside the training range): green < 5%, yellow 5-20%',
+    );
+    expect(msg.bodyText).not.toContain('PSI');
     expect(msg.bodyText).toContain(
       'Changed this check: TS-101 warning -> alert',
     );
@@ -290,7 +287,7 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     expect(card).toContain('"type":"ColumnSet"');
     expect(card).toContain('"color":"Attention"');
     expect(card).toContain('"color":"Warning"');
-    expect(card).toContain('0.31 CRIT');
+    expect(card).toContain('24.0 CRIT');
   });
 
   it('links every digest row to its own model page in all three renderings', () => {
@@ -310,10 +307,10 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     const tableEnd = body.lastIndexOf('| FLASH-303');
     const models = body.indexOf('Models:');
     expect(models).toBeGreaterThan(tableEnd);
-    // Worst-graded metric wins: TS row is PSI CRIT; FLASH-303's three
-    // metrics are all WARN, so the first (PSI) is shown.
-    expect(body).toContain('FLASH-303 — WARNING · Residual SD · PSI 0.14 WARN');
-    expect(body).toContain('ALERT · Drift · PSI 0.31 CRIT on FI-1001');
+    // Worst-graded metric wins: TS row is OoR CRIT; FLASH-303's two
+    // metrics are both WARN, so the first (OoR) is shown.
+    expect(body).toContain('FLASH-303 — WARNING · Residual SD · OoR 6.5% WARN');
+    expect(body).toContain('ALERT · Drift · OoR 24.0% CRIT on FI-1001');
 
     const card = JSON.stringify(renderTeamsCard(msg));
     expect(card).toContain('"title":"Open FLASH-303"');
@@ -347,7 +344,7 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     expect(msg.bodyText).toContain('since 5 Oct 2026 06:15 UTC (2d 3h)');
     // A row with no known since-time shows a dash and no "since" phrase.
     expect(msg.bodyText).not.toContain(
-      'FLASH-303 — WARNING · Residual SD · PSI 0.14 WARN · since',
+      'FLASH-303 — WARNING · Residual SD · OoR 6.5% WARN · since',
     );
 
     const card = JSON.stringify(renderTeamsCard(msg));
@@ -396,7 +393,7 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
       'Status',
       'Since',
       'Reason',
-      'PSI',
+      'Worst input',
       'OoR %',
       'SD ratio',
     ]);

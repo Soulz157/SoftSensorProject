@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 
 /**
- * MODEL-SERVE-018. Marks the pinned target (y) row in the drift and PSI
+ * MODEL-SERVE-018. Marks the pinned target (y) row in the Input Drift
  * tables. Neutral on purpose: red/amber are reserved for status, and the
  * row's own status pill already carries the verdict.
  */

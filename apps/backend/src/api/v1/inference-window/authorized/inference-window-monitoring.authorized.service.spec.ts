@@ -111,7 +111,7 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       frozenSince: [],
       thresholds: null,
       // MODEL-SERVE-031. No PSI evidence on this branch.
-      psiSummary: null,
+      driftSummary: null,
       // MODEL-SERVE-012. UNKNOWN with nulls, never a zero ratio: nothing has
       // been scored, so there is no spread to report.
       residualSd: {
@@ -163,7 +163,7 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       // not drift watching is on (residual-SD is not gated by it).
       thresholds: { warnSd: 1.5, criticalSd: 3.0 },
       // MODEL-SERVE-031. driftMonitor off means no PSI evidence.
-      psiSummary: null,
+      driftSummary: null,
       // MODEL-SERVE-012. UNKNOWN with nulls, never a zero ratio: nothing has
       // been scored, so there is no spread to report.
       residualSd: {
@@ -314,7 +314,7 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     expect(mockedPostToPython).not.toHaveBeenCalled();
   });
 
-  it('grades drift by PSI alone: a PSI WARN over the rolling windows reads WARN/DRIFT_WARN (MODEL-SERVE-028)', async () => {
+  it('grades drift by training range: 10% of live values above the max reads WARN/DRIFT_WARN (MODEL-SERVE-036)', async () => {
     mockedPostToPython.mockImplementation((path: string) =>
       Promise.resolve(
         path === '/v1/preprocess/feature-spec'
@@ -359,9 +359,9 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
             featureStats: {
               tag_a: { n: 10, sum: 1000, sumsq: 100_010, min: 99, max: 101 },
             },
-            // 70/30 against a 50/50 reference -> PSI ~0.17, WARN (0.1-0.25).
+            // 45 in range, 5 above the training max -> 10%, WARN (5-20%).
             featureHistograms: {
-              tag_a: { counts: [70, 30], below: 0, above: 0 },
+              tag_a: { counts: [25, 20], below: 0, above: 5 },
             },
           },
         ]),
@@ -375,7 +375,7 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     expect(result.thresholds).toEqual({ warnSd: 1.5, criticalSd: 3.0 });
   });
 
-  it('is UNKNOWN when windows carry histograms but the artifact has no PSI reference', async () => {
+  it('is UNKNOWN when windows carry histograms but the artifact has no training range', async () => {
     mockedPostToPython.mockImplementation((path: string) =>
       Promise.resolve(
         path === '/v1/preprocess/feature-spec'
@@ -437,7 +437,9 @@ describe('InferenceWindowMonitoringService target row (MODEL-SERVE-018)', () => 
     });
   }
   const WINDOW = {
-    windowStart: new Date(),
+    windowStart: new Date('2026-01-01T05:00:00.000Z'),
+    windowEnd: new Date('2026-01-01T06:00:00.000Z'),
+    inputKey: 'inference/model-1/v1/dt=2026-01-01/hour=12/input.parquet',
     status: 'SUCCEEDED',
     inputRows: 10,
     featureStats: {
@@ -445,7 +447,7 @@ describe('InferenceWindowMonitoringService target row (MODEL-SERVE-018)', () => 
     },
   };
 
-  it('PSI target is null when no window carries a target histogram', async () => {
+  it('target is null when no window carries a target histogram', async () => {
     mockedPostToPython.mockRejectedValue(new Error('no spec'));
     const service = makeService(
       prismaWith([
@@ -453,7 +455,7 @@ describe('InferenceWindowMonitoringService target row (MODEL-SERVE-018)', () => 
       ]),
     );
 
-    const { data } = await service.getPsiReport(
+    const { data } = await service.getInputDriftReport(
       'model-1',
       '2026-01-01',
       '2026-01-02',
@@ -461,5 +463,177 @@ describe('InferenceWindowMonitoringService target row (MODEL-SERVE-018)', () => 
 
     expect(data.targetColumn).toBe('y_lab');
     expect(data.target).toBeNull();
+  });
+});
+
+describe('InferenceWindowMonitoringService.getInputDriftReport (MODEL-SERVE-036)', () => {
+  const SPEC = {
+    source_key: PRODUCTION_VERSION.goldObjectKey,
+    feature_spec_key: 'feature_spec.json',
+    spec: {
+      psiRefEdges: { tag_a: [10, 15, 20] },
+      psiBinCount: { tag_a: 2 },
+      psiBinMode: { tag_a: 'continuous' },
+      psiRefCounts: { tag_a: [50, 50] },
+    },
+  };
+  const column = (over: Record<string, unknown>) => ({
+    resolution: 'raw',
+    bucket_minutes: null,
+    points: [
+      {
+        t: '2026-01-01T05:00:00.000Z',
+        value: 21,
+        min: 21,
+        max: 21,
+        out_of_range: 1,
+      },
+    ],
+    windows: [
+      {
+        window_start: '2026-01-01T05:00:00.000Z',
+        window_end: '2026-01-01T06:00:00.000Z',
+        n: 60,
+        min: 12,
+        max: 21,
+        mean: 15,
+        below: 0,
+        above: 15,
+      },
+    ],
+    total: 60,
+    below: 0,
+    above: 15,
+    counts: [20, 25],
+    live_min: 12,
+    live_max: 21,
+    live_mean: 15,
+    last_out_of_range_at: '2026-01-01T05:59:00.000Z',
+    ...over,
+  });
+  const WINDOWS = [
+    {
+      windowStart: new Date('2026-01-01T05:00:00.000Z'),
+      windowEnd: new Date('2026-01-01T06:00:00.000Z'),
+      inputKey: 'in-1',
+      targetHistogram: null,
+    },
+  ];
+
+  function prismaWith(windows: unknown[]) {
+    const findMany = jest.fn().mockResolvedValue(windows);
+    return {
+      findMany,
+      prisma: buildPrisma({
+        modelVersion: {
+          findFirst: jest.fn().mockResolvedValue(PRODUCTION_VERSION),
+        },
+        inferenceWindow: {
+          findMany,
+          findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
+        },
+      }),
+    };
+  }
+
+  it('grades each tag from the same rows its trend is drawn from', async () => {
+    let seriesBody: Record<string, unknown> | undefined;
+    mockedPostToPython.mockImplementation(
+      (path: string, body: Record<string, unknown>) => {
+        if (path === '/v1/preprocess/feature-spec')
+          return Promise.resolve(SPEC);
+        seriesBody = body;
+        return Promise.resolve({
+          columns: {
+            tag_a: column({}),
+            // No training range recorded: trend kept, verdict UNKNOWN.
+            tag_b: column({ counts: null, below: 0, above: 0 }),
+            // The target never grades as an input.
+            y_lab: column({}),
+          },
+          missing: 0,
+        });
+      },
+    );
+    const { prisma, findMany } = prismaWith(WINDOWS);
+
+    const { data } = await makeService(prisma).getInputDriftReport(
+      'model-1',
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-02T00:00:00.000Z',
+    );
+
+    const [query] = findMany.mock.calls[0] as [
+      { where: Record<string, unknown>; take: number },
+    ];
+    expect(query.where).toMatchObject({
+      status: 'SUCCEEDED',
+      inputKey: { not: null },
+    });
+    expect(query.take).toBe(31 * 24 + 1);
+    expect(seriesBody).toMatchObject({
+      columns: [],
+      references: { tag_a: { edges: [10, 15, 20], bin_mode: 'continuous' } },
+    });
+    const byName = Object.fromEntries(data.columns.map((c) => [c.column, c]));
+    expect(byName.tag_a).toMatchObject({
+      status: 'CRITICAL',
+      outOfRangePct: 25,
+      trainMin: 10,
+      trainMax: 20,
+      liveTotal: 60,
+    });
+    expect(byName.tag_b).toMatchObject({ status: 'UNKNOWN', liveTotal: 60 });
+    expect(byName.y_lab).toBeUndefined();
+    expect(data.status).toBe('CRITICAL');
+    expect(data.series.tag_a.points[0]).toMatchObject({ outOfRange: 1 });
+    expect(data.series.tag_a.windows[0]).toMatchObject({
+      windowStart: '2026-01-01T05:00:00.000Z',
+      above: 15,
+    });
+    expect(data.basis).toMatchObject({
+      plane: 'window',
+      windowsUsed: 1,
+      capped: false,
+      maxDays: 31,
+      healthWindows: 24,
+      thresholds: { outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 },
+    });
+  });
+
+  it('says the range was capped when more than 31 days of windows exist', async () => {
+    mockedPostToPython.mockImplementation((path: string) =>
+      Promise.resolve(
+        path === '/v1/preprocess/feature-spec'
+          ? SPEC
+          : { columns: {}, missing: 0 },
+      ),
+    );
+    const many = Array.from({ length: 31 * 24 + 1 }, () => WINDOWS[0]);
+    const { prisma } = prismaWith(many);
+    const { data } = await makeService(prisma).getInputDriftReport(
+      'model-1',
+      '2025-01-01T00:00:00.000Z',
+      '2026-01-02T00:00:00.000Z',
+    );
+    expect(data.basis.capped).toBe(true);
+    expect(data.basis.windowsUsed).toBe(31 * 24);
+  });
+
+  it('fails soft when the input files cannot be read', async () => {
+    mockedPostToPython.mockImplementation((path: string) =>
+      path === '/v1/preprocess/feature-spec'
+        ? Promise.resolve(SPEC)
+        : Promise.reject(new Error('object store down')),
+    );
+    const { prisma } = prismaWith(WINDOWS);
+    const { data } = await makeService(prisma).getInputDriftReport(
+      'model-1',
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-02T00:00:00.000Z',
+    );
+    expect(data.columns).toEqual([]);
+    expect(data.status).toBe('UNKNOWN');
+    expect(data.basis.missing).toBe(1);
   });
 });

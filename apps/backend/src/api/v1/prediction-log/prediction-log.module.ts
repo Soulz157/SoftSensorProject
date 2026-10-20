@@ -7,7 +7,7 @@ import { InferenceWindowModule } from '@/api/v1/inference-window/inference-windo
 
 /**
  * MODEL-SERVE-001-T17. `InferenceWindowModule` for `InferenceWindowMonitor
- * ingService` — the window-plane PSI reader `getPsiService`
+ * ingService` — the window-plane input-drift reader `getInputDriftService`
  * dispatches to for a model with an `InferenceSchedule`. The
  * dependency runs this direction only: `InferenceWindowModule`'s own
  * providers (`TrainningContainerModule`/`ModelServingModule`) reference

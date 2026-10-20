@@ -1,19 +1,25 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
-import { env } from '@/config/env.config';
 import {
   appendPredictionLog,
   predictionLogSeries,
 } from '@/lib/python-preprocess-client';
 import {
-  computePsi,
-  poolHistograms,
-  PSI_EPSILON,
-  type FeatureHistogramMap,
-} from '@/lib/prediction-psi';
-import { resolvePsiReference } from '@/lib/artifact-baseline';
-import { InferenceWindowMonitoringService } from '@/api/v1/inference-window/authorized/inference-window-monitoring.authorized.service';
+  buildRowSeries,
+  driftThresholds,
+  gradeSeries,
+} from '@/lib/input-range-drift';
+import { resolveDriftReference } from '@/lib/artifact-baseline';
+import {
+  DRIFT_RANGE_MAX_DAYS,
+  InferenceWindowMonitoringService,
+} from '@/api/v1/inference-window/authorized/inference-window-monitoring.authorized.service';
+
+/** MODEL-SERVE-036. Trend points per tag, and the health population size the
+ *  card names (`getHealthStatus` grades the newest 24 windows). */
+const DRIFT_TREND_MAX_POINTS = 600;
+const HEALTH_WINDOWS = 24;
 import type {
   IngestPredictionLogDto,
   PredictionLogRangeQueryDto,
@@ -22,7 +28,7 @@ import { canReadWithGrant } from '@/lib/workspace-permission';
 
 /**
  * MODEL-SERVE-005. Sampled synchronous-/predict logging (T01) and the
- * input-drift signal built on it (PSI only since MODEL-SERVE-028).
+ * input-drift signal built on it (training range since MODEL-SERVE-036).
  *
  * Its own module rather than folded into model-serving/model-version,
  * matching this codebase's established one-feature-per-module convention
@@ -35,7 +41,7 @@ export class PredictionLogAuthorizedService {
 
   constructor(
     private readonly prisma: PrismaService,
-    // MODEL-SERVE-001-T17. `getPsiService` dispatches to
+    // MODEL-SERVE-001-T17. `getInputDriftService` dispatches to
     // this for a model with an InferenceSchedule — see
     // `InferenceWindowMonitoringService.hasSchedule`'s own doc comment for
     // the full plane-selection rule.
@@ -262,18 +268,15 @@ export class PredictionLogAuthorizedService {
   }
 
   /**
-   * MODEL-SERVE-001-T13. PSI over the current PRODUCTION version's live
-   * inputs — the ONLY input-drift metric since MODEL-SERVE-028 removed the
-   * z-score `/drift` and `/live-drift` routes this used to sit beside.
-   * Pools `PredictionLog.featureHistograms` over `[from, to]` against the
-   * training artifact's frozen `feature_spec.json` reference. PSI needs
-   * `binCount * PSI_MIN_SAMPLES_PER_BIN` live samples before a figure is
-   * even computed, so the CALLER is expected to request a wide range (the
-   * client defaults this to a rolling 24h window; this endpoint itself
-   * enforces no particular range, only the sample floor).
+   * MODEL-SERVE-036. Input drift by training range over the PRODUCTION
+   * version's live inputs: per tag, the share of values outside its
+   * training [min, max], with the trend and hourly stats behind it. On the
+   * /predict plane the logged rows themselves are read (`predictionLogSeries`)
+   * and bucketed here with `bucketValue`, the mirror of the Python primitive,
+   * so the badge and the chart count one population. Capped to 31 days.
    *
    * MODEL-SERVE-001-T17. PLANE DISPATCH, decided with the user 2026-09-15:
-   * a model with an InferenceSchedule reads `InferenceWindow.featureHistograms`
+   * a model with an InferenceSchedule reads its windows' input files
    * instead — `PredictionLog` is written by `/predict` ONLY, so a
    * scheduled-only model's PredictionLog is empty BY CONSTRUCTION, and
    * everything below this check would correctly compute nothing forever.
@@ -281,7 +284,7 @@ export class PredictionLogAuthorizedService {
    * the full rule. Everything from here down is the `/predict`-plane
    * implementation, reached only for a model with no schedule.
    */
-  async getPsiService(
+  async getInputDriftService(
     modelId: string,
     query: PredictionLogRangeQueryDto,
     user: Auth.UserPayload,
@@ -289,7 +292,11 @@ export class PredictionLogAuthorizedService {
     await this.assertModelAccess(modelId, user, 'monitoring-read');
 
     if (await this.windowMonitoring.hasSchedule(modelId)) {
-      return this.windowMonitoring.getPsiReport(modelId, query.from, query.to);
+      return this.windowMonitoring.getInputDriftReport(
+        modelId,
+        query.from,
+        query.to,
+      );
     }
 
     const production = await this.prisma.modelVersion.findFirst({
@@ -298,80 +305,57 @@ export class PredictionLogAuthorizedService {
     if (!production) {
       throw new AppException({
         statusCode: 404,
-        message: `Model ${modelId} has no PRODUCTION version. Nothing to compare live traffic against.`,
+        message: `Model ${modelId} has no PRODUCTION version. Nothing to compare live inputs against.`,
         type: 'ERROR',
       });
     }
 
-    const rows = await this.prisma.predictionLog.findMany({
-      where: {
-        modelVersionId: production.id,
-        requestedAt: { gte: new Date(query.from), lte: new Date(query.to) },
-      },
-      select: { featureHistograms: true },
+    // Same 31-day cap as the window plane.
+    const toMs = Date.parse(query.to);
+    const floor = toMs - DRIFT_RANGE_MAX_DAYS * 86_400_000;
+    const capped = Date.parse(query.from) < floor;
+    const from = capped ? new Date(floor).toISOString() : query.from;
+
+    const series = await predictionLogSeries({
+      model_id: modelId,
+      model_version_id: production.id,
+      from,
+      to: query.to,
     });
-
-    // `featureHistograms` is nullable at the ROW level (a request logged
-    // before T13, or served under a spec that predated it) — `null` here,
-    // never an object with per-tag nulls inside it. Filtered out BEFORE
-    // `poolHistograms`, which expects every array entry to be an object it
-    // can `Object.entries` over; passing a bare `null` through would throw.
-    const histograms = rows
-      .map((r) => r.featureHistograms)
-      .filter((h): h is NonNullable<typeof h> => h !== null);
-
-    const pooled = poolHistograms(
-      histograms.map((h) => h as unknown as FeatureHistogramMap),
+    const reference = await resolveDriftReference(production.goldObjectKey);
+    const thresholds = driftThresholds();
+    const rowSeries = buildRowSeries(
+      series.points,
+      reference,
+      DRIFT_TREND_MAX_POINTS,
     );
-
-    const reference = await resolvePsiReference(production.goldObjectKey);
-
-    const report = computePsi(pooled, reference, {
-      warn: env.PSI_WARN,
-      critical: env.PSI_CRITICAL,
-      minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
-      outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
-      outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-    });
+    const graded = gradeSeries(rowSeries, reference, thresholds);
+    const hours = new Set(series.points.map((p) => p.timestamp.slice(0, 13)))
+      .size;
 
     return {
       statusCode: 200,
-      message: 'PSI report fetched',
+      message: 'Input drift report fetched',
       type: 'SUCCESS' as const,
       data: {
-        ...report,
+        ...graded.report,
         // MODEL-SERVE-018-D05. A /predict payload carries no y.
         targetColumn: null,
         target: null,
+        series: graded.series,
         basis: {
+          plane: 'predict' as const,
           modelVersionId: production.id,
           version: production.version,
-          goldArtifactId: production.goldArtifactId,
-          goldObjectKey: production.goldObjectKey,
-          // MODEL-SERVE-001-T16. `rows.length` is captured BEFORE the
-          // null-`featureHistograms` filter above — it overstates what
-          // actually fed `poolHistograms`. Kept for parity with the removed `/drift`'s
-          // own `sampleRequests`; `histogramRequests` below is the honest
-          // figure a "computed over" readout should actually print.
-          sampleRequests: rows.length,
-          histogramRequests: histograms.length,
-          from: query.from,
+          from,
           to: query.to,
-          // T16: the env-derived thresholds/epsilon `computePsi` was just
-          // called with, so the screen's own disclaimer reads real
-          // config rather than a literal that silently drifts from it.
-          thresholds: {
-            warn: env.PSI_WARN,
-            critical: env.PSI_CRITICAL,
-            minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
-            outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
-            outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-          },
-          // MODEL-SERVE-001-T17. Named on every basis, on both planes —
-          // see InferenceWindowMonitoringService's own basisOf for the
-          // window-plane counterpart.
-          plane: 'predict' as const,
-          epsilon: PSI_EPSILON,
+          windowsUsed: hours,
+          capped,
+          truncated: series.truncated,
+          maxDays: DRIFT_RANGE_MAX_DAYS,
+          missing: 0,
+          healthWindows: HEALTH_WINDOWS,
+          thresholds,
         },
       },
     };

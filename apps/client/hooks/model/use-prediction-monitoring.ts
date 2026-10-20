@@ -6,7 +6,7 @@ import type { TimeRange } from '@/lib/mock-readings'
 import {
   modelMonitoringService,
   type PredictionSeriesResult,
-  type PsiReport,
+  type InputDriftReport,
 } from '@/services/model-monitoring'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 
@@ -55,17 +55,17 @@ interface UsePredictionMonitoringResult {
    *  sample-floor recommendation; a report reading `INSUFFICIENT_DATA` is
    *  itself the signal to widen the range toggle, not a reason to give
    *  this metric a second, independent time control. */
-  psi: PsiReport | null
-  psiLoading: boolean
-  /** The backend's own message on any PSI-fetch failure (most commonly a
+  inputDrift: InputDriftReport | null
+  inputDriftLoading: boolean
+  /** The backend's own message on any input-drift fetch failure (most commonly a
    *  404 "no PRODUCTION version") — an honest empty state naming why, never
    *  a generic error toast or a stale report. */
-  psiUnavailableReason: string | null
+  inputDriftUnavailableReason: string | null
 }
 
 /**
  * MODEL-SERVE-005. Real data for the Monitoring page's "Live Predictions"
- * and "Input Drift (PSI)" panels — the sampled synchronous-/predict
+ * and "Input Drift" panels — the sampled synchronous-/predict
  * stream and the drift signal built on it. Deliberately SEPARATE from
  * `useMonitoringData` (the existing Actual-vs-Predict/Residual charts):
  * those charts and their SD-band/residual math require ground truth, which
@@ -124,9 +124,9 @@ export function usePredictionMonitoring(
     toMs: number
   } | null>(null)
   const [livePredictEnabled, setLivePredictEnabled] = useState(false)
-  const [psi, setPsi] = useState<PsiReport | null>(null)
-  const [psiLoading, setPsiLoading] = useState(false)
-  const [psiUnavailableReason, setPsiUnavailableReason] = useState<
+  const [inputDrift, setInputDrift] = useState<InputDriftReport | null>(null)
+  const [inputDriftLoading, setInputDriftLoading] = useState(false)
+  const [inputDriftUnavailableReason, setInputDriftUnavailableReason] = useState<
     string | null
   >(null)
 
@@ -143,8 +143,8 @@ export function usePredictionMonitoring(
   const seriesCacheKey = enabled
     ? `prediction-monitoring|predictions|${model!.id}|${range}|${refreshKey}`
     : null
-  const psiCacheKey = enabled
-    ? `prediction-monitoring|psi|${model!.id}|${range}|${refreshKey}`
+  const inputDriftCacheKey = enabled
+    ? `prediction-monitoring|input-drift|${model!.id}|${range}|${refreshKey}`
     : null
 
   useDebouncedAbortableRequest<PredictionSeriesResult>({
@@ -195,36 +195,36 @@ export function usePredictionMonitoring(
     },
   })
 
-  useDebouncedAbortableRequest<PsiReport>({
+  useDebouncedAbortableRequest<InputDriftReport>({
     enabled,
-    cacheKey: psiCacheKey,
+    cacheKey: inputDriftCacheKey,
     debounceMs: 0,
     fetcher: signal => {
       const to = new Date().toISOString()
       const from = new Date(Date.now() - RANGE_MS[range]).toISOString()
       return modelMonitoringService
-        .psi(model!.id, from, to, signal)
+        .inputDrift(model!.id, from, to, signal)
         .then(res => res.data)
     },
     onLoading: () => {
-      setPsi(null)
-      setPsiUnavailableReason(null)
-      setPsiLoading(true)
+      setInputDrift(null)
+      setInputDriftUnavailableReason(null)
+      setInputDriftLoading(true)
     },
     onSettled: result => {
       if (result.status === 'ready') {
-        setPsi(result.data)
-        setPsiUnavailableReason(null)
+        setInputDrift(result.data)
+        setInputDriftUnavailableReason(null)
       } else {
-        setPsi(null)
-        setPsiUnavailableReason(result.error)
+        setInputDrift(null)
+        setInputDriftUnavailableReason(result.error)
       }
-      setPsiLoading(false)
+      setInputDriftLoading(false)
     },
     onIdle: () => {
-      setPsi(null)
-      setPsiUnavailableReason(null)
-      setPsiLoading(false)
+      setInputDrift(null)
+      setInputDriftUnavailableReason(null)
+      setInputDriftLoading(false)
     },
   })
 
@@ -234,8 +234,8 @@ export function usePredictionMonitoring(
     pointsTruncated,
     seriesBounds,
     livePredictEnabled,
-    psi,
-    psiLoading,
-    psiUnavailableReason,
+    inputDrift,
+    inputDriftLoading,
+    inputDriftUnavailableReason,
   }
 }

@@ -1,18 +1,19 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
-import { env } from '@/config/env.config';
 import type { FeatureStatsMap } from '@/lib/feature-stats';
 import {
-  computePsi,
+  computeRangeDrift,
+  driftThresholds,
+  gradeSeries,
   poolHistograms,
-  PSI_EPSILON,
   type FeatureHistogram,
   type FeatureHistogramMap,
-} from '@/lib/prediction-psi';
+} from '@/lib/input-range-drift';
+import { inferenceWindowInputSeries } from '@/lib/python-preprocess-client';
 import {
   resolveColumnBaseline,
-  resolvePsiReference,
+  resolveDriftReference,
 } from '@/lib/artifact-baseline';
 import { flatMinutes } from '@/lib/tag-observation';
 import {
@@ -26,14 +27,14 @@ import { isStale } from '@/lib/deploy-status';
 // MODEL-SERVE-001-T29. The frozen-tag detector, pure and co-located with its
 // own spec like the other 13 modules in lib/.
 import { detectFrozenColumns } from '@/lib/sensor-frozen';
-import { computeTargetPsi } from '@/lib/target-monitoring';
+import { computeTargetDrift } from '@/lib/target-monitoring';
 import {
   classifyResidualSd,
   truthPoolSince,
   type ResidualSdVerdict,
 } from '@/lib/residual-sd-health';
 import { baselineResidualSd } from '@/lib/model-version-residual-sd';
-import { summarizePsi, type PsiSummary } from '@/lib/notification-digest';
+import { summarizeDrift, type DriftSummary } from '@/lib/notification-digest';
 
 /**
  * `resolveProductionWindows`'s own `take`. Named because T29's
@@ -43,15 +44,21 @@ import { summarizePsi, type PsiSummary } from '@/lib/notification-digest';
  */
 const PRODUCTION_WINDOW_TAKE = 24;
 
+/** MODEL-SERVE-036. The Input Drift range read: at most 31 days of hourly
+ *  windows' input files, and at most this many trend points per tag. */
+export const DRIFT_RANGE_MAX_DAYS = 31;
+const DRIFT_RANGE_MAX_WINDOWS = DRIFT_RANGE_MAX_DAYS * 24;
+const DRIFT_TREND_MAX_POINTS = 600;
+
 /**
  * MODEL-SERVE-001-T17. PSI, computed from `InferenceWindow`'s own
  * `featureHistograms` — the WINDOW plane, for a model with a scheduled
  * `InferenceSchedule`. The `/predict`-only counterpart lives in
- * `PredictionLogAuthorizedService.getPsiService`, which
+ * `PredictionLogAuthorizedService.getInputDriftService`, which
  * calls `hasSchedule` below to decide which plane a model reads from — see
  * that service's own doc comment for the full dispatch rule. Both planes
- * run the SAME pure comparison function (`computePsi` from
- * `lib/prediction-psi.ts`) and the SAME artifact reference reads
+ * run the SAME pure comparison function (`computeRangeDrift` from
+ * `lib/input-range-drift.ts`) and the SAME artifact reference reads
  * (`lib/artifact-baseline.ts`) — only WHERE the live side of the
  * comparison is read from differs. (MODEL-SERVE-028 removed the z-score
  * drift report that used to sit beside it.)
@@ -65,6 +72,8 @@ const PRODUCTION_WINDOW_TAKE = 24;
  */
 @Injectable()
 export class InferenceWindowMonitoringService {
+  private readonly log = new Logger(InferenceWindowMonitoringService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -102,15 +111,13 @@ export class InferenceWindowMonitoringService {
    * exactly when it carries a stored histogram/stats row, which happens
    * exactly when a real cleaned input frame was written — `put_frame` runs
    * before SKIPPED or FAILED is ever decided, so both still hold real,
-   * cleaned input evidence. Status is DISCLOSURE (`basisOf`'s own
-   * `statusBreakdown`), never a filter on which rows count.
+   * cleaned input evidence.
    *
-   * `from`/`to` OPTIONAL — MODEL-SERVE-001-T21's own addition. The
-   * report caller (`getPsiReport`) always passes an
-   * explicit user-chosen range; `getHealthStatus` below has none to pass
-   * (it is not answering "how did drift look in this window", it is
-   * answering "what is the CURRENT health reading"), so it calls this with
-   * neither and gets the rolling most-recent-24 with no date floor at all.
+   * `from`/`to` OPTIONAL — MODEL-SERVE-001-T21's own addition.
+   * `getHealthStatus` passes neither (it answers "what is the CURRENT health
+   * reading") and gets the rolling most-recent-24 with no date floor. The
+   * Input Drift card's range read (`getInputDriftReport`) has its own query
+   * since MODEL-SERVE-036: it reads input files, not these histograms.
    */
   private async resolveProductionWindows(
     modelId: string,
@@ -164,90 +171,97 @@ export class InferenceWindowMonitoringService {
   }
 
   /**
-   * The window-plane-specific half of `basis`, shared by both reports
-   * below — `plane`, `windowsUsed`, the real earliest/latest `windowStart`
-   * (never a printed "rolling 24h": this range is only exactly that when
-   * the pool happens to hold 24 windows spanning that long — T16's own
-   * departure (1) restated one plane over), the per-status breakdown (the
-   * disclosure this feature's own no-status-whitelist rule requires — a
-   * figure computed mostly from windows that never scored must say so),
-   * and the summed `inputRows` across the pool.
+   * MODEL-SERVE-036. Input drift by training range over `[from, to]`, read
+   * from each SUCCEEDED window's input Parquet: per tag, the trend, the
+   * per-window stats and the below/above counts that grade its badge — one
+   * population for all four. Capped to the newest `DRIFT_RANGE_MAX_WINDOWS`
+   * windows (31 days hourly); `basis.capped` says so.
+   *
+   * The target (y) is not in the input frame (it is narrowed away before the
+   * frame is written), so its display-only row still grades from the
+   * windows' own target histograms and carries no trend.
    */
-  private basisOf(
-    production: {
-      id: string;
-      version: number;
-      goldArtifactId: string;
-      goldObjectKey: string;
-    },
-    windows: Array<{
-      windowStart: Date;
-      status: string;
-      inputRows: number | null;
-    }>,
-    from: string,
-    to: string,
-  ) {
-    const statusBreakdown: Record<string, number> = {};
-    let totalInputRows = 0;
-    for (const w of windows) {
-      statusBreakdown[w.status] = (statusBreakdown[w.status] ?? 0) + 1;
-      totalInputRows += w.inputRows ?? 0;
+  async getInputDriftReport(modelId: string, from: string, to: string) {
+    const production = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+      include: { sourceRun: { select: { targetY: true } } },
+    });
+    if (!production) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Model ${modelId} has no PRODUCTION version. Nothing to compare live inputs against.`,
+        type: 'ERROR',
+      });
     }
-    // DESC order (resolveProductionWindows's own orderBy): the first row is
-    // the latest window, the last is the earliest.
-    const windowStartLatest = windows[0]?.windowStart.toISOString() ?? null;
-    const windowStartEarliest =
-      windows[windows.length - 1]?.windowStart.toISOString() ?? null;
 
-    return {
-      modelVersionId: production.id,
-      version: production.version,
-      goldArtifactId: production.goldArtifactId,
-      goldObjectKey: production.goldObjectKey,
-      plane: 'window' as const,
-      // Parity with the /predict-plane basis's own `sampleRequests` — same
-      // MEANING ("how many source records fed this pool"), reinterpreted
-      // as windows rather than requests. `windowsUsed` is the plane-honest
-      // name a caller can read without branching on `plane` first.
-      sampleRequests: windows.length,
-      windowsUsed: windows.length,
-      windowStartEarliest,
-      windowStartLatest,
-      statusBreakdown,
-      totalInputRows,
-      from,
-      to,
-    };
-  }
+    const rows = await this.prisma.inferenceWindow.findMany({
+      where: {
+        modelVersionId: production.id,
+        status: 'SUCCEEDED',
+        inputKey: { not: null },
+        windowStart: { gte: new Date(from), lte: new Date(to) },
+      },
+      orderBy: { windowStart: 'desc' },
+      take: DRIFT_RANGE_MAX_WINDOWS + 1,
+      select: {
+        windowStart: true,
+        windowEnd: true,
+        inputKey: true,
+        targetHistogram: true,
+      },
+    });
+    const capped = rows.length > DRIFT_RANGE_MAX_WINDOWS;
+    const windows = rows.slice(0, DRIFT_RANGE_MAX_WINDOWS);
 
-  async getPsiReport(modelId: string, from: string, to: string) {
-    const { production, windows } = await this.resolveProductionWindows(
-      modelId,
-      from,
-      to,
-    );
-
-    const histogramRows = windows
-      .map((w) => w.featureHistograms)
-      .filter((h): h is NonNullable<typeof h> => h !== null);
-
-    const pooled = poolHistograms(
-      histogramRows.map((h) => h as unknown as FeatureHistogramMap),
-    );
-    const reference = await resolvePsiReference(production.goldObjectKey);
-    const thresholds = {
-      warn: env.PSI_WARN,
-      critical: env.PSI_CRITICAL,
-      minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
-      outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
-      outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-    };
-    const report = computePsi(pooled, reference, thresholds);
-    // MODEL-SERVE-018. Computed apart from `report`, so it can never move
-    // `report.status` (display-only, MODEL-SERVE-018-D01).
+    const reference = await resolveDriftReference(production.goldObjectKey);
+    const thresholds = driftThresholds();
     const targetColumn = production.sourceRun.targetY || null;
-    const target = computeTargetPsi(
+
+    let graded: ReturnType<typeof gradeSeries> = {
+      report: { status: 'UNKNOWN', columns: [] },
+      series: {},
+    };
+    let missing = 0;
+    if (windows.length > 0) {
+      const references: Record<
+        string,
+        { edges: number[]; bin_mode: 'continuous' | 'categorical' }
+      > = {};
+      for (const [tag, ref] of Object.entries(reference)) {
+        if (ref && tag !== targetColumn) {
+          references[tag] = { edges: ref.edges, bin_mode: ref.binMode };
+        }
+      }
+      try {
+        const result = await inferenceWindowInputSeries({
+          windows: windows.map((w) => ({
+            key: w.inputKey!,
+            window_start: w.windowStart.toISOString(),
+            window_end: w.windowEnd.toISOString(),
+          })),
+          // Empty: every feature column the input frames carry, so a tag
+          // with no recorded range still shows its trend (as UNKNOWN).
+          columns: [],
+          references,
+          max_points: DRIFT_TREND_MAX_POINTS,
+        });
+        missing = result.missing;
+        const features = Object.fromEntries(
+          Object.entries(result.columns).filter(([c]) => c !== targetColumn),
+        );
+        graded = gradeSeries(features, reference, thresholds);
+      } catch (err) {
+        // Fail SOFT, the same judgement `getScheduledSeriesService` makes:
+        // an unreachable object store reads as "no input values", counted
+        // in `missing`, never as a broken Monitoring tab.
+        this.log.warn(
+          `Input series read failed for model ${modelId}: ${(err as Error).message}`,
+        );
+        missing = windows.length;
+      }
+    }
+
+    const target = computeTargetDrift(
       targetColumn,
       windows.map(
         (w) => w.targetHistogram as unknown as FeatureHistogram | null,
@@ -258,23 +272,26 @@ export class InferenceWindowMonitoringService {
 
     return {
       statusCode: 200,
-      message: 'PSI report fetched',
+      message: 'Input drift report fetched',
       type: 'SUCCESS' as const,
       data: {
-        ...report,
+        ...graded.report,
         targetColumn,
         target,
+        series: graded.series,
         basis: {
-          ...this.basisOf(production, windows, from, to),
-          histogramRequests: histogramRows.length,
-          thresholds: {
-            warn: env.PSI_WARN,
-            critical: env.PSI_CRITICAL,
-            minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
-            outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
-            outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-          },
-          epsilon: PSI_EPSILON,
+          plane: 'window' as const,
+          modelVersionId: production.id,
+          version: production.version,
+          from,
+          to,
+          windowsUsed: windows.length,
+          capped,
+          maxDays: DRIFT_RANGE_MAX_DAYS,
+          truncated: false,
+          missing,
+          healthWindows: PRODUCTION_WINDOW_TAKE,
+          thresholds,
         },
       },
     };
@@ -282,11 +299,11 @@ export class InferenceWindowMonitoringService {
 
   /**
    * MODEL-SERVE-001-T21. The health axis — SEPARATE from `deployStatus`,
-   * per `lib/model-health.ts`'s own doc comment. Reuses `computePsi`
-   * unchanged, with the same env thresholds `getPsiReport` above uses.
+   * per `lib/model-health.ts`'s own doc comment. Reuses `computeRangeDrift`
+   * unchanged, with the same env thresholds `getInputDriftReport` above uses.
    * MODEL-SERVE-028: PSI is the only input-drift axis.
    *
-   * NEVER THROWS. `getPsiReport` is an explicit,
+   * NEVER THROWS. `getInputDriftReport` is an explicit,
    * user-requested reports, so a 404 for "no PRODUCTION version" is the
    * right response; this is a badge fed by every model detail page load,
    * decided PURELY INFORMATIONAL by the user (2026-09-15) — a hard error
@@ -326,7 +343,7 @@ export class InferenceWindowMonitoringService {
     /** MODEL-SERVE-031. The worst-column PSI and the largest out-of-range
      *  share beside the verdict, so a digest can show the numbers. Null when
      *  there is no PSI evidence (no schedule, drift off, no reference). */
-    psiSummary: PsiSummary | null;
+    driftSummary: DriftSummary | null;
   }> {
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
@@ -338,7 +355,7 @@ export class InferenceWindowMonitoringService {
         frozenColumns: [],
         thresholds: null,
         frozenSince: [],
-        psiSummary: null,
+        driftSummary: null,
         // No schedule means nothing has ever been scored, so there is no
         // spread to report — UNKNOWN with nulls, never a zero.
         residualSd: {
@@ -431,7 +448,7 @@ export class InferenceWindowMonitoringService {
     //
     // T27 RULE (2), THE DARK-SHIP GATE: PSI may only speak when there IS
     // evidence — a non-empty frozen `psiRefEdges` reference AND at least one
-    // window carrying a histogram. `resolvePsiReference` returns `{}` from
+    // window carrying a histogram. `resolveDriftReference` returns `{}` from
     // its SUCCESS path as well as its catch path, so without this an
     // artifact whose feature_spec read failed would report healthy. Live
     // 2026-10-04: 2 of 3 scheduled models carry no histograms at all, so
@@ -449,25 +466,23 @@ export class InferenceWindowMonitoringService {
 
     const psiReference =
       production && schedule.driftMonitor && healthHistogramRows.length > 0
-        ? await resolvePsiReference(production.goldObjectKey)
+        ? await resolveDriftReference(production.goldObjectKey)
         : {};
-    const psiEvidence =
+    const driftEvidence =
       healthHistogramRows.length > 0 && Object.keys(psiReference).length > 0;
 
     // INSUFFICIENT_DATA and UNKNOWN reach `classifyModelHealth` as
-    // themselves and raise nothing there — `computePsi` publishes no numeric
+    // themselves and raise nothing there — `computeRangeDrift` publishes no numeric
     // PSI below its sample floor, and this method must not turn that silence
     // into either an alarm or a clean bill of health.
-    const psiReport = psiEvidence
-      ? computePsi(poolHistograms(healthHistogramRows), psiReference, {
-          warn: env.PSI_WARN,
-          critical: env.PSI_CRITICAL,
-          minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
-          outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
-          outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-        })
+    const psiReport = driftEvidence
+      ? computeRangeDrift(
+          poolHistograms(healthHistogramRows),
+          psiReference,
+          driftThresholds(),
+        )
       : null;
-    const psiStatus = psiReport ? psiReport.status : null;
+    const driftStatus = psiReport ? psiReport.status : null;
 
     // MODEL-SERVE-009-T03. EVIDENCE BESIDE THE BADGE, NOT A SECOND DETECTOR.
     // MODEL-SERVE-001-T29 still decides WHICH columns are frozen, by its own
@@ -561,8 +576,8 @@ export class InferenceWindowMonitoringService {
       ...classifyModelHealth({
         enabled: schedule.enabled,
         driftMonitor: schedule.driftMonitor,
-        psiStatus,
-        psiEvidence,
+        driftStatus,
+        driftEvidence,
         frozenColumns,
         residualSdStatus: residualSd.status,
         ...bands,
@@ -570,7 +585,7 @@ export class InferenceWindowMonitoringService {
       }),
       thresholds,
       frozenSince,
-      psiSummary: psiReport ? summarizePsi(psiReport) : null,
+      driftSummary: psiReport ? summarizeDrift(psiReport) : null,
       // The two halves of the comparison, beside the verdict — a reader can
       // see WHICH numbers produced it rather than being handed a word.
       residualSd,

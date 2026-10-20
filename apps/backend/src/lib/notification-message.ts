@@ -253,16 +253,10 @@ const BAND_RANK: Record<DigestBand, number> = { ok: 0, warn: 1, crit: 2 };
 function rowDescription(r: DigestRow): string {
   const parts = [`${r.model} — ${r.status.toUpperCase()}`, r.reason];
   const candidates: { band: DigestBand; text: string }[] = [];
-  if (r.psiBand && r.psi !== null) {
-    candidates.push({
-      band: r.psiBand,
-      text: `PSI ${r.psi.toFixed(2)} ${BAND_LABEL[r.psiBand]}${r.worstInput ? ` on ${r.worstInput}` : ''}`,
-    });
-  }
   if (r.outOfRangeBand && r.outOfRangePct !== null) {
     candidates.push({
       band: r.outOfRangeBand,
-      text: `OoR ${r.outOfRangePct.toFixed(1)}% ${BAND_LABEL[r.outOfRangeBand]}`,
+      text: `OoR ${r.outOfRangePct.toFixed(1)}% ${BAND_LABEL[r.outOfRangeBand]}${r.worstInput ? ` on ${r.worstInput}` : ''}`,
     });
   }
   if (r.sdBand && r.sdRatio !== null) {
@@ -330,7 +324,6 @@ function digestCells(r: DigestRow): DigestCell[] {
     { text: fmtDuration(r.openMinutes), band: null },
     { text: r.reason, band: null },
     { text: r.worstInput ?? '—', band: null },
-    { text: fmtNum(r.psi, 2), band: r.psiBand },
     { text: fmtNum(r.outOfRangePct, 1), band: r.outOfRangeBand },
     { text: fmtNum(r.sdRatio, 1, 'x'), band: r.sdBand },
     { text: band, band: null },
@@ -343,7 +336,6 @@ const DIGEST_HEADERS = [
   'Since',
   'Reason',
   'Worst input',
-  'PSI',
   'OoR %',
   'SD ratio',
   'Band (warn/crit)',
@@ -357,8 +349,7 @@ function legendLines(d: DigestData): string[] {
   const l = d.legend;
   return [
     'Band legend (green OK / yellow WARN / red CRIT):',
-    `PSI: green < ${l.warn}, yellow ${l.warn}-${l.critical}, red >= ${l.critical}`,
-    `OoR %: green < ${l.outOfRangeWarnPct}%, yellow ${l.outOfRangeWarnPct}-${l.outOfRangeCriticalPct}%, red >= ${l.outOfRangeCriticalPct}%`,
+    `OoR % (live values outside the training range): green < ${l.outOfRangeWarnPct}%, yellow ${l.outOfRangeWarnPct}-${l.outOfRangeCriticalPct}%, red >= ${l.outOfRangeCriticalPct}%`,
     'SD ratio (live SD / baseline SD): green < warn, yellow warn to < crit, red >= crit (the warn/crit band is set per model)',
   ];
 }
@@ -435,9 +426,15 @@ function renderTeamsDigestCard(msg: RenderedMessage, d: DigestData): unknown {
   const header = {
     type: 'ColumnSet',
     columns: [
-      ...['Model', 'Status', 'Since', 'Reason', 'PSI', 'OoR %', 'SD ratio'].map(
-        (h) => col(h, { weight: 'Bolder' }),
-      ),
+      ...[
+        'Model',
+        'Status',
+        'Since',
+        'Reason',
+        'Worst input',
+        'OoR %',
+        'SD ratio',
+      ].map((h) => col(h, { weight: 'Bolder' })),
     ],
   };
   const rows = d.rows.map((r) => {
@@ -456,11 +453,11 @@ function renderTeamsDigestCard(msg: RenderedMessage, d: DigestData): unknown {
         col(cells[1].text),
         col(cells[2].text),
         col(cells[3].text),
+        col(cells[4].text),
         bandCol(cells[5]),
-        bandCol(cells[6]),
         col(
-          `${cellText(cells[7])}${sdBand}`,
-          cells[7].band ? { color: BAND_TEAMS_COLOR[cells[7].band] } : {},
+          `${cellText(cells[6])}${sdBand}`,
+          cells[6].band ? { color: BAND_TEAMS_COLOR[cells[6].band] } : {},
         ),
       ],
     };

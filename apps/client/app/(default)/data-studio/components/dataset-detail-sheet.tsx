@@ -336,7 +336,7 @@ export function DatasetDetailSheet({
                       disabled={compareBlockedReason !== null}
                       title={
                         compareBlockedReason ??
-                        'Compare against the validation data'
+                        'Compare the training or raw data against the validation data'
                       }
                       onClick={() => setCompareOpen(true)}
                     >
@@ -808,6 +808,9 @@ export function DatasetDetailSheet({
         artifactId={artifactId}
         availableTags={tags}
         holdout={holdout}
+        // Same as Model Phase 2's Data Review: offers the "Raw (Bronze)"
+        // left side too; `null` makes the modal say why it is unavailable.
+        rawArtifactId={dataset?.adoptedBronzeArtifactId ?? null}
       />
     </Dialog>
   )

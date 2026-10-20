@@ -19,22 +19,23 @@ import { baselineResidualSd } from '@/lib/model-version-residual-sd';
 // — one rule for "is this tag frozen", not a second one that could disagree
 // with the detail page about the same tag.
 import { detectFrozenColumns } from '@/lib/sensor-frozen';
-// `resolveColumnBaseline`'s and `resolvePsiReference`'s OWN caching (by
+// `resolveColumnBaseline`'s and `resolveDriftReference`'s OWN caching (by
 // `goldObjectKey`, an immutable artifact key) is what makes calling them here
 // affordable — see their own doc comments. Without that cache each read would
 // be an uncached HTTP round trip to apps/python per enabled model, on every
 // Alerts/Overview/sidebar load.
 import {
   resolveColumnBaseline,
-  resolvePsiReference,
+  resolveDriftReference,
 } from '@/lib/artifact-baseline';
 import type { FeatureStatsMap } from '@/lib/feature-stats';
 import {
-  computePsi,
+  computeRangeDrift,
+  driftThresholds,
   poolHistograms,
   type FeatureHistogramMap,
-  type PsiStatus,
-} from '@/lib/prediction-psi';
+  type DriftStatus,
+} from '@/lib/input-range-drift';
 
 /**
  * MODEL-SERVE-024-D03. The window sample the list's drift verdict is graded
@@ -43,12 +44,15 @@ import {
  */
 const DRIFT_WINDOW_TAKE = 24;
 
-type PsiVerdict = {
-  psiStatus: PsiStatus | null;
-  psiEvidence: boolean;
+type DriftVerdict = {
+  driftStatus: DriftStatus | null;
+  driftEvidence: boolean;
 };
 
-const NO_PSI: PsiVerdict = { psiStatus: null, psiEvidence: false };
+const NO_DRIFT_EVIDENCE: DriftVerdict = {
+  driftStatus: null,
+  driftEvidence: false,
+};
 
 /**
  * MODEL-SERVE-006-T12. Per decisions.deploy_status_currently_asserts_
@@ -349,7 +353,7 @@ export async function deriveDeployStatuses(
   // per enabled model, so a DRIFT_WARN/DRIFT_CRITICAL reaches the Alerts
   // page, plant and workspace instead of living only on the detail page.
   // The per-model reference read is cached by artifact key.
-  const psiByModel = new Map<string, PsiVerdict>();
+  const psiByModel = new Map<string, DriftVerdict>();
   await Promise.all(
     enabledIds.map(async (modelId) => {
       const schedule = scheduleByModel.get(modelId)!;
@@ -357,7 +361,7 @@ export async function deriveDeployStatuses(
       if (schedule.driftMonitor && productionForDrift) {
         psiByModel.set(
           modelId,
-          await resolveListPsi(
+          await resolveListDrift(
             prisma,
             productionForDrift.id,
             productionForDrift.goldObjectKey,
@@ -523,8 +527,10 @@ export async function deriveDeployStatuses(
         // and env PSI thresholds, for opted-in schedules. Off, or no
         // evidence, is "no drift claim", never "PSI said fine".
         driftMonitor: schedule.driftMonitor,
-        psiStatus: (psiByModel.get(schedule.modelId) ?? NO_PSI).psiStatus,
-        psiEvidence: (psiByModel.get(schedule.modelId) ?? NO_PSI).psiEvidence,
+        driftStatus: (psiByModel.get(schedule.modelId) ?? NO_DRIFT_EVIDENCE)
+          .driftStatus,
+        driftEvidence: (psiByModel.get(schedule.modelId) ?? NO_DRIFT_EVIDENCE)
+          .driftEvidence,
         // T27's `missingPct` band is STILL the detail page's job alone: it
         // reads the NEWEST terminal window's own missingPct ("is the data
         // bad RIGHT NOW"), which this batched query has no per-model reason
@@ -572,11 +578,11 @@ export async function deriveDeployStatuses(
  * as the detail page (`getHealthStatus`): no window histograms or an empty
  * reference is NO evidence, and no evidence is never read as "no drift".
  */
-async function resolveListPsi(
+async function resolveListDrift(
   prisma: PrismaService,
   productionVersionId: string,
   goldObjectKey: string,
-): Promise<PsiVerdict> {
+): Promise<DriftVerdict> {
   const windows = await prisma.inferenceWindow.findMany({
     where: { modelVersionId: productionVersionId },
     orderBy: { windowStart: 'desc' },
@@ -586,18 +592,16 @@ async function resolveListPsi(
   const histogramRows = windows
     .filter((w) => w.featureHistograms != null)
     .map((w) => w.featureHistograms as unknown as FeatureHistogramMap);
-  if (histogramRows.length === 0) return NO_PSI;
-  const reference = await resolvePsiReference(goldObjectKey);
-  if (Object.keys(reference).length === 0) return NO_PSI;
+  if (histogramRows.length === 0) return NO_DRIFT_EVIDENCE;
+  const reference = await resolveDriftReference(goldObjectKey);
+  if (Object.keys(reference).length === 0) return NO_DRIFT_EVIDENCE;
   return {
-    psiStatus: computePsi(poolHistograms(histogramRows), reference, {
-      warn: env.PSI_WARN,
-      critical: env.PSI_CRITICAL,
-      minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
-      outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
-      outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-    }).status,
-    psiEvidence: true,
+    driftStatus: computeRangeDrift(
+      poolHistograms(histogramRows),
+      reference,
+      driftThresholds(),
+    ).status,
+    driftEvidence: true,
   };
 }
 

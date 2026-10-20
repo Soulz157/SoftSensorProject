@@ -37,11 +37,11 @@ export const HEALTH_REASON_LABEL: Record<HealthReason, string> = {
   NO_PREDICTIONS: 'no predictions',
   BAD_DATA: 'bad input data',
   SENSOR_FROZEN: 'tag not moving',
-  // MODEL-SERVE-028. PSI is the only input-drift signal; the label names it
-  // so a reader knows which metric fired. KEEP IN SYNC with the backend pin
+  // MODEL-SERVE-036. Input drift is the share of live values outside the
+  // training range; the label names it so a reader knows which rule fired. KEEP IN SYNC with the backend pin
   // (apps/backend/src/lib/notification-health-reason-label.ts).
-  DRIFT_CRITICAL: 'PSI input drift (critical)',
-  DRIFT_WARN: 'PSI input drift',
+  DRIFT_CRITICAL: 'Input outside training range (critical)',
+  DRIFT_WARN: 'Input outside training range',
   // MODEL-SERVE-012. Named for the BAND the reader already sees on the
   // Residual chart, so the badge and the chart speak the same language. Two
   // codes rather than one, like the drift pair: 1–2 SD

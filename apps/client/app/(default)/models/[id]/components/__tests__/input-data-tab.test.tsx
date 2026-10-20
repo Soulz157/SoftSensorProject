@@ -14,8 +14,8 @@ const h = vi.hoisted(() => ({
   points: [] as unknown[],
   pointsLoading: false,
   pointsTruncated: false,
-  psi: null as unknown,
-  psiLoading: false,
+  inputDrift: null as unknown,
+  inputDriftLoading: false,
   schema: null as unknown,
   schemaLoading: false,
   schemaError: null as string | null,
@@ -31,9 +31,9 @@ vi.mock('@/hooks/model/use-prediction-monitoring', () => ({
     // (no crash), but that silently diverges from what the real hook
     // returns rather than exercising the left-join fallback this tab's
     // own table relies on.
-    psi: h.psi,
-    psiLoading: h.psiLoading,
-    psiUnavailableReason: null,
+    inputDrift: h.inputDrift,
+    inputDriftLoading: h.inputDriftLoading,
+    inputDriftUnavailableReason: null,
   }),
 }))
 
@@ -66,8 +66,8 @@ beforeEach(() => {
   h.points = []
   h.pointsLoading = false
   h.pointsTruncated = false
-  h.psi = null
-  h.psiLoading = false
+  h.inputDrift = null
+  h.inputDriftLoading = false
   h.schema = null
   h.schemaLoading = false
   h.schemaError = null
@@ -86,7 +86,7 @@ describe('InputDataTab', () => {
       scalingParams: null,
     }
     h.points = []
-    h.psi = null
+    h.inputDrift = null
 
     render(<InputDataTab model={MODEL} />)
 
@@ -94,7 +94,7 @@ describe('InputDataTab', () => {
     expect(screen.getByText('PI-204.PV')).toBeInTheDocument()
     expect(screen.getByText('FC-310.PV')).toBeInTheDocument()
     // MODEL-SERVE-001-T15. Two status columns per row again (3 rows x 2 =
-    // 6): Drift (PSI) has no report to compare, and Status (PI said
+    // 6): Out of range has no report to compare, and Status (PI said
     // nothing — the hook is mocked to null here).
     expect(screen.getAllByText('UNKNOWN')).toHaveLength(6)
   })

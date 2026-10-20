@@ -26,7 +26,7 @@ interface UseModelInputStatusResult {
  * of the whole feature list.
  *
  * Not keyed to the tab's `TimeRange` toggle either — this is a "right now"
- * snapshot, unlike `usePredictionMonitoring`'s series/drift/psi, which pool
+ * snapshot, unlike `usePredictionMonitoring`'s series/drift, which pool
  * a [from, to] window. Its own cache key, so it can never collide with
  * theirs (the collision `use-prediction-monitoring.ts` documents on itself).
  */

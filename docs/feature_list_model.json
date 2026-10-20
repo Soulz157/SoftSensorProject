@@ -3891,7 +3891,8 @@
         {
           "id": "MODEL-SERVE-028-T03",
           "title": "Verify: types, lint, touched specs with case counts, live check on 85b35299 and a no-reference model",
-          "status": "in_progress",
+          "status": "blocked",
+          "superseded_by": "MODEL-SERVE-036 (2026-10-19: PSI removed; drift graded by training min/max)",
           "progress": 50,
           "result": "Static half DONE 2026-10-04: backend tsc clean outside pre-existing spec errors (auth/candidate-job/notification-feed/inference-window tagObservation, untouched files); touched backend suites 32/32, 542 tests pass; full backend 1214/1223 with the 9 failures identical on a detached-HEAD worktree baseline. Client tsc clean outside pre-existing dataset-compare-modal + model-evaluation.test; touched client tests 22 files / 204 pass; full client suite's 26 failures identical on the HEAD baseline. Lint/prettier clean on touched files (2 backend unbound-method hits are the same pattern HEAD has). LIVE HALF NOT DONE: no dev servers were running, and starting the backend also starts the scheduler/live-predict driver that write to the dev DB."
         }
@@ -4495,6 +4496,72 @@
         "tsc --noEmit backend and client: 0 errors. eslint on changed files: clean.",
         "Live UI: NOT YET RUN."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-036",
+      "title": "Input drift by training range: a live value below the training min or above the training max is drift (graded by out-of-range %); PSI removed; per-tag input trend chart with expandable Deep Detail on the Monitoring tab",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-028",
+        "MODEL-SERVE-029"
+      ],
+      "description": "User request 2026-10-19: replace PSI with the training min/max rule. Each input tag shows its own trend chart (raw per-minute values from the window input parquet) and expands to Deep Detail: large trend chart, stats summary, distribution vs training, per-window table. Mockup on a local dev route first, approved before the real Monitoring tab changes. REVERSES MODEL-SERVE-028 (PSI-only drift) at the user's explicit request.",
+      "userDecisions": [
+        "2026-10-19: rule = % thresholds: WARN at >= 5% of live values outside the training range, CRITICAL at >= 20% (env).",
+        "2026-10-19: remove PSI completely (status, health, alerts, notifications, UI wording).",
+        "2026-10-19: trend = raw per-minute values from each window's input parquet; long ranges downsampled keeping bucket min/max.",
+        "2026-10-19: location = Monitoring tab replaces the PSI card; Input Data tab Drift column becomes 'Out of range'.",
+        "2026-10-19: Deep Detail = large trend chart + stats summary + distribution vs training + per-window table; mock up all of it in a local preview before the real page."
+      ],
+      "findings": [
+        "Training range already recorded: feature_spec.json psiRefEdges (edges[0] = train min, edges[-1] = train max for continuous tags, widened by MODEL-SERVE-029).",
+        "Live below/above counts already recorded per window in featureHistograms via the shared bucket_histogram (categorical tags use a half-gap tolerance).",
+        "Window input parquet (inputKey) is the cleaned raw frame of the model's feature columns (~60 one-minute rows per 1 h window) - the same frame the histograms are bucketed from; no endpoint serves it yet.",
+        "The range report and health both use the newest 24 windows; a range chart needs its own window set and must grade the badge from the same population.",
+        "Models without psiRefEdges (e.g. 8c2affc6, 3991c43f locally) stay UNKNOWN until retrained."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-036-T01",
+          "title": "Mockup: InputDriftPanel / InputDriftDetail / sparkline + lib/input-drift.ts against fixtures typed as the planned InputDriftReport; dev-only route /dev/input-drift-mockup; user approval gate",
+          "status": "in_progress",
+          "result": "2026-10-19: built. Types InputDriftReport/ColumnRangeDrift/InputTrendSeries/InputDriftWindow in services/model-monitoring.ts (additive); lib/input-drift.ts (13 vitest cases pass); monitoring/input-drift/{panel,detail,trend-chart,sparkline,stats,window-table}.tsx; panel test 5/5; fixtures + route app/(default)/dev/input-drift-mockup (notFound in production). tsc + eslint clean on touched files. WAITING for user review of the mockup; the real Monitoring tab is untouched."
+        },
+        {
+          "id": "MODEL-SERVE-036-T02",
+          "title": "Python POST /v1/preprocess/inference-window/input-series: per-window n/min/max/mean/below/above (bucket_histogram) + downsampled points per tag",
+          "status": "completed",
+          "result": "2026-10-19: apps/python services/input_series_service.py + POST /v1/preprocess/inference-window/input-series (schemas InferenceWindowInputSeries*). Counts with softsensor_scaling.bucket_value; columns empty = discovered from frames; bucketed above max_points keeping min/max. pytest 6/6."
+        },
+        {
+          "id": "MODEL-SERVE-036-T03",
+          "title": "Backend computeRangeDrift (lib/input-range-drift.ts) replaces computePsi; env INPUT_DRIFT_*; GET /input-drift replaces /psi; health/list/notifications drop PSI (parseMetrics accepts old worstPsi rows)",
+          "status": "completed",
+          "result": "2026-10-19: lib/prediction-psi.ts deleted -> lib/input-range-drift.ts (gradeColumn/computeRangeDrift/gradeSeries/bucketValue mirror/buildRowSeries). env INPUT_DRIFT_OUT_OF_RANGE_WARN_PCT/CRITICAL_PCT (fallback to PSI_OUT_OF_RANGE_*) + INPUT_DRIFT_MIN_SAMPLES=30; PSI_WARN/CRITICAL/MIN_SAMPLES_PER_BIN removed. GET /model/:id/input-drift replaces /psi (window plane reads input parquets, <=744 windows, fail-soft; predict plane reads predictionLogSeries rows). Health/list/notifications grade by range; digest drops PSI column, parseMetrics reads legacy worstPsiColumn. jest: lib+inference-window+prediction-log+notification 44 suites / 778 tests pass; tsc + eslint clean."
+        },
+        {
+          "id": "MODEL-SERVE-036-T04",
+          "title": "Client wiring: Monitoring tab card, Input Data 'Out of range' column, Retrain context, hook/service/types; delete PSI client files and the mockup route",
+          "status": "completed",
+          "result": "2026-10-19: Monitoring tab card = InputDriftPanel; Input Data column Out of range (+ stale useMemo deps fixed); Retrain context; hook/service/types renamed (inputDrift); psi-panel + PSI explain helpers deleted; bin chart/table moved to input-drift/distribution-*; landing demo converted; dev mockup route removed (fixtures moved to __tests__). Client tsc + eslint clean; touched vitest 10 files pass, monitoring.test.ts has the 2 known baseline formatAxisValue failures."
+        },
+        {
+          "id": "MODEL-SERVE-036-T05",
+          "title": "Verification: specs with case counts, tsc, lint, parquet-vs-histogram count consistency on 85b35299, live Monitoring tab check",
+          "status": "in_progress",
+          "result": "2026-10-19: LIVE consistency on 85b35299 against the running python service: 14 windows x 21 tags = 294 per-window below/above/n comparisons between input-parquet counts and stored featureHistograms, 0 mismatches. Python read timed at 19 ms/window locally (14 windows 0.26 s; 744-window worst case extrapolates to ~14 s, unmeasured). Full suites: backend 9 failed | 1661 passed (the 9 pre-existing auth/plan/DI suites), client 25 failed | 3368 passed (same 9 baseline files). Target column confirmed absent from input parquets (85b35299 target S204IBP.lab), so the target row says its trend is not stored. NOT DONE: browser check of the real Monitoring tab (Chrome extension did not respond); backend /input-drift not curl-tested end to end (needs a session token)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A tag's status is graded only by the share of live values outside its training [min, max]; no PSI value is computed, stored for display, or rendered.",
+        "Each input tag on the Monitoring tab shows a trend of its own input values with the training min/max drawn.",
+        "Expanding a tag shows a large trend chart, a stats summary, distribution vs training and a per-window table.",
+        "Badge, chart, stats and table for a range describe the same windows.",
+        "A model without a recorded training range shows UNKNOWN with a retrain note, never a fabricated range."
+      ],
+      "verification": []
     }
   ],
   "global_definition_of_done": [

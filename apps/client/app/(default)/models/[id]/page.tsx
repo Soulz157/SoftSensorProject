@@ -877,7 +877,7 @@ export default function ModelDetailPage({
             <TabsList className="inline-flex h-10 w-max items-center justify-start p-1">
               <TabsTrigger
                 value="input"
-                className="flex items-center gap-2 px-4"
+                className="cursor-pointer flex items-center gap-2 px-4"
               >
                 <Database className="h-4 w-4 shrink-0" />
                 <span>Input Data</span>
@@ -885,7 +885,7 @@ export default function ModelDetailPage({
 
               <TabsTrigger
                 value="monitoring"
-                className="flex items-center gap-2 px-4"
+                className="cursor-pointer flex items-center gap-2 px-4"
               >
                 <BarChart3 className="h-4 w-4 shrink-0" />
                 <span>Monitoring</span>
@@ -893,7 +893,7 @@ export default function ModelDetailPage({
 
               <TabsTrigger
                 value="evaluation"
-                className="flex items-center gap-2 px-4"
+                className="cursor-pointer flex items-center gap-2 px-4"
               >
                 <Gauge className="h-4 w-4 shrink-0" />
                 <span>BackFill</span>
@@ -906,7 +906,7 @@ export default function ModelDetailPage({
                   the operational tabs. */}
               <TabsTrigger
                 value="versions"
-                className="flex items-center gap-2 px-4"
+                className="cursor-pointer flex items-center gap-2 px-4"
               >
                 <GitBranch className="h-4 w-4 shrink-0" />
                 <span>Versions</span>
@@ -916,7 +916,7 @@ export default function ModelDetailPage({
                   retrain's result IS a new version to compare and promote. */}
               <TabsTrigger
                 value="retrain"
-                className="flex items-center gap-2 px-4"
+                className="cursor-pointer flex items-center gap-2 px-4"
               >
                 <RefreshCw className="h-4 w-4 shrink-0" />
                 <span>Retrain</span>
@@ -924,7 +924,7 @@ export default function ModelDetailPage({
 
               <TabsTrigger
                 value="logs"
-                className="flex items-center gap-2 px-4"
+                className="cursor-pointer flex items-center gap-2 px-4"
               >
                 <Terminal className="h-4 w-4 shrink-0" />
                 <span>Logs</span>
@@ -936,7 +936,7 @@ export default function ModelDetailPage({
               </TabsTrigger>
               <TabsTrigger
                 value="history"
-                className="flex items-center gap-2 px-4"
+                className="cursor-pointer flex items-center gap-2 px-4"
               >
                 <History className="h-4 w-4 shrink-0" />
                 <span>Edit History</span>

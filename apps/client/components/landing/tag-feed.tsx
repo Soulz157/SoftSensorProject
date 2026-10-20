@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 import {
   DEMO_MODEL,
-  DEMO_PSI_WARN,
+  DEMO_DRIFT_WARN_PCT,
   DEMO_TAGS,
-  psiStatusOf,
+  driftStatusOf,
   sparkPoints,
   tagHistory,
   tagValueAt,
@@ -25,7 +25,7 @@ const SPARK_W = 48
 const SPARK_H = 16
 
 /**
- * Direction C: live input tags, each with its input drift (PSI, graded and
+ * Direction C: live input tags, each with its input drift (out-of-range %, graded and
  * coloured exactly like the app's Drift badge), feeding a trained model whose
  * output is the prediction line. Hovering a tag highlights its path. Values
  * tick once a second; reduced motion holds them still. Illustrative data only.
@@ -54,7 +54,7 @@ export function TagFeed() {
             <span className="hidden sm:block">Trend</span>
             <span className="text-right">Value</span>
             <span className="w-28 pr-3 text-right whitespace-nowrap">
-              Drift (PSI)
+              Out of range
             </span>
           </div>
           <ul>
@@ -103,15 +103,15 @@ export function TagFeed() {
                 </span>
                 <span className="flex w-28 items-center justify-end gap-2 pr-3">
                   <span className="font-mono text-xs text-muted-foreground tabular-nums">
-                    {t.psi.toFixed(2)}
+                    {t.outOfRangePct.toFixed(1)}%
                   </span>
                   <span
                     className={cn(
                       'inline-flex h-5 items-center rounded-full px-2 text-[11px] font-medium',
-                      MONITORING_STATUS_CLASS[psiStatusOf(t.psi)],
+                      MONITORING_STATUS_CLASS[driftStatusOf(t.outOfRangePct)],
                     )}
                   >
-                    {MONITORING_STATUS_LABEL[psiStatusOf(t.psi)]}
+                    {MONITORING_STATUS_LABEL[driftStatusOf(t.outOfRangePct)]}
                   </span>
                 </span>
               </li>
@@ -174,8 +174,12 @@ export function TagFeed() {
         <div className="flex gap-2">
           <dt className="text-muted-foreground">Input drift</dt>
           <dd>
-            {DEMO_TAGS.filter(t => t.psi >= DEMO_PSI_WARN).length} of{' '}
-            {DEMO_TAGS.length} tags at PSI ≥ {DEMO_PSI_WARN.toFixed(2)}
+            {
+              DEMO_TAGS.filter(t => t.outOfRangePct >= DEMO_DRIFT_WARN_PCT)
+                .length
+            }{' '}
+            of {DEMO_TAGS.length} tags outside training range on ≥{' '}
+            {DEMO_DRIFT_WARN_PCT}% of values
           </dd>
         </div>
       </dl>

@@ -6,7 +6,7 @@ import {
 } from './deploy-status';
 import {
   resolveColumnBaseline,
-  resolvePsiReference,
+  resolveDriftReference,
 } from '@/lib/artifact-baseline';
 
 // MODEL-SERVE-001-T30. `deriveDeployStatuses` now calls `resolveColumnBaseline`
@@ -18,7 +18,7 @@ import {
 // fixtures and never reaches it at all.
 jest.mock('@/lib/artifact-baseline');
 const mockedResolveColumnBaseline = resolveColumnBaseline as jest.Mock;
-const mockedResolvePsiReference = resolvePsiReference as jest.Mock;
+const mockedResolveDriftReference = resolveDriftReference as jest.Mock;
 
 describe('classifyDeployStatus (MODEL-SERVE-006-T12, reshaped by T26)', () => {
   it('is stopped when the schedule is not enabled, regardless of history', () => {
@@ -991,10 +991,10 @@ describe('deriveDeployStatuses — frozen detection (MODEL-SERVE-001-T30)', () =
   });
 });
 
-describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / MODEL-SERVE-028)', () => {
+describe('deriveDeployStatuses — training-range drift on the list (MODEL-SERVE-024-D03 / MODEL-SERVE-036)', () => {
   afterEach(() => {
     mockedResolveColumnBaseline.mockReset();
-    mockedResolvePsiReference.mockReset();
+    mockedResolveDriftReference.mockReset();
   });
 
   const SCHEDULE = {
@@ -1028,10 +1028,13 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
     },
   };
 
-  /** A production window whose tag_a live histogram is `[lo, hi]`. Against
-   *  the 50/50 reference: 70/30 is PSI ~0.17 (WARN), 95/5 is ~1.0 (CRITICAL). */
-  const window = (lo: number, hi: number) => ({
-    featureHistograms: { tag_a: { counts: [lo, hi], below: 0, above: 0 } },
+  /** A production window with `inside` tag_a values in range and `above`
+   *  past the training max. 10% out is WARN (>= 5%), 25% is CRITICAL
+   *  (>= 20%). */
+  const window = (inside: number, above: number) => ({
+    featureHistograms: {
+      tag_a: { counts: [inside, 0], below: 0, above },
+    },
   });
 
   /** `findMany` serves two queries: the recent-terminal one (no
@@ -1067,8 +1070,8 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
   }
 
   it('grades the production version’s newest 24 windows and reports DRIFT_WARN as WARN', async () => {
-    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
-    const { prisma, findMany } = buildPrisma([window(35, 15), window(35, 15)]);
+    mockedResolveDriftReference.mockResolvedValue(REFERENCE);
+    const { prisma, findMany } = buildPrisma([window(45, 5), window(45, 5)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
@@ -1083,8 +1086,8 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
   });
 
   it('reports DRIFT_CRITICAL as ALERT', async () => {
-    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
-    const { prisma } = buildPrisma([window(95, 5)]);
+    mockedResolveDriftReference.mockResolvedValue(REFERENCE);
+    const { prisma } = buildPrisma([window(75, 25)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
@@ -1093,7 +1096,7 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
   });
 
   it('makes no drift claim and no extra query when drift watching is off', async () => {
-    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
+    mockedResolveDriftReference.mockResolvedValue(REFERENCE);
     const { prisma, findMany } = buildPrisma([window(95, 5)], {
       ...SCHEDULE,
       driftMonitor: false,
@@ -1107,8 +1110,8 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
     expect(result.m1?.monitoring.reason).toBeNull();
   });
 
-  it('treats an empty PSI reference as no evidence, never as no drift', async () => {
-    mockedResolvePsiReference.mockResolvedValue({});
+  it('treats an empty training-range reference as no evidence, never as no drift', async () => {
+    mockedResolveDriftReference.mockResolvedValue({});
     const { prisma } = buildPrisma([window(95, 5)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
@@ -1118,12 +1121,12 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
   });
 
   it('treats windows with no histograms as no evidence, and skips the reference read', async () => {
-    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
+    mockedResolveDriftReference.mockResolvedValue(REFERENCE);
     const { prisma } = buildPrisma([{ featureHistograms: null }]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
-    expect(mockedResolvePsiReference).not.toHaveBeenCalled();
+    expect(mockedResolveDriftReference).not.toHaveBeenCalled();
     expect(result.m1?.monitoring.reason).toBeNull();
     expect(result.m1?.monitoring.status).not.toBe('OK');
   });

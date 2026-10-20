@@ -252,11 +252,11 @@ export function Phase6Deploy({ nav }: Props) {
         <div className="flex items-center justify-between gap-4">
           <div className="space-y-0.5">
             <Label htmlFor="drift-monitor" className="text-xs font-normal">
-              Drift monitor (PSI)
+              Drift monitor
             </Label>
             <p className="text-xs text-muted-foreground">
-              Flag when live input distributions shift from training, measured
-              by PSI.
+              Flag when live input values fall outside the range the model was
+              trained on.
             </p>
           </div>
           <Switch

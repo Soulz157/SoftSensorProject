@@ -28,19 +28,21 @@ export interface DemoTag {
   description: string
   unit: string
   digits: number
-  /** Input drift for this tag: PSI of live vs training distribution. */
-  psi: number
+  /** Input drift for this tag: % of live values outside its training
+   *  range. */
+  outOfRangePct: number
   shape: TraceShape
 }
 
-/** The app's default PSI cutoffs (backend PSI_WARN / PSI_CRITICAL). */
-export const DEMO_PSI_WARN = 0.1
-export const DEMO_PSI_CRITICAL = 0.25
+/** The app's default out-of-range cutoffs (backend
+ *  INPUT_DRIFT_OUT_OF_RANGE_WARN_PCT / _CRITICAL_PCT). */
+export const DEMO_DRIFT_WARN_PCT = 5
+export const DEMO_DRIFT_CRITICAL_PCT = 20
 
-/** Same grading as the backend's `statusFor`: `>=` at each cutoff. */
-export function psiStatusOf(psi: number): 'OK' | 'WARN' | 'CRITICAL' {
-  if (psi >= DEMO_PSI_CRITICAL) return 'CRITICAL'
-  if (psi >= DEMO_PSI_WARN) return 'WARN'
+/** Same grading as the backend's `outOfRangeStatusFor`: `>=` at each cutoff. */
+export function driftStatusOf(pct: number): 'OK' | 'WARN' | 'CRITICAL' {
+  if (pct >= DEMO_DRIFT_CRITICAL_PCT) return 'CRITICAL'
+  if (pct >= DEMO_DRIFT_WARN_PCT) return 'WARN'
   return 'OK'
 }
 
@@ -50,7 +52,7 @@ export const DEMO_TAGS: readonly DemoTag[] = [
     description: 'Column top temperature',
     unit: '°C',
     digits: 1,
-    psi: 0.04,
+    outOfRangePct: 0,
     shape: { seed: 23, base: 86.1, amplitude: 1.4 },
   },
   {
@@ -58,7 +60,7 @@ export const DEMO_TAGS: readonly DemoTag[] = [
     description: 'Feed flow',
     unit: 'm³/h',
     digits: 1,
-    psi: 0.18,
+    outOfRangePct: 7.5,
     shape: { seed: 11, base: 128.4, amplitude: 3.2 },
   },
   {
@@ -66,7 +68,7 @@ export const DEMO_TAGS: readonly DemoTag[] = [
     description: 'Column pressure',
     unit: 'bar',
     digits: 2,
-    psi: 0.07,
+    outOfRangePct: 1.2,
     shape: { seed: 41, base: 7.84, amplitude: 0.22 },
   },
   {
@@ -74,7 +76,7 @@ export const DEMO_TAGS: readonly DemoTag[] = [
     description: 'Reflux ratio',
     unit: '',
     digits: 2,
-    psi: 0.02,
+    outOfRangePct: 0,
     shape: { seed: 37, base: 3.92, amplitude: 0.18 },
   },
 ]
@@ -273,10 +275,11 @@ export function demoKpis(): DemoKpi[] {
     {
       id: 'drift',
       label: 'Input drift',
-      value: DEMO_TAGS.filter(t => t.psi >= DEMO_PSI_WARN).length,
+      value: DEMO_TAGS.filter(t => t.outOfRangePct >= DEMO_DRIFT_WARN_PCT)
+        .length,
       digits: 0,
       unit: `of ${DEMO_TAGS.length} tags`,
-      note: `At PSI ≥ ${DEMO_PSI_WARN.toFixed(2)}`,
+      note: `Outside training range on ≥ ${DEMO_DRIFT_WARN_PCT}% of values`,
     },
   ]
 }

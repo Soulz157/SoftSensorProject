@@ -14,6 +14,8 @@ import {
   buildMonitoringRows,
   formatLagDuration,
   applyHeldDeviationBand,
+  formatAxisValue,
+  unpairedBandSd,
   applyHeldValue,
   heldDeviationStats,
   heldEvalPoints,
@@ -36,7 +38,7 @@ import {
   SD3_COLOR,
   type ResidualMode,
 } from './residual-chart'
-import { PsiPanel } from './psi/psi-panel'
+import { InputDriftPanel } from './input-drift/input-drift-panel'
 
 /* MODEL-SERVE-009-T05. A local `RANGE_MS` used to live here so the held
  * series could be drawn over "exactly the window the data was fetched for".
@@ -61,7 +63,7 @@ function LegendItem({ color, label }: { color: string; label: string }) {
 
 /**
  * MODEL-SERVE-005-T03. The honest no-data state, following the rule
- * `PsiPanel` already applies to its own no-PRODUCTION-version case: name
+ * `InputDriftPanel` already applies to its own no-PRODUCTION-version case: name
  * WHY there is nothing, rather than rendering an empty axis that reads as
  * a flat, healthy line.
  *
@@ -70,7 +72,7 @@ function LegendItem({ color, label }: { color: string; label: string }) {
  * the windows exist but the lab has not reported yet, or the read failed.
  */
 // Exported for direct testing, same pattern as this folder's sibling
-// components (PsiPanel) — EmptyTruth itself has no
+// components (InputDriftPanel) — EmptyTruth itself has no
 // consumer outside this file (models/[id]/page.tsx imports the default
 // ModelMonitoringTab, never this helper directly), so the export exists
 // purely so a test can render one of its four empty-cause branches without
@@ -212,9 +214,9 @@ export function ModelMonitoringTab({
   const {
     points: livePoints,
     seriesBounds,
-    psi,
-    psiLoading,
-    psiUnavailableReason,
+    inputDrift,
+    inputDriftLoading,
+    inputDriftUnavailableReason,
   } = usePredictionMonitoring(model, range, refreshKey)
 
   /**
@@ -309,12 +311,26 @@ export function ModelMonitoringTab({
     [rowsWithLive],
   )
 
+  /**
+   * The spread the band is drawn with where no lab pair exists, in order of
+   * meaning: the serving version's own residual SD from its training test
+   * set (the error the model was expected to make — user decision
+   * 2026-10-19), else the held-deviation spread above. The held spread alone
+   * measures how STEADY the prediction is, so a flat prediction beside a
+   * flat held value gave a band of ~0 and nothing on screen (s611water:
+   * predictions within 0.0005 of each other).
+   */
+  const { sd: unpairedSd, basis: unpairedBasis } = unpairedBandSd(
+    referenceSd,
+    heldSd,
+  )
+
   const rowsWithBand = useMemo(
     // Rows carrying a REAL joined pair keep the residual band
     // `buildMonitoringRows` already gave them; this only fills rows that have
     // none, so the two never overwrite each other.
-    () => applyHeldDeviationBand(rowsWithLive, heldSd),
-    [rowsWithLive, heldSd],
+    () => applyHeldDeviationBand(rowsWithLive, unpairedSd),
+    [rowsWithLive, unpairedSd],
   )
 
   /**
@@ -407,7 +423,7 @@ export function ModelMonitoringTab({
     const lo = Math.min(...values)
     const hi = Math.max(...values)
 
-    const effectiveSd = stats.sd > 0 ? stats.sd : heldSd
+    const effectiveSd = stats.sd > 0 ? stats.sd : unpairedSd
     const bandSpan = effectiveSd * 2
     const dataSpan = hi - lo
     const span = Math.max(dataSpan, bandSpan * 3)
@@ -415,7 +431,7 @@ export function ModelMonitoringTab({
     const mid = (lo + hi) / 2
 
     return [mid - span / 2 - pad, mid + span / 2 + pad]
-  }, [rowsWithBand, stats.sd, heldSd])
+  }, [rowsWithBand, stats.sd, unpairedSd])
 
   const changeRange = (r: TimeRange) => {
     setRange(r)
@@ -534,14 +550,24 @@ export function ModelMonitoringTab({
       JOINED range has. With no pairs the band is drawn from a
       different spread entirely, and leaving the original wording
       would have the caption describe a band that is not on screen. */}
-          {points.length === 0 && heldSd > 0 && (
-            <>
-              {' '}
-              No pair in this range, so the band is ±1 SD of the
-              prediction&apos;s distance from the last measured value —
-              consistency, not error.
-            </>
-          )}
+          {points.length === 0 &&
+            unpairedSd > 0 &&
+            (unpairedBasis === 'reference' ? (
+              <>
+                {' '}
+                No pair in this range, so the band is ±1 SD of this model&apos;s
+                residuals on its training test set (
+                {formatAxisValue(unpairedSd)}) around the last measured value —
+                the error it was expected to make.
+              </>
+            ) : (
+              <>
+                {' '}
+                No pair in this range, so the band is ±1 SD of the
+                prediction&apos;s distance from the last measured value —
+                consistency, not error.
+              </>
+            ))}
         </p>
 
         {(latest.actual || latest.predict) && (
@@ -730,7 +756,16 @@ export function ModelMonitoringTab({
               // the SAME held-deviation spread the Actual-vs-Predict band
               // uses, and say which basis is on screen rather than leaving
               // two different meanings behind one identical picture.
-              sd={stats.sd > 0 ? stats.sd : heldSd}
+              //
+              // 2026-10-19: with no pair, the Actual-vs-Predict band now uses
+              // the training residual SD (`unpairedSd`). Passing 0 here when
+              // that exists hands the choice to `residualBand`, which then
+              // draws the SAME `referenceSd` and labels it "from the
+              // training test set" — one spread on both charts, as T15/T16
+              // require. The held spread is used only without a reference.
+              sd={
+                stats.sd > 0 ? stats.sd : unpairedBasis === 'held' ? heldSd : 0
+              }
               referenceSd={referenceSd}
               sdBasis={stats.sd > 0 ? 'residual' : 'held'}
               mode={residualMode}
@@ -739,28 +774,25 @@ export function ModelMonitoringTab({
         </div>
       </div>
 
-      {/* MODEL-SERVE-001-T13/T16, sole drift card since MODEL-SERVE-028
-          (2026-10-04): the z-score "Distribution Drift" card that sat above
-          was removed so a reader sees one drift signal, and this one drives
-          the model's drift status too. Pooled over the selected range and
-          recomputed on load — not a scheduled rolling 24h job — so
-          "Computed over" inside the card states the real window rather than
-          a cadence word here that could go stale. */}
+      {/* MODEL-SERVE-036, the sole drift card: per input tag, the share of
+          live values outside its training range, with its own trend and a
+          Deep Detail row. Read over the selected range (cut to 31 days) and
+          recomputed on load; the card states the windows it read. */}
       <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
         <div className="mb-4 space-y-1">
           <h2 className="text-sm font-semibold text-foreground">
-            Input Drift (PSI)
+            Input Drift
           </h2>
           <p className="text-xs text-muted-foreground">
-            Population Stability Index: live inputs vs. the production
-            version&apos;s frozen training bins (feature_spec.json) — pooled
-            over the selected range, recomputed on load.
+            Live input values vs. the range each tag had in the production
+            version&apos;s training data. A value outside that range means the
+            model is extrapolating. Open a tag for its trend and detail.
           </p>
         </div>
-        <PsiPanel
-          report={psi}
-          loading={psiLoading}
-          unavailableReason={psiUnavailableReason}
+        <InputDriftPanel
+          report={inputDrift}
+          loading={inputDriftLoading}
+          unavailableReason={inputDriftUnavailableReason}
         />
       </div>
     </div>

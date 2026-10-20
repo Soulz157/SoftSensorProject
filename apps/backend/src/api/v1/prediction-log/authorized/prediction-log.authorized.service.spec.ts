@@ -6,7 +6,7 @@ import { env } from '@/config/env.config';
 import type { InferenceWindowMonitoringService } from '@/api/v1/inference-window/authorized/inference-window-monitoring.authorized.service';
 
 jest.mock('@/lib/python-preprocess-client');
-// `postToPython` is never called by getPsiService directly
+// `postToPython` is never called by getInputDriftService directly
 // (it goes through `readFeatureSpec`'s own
 // postToPython call inside python-preprocess-client/lib/artifact-baseline,
 // already covered by the mock above) — mocked here only so importing
@@ -18,6 +18,7 @@ jest.mock('@/lib/python-client', () => ({
 }));
 
 const mockedReadFeatureSpec = pythonClient.readFeatureSpec as jest.Mock;
+const mockedPredictionLogSeries = pythonClient.predictionLogSeries as jest.Mock;
 
 // MODEL-SERVE-001-T17. `hasSchedule` defaults `false` so every EXISTING
 // test below (none of which configures a schedule) keeps exercising the
@@ -31,7 +32,7 @@ const mockedReadFeatureSpec = pythonClient.readFeatureSpec as jest.Mock;
 // value — one cast, not eight.
 const mockWindowMonitoring = {
   hasSchedule: jest.fn().mockResolvedValue(false),
-  getPsiReport: jest.fn(),
+  getInputDriftReport: jest.fn(),
 } as unknown as InferenceWindowMonitoringService;
 
 const ADMIN: Auth.UserPayload = {
@@ -100,8 +101,8 @@ function createCallArgs(prisma: ReturnType<typeof makePrisma>): {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // `resolvePsiReference`'s cache is MODULE-LEVEL and outlives per-test
-  // mock clearing. Every PSI test in this file reuses one literal
+  // `resolveDriftReference`'s cache is MODULE-LEVEL and outlives per-test
+  // mock clearing. Every drift test in this file reuses one literal
   // `goldObjectKey` (`PRODUCTION_VERSION.goldObjectKey`) — see the same
   // note in inference-window-monitoring.authorized.service.spec.ts.
   resetColumnBaselineCacheForTests();
@@ -160,9 +161,9 @@ describe('PredictionLogAuthorizedService.ingestPredictionLogService', () => {
   });
 });
 
-// ── getPsiService ───────────────────────────────────────────────────────
+// ── getInputDriftService ───────────────────────────────────────────────────────
 
-describe('PredictionLogAuthorizedService.getPsiService', () => {
+describe('PredictionLogAuthorizedService.getInputDriftService', () => {
   it('refuses (404) when the model has no PRODUCTION version', async () => {
     const prisma = makePrisma({ productionVersion: null });
     const service = new PredictionLogAuthorizedService(
@@ -170,175 +171,137 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
       mockWindowMonitoring,
     );
     await expect(
-      service.getPsiService('model-1', RANGE, ADMIN),
+      service.getInputDriftService('model-1', RANGE, ADMIN),
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it('pools PredictionLog.featureHistograms and computes PSI against the resolved reference', async () => {
-    const prisma = makePrisma({
-      predictionLogs: [
-        { featureHistograms: { X: { counts: [200], below: 0, above: 0 } } },
-        { featureHistograms: { X: { counts: [200], below: 0, above: 0 } } },
-      ],
-    });
-    mockedReadFeatureSpec.mockResolvedValue({
-      source_key: PRODUCTION_VERSION.goldObjectKey,
-      feature_spec_key: 'feature_spec.json',
-      spec: {
-        psiRefEdges: { X: [0, 1] },
-        psiBinCount: { X: 1 },
-        psiBinMode: { X: 'continuous' },
-        psiRefCounts: { X: [400] },
-      },
+  const SPEC = {
+    source_key: PRODUCTION_VERSION.goldObjectKey,
+    feature_spec_key: 'feature_spec.json',
+    spec: {
+      psiRefEdges: { X: [0, 5, 10], V: [0, 1, 2] },
+      psiBinCount: { X: 2, V: 3 },
+      psiBinMode: { X: 'continuous', V: 'categorical' },
+      psiRefCounts: { X: [50, 50], V: [10, 10, 10] },
+    },
+  };
+  /** 40 logged rows, one a minute from 05:00 UTC: X steps 1..40 / 4 (so
+   *  0.25..10), with the last 4 pushed above the training max of 10. */
+  const ROWS = Array.from({ length: 40 }, (_, i) => ({
+    timestamp: new Date(Date.UTC(2026, 0, 1, 5, i)).toISOString(),
+    prediction: 1,
+    features: { X: i >= 36 ? 12 : (i + 1) / 4, V: i === 0 ? 2.4 : 1 },
+  }));
+
+  it('grades each tag from the logged rows its trend is drawn from (MODEL-SERVE-036)', async () => {
+    const prisma = makePrisma({});
+    mockedReadFeatureSpec.mockResolvedValue(SPEC);
+    mockedPredictionLogSeries.mockResolvedValue({
+      points: ROWS,
+      truncated: false,
     });
 
     const service = new PredictionLogAuthorizedService(
       prisma as never,
       mockWindowMonitoring,
     );
-    const result = await service.getPsiService('model-1', RANGE, ADMIN);
+    const result = await service.getInputDriftService('model-1', RANGE, ADMIN);
 
-    expect(mockedReadFeatureSpec).toHaveBeenCalledWith(
-      PRODUCTION_VERSION.goldObjectKey,
-    );
-    expect(result.data.columns[0]).toMatchObject({
-      column: 'X',
-      status: 'OK',
+    expect(mockedPredictionLogSeries).toHaveBeenCalledWith({
+      model_id: 'model-1',
+      model_version_id: PRODUCTION_VERSION.id,
+      from: RANGE.from,
+      to: RANGE.to,
     });
-    expect(result.data.columns[0].psi).toBeCloseTo(0, 5);
+    const byName = Object.fromEntries(
+      result.data.columns.map((c) => [c.column, c]),
+    );
+    // 4 of 40 above the max -> 10%, WARN.
+    expect(byName.X).toMatchObject({
+      status: 'WARN',
+      above: 4,
+      below: 0,
+      outOfRangePct: 10,
+      trainMin: 0,
+      trainMax: 10,
+    });
+    // Categorical half-gap tolerance: 2.4 is within 0.5 of state 2 -> in.
+    expect(byName.V).toMatchObject({ status: 'OK', above: 0 });
+    expect(result.data.series.X.points).toHaveLength(40);
+    expect(
+      result.data.series.X.points.filter((p) => p.outOfRange > 0),
+    ).toHaveLength(4);
+    expect(result.data.series.X.windows[0]).toMatchObject({ n: 40, above: 4 });
     expect(result.data.basis).toMatchObject({
+      plane: 'predict',
       modelVersionId: PRODUCTION_VERSION.id,
       version: PRODUCTION_VERSION.version,
-      sampleRequests: 2,
-      // T16: both rows carried a histogram, so the honest count equals the
-      // raw row count here — the two only diverge once a null row exists
-      // (see the null-filtering test below).
-      histogramRequests: 2,
+      windowsUsed: 1,
+      capped: false,
       thresholds: {
-        warn: 0.1,
-        critical: 0.25,
-        minSamplesPerBin: 20,
-        outOfRangeWarnPct: 5,
-        outOfRangeCriticalPct: 20,
+        outOfRangeWarnPct: env.INPUT_DRIFT_OUT_OF_RANGE_WARN_PCT,
+        outOfRangeCriticalPct: env.INPUT_DRIFT_OUT_OF_RANGE_CRITICAL_PCT,
+        minSamples: env.INPUT_DRIFT_MIN_SAMPLES,
       },
     });
-    expect(result.data.basis.epsilon).toBeGreaterThan(0);
-    // The disclaimer text reads these numbers rather than a literal — they
-    // must be the SAME thresholds `computePsi` was actually called with,
-    // not merely present.
-    expect(result.data.basis.thresholds.warn).toBe(env.PSI_WARN);
-    expect(result.data.basis.thresholds.critical).toBe(env.PSI_CRITICAL);
-    expect(result.data.basis.thresholds.minSamplesPerBin).toBe(
-      env.PSI_MIN_SAMPLES_PER_BIN,
-    );
-    expect(result.data.basis.thresholds.outOfRangeWarnPct).toBe(
-      env.PSI_OUT_OF_RANGE_WARN_PCT,
-    );
-    expect(result.data.basis.thresholds.outOfRangeCriticalPct).toBe(
-      env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-    );
   });
 
-  it('filters out a row-level null featureHistograms before pooling, without throwing', async () => {
-    const prisma = makePrisma({
-      predictionLogs: [
-        { featureHistograms: null }, // a request logged before T13
-        { featureHistograms: { X: { counts: [500], below: 0, above: 0 } } },
-      ],
-    });
-    mockedReadFeatureSpec.mockResolvedValue({
-      source_key: PRODUCTION_VERSION.goldObjectKey,
-      feature_spec_key: 'feature_spec.json',
-      spec: {
-        psiRefEdges: { X: [0, 1] },
-        psiBinCount: { X: 1 },
-        psiBinMode: { X: 'continuous' },
-        psiRefCounts: { X: [500] },
-      },
+  it('cuts a range longer than 31 days to the newest 31 and says so', async () => {
+    const prisma = makePrisma({});
+    mockedReadFeatureSpec.mockResolvedValue(SPEC);
+    mockedPredictionLogSeries.mockResolvedValue({
+      points: [],
+      truncated: false,
     });
 
     const service = new PredictionLogAuthorizedService(
       prisma as never,
       mockWindowMonitoring,
     );
-    const result = await service.getPsiService('model-1', RANGE, ADMIN);
-
-    expect(result.data.columns[0].status).toBe('OK');
-    expect(result.data.basis.sampleRequests).toBe(2); // total rows, not filtered count
-    // T16: `histogramRequests` is the HONEST figure — one row's histogram
-    // was null and never fed `poolHistograms`. `sampleRequests` overstates
-    // this by construction (captured before the filter); the two must
-    // diverge here or the distinction has no test coverage at all.
-    expect(result.data.basis.histogramRequests).toBe(1);
-    expect(result.data.basis.histogramRequests).toBeLessThanOrEqual(
-      result.data.basis.sampleRequests,
+    const result = await service.getInputDriftService(
+      'model-1',
+      { from: '2025-01-01T00:00:00.000Z', to: '2026-01-02T00:00:00.000Z' },
+      ADMIN,
     );
+
+    expect(result.data.basis.capped).toBe(true);
+    expect(result.data.basis.from).toBe('2025-12-02T00:00:00.000Z');
   });
 
   it('reports every column UNKNOWN, never throws, when feature_spec.json is unavailable', async () => {
-    const prisma = makePrisma({
-      predictionLogs: [
-        { featureHistograms: { X: { counts: [500], below: 0, above: 0 } } },
-      ],
-    });
+    const prisma = makePrisma({});
     mockedReadFeatureSpec.mockRejectedValue(new Error('object not found'));
-
-    const service = new PredictionLogAuthorizedService(
-      prisma as never,
-      mockWindowMonitoring,
-    );
-    const result = await service.getPsiService('model-1', RANGE, ADMIN);
-
-    expect(result.data.columns[0].status).toBe('UNKNOWN');
-    expect(result.data.columns[0].reason).toMatch(/no training reference/);
-  });
-
-  it('skips a tag whose reference is missing any of the four required fields', async () => {
-    const prisma = makePrisma({
-      predictionLogs: [
-        {
-          featureHistograms: {
-            COMPLETE: { counts: [500], below: 0, above: 0 },
-            PARTIAL: { counts: [500], below: 0, above: 0 },
-          },
-        },
-      ],
-    });
-    mockedReadFeatureSpec.mockResolvedValue({
-      source_key: PRODUCTION_VERSION.goldObjectKey,
-      feature_spec_key: 'feature_spec.json',
-      spec: {
-        psiRefEdges: { COMPLETE: [0, 1], PARTIAL: [0, 1] },
-        psiBinCount: { COMPLETE: 1, PARTIAL: 1 },
-        psiBinMode: { COMPLETE: 'continuous' }, // PARTIAL missing here
-        psiRefCounts: { COMPLETE: [500], PARTIAL: [500] },
-      },
+    mockedPredictionLogSeries.mockResolvedValue({
+      points: ROWS,
+      truncated: false,
     });
 
     const service = new PredictionLogAuthorizedService(
       prisma as never,
       mockWindowMonitoring,
     );
-    const result = await service.getPsiService('model-1', RANGE, ADMIN);
+    const result = await service.getInputDriftService('model-1', RANGE, ADMIN);
 
-    const complete = result.data.columns.find((c) => c.column === 'COMPLETE');
-    const partial = result.data.columns.find((c) => c.column === 'PARTIAL');
-    expect(complete?.status).toBe('OK');
-    expect(partial?.status).toBe('UNKNOWN');
-    expect(partial?.reason).toMatch(/no training reference/);
+    expect(result.data.columns.map((c) => c.status)).toEqual([
+      'UNKNOWN',
+      'UNKNOWN',
+    ]);
+    expect(result.data.columns[0].reason).toMatch(/no training range/);
+    // The trend is still there to look at.
+    expect(result.data.series.X.points).toHaveLength(40);
   });
 });
 
 // ── MODEL-SERVE-001-T17: plane dispatch ────────────────────────────────────
 
 describe('PredictionLogAuthorizedService plane dispatch', () => {
-  it('getPsiService delegates to the window plane when a schedule exists, and never touches PredictionLog', async () => {
+  it('getInputDriftService delegates to the window plane when a schedule exists, and never touches PredictionLog', async () => {
     const prisma = makePrisma({});
     const windowMonitoring = {
       hasSchedule: jest.fn().mockResolvedValue(true),
-      getPsiReport: jest.fn().mockResolvedValue({
+      getInputDriftReport: jest.fn().mockResolvedValue({
         statusCode: 200,
-        message: 'PSI report fetched',
+        message: 'Input drift report fetched',
         type: 'SUCCESS',
         data: { status: 'OK', columns: [], basis: { plane: 'window' } },
       }),
@@ -348,9 +311,9 @@ describe('PredictionLogAuthorizedService plane dispatch', () => {
       prisma as never,
       windowMonitoring,
     );
-    const result = await service.getPsiService('model-1', RANGE, ADMIN);
+    const result = await service.getInputDriftService('model-1', RANGE, ADMIN);
 
-    expect(windowMonitoring.getPsiReport).toHaveBeenCalledWith(
+    expect(windowMonitoring.getInputDriftReport).toHaveBeenCalledWith(
       'model-1',
       RANGE.from,
       RANGE.to,
@@ -363,25 +326,29 @@ describe('PredictionLogAuthorizedService plane dispatch', () => {
     expect(prisma.predictionLog.findMany).not.toHaveBeenCalled();
   });
 
-  it('getPsiService stays on the /predict plane when no schedule exists', async () => {
-    const prisma = makePrisma({ predictionLogs: [] });
+  it('getInputDriftService stays on the /predict plane when no schedule exists', async () => {
+    const prisma = makePrisma({});
     mockedReadFeatureSpec.mockResolvedValue({
       source_key: PRODUCTION_VERSION.goldObjectKey,
       feature_spec_key: 'feature_spec.json',
       spec: {},
     });
+    mockedPredictionLogSeries.mockResolvedValue({
+      points: [],
+      truncated: false,
+    });
     const windowMonitoring = {
       hasSchedule: jest.fn().mockResolvedValue(false),
-      getPsiReport: jest.fn(),
+      getInputDriftReport: jest.fn(),
     } as unknown as InferenceWindowMonitoringService;
 
     const service = new PredictionLogAuthorizedService(
       prisma as never,
       windowMonitoring,
     );
-    await service.getPsiService('model-1', RANGE, ADMIN);
+    await service.getInputDriftService('model-1', RANGE, ADMIN);
 
-    expect(windowMonitoring.getPsiReport).not.toHaveBeenCalled();
-    expect(prisma.predictionLog.findMany).toHaveBeenCalled();
+    expect(windowMonitoring.getInputDriftReport).not.toHaveBeenCalled();
+    expect(mockedPredictionLogSeries).toHaveBeenCalled();
   });
 });

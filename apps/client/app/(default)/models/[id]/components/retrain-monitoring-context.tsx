@@ -9,14 +9,14 @@ import {
 import type { AIModel } from '@/types'
 
 /**
- * MODEL-SERVE-014-T05. Input-drift (PSI) context beside the Retrain
+ * MODEL-SERVE-014-T05. Input-drift context beside the Retrain
  * decision —
  * CONTEXT ONLY. Nothing here gates, blocks or auto-triggers a retrain: no
  * product decision exists for an automatic drift-driven retrain, so this
  * states what monitoring currently measures and stops there.
  *
  * Sourced entirely from `usePredictionMonitoring` — the SAME hook and the
- * same `[from, to]` the Monitoring tab's own `PsiPanel` reads,
+ * same `[from, to]` the Monitoring tab's own `InputDriftPanel` reads,
  * and the same `MONITORING_STATUS_CLASS` palette. No second
  * drift computation is introduced client-side, and no figure here is
  * derived from anything this component fetched on its own.
@@ -26,7 +26,7 @@ import type { AIModel } from '@/types'
  * Model Detail render.
  *
  * Every unavailable state is shown EXPLICITLY rather than as a blank or a
- * false OK: `UNKNOWN` (no training reference at all) and PSI's
+ * false OK: `UNKNOWN` (no training range at all) and
  * `INSUFFICIENT_DATA` (a reference exists, live traffic has not cleared the
  * sample floor) are different facts and read differently on screen — see
  * `lib/drift-status-style.ts`'s own note on why they share one palette but
@@ -34,22 +34,22 @@ import type { AIModel } from '@/types'
  */
 export function RetrainMonitoringContext({ model }: { model: AIModel }) {
   const {
-    psi,
-    psiLoading: loading,
-    psiUnavailableReason,
+    inputDrift,
+    inputDriftLoading: loading,
+    inputDriftUnavailableReason,
   } = usePredictionMonitoring(model, '24h')
 
   // The window the report was ACTUALLY computed over — the backend's own
   // `basis.from`/`basis.to`, never a client-side "last 24h" label that would
   // be false whenever the pool holds a shorter span.
-  const basis = psi?.basis ?? null
+  const basis = inputDrift?.basis ?? null
   const period =
     basis?.from && basis.to
       ? `${new Date(basis.from).toLocaleString()} — ${new Date(basis.to).toLocaleString()}`
       : null
 
-  const psiFlagged =
-    psi?.columns.filter(c => c.status === 'WARN' || c.status === 'CRITICAL')
+  const driftFlagged =
+    inputDrift?.columns.filter(c => c.status === 'WARN' || c.status === 'CRITICAL')
       .length ?? 0
 
   return (
@@ -67,28 +67,29 @@ export function RetrainMonitoringContext({ model }: { model: AIModel }) {
         <>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[11px] text-muted-foreground">
-              Input drift (PSI)
+              Input drift (training range)
             </span>
-            {psiUnavailableReason ? (
+            {inputDriftUnavailableReason ? (
               <span className="text-[11px] text-muted-foreground">
-                {psiUnavailableReason}
+                {inputDriftUnavailableReason}
               </span>
-            ) : psi ? (
+            ) : inputDrift ? (
               <>
                 <Badge
-                  className={`${MONITORING_STATUS_CLASS[psi.status]} border-0 text-[10px]`}
+                  className={`${MONITORING_STATUS_CLASS[inputDrift.status]} border-0 text-[10px]`}
                 >
-                  {MONITORING_STATUS_LABEL[psi.status]}
+                  {MONITORING_STATUS_LABEL[inputDrift.status]}
                 </Badge>
-                {psiFlagged > 0 && (
+                {driftFlagged > 0 && (
                   <span className="text-[11px] text-muted-foreground">
-                    {psiFlagged} of {psi.columns.length} inputs flagged
+                    {driftFlagged} of {inputDrift.columns.length} inputs out of
+                    training range
                   </span>
                 )}
               </>
             ) : (
               <span className="text-[11px] text-muted-foreground">
-                No PSI report available
+                No input drift report available
               </span>
             )}
           </div>

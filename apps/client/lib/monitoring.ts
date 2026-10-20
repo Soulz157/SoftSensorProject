@@ -190,8 +190,16 @@ export function pickTimeFormat(spanMs: number): (t: number) => string {
   }
 }
 
+/**
+ * Trim float noise to SIX SIGNIFICANT DIGITS — not a fixed number of
+ * decimals. This module carries process values of unknown scale (110.1, or a
+ * water content of 1.4252): two decimals rounded a 0.0004 spread to 0, which
+ * collapsed the ±SD band on such a target to nothing. Same reasoning as
+ * `formatAxisValue` below, at a precision meant for arithmetic, not display.
+ */
 function round(n: number): number {
-  return Math.round(n * 100) / 100
+  if (!Number.isFinite(n) || n === 0) return n
+  return Number(n.toPrecision(6))
 }
 
 /** MODEL-SERVE-001-T18. `truthLagMinutes` and `cadenceMinutes` are stored in
@@ -510,6 +518,23 @@ export function heldDeviationStats(rows: LiveOverlayRow[]): {
   const mean = deviations.reduce((acc, d) => acc + d, 0) / n
   const variance = deviations.reduce((acc, d) => acc + (d - mean) ** 2, 0) / n
   return { sd: round(Math.sqrt(variance)), n }
+}
+
+/**
+ * The spread the Actual-vs-Predict band is drawn with where no lab pair
+ * exists (user decision 2026-10-19): the serving version's residual SD from
+ * its training test set — the error the model was expected to make — and the
+ * held-deviation spread only when there is no such figure. The held spread
+ * measures how steady the prediction is, so a flat prediction beside a flat
+ * held value yields a band of ~0 that is not visible at all.
+ */
+export function unpairedBandSd(
+  referenceSd: number | null,
+  heldSd: number,
+): { sd: number; basis: 'reference' | 'held' } {
+  return referenceSd !== null && Number.isFinite(referenceSd) && referenceSd > 0
+    ? { sd: referenceSd, basis: 'reference' }
+    : { sd: heldSd, basis: 'held' }
 }
 
 /**

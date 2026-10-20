@@ -1,8 +1,8 @@
-import type { PsiStatus } from '@/services/model-monitoring'
+import type { InputDriftStatus } from '@/services/model-monitoring'
 
 /**
- * The ONE treatment for every drift and PSI status badge in the app — the
- * Monitoring tab's PSI card (the only drift signal since MODEL-SERVE-028), the Input Data tab's
+ * The ONE treatment for every input-drift status badge in the app — the
+ * Monitoring tab's Input Drift card (training range since MODEL-SERVE-036), the Input Data tab's
  * feature table, and the retrain dialog's monitoring context.
  *
  * WHY ONE MAP. This started as two: a traffic light for the monitoring
@@ -15,16 +15,16 @@ import type { PsiStatus } from '@/services/model-monitoring'
  *
  * This overrides the red/amber reservation in §5 of
  * docs/DESIGN_SYSTEM.md (red/amber for workspace and plant operating
- * state) for drift and PSI specifically.
+ * state) for input drift specifically.
  *
  * `UNKNOWN` and `INSUFFICIENT_DATA` stay neutral on purpose. The first is
  * an absence of any verdict and the second is "not enough live traffic
  * yet" — neither is a healthy result, so neither may read as green.
  *
- * Keyed by `PsiStatus` because that union is a superset of `DriftStatus`
+ * Keyed by `InputDriftStatus` because that union is a superset of `DriftStatus`
  * (it adds `INSUFFICIENT_DATA`), so one map safely serves both.
  */
-export const MONITORING_STATUS_CLASS: Record<PsiStatus, string> = {
+export const MONITORING_STATUS_CLASS: Record<InputDriftStatus, string> = {
   OK: 'bg-green-500/15 text-green-600 dark:text-green-400',
   WARN: 'bg-yellow-500/15 text-yellow-600 dark:text-yellow-400',
   CRITICAL: 'bg-red-500/15 text-red-600 dark:text-red-400',
@@ -53,7 +53,7 @@ export const MONITORING_STATUS_CLASS: Record<PsiStatus, string> = {
  * inside that generated component, which is immutable under CLAUDE.md,
  * so the bubble would no longer match its own arrow.
  */
-export const MONITORING_STATUS_CLASS_ON_TOOLTIP: Record<PsiStatus, string> = {
+export const MONITORING_STATUS_CLASS_ON_TOOLTIP: Record<InputDriftStatus, string> = {
   OK: 'bg-green-500/25 text-green-300 dark:bg-green-600/20 dark:text-green-700',
   WARN: 'bg-yellow-500/25 text-yellow-200 dark:bg-yellow-600/20 dark:text-yellow-700',
   CRITICAL: 'bg-red-500/25 text-red-300 dark:bg-red-600/20 dark:text-red-700',
@@ -65,11 +65,11 @@ export const MONITORING_STATUS_CLASS_ON_TOOLTIP: Record<PsiStatus, string> = {
  * Wording, applied everywhere the map above is. The wire value `OK`
  * renders as "Good": the badge answers "how is this input doing", and
  * "Good" reads as an assessment where "OK" reads as a shrug. Only the
- * DISPLAY changes — the `DriftStatus`/`PsiStatus` values crossing the
+ * DISPLAY changes — the `DriftStatus`/`InputDriftStatus` values crossing the
  * wire are untouched, and every test and API contract still speaks `OK`.
  *
  * `INSUFFICIENT_DATA` keeps the prose form MODEL-SERVE-001-T13's DISPLAY
- * SPEC quotes verbatim; it used to live in `psi-panel.tsx`'s own local
+ * SPEC quotes verbatim; it used to live in the old PSI panel's own local
  * `psiStatusLabel`.
  *
  * NOTE for the Input Data tab: this "Good" sits one cell away from the PI
@@ -79,7 +79,7 @@ export const MONITORING_STATUS_CLASS_ON_TOOLTIP: Record<PsiStatus, string> = {
  * are what distinguishes them. Accepted deliberately in favour of one
  * consistent vocabulary; see the status tooltip for what each asserts.
  */
-export const MONITORING_STATUS_LABEL: Record<PsiStatus, string> = {
+export const MONITORING_STATUS_LABEL: Record<InputDriftStatus, string> = {
   OK: 'Good',
   WARN: 'WARN',
   CRITICAL: 'CRITICAL',

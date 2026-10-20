@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  explainTargetPsi,
+  explainTargetRange,
   TARGET_NOT_COUNTED_NOTE,
   unrecordedTargetColumn,
   withTargetFirst,
@@ -37,37 +37,32 @@ describe('unrecordedTargetColumn', () => {
   })
 })
 
-describe('target tooltips', () => {
-  it('psi: target wording at CRITICAL, never "this input" or "predicting on data"', () => {
-    const out = explainTargetPsi(
-      { psi: 0.4, status: 'CRITICAL', liveTotal: 100, bins: null },
-      {
-        warn: 0.1,
-        critical: 0.25,
-        minSamplesPerBin: 20,
-        outOfRangeWarnPct: 5,
-        outOfRangeCriticalPct: 20,
-      },
-    )
-    expect(out.meaning).toMatch(/^The target’s live distribution/)
-    expect(out.meaning).not.toMatch(/this input|predicting on data/i)
-    expect(out.meaning).toContain(TARGET_NOT_COUNTED_NOTE)
-    expect(out.criteria).toEqual(['PSI 0.400 ≥ 0.25 → CRITICAL'])
+describe('target tooltips (MODEL-SERVE-036)', () => {
+  const T = { outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20, minSamples: 30 }
+  const col = (status: 'OK' | 'CRITICAL', above: number) => ({
+    column: 'Y',
+    liveTotal: 100,
+    below: 0,
+    above,
+    outOfRangePct: above,
+    trainMin: 0,
+    trainMax: 10,
+    binMode: 'continuous' as const,
+    status,
+    bins: null,
   })
 
-  it('psi: target wording for every status, including OK', () => {
-    const out = explainTargetPsi(
-      { psi: 0.01, status: 'OK', liveTotal: 100, bins: null },
-      {
-        warn: 0.1,
-        critical: 0.25,
-        minSamplesPerBin: 20,
-        outOfRangeWarnPct: 5,
-        outOfRangeCriticalPct: 20,
-      },
-    )
-    expect(out.meaning).toMatch(/^The target’s live distribution/)
-    expect(out.meaning).not.toMatch(/this input/i)
+  it('target wording at CRITICAL, never "this input" or "extrapolating"', () => {
+    const out = explainTargetRange(col('CRITICAL', 40), T)
+    expect(out.meaning).toMatch(/^Many live target values/)
+    expect(out.meaning).not.toMatch(/this input|extrapolating/i)
+    expect(out.meaning).toContain(TARGET_NOT_COUNTED_NOTE)
+    expect(out.criteria[1]).toMatch(/≥ 20% → CRITICAL$/)
+  })
+
+  it('target wording for every status, including OK', () => {
+    const out = explainTargetRange(col('OK', 0), T)
+    expect(out.meaning).toMatch(/^Live target values stay inside/)
     expect(out.meaning).toContain(TARGET_NOT_COUNTED_NOTE)
   })
 })

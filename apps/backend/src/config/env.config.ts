@@ -172,29 +172,24 @@ export const env = {
   // and DRIFT_CRITICAL_SD with the z-score mean-shift drift signal. PSI
   // (below) is the only input-drift metric.
 
-  // MODEL-SERVE-001-T13. PSI thresholds — 0.1/0.25 are the CONVENTIONAL
-  // credit-scoring cutoffs (commonly cited: <0.1 stable, 0.1-0.25 moderate
-  // shift, >0.25 major shift), never measured against this project's own
-  // process data (T13's own explicit warning: writing these on screen as
-  // if measured would be "a guess wearing a formula", the exact defect
-  // MODEL-FLOW-020's finding 3 names) — the UI must label them as
-  // convention, not fact. PSI_MIN_SAMPLES_PER_BIN is T13's own resolved
-  // openDecision #2: below `binCount * PSI_MIN_SAMPLES_PER_BIN` live
-  // samples, a PSI figure is not published at all (INSUFFICIENT_DATA,
-  // never a numeric value at noise-level sample sizes).
-  PSI_WARN: Number(process.env.PSI_WARN ?? 0.1),
-  PSI_CRITICAL: Number(process.env.PSI_CRITICAL ?? 0.25),
-  PSI_MIN_SAMPLES_PER_BIN: Number(process.env.PSI_MIN_SAMPLES_PER_BIN ?? 20),
-  // MODEL-SERVE-029. Out-of-range grading — the share of live samples
-  // (percent of liveTotal) outside a tag's frozen trained edges, graded by
-  // its own rule beside PSI because PSI's formula cannot see that mass at
-  // all (the reference has no below/above bin to compare against). 5/20
-  // are a CONVENTIONAL starting point chosen 2026-10-05, not measured
-  // against this plant's data — label them as convention, like PSI_WARN.
-  PSI_OUT_OF_RANGE_WARN_PCT: Number(process.env.PSI_OUT_OF_RANGE_WARN_PCT ?? 5),
-  PSI_OUT_OF_RANGE_CRITICAL_PCT: Number(
-    process.env.PSI_OUT_OF_RANGE_CRITICAL_PCT ?? 20,
+  // MODEL-SERVE-036. Input drift by training range (replaces PSI): the share
+  // of live values outside a tag's training [min, max]. 5/20 are a
+  // CONVENTIONAL starting point (chosen 2026-10-05 for MODEL-SERVE-029), not
+  // measured against this plant's data — the UI labels them as convention.
+  // The PSI_OUT_OF_RANGE_* names are still read as a fallback so deployed
+  // .env files keep their values.
+  INPUT_DRIFT_OUT_OF_RANGE_WARN_PCT: Number(
+    process.env.INPUT_DRIFT_OUT_OF_RANGE_WARN_PCT ??
+      process.env.PSI_OUT_OF_RANGE_WARN_PCT ??
+      5,
   ),
+  INPUT_DRIFT_OUT_OF_RANGE_CRITICAL_PCT: Number(
+    process.env.INPUT_DRIFT_OUT_OF_RANGE_CRITICAL_PCT ??
+      process.env.PSI_OUT_OF_RANGE_CRITICAL_PCT ??
+      20,
+  ),
+  // Below this many live values a tag is INSUFFICIENT_DATA, never graded.
+  INPUT_DRIFT_MIN_SAMPLES: Number(process.env.INPUT_DRIFT_MIN_SAMPLES ?? 30),
 
   // MODEL-SERVE-006. The scheduler tick — same `<= 0` disables / `.unref()`
   // shape ModelDraftCleanupAdminService's own MODEL_DRAFT_SWEEP_INTERVAL_MS

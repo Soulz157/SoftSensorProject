@@ -1,10 +1,9 @@
 import type { HealthReason, HealthStatus } from './model-health';
 import {
   outOfRangeStatusFor,
-  statusFor,
-  type PsiReport,
-  type PsiThresholds,
-} from './prediction-psi';
+  type RangeDriftReport,
+  type DriftThresholds,
+} from './input-range-drift';
 
 /**
  * MODEL-SERVE-031. Pure derivation for the workspace monitoring digest — no
@@ -13,18 +12,19 @@ import {
  * never from whatever subset of models one sweep happened to evaluate.
  */
 
-/** Worst-column PSI beside the verdict. Both numbers are null when no column
- *  has a computed value (INSUFFICIENT_DATA / UNKNOWN) — rendered as "—". */
-export interface PsiSummary {
+/** MODEL-SERVE-036. The input with the largest share of live values outside
+ *  its training range. Null when no column has a graded share
+ *  (INSUFFICIENT_DATA / UNKNOWN) — rendered as "—". */
+export interface DriftSummary {
   worstColumn: string | null;
-  worstPsi: number | null;
   maxOutOfRangePct: number | null;
 }
 
 /** What is stored in `ModelAlertState.metrics` (a Json column). */
 export interface DigestMetrics {
-  worstPsiColumn: string | null;
-  worstPsi: number | null;
+  /** Stored under this key since MODEL-SERVE-036; rows written earlier carry
+   *  `worstPsiColumn`, which `parseMetrics` reads as a fallback. */
+  worstColumn: string | null;
   maxOutOfRangePct: number | null;
   sdRatio: number | null;
   warnSd: number | null;
@@ -46,8 +46,8 @@ export type DigestStatusWord = 'alert' | 'warning' | 'frozen' | 'offline';
 /** The cutoffs the legend prints — read from env at the call site, never
  *  hardcoded here, so the legend cannot disagree with the grading. */
 export type DigestThresholds = Pick<
-  PsiThresholds,
-  'warn' | 'critical' | 'outOfRangeWarnPct' | 'outOfRangeCriticalPct'
+  DriftThresholds,
+  'outOfRangeWarnPct' | 'outOfRangeCriticalPct'
 >;
 
 export interface DigestRow {
@@ -56,8 +56,6 @@ export interface DigestRow {
   status: DigestStatusWord;
   reason: string;
   worstInput: string | null;
-  psi: number | null;
-  psiBand: DigestBand | null;
   outOfRangePct: number | null;
   outOfRangeBand: DigestBand | null;
   sdRatio: number | null;
@@ -107,37 +105,32 @@ export interface DigestStateInput {
   metrics: unknown;
 }
 
-export function summarizePsi(report: PsiReport): PsiSummary {
+export function summarizeDrift(report: RangeDriftReport): DriftSummary {
   let worstColumn: string | null = null;
-  let worstPsi: number | null = null;
   let maxOutOfRangePct: number | null = null;
   for (const c of report.columns) {
-    if (c.psi !== null && (worstPsi === null || c.psi > worstPsi)) {
-      worstPsi = c.psi;
-      worstColumn = c.column;
-    }
+    if (c.status === 'UNKNOWN' || c.status === 'INSUFFICIENT_DATA') continue;
     if (
       c.outOfRangePct !== null &&
       (maxOutOfRangePct === null || c.outOfRangePct > maxOutOfRangePct)
     ) {
       maxOutOfRangePct = c.outOfRangePct;
-      if (worstColumn === null) worstColumn = c.column;
+      worstColumn = c.column;
     }
   }
-  return { worstColumn, worstPsi, maxOutOfRangePct };
+  return { worstColumn, maxOutOfRangePct };
 }
 
 export function buildMetrics(input: {
-  psiSummary: PsiSummary | null;
+  driftSummary: DriftSummary | null;
   sdRatio: number | null;
   thresholds: { warnSd: number; criticalSd: number } | null;
   statusWord: string | null;
   statusSince: string | null;
 }): DigestMetrics {
   return {
-    worstPsiColumn: input.psiSummary?.worstColumn ?? null,
-    worstPsi: input.psiSummary?.worstPsi ?? null,
-    maxOutOfRangePct: input.psiSummary?.maxOutOfRangePct ?? null,
+    worstColumn: input.driftSummary?.worstColumn ?? null,
+    maxOutOfRangePct: input.driftSummary?.maxOutOfRangePct ?? null,
     sdRatio: input.sdRatio,
     warnSd: input.thresholds?.warnSd ?? null,
     criticalSd: input.thresholds?.criticalSd ?? null,
@@ -161,8 +154,7 @@ export function parseMetrics(raw: unknown): DigestMetrics | null {
   }
   const o = raw as Record<string, unknown>;
   return {
-    worstPsiColumn: strOrNull(o.worstPsiColumn),
-    worstPsi: numOrNull(o.worstPsi),
+    worstColumn: strOrNull(o.worstColumn) ?? strOrNull(o.worstPsiColumn),
     maxOutOfRangePct: numOrNull(o.maxOutOfRangePct),
     sdRatio: numOrNull(o.sdRatio),
     warnSd: numOrNull(o.warnSd),
@@ -210,20 +202,12 @@ function fromStatus(s: string): DigestBand {
   return 'ok';
 }
 
-export function psiBandFor(
-  psi: number | null,
-  t: DigestThresholds,
-): DigestBand | null {
-  if (psi === null) return null;
-  return fromStatus(statusFor(psi, { ...t, minSamplesPerBin: 0 }));
-}
-
 export function outOfRangeBandFor(
   pct: number | null,
   t: DigestThresholds,
 ): DigestBand | null {
   if (pct === null) return null;
-  return fromStatus(outOfRangeStatusFor(pct, { ...t, minSamplesPerBin: 0 }));
+  return fromStatus(outOfRangeStatusFor(pct, { ...t, minSamples: 0 }));
 }
 
 /** Same `>=` rule as `classifyResidualSd`. */
@@ -303,7 +287,6 @@ export function buildDigestRows(
     const word = statusWord(st.status, m?.statusWord ?? null);
     if (!word) continue;
     const frozen = word === 'frozen';
-    const psi = frozen ? null : (m?.worstPsi ?? null);
     const oor = frozen ? null : (m?.maxOutOfRangePct ?? null);
     rows.push({
       modelId: st.modelId,
@@ -314,9 +297,7 @@ export function buildDigestRows(
           ? `Frozen: ${st.frozenColumns.join(', ')}`
           : 'Frozen'
         : shortReason(st.reason),
-      worstInput: frozen ? null : (m?.worstPsiColumn ?? null),
-      psi,
-      psiBand: psiBandFor(psi, legend),
+      worstInput: frozen ? null : (m?.worstColumn ?? null),
       outOfRangePct: oor,
       outOfRangeBand: outOfRangeBandFor(oor, legend),
       sdRatio: m?.sdRatio ?? null,

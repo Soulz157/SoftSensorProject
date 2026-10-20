@@ -7,7 +7,7 @@ const healthy = {
   driftMonitor: true,
   // MODEL-SERVE-028. PSI is the only drift input. Null = nothing classified
   // yet; the drift tests below set it.
-  psiStatus: null,
+  driftStatus: null,
   consecutiveFailures: 0,
   staleness: 'OK',
   // Has produced before — so a STALE verdict means the record STOPPED, which
@@ -24,7 +24,7 @@ const healthy = {
   frozenColumns: [] as string[],
   // There IS evidence to judge drift on unless a test says otherwise —
   // the no-evidence case is its own describe block below.
-  psiEvidence: true,
+  driftEvidence: true,
   // MODEL-SERVE-012. UNKNOWN by default, NOT OK: these tests are about the
   // drift and liveness tiers, and a default of OK would let this axis answer
   // for them. UNKNOWN makes it silent, which is what "this test is not about
@@ -38,14 +38,14 @@ describe('classifyModelHealth (MODEL-SERVE-001-T21)', () => {
       classifyModelHealth({
         ...healthy,
         driftMonitor: false,
-        psiStatus: 'OK',
+        driftStatus: 'OK',
       }),
     ).toEqual({ status: 'OFF', reason: null, frozenColumns: [] });
     expect(
       classifyModelHealth({
         ...healthy,
         driftMonitor: false,
-        psiStatus: 'CRITICAL',
+        driftStatus: 'CRITICAL',
       }),
     ).toEqual({ status: 'OFF', reason: null, frozenColumns: [] });
     expect(classifyModelHealth({ ...healthy, driftMonitor: false })).toEqual({
@@ -66,17 +66,19 @@ describe('classifyModelHealth (MODEL-SERVE-001-T21)', () => {
   });
 
   it('passes the drift report status straight through once monitoring is on', () => {
-    expect(classifyModelHealth({ ...healthy, psiStatus: 'OK' })).toEqual({
+    expect(classifyModelHealth({ ...healthy, driftStatus: 'OK' })).toEqual({
       status: 'OK',
       reason: null,
       frozenColumns: [],
     });
-    expect(classifyModelHealth({ ...healthy, psiStatus: 'WARN' })).toEqual({
+    expect(classifyModelHealth({ ...healthy, driftStatus: 'WARN' })).toEqual({
       status: 'WARN',
       reason: 'DRIFT_WARN',
       frozenColumns: [],
     });
-    expect(classifyModelHealth({ ...healthy, psiStatus: 'CRITICAL' })).toEqual({
+    expect(
+      classifyModelHealth({ ...healthy, driftStatus: 'CRITICAL' }),
+    ).toEqual({
       // T27: a drift CRITICAL surfaces as ALERT carrying DRIFT_CRITICAL, so
       // the card names WHICH signal fired. 'CRITICAL' remains in the union
       // (stored payloads and the client map still carry it) but is no
@@ -85,17 +87,19 @@ describe('classifyModelHealth (MODEL-SERVE-001-T21)', () => {
       reason: 'DRIFT_CRITICAL',
       frozenColumns: [],
     });
-    expect(classifyModelHealth({ ...healthy, psiStatus: 'UNKNOWN' })).toEqual({
-      status: 'UNKNOWN',
-      reason: null,
-      frozenColumns: [],
-    });
+    expect(classifyModelHealth({ ...healthy, driftStatus: 'UNKNOWN' })).toEqual(
+      {
+        status: 'UNKNOWN',
+        reason: null,
+        frozenColumns: [],
+      },
+    );
   });
 });
 
 describe('PSI is the only drift axis (MODEL-SERVE-028)', () => {
   it('maps PSI WARN to a Warning — the 2026-10-04 override of the ALERT-only decision', () => {
-    expect(classifyModelHealth({ ...healthy, psiStatus: 'WARN' })).toEqual({
+    expect(classifyModelHealth({ ...healthy, driftStatus: 'WARN' })).toEqual({
       status: 'WARN',
       reason: 'DRIFT_WARN',
       frozenColumns: [],
@@ -104,16 +108,16 @@ describe('PSI is the only drift axis (MODEL-SERVE-028)', () => {
 
   it('maps INSUFFICIENT_DATA to UNKNOWN — thin evidence is not health, and not an alarm either', () => {
     expect(
-      classifyModelHealth({ ...healthy, psiStatus: 'INSUFFICIENT_DATA' }),
+      classifyModelHealth({ ...healthy, driftStatus: 'INSUFFICIENT_DATA' }),
     ).toEqual({ status: 'UNKNOWN', reason: null, frozenColumns: [] });
   });
 
   it('is gated behind driftMonitor', () => {
     // driftMonitor defaults FALSE, so drift alerts are live only for
     // schedules that opted in.
-    for (const psiStatus of ['WARN', 'CRITICAL'] as const) {
+    for (const driftStatus of ['WARN', 'CRITICAL'] as const) {
       expect(
-        classifyModelHealth({ ...healthy, driftMonitor: false, psiStatus })
+        classifyModelHealth({ ...healthy, driftMonitor: false, driftStatus })
           .reason,
       ).toBeNull();
     }
@@ -194,7 +198,7 @@ describe('classifyModelHealth — the liveness half (MODEL-SERVE-001-T26/V19)', 
     expect(
       classifyModelHealth({
         ...healthy,
-        psiStatus: 'OK',
+        driftStatus: 'OK',
         consecutiveFailures: 3,
       }),
     ).toEqual({
@@ -361,7 +365,7 @@ describe('the remaining T27 bands', () => {
 });
 
 /**
- * T27 RULE (2), THE DARK-SHIP GATE. `resolvePsiReference` returns `{}` from
+ * T27 RULE (2), THE DARK-SHIP GATE. `resolveDriftReference` returns `{}` from
  * its SUCCESS path as well as its catch path, and live 2026-10-04 two of three
  * scheduled models carry no histograms at all — so "no evidence" is the live
  * case, not a hypothetical. An Alert path built on it reports healthy.
@@ -371,9 +375,9 @@ describe('drift never speaks without evidence (MODEL-SERVE-001-T27 rule 2)', () 
     expect(
       classifyModelHealth({
         ...healthy,
-        psiEvidence: false,
+        driftEvidence: false,
         // Even with a status that would otherwise read healthy.
-        psiStatus: 'OK',
+        driftStatus: 'OK',
       }),
     ).toEqual({ status: 'UNKNOWN', reason: null, frozenColumns: [] });
   });
@@ -383,19 +387,21 @@ describe('drift never speaks without evidence (MODEL-SERVE-001-T27 rule 2)', () 
     expect(
       classifyModelHealth({
         ...healthy,
-        psiEvidence: false,
-        psiStatus: 'CRITICAL',
+        driftEvidence: false,
+        driftStatus: 'CRITICAL',
       }),
     ).toEqual({ status: 'UNKNOWN', reason: null, frozenColumns: [] });
   });
 
-  it("passes computePsi's OWN UNKNOWN through rather than folding it into OK", () => {
+  it("passes computeRangeDrift's OWN UNKNOWN through rather than folding it into OK", () => {
     // Every column lacked a usable reference. That is not health.
-    expect(classifyModelHealth({ ...healthy, psiStatus: 'UNKNOWN' })).toEqual({
-      status: 'UNKNOWN',
-      reason: null,
-      frozenColumns: [],
-    });
+    expect(classifyModelHealth({ ...healthy, driftStatus: 'UNKNOWN' })).toEqual(
+      {
+        status: 'UNKNOWN',
+        reason: null,
+        frozenColumns: [],
+      },
+    );
   });
 
   it('still reports LIVENESS faults when drift has no evidence', () => {
@@ -405,7 +411,7 @@ describe('drift never speaks without evidence (MODEL-SERVE-001-T27 rule 2)', () 
     expect(
       classifyModelHealth({
         ...healthy,
-        psiEvidence: false,
+        driftEvidence: false,
         consecutiveFailures: 3,
       }),
     ).toEqual({
@@ -441,7 +447,7 @@ describe('the output-error axis (MODEL-SERVE-012)', () => {
     expect(
       classifyModelHealth({
         ...healthy,
-        psiStatus: 'CRITICAL',
+        driftStatus: 'CRITICAL',
         residualSdStatus: 'ALERT',
       }),
     ).toEqual({
@@ -455,7 +461,7 @@ describe('the output-error axis (MODEL-SERVE-012)', () => {
     expect(
       classifyModelHealth({
         ...healthy,
-        psiStatus: 'WARN',
+        driftStatus: 'WARN',
         residualSdStatus: 'WARN',
       }),
     ).toEqual({ status: 'WARN', reason: 'DRIFT_WARN', frozenColumns: [] });

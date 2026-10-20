@@ -11,17 +11,21 @@ import {
 } from '@/components/ui/table'
 import { PI_STATUS_CLASS } from '@/lib/pi-status-style'
 import type { InputFeatureRow } from '@/lib/model-input-features'
-import { explainPsiColumn } from '@/lib/monitoring-status-explain'
-import type { PsiReport } from '@/services/model-monitoring'
+import {
+  explainRangeDrift,
+  formatPct,
+  unknownDriftColumn,
+} from '@/lib/input-drift'
+import type { InputDriftReport } from '@/services/model-monitoring'
 import { StatusBadgeWithExplanation } from '../monitoring/status-badge-with-explanation'
 
 interface Props {
   rows: InputFeatureRow[]
-  /** MODEL-SERVE-028. The PSI report's OWN thresholds, for the Drift
-   *  badge's tooltip. Undefined until the report loads, and then
-   *  `explainPsiColumn` prints the meaning with NO criteria rather than
-   *  inventing 0.1/0.25. */
-  psiThresholds?: PsiReport['basis']['thresholds']
+  /** MODEL-SERVE-036. The drift report's OWN thresholds, for the badge
+   *  tooltip. Undefined until the report loads, and then
+   *  `explainRangeDrift` prints the meaning with NO criteria rather than
+   *  inventing cutoffs. */
+  driftThresholds?: InputDriftReport['basis']['thresholds']
 }
 
 function fmtValue(row: InputFeatureRow): string {
@@ -61,7 +65,7 @@ function formatFlatDuration(minutes: number): string {
   return m === 0 ? `${h}h` : `${h}h${m}m`
 }
 
-export function InputFeatureTable({ rows, psiThresholds }: Props) {
+export function InputFeatureTable({ rows, driftThresholds }: Props) {
   return (
     <Table>
       <TableHeader>
@@ -70,9 +74,10 @@ export function InputFeatureTable({ rows, psiThresholds }: Props) {
           <TableHead>Feature</TableHead>
           {/* T12. This column reports DRIFT vs. the training distribution,
               never per-tag data quality — the old "Status" header let a
-              reader reasonably mistake one for the other. MODEL-SERVE-028:
-              PSI is the only drift signal, so the header names it. */}
-          <TableHead>Drift (PSI)</TableHead>
+              reader reasonably mistake one for the other. MODEL-SERVE-036:
+              drift is the share of live values outside the training range,
+              so the header names that. */}
+          <TableHead>Out of range</TableHead>
           {/* MODEL-SERVE-001-T15. PI's OWN quality flag, read live — a
               different question from Drift, and the one an operator opens
               this tab to ask. For a derived feature it is its source tags'
@@ -108,7 +113,7 @@ export function InputFeatureTable({ rows, psiThresholds }: Props) {
             </TableCell>
             <TableCell>
               {/* The SAME label, palette and explanation the Monitoring
-                  tab's PSI card shows. This badge briefly kept a
+                  tab's Input Drift card shows. This badge briefly kept a
                   neutral/purple treatment and the raw `OK` token, to stay
                   clear of the PI health badge in the next cell — but that
                   only made one verdict render two ways on two tabs. The
@@ -116,20 +121,20 @@ export function InputFeatureTable({ rows, psiThresholds }: Props) {
                   questions now; the tooltip says which is which.
                   `row.driftReason` moves from `title` into that tooltip
                   body, which the native attribute could never render. */}
-              <StatusBadgeWithExplanation
-                status={row.driftStatus}
-                explanation={explainPsiColumn(
-                  {
-                    psi: row.psi,
-                    status: row.driftStatus,
-                    reason: row.driftReason,
-                    liveTotal: row.psiLiveTotal,
-                    bins: row.psiBins,
-                    outOfRangePct: row.psiOutOfRangePct,
-                  },
-                  psiThresholds,
+              <div className="flex items-center gap-2">
+                <StatusBadgeWithExplanation
+                  status={row.driftStatus}
+                  explanation={explainRangeDrift(
+                    row.drift ?? unknownDriftColumn(row.column),
+                    driftThresholds,
+                  )}
+                />
+                {row.outOfRangePct !== null && (
+                  <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                    {formatPct(row.outOfRangePct)}
+                  </span>
                 )}
-              />
+              </div>
             </TableCell>
             <TableCell>
               <Badge

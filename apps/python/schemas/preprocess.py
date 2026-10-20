@@ -1239,6 +1239,84 @@ class InferenceWindowMetricsSeriesResponse(BaseModel):
     missing: int
 
 
+class InputSeriesWindow(BaseModel):
+    """One scheduled window's input Parquet (`InferenceWindow.inputKey`)."""
+
+    key: str
+    window_start: str
+    window_end: str
+
+
+class InputSeriesReference(BaseModel):
+    """A column's frozen training reference (`feature_spec.json`
+    `psiRefEdges`/`psiBinMode`). Its outer edges ARE the training range."""
+
+    edges: list[float] = Field(..., min_length=1)
+    bin_mode: Literal["continuous", "categorical"]
+
+
+class InferenceWindowInputSeriesRequest(BaseModel):
+    """MODEL-SERVE-036. Raw input values per tag across scheduled windows,
+    for the Input Drift card: the trend, the per-window table, and the
+    out-of-range counts that grade the badge — all from the SAME rows.
+
+    Out-of-range is decided by `softsensor_scaling.bucket_value`, the
+    primitive every window histogram is bucketed with, so a categorical
+    tag's half-gap tolerance applies here exactly as it does there.
+    """
+
+    windows: list[InputSeriesWindow] = Field(..., min_length=1, max_length=800)
+    #: Empty: every feature column found in the window frames.
+    columns: list[str] = Field(default_factory=list)
+    #: Columns absent here have no training range: values only, no counts.
+    references: dict[str, InputSeriesReference] = Field(default_factory=dict)
+    #: Above this many rows per column the trend is bucketed (min/max kept).
+    max_points: int = Field(600, ge=50, le=5000)
+
+
+class InputSeriesPoint(BaseModel):
+    t: str
+    value: float
+    min: float
+    max: float
+    out_of_range: int
+
+
+class InputSeriesWindowStats(BaseModel):
+    window_start: str
+    window_end: str
+    n: int
+    min: float | None
+    max: float | None
+    mean: float | None
+    below: int
+    above: int
+
+
+class InputSeriesColumn(BaseModel):
+    resolution: Literal["raw", "bucketed"]
+    bucket_minutes: int | None
+    points: list[InputSeriesPoint]
+    #: Newest first.
+    windows: list[InputSeriesWindowStats]
+    total: int
+    below: int
+    above: int
+    #: In-range bin counts summed over every window; null without a
+    #: reference.
+    counts: list[int] | None
+    live_min: float | None
+    live_max: float | None
+    live_mean: float | None
+    last_out_of_range_at: str | None
+
+
+class InferenceWindowInputSeriesResponse(BaseModel):
+    columns: dict[str, InputSeriesColumn]
+    #: Window keys that did not resolve — a gap, never a failed read.
+    missing: int
+
+
 class ResplitHoldoutRequest(BaseModel):
     """Re-split an EXISTING, PRISTINE (never-split) BRONZE against a holdout
     window, without re-fetching from the source.

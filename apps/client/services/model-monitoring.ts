@@ -36,44 +36,13 @@ export interface PredictionSeriesResult {
 }
 
 /**
- * MODEL-SERVE-001-T17. `plane` names which live data source produced this
- * report — `'window'` for a model with an `InferenceSchedule` (pooled from
- * `InferenceWindow.featureStats`/`featureHistograms`), `'predict'` for one
- * without (pooled from `PredictionLog`, MODEL-SERVE-005's original plane).
- * Decided by schedule PRESENCE server-side, never inferred client-side from
- * which fields happen to be populated. The five fields below `plane` are
- * populated ONLY on the window plane — a model with no schedule has no
- * window pool to describe, so they stay `undefined` there rather than
- * printing a false zero.
+ * MODEL-SERVE-036. Input-drift verdict by TRAINING RANGE (replaces PSI). A
+ * live value below the training min or above the training max is drift; a
+ * column is graded by the share of such values. `INSUFFICIENT_DATA` (a
+ * range exists, too few live values) is distinct from `UNKNOWN` (no range
+ * recorded at all) — see `apps/backend/src/lib/input-range-drift.ts`.
  */
-export interface MonitoringBasis {
-  plane: 'window' | 'predict'
-  /** Windows fetched in `[from, to]` (≤24, the rolling horizon T17 itself
-   *  specifies) — window plane only. */
-  windowsUsed?: number
-  /** Real earliest/latest `windowStart` in the pool — NEVER a printed
-   *  "rolling 24h": that label would be false whenever the pool holds
-   *  fewer than 24 windows or a shorter span. Window plane only. */
-  windowStartEarliest?: string | null
-  windowStartLatest?: string | null
-  /** Per-`InferenceWindowStatus` counts across the pooled windows — the
-   *  disclosure T17's own no-status-whitelist rule requires: a figure
-   *  computed mostly from windows that never scored must say so. Window
-   *  plane only. */
-  statusBreakdown?: Record<string, number>
-  /** Sum of `inputRows` across the pooled windows — window plane only. */
-  totalInputRows?: number
-}
-
-/**
- * MODEL-SERVE-001-T13. PSI (Population Stability Index) — the ONLY input
- * drift signal since MODEL-SERVE-028 removed the z-score report it was first
- * published beside. `INSUFFICIENT_DATA` is real information
- * (a reference exists, live traffic just has not cleared the sample floor
- * yet) distinct from `UNKNOWN` (no reference at all) — see
- * `apps/backend/src/lib/prediction-psi.ts`'s own module docstring.
- */
-export type PsiStatus =
+export type InputDriftStatus =
   | 'OK'
   | 'WARN'
   | 'CRITICAL'
@@ -81,106 +50,123 @@ export type PsiStatus =
   | 'INSUFFICIENT_DATA'
 
 /**
- * MODEL-SERVE-001-T16. Per-column raw bin data — mirrors the backend's
- * `ColumnBins` (`apps/backend/src/lib/prediction-psi.ts`) verbatim. `null`
- * exactly when `PsiColumn.status` is `UNKNOWN` — no training reference
- * exists for this column. Present on every OTHER status, INCLUDING
- * `INSUFFICIENT_DATA`: that row still needs `liveInRangeTotal`/`below`/
- * `above`/`minSamples` to print "412 of 600 rows".
- *
- * NEVER a license to draw a chart below the sample floor — see
- * `PsiPanel`'s own render rule: an `INSUFFICIENT_DATA` row is not
- * clickable, and `bins` there is for the rows-vs-floor readout only.
+ * Live vs training distribution for one column — mirrors the backend's
+ * `ColumnBins`. For Deep Detail only; it grades nothing. `null` on a column
+ * whose status is `UNKNOWN`.
  */
 export interface ColumnBins {
   binMode: 'continuous' | 'categorical'
-  /** RESOLVED count, never a default assumed — a degenerate tag's reduced
-   *  bin count must be visible, never presumed to be 10. */
+  /** The RESOLVED count — a degenerate tag's reduced bin count must be
+   *  visible, never presumed to be 10. */
   binCount: number
   /** Frozen at training time, RAW engineering units — `edges[i]`..
    *  `edges[i+1]` is bin `i` in `continuous` mode (last bin closed on the
-   *  right); in `categorical` mode each entry in `edges` IS the bin (one
-   *  per trained value), so `edges.length === binCount` there, never
-   *  `binCount + 1`. */
+   *  right); in `categorical` mode each entry IS the bin (one per trained
+   *  value). The outer edges are the training range. */
   edges: number[]
-  /** MEASURED reference population per bin — never assumed uniform (a
-   *  categorical split is not equal-frequency the way a quantile split
-   *  is). */
+  /** MEASURED reference population per bin — never assumed uniform. */
   refCounts: number[]
   liveCounts: number[]
   below: number
   above: number
-  /** PSI's OWN denominator — `sum(liveCounts)`, EXCLUDING below/above. */
+  /** `sum(liveCounts)`, EXCLUDING below/above. */
   liveInRangeTotal: number
-  /** `binCount * minSamplesPerBin` — the floor `liveTotal` is tested
-   *  against. */
+  /** The grading floor — fewer live values than this are not graded. */
   minSamples: number
 }
 
-export interface PsiColumn {
+/** One scored window (window plane) or one hour of requests (predict
+ *  plane). `below`/`above` come from the same counting rule as the column
+ *  verdict, so a table row and the badge can never disagree. */
+export interface InputDriftWindow {
+  windowStart: string
+  windowEnd: string
+  n: number
+  /** Null when `n` is 0. */
+  min: number | null
+  max: number | null
+  mean: number | null
+  below: number
+  above: number
+}
+
+/** One point of a tag's trend. Raw resolution: one row, so min = max =
+ *  value. Bucketed: the bucket mean with its own min and max kept, so a
+ *  spike inside a bucket still reaches the chart. */
+export interface InputTrendPoint {
+  t: string
+  value: number | null
+  min: number | null
+  max: number | null
+  /** Rows in this point outside the training range. */
+  outOfRange: number
+}
+
+export interface InputTrendSeries {
+  resolution: 'raw' | 'bucketed'
+  /** Bucket width when `resolution` is 'bucketed'. */
+  bucketMinutes: number | null
+  points: InputTrendPoint[]
+  /** Newest first. */
+  windows: InputDriftWindow[]
+  liveMin: number | null
+  liveMax: number | null
+  liveMean: number | null
+  lastOutOfRangeAt: string | null
+}
+
+export interface ColumnRangeDrift {
   column: string
   liveTotal: number
-  /** Null exactly when `status` is `UNKNOWN` or `INSUFFICIENT_DATA` — a
-   *  number here always means a real, computed PSI, never a placeholder. */
-  psi: number | null
-  /** Live mass OUTSIDE the trained reference edges, as a percentage of
-   *  `liveTotal` — a REAL measured count, never folded into `psi` itself
-   *  (the reference has no defined mass outside its own edges to compare
-   *  against — see the backend module's own doc comment). This is the
-   *  ONE rendered overflow figure; a drill-down's flanking bars/table row
-   *  derive their own display from `bins.below`/`bins.above` directly,
-   *  never a second independently-computed percentage. */
+  below: number
+  above: number
+  /** Null when there is no training range or no live value. */
   outOfRangePct: number | null
-  status: PsiStatus
+  /** The training range: the reference's outer edges. Null exactly when
+   *  `status` is UNKNOWN (no range recorded). */
+  trainMin: number | null
+  trainMax: number | null
+  binMode: 'continuous' | 'categorical' | null
+  status: InputDriftStatus
   reason?: string
-  /** See `ColumnBins`'s own doc comment for exactly when this is null. */
+  /** Live vs training distribution, for Deep Detail only — it does not
+   *  grade anything. */
   bins: ColumnBins | null
 }
 
-export interface PsiReport {
-  status: PsiStatus
-  columns: PsiColumn[]
-  /** MODEL-SERVE-018. The model's TARGET tag (y), computed apart from
-   *  `columns` — display-only, never part of `status`. Null/absent on the
-   *  /predict plane and when no window in range recorded the target. */
+export interface InputDriftReport {
+  status: InputDriftStatus
+  columns: ColumnRangeDrift[]
+  /** The target (y), display only — never part of `status`. */
   targetColumn?: string | null
-  target?: PsiColumn | null
-  basis: MonitoringBasis & {
+  target?: ColumnRangeDrift | null
+  /** Keyed by column (target included). A column absent here had no live
+   *  rows to plot. */
+  series: Record<string, InputTrendSeries>
+  basis: {
+    plane: 'window' | 'predict'
     modelVersionId: string
     version: number
-    goldArtifactId: string
-    goldObjectKey: string
-    /** WINDOW PLANE: windows fetched in [from, to] for the PRODUCTION
-     *  version (≤24), same value as `windowsUsed`. PREDICT PLANE: requests
-     *  found in [from, to], BEFORE the null-`featureHistograms` filter —
-     *  kept for parity with the removed drift report's `sampleRequests`. Either
-     *  way, overstates what actually fed the PSI pool whenever a row
-     *  predates T13/T17 or was served under a pre-T13 spec;
-     *  `histogramRequests` below is the honest count for that. */
-    sampleRequests: number
-    /** Rows (requests on the predict plane, windows on the window plane)
-     *  that actually carried a `featureHistograms` entry and fed
-     *  `poolHistograms` — the number a "computed over" readout should
-     *  print. */
-    histogramRequests: number
     from: string
     to: string
-    /** The env-derived thresholds `computePsi` was called with — read
-     *  these for the on-screen disclaimer rather than a hardcoded literal,
-     *  so the two can never silently drift apart. */
+    /** Windows (or hours, on the predict plane) behind every figure in this
+     *  report — badge, chart, stats and table alike. */
+    windowsUsed: number
+    /** The range was cut to the newest `maxDays` days. */
+    capped: boolean
+    maxDays: number
+    /** /predict plane: the row read hit its limit, so the figures cover a
+     *  sample of the range. Always false on the window plane. */
+    truncated: boolean
+    /** Windows whose input file could not be read. */
+    missing: number
+    /** Model health and alerts grade the newest N windows, not this range. */
+    healthWindows: number
     thresholds: {
-      warn: number
-      critical: number
-      minSamplesPerBin: number
-      /** MODEL-SERVE-029. `outOfRangePct` cutoffs (percent of liveTotal)
-       *  — graded beside PSI; the column status is the worse of the two. */
       outOfRangeWarnPct: number
       outOfRangeCriticalPct: number
+      minSamples: number
     }
-    /** The floor substituted for a zero bin proportion before `ln` — T13's
-     *  own instruction that this must be STATED, never hidden in a
-     *  constant. */
-    epsilon: number
   }
 }
 
@@ -296,24 +282,23 @@ export const modelMonitoringService = {
       signal,
     }),
 
-  /** MODEL-SERVE-001-T13. Input drift, PSI only (MODEL-SERVE-028). PSI
-   *  needs `binCount * PSI_MIN_SAMPLES_PER_BIN` live samples before a figure
-   *  is computed at all, so callers should default this range wide (e.g. a
-   *  rolling 24h). 404s when the model has no PRODUCTION version — callers
-   *  should treat that as "nothing to show", not an error toast. */
-  psi: (
+  /** MODEL-SERVE-036. Input drift by training range over `[from, to]`
+   *  (capped server-side to 31 days): per tag, the verdict, the trend and
+   *  the per-window stats behind it. 404s when the model has no PRODUCTION
+   *  version — callers treat that as "nothing to show". */
+  inputDrift: (
     modelId: string,
     from: string,
     to: string,
     signal?: AbortSignal,
-  ): Promise<ApiResponse<PsiReport>> =>
-    fetchClient(`${base(modelId)}/psi?${rangeQuery(from, to)}`, {
+  ): Promise<ApiResponse<InputDriftReport>> =>
+    fetchClient(`${base(modelId)}/input-drift?${rangeQuery(from, to)}`, {
       method: 'GET',
       signal,
     }),
 
   /** The trained X/Y schema for the Input Data tab — does not vary with a
-   *  time range, unlike `predictions`/`psi` above. Never 404s for "no
+   *  time range, unlike `predictions`/`inputDrift` above. Never 404s for "no
    *  PRODUCTION version": falls back to the model's latest version, since
    *  Save Model always mints at least one. */
   inputSchema: (
@@ -328,7 +313,7 @@ export const modelMonitoringService = {
   /** MODEL-SERVE-001-T15. Live PI quality per feature tag. A SEPARATE call
    *  from `inputSchema` on purpose: this one reaches PI, so it must be able
    *  to fail without taking the feature list down with it. Takes no time
-   *  range — it is a "right now" snapshot, unlike `psi` above. */
+   *  range — it is a "right now" snapshot, unlike `inputDrift` above. */
   inputStatus: (
     modelId: string,
     signal?: AbortSignal,

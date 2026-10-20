@@ -8,7 +8,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import type { ColumnBins } from '@/services/model-monitoring'
-import { resolvePsiBins, resolvePsiOverflow } from '@/lib/psi-bins'
+import { resolveDistributionBins, resolveOverflow } from '@/lib/distribution-bins'
 
 interface Props {
   bins: ColumnBins
@@ -16,11 +16,10 @@ interface Props {
 }
 
 /**
- * MODEL-SERVE-001-T13/T16, level 3 of T13's own chosen display spec —
- * NOT OPTIONAL: "bare B1..B10 labels tell a process engineer nothing …
- * the entire value of PSI over a z-score is knowing WHERE in the range
- * the distribution moved." `resolvePsiBins`/`resolvePsiOverflow`
- * (`lib/psi-bins.ts`) already branch on `binMode` for edge semantics — this
+ * MODEL-SERVE-036 Deep Detail, the table beside `DistributionChart` —
+ * NOT OPTIONAL: bare B1..B10 labels tell a process engineer nothing; the
+ * value of this view is knowing WHERE in the range the distribution moved. `resolveDistributionBins`/`resolveOverflow`
+ * (`lib/distribution-bins.ts`) already branch on `binMode` for edge semantics — this
  * component only renders their result, never re-derives a range itself.
  *
  * Overflow rows (both bin modes since MODEL-SERVE-029) are visually set apart (`bg-muted/10`)
@@ -39,9 +38,9 @@ interface Props {
  * simply false for a categorical tag, whose counts are real per-value
  * frequencies and legitimately uneven.
  */
-export function PsiBinTable({ bins, liveTotal }: Props) {
-  const rows = resolvePsiBins(bins)
-  const overflow = resolvePsiOverflow(bins, liveTotal)
+export function DistributionTable({ bins, liveTotal }: Props) {
+  const rows = resolveDistributionBins(bins)
+  const overflow = resolveOverflow(bins, liveTotal)
 
   return (
     <div className="overflow-x-auto rounded-lg border border-border">

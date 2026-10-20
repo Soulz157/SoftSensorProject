@@ -10,7 +10,7 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart'
 import type { ColumnBins } from '@/services/model-monitoring'
-import { resolvePsiBins, resolvePsiOverflow } from '@/lib/psi-bins'
+import { resolveDistributionBins, resolveOverflow } from '@/lib/distribution-bins'
 
 interface Props {
   bins: ColumnBins
@@ -32,7 +32,8 @@ const config = {
 } satisfies ChartConfig
 
 /**
- * MODEL-SERVE-001-T13/T16, level 2 of T13's own chosen display spec. The
+ * MODEL-SERVE-036 Deep Detail, "Distribution vs training" (first built as
+ * MODEL-SERVE-001-T16 for PSI; it grades nothing now). The
  * repo's first GROUPED (multi-series) bar chart — every existing `<Bar>`
  * here renders a single series, so this is built on `ChartContainer`'s
  * token-driven pattern (`ingestion-trend-chart.tsx`), never on
@@ -40,7 +41,7 @@ const config = {
  * spend DESIGN.md's reserved Warning Amber on a non-status mark.
  *
  * Bin labels are bare (`B1`..`B10`, `<lo`/`>hi`) DELIBERATELY — the
- * sibling `PsiBinTable` rendered beside this chart carries the real
+ * sibling `DistributionTable` rendered beside this chart carries the real
  * engineering-unit ranges; T13's own "bare B1..B10 labels tell a process
  * engineer nothing" is the reason that table exists, not a reason to widen
  * this chart's axis labels.
@@ -54,13 +55,13 @@ const config = {
  * NO STATUS COLORS in the bars. The summary card's badge now DOES carry
  * the traffic-light vocabulary (`MONITORING_STATUS_CLASS`), which makes
  * this rule matter more, not less: a per-bin bar tinted green or red
- * would assert a per-bin verdict PSI never produces — the status is a
+ * would assert a per-bin verdict nothing produces — the status is a
  * property of the whole column. Status stays in the badge; these bars use
  * chart tokens only.
  */
-export function PsiBinChart({ bins, liveTotal }: Props) {
-  const binRows = resolvePsiBins(bins)
-  const overflow = resolvePsiOverflow(bins, liveTotal)
+export function DistributionChart({ bins, liveTotal }: Props) {
+  const binRows = resolveDistributionBins(bins)
+  const overflow = resolveOverflow(bins, liveTotal)
 
   const data: ChartRow[] = []
   if (overflow) {

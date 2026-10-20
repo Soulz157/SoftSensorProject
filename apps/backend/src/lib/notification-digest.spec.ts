@@ -4,31 +4,20 @@ import {
   buildDigestRows,
   outOfRangeBandFor,
   parseMetrics,
-  psiBandFor,
   sdBandFor,
   shortReason,
-  summarizePsi,
+  summarizeDrift,
   type DigestStateInput,
   type DigestThresholds,
 } from './notification-digest';
-import type { PsiReport } from './prediction-psi';
+import type { RangeDriftReport } from './input-range-drift';
 
 const LEGEND: DigestThresholds = {
-  warn: 0.1,
-  critical: 0.25,
   outOfRangeWarnPct: 5,
   outOfRangeCriticalPct: 20,
 };
 
 describe('band grading (MODEL-SERVE-031)', () => {
-  it('grades PSI with >= at the warn and critical cutoffs', () => {
-    expect(psiBandFor(0.0999, LEGEND)).toBe('ok');
-    expect(psiBandFor(0.1, LEGEND)).toBe('warn');
-    expect(psiBandFor(0.2499, LEGEND)).toBe('warn');
-    expect(psiBandFor(0.25, LEGEND)).toBe('crit');
-    expect(psiBandFor(null, LEGEND)).toBeNull();
-  });
-
   it('grades out-of-range % with >= at its own cutoffs', () => {
     expect(outOfRangeBandFor(4.9, LEGEND)).toBe('ok');
     expect(outOfRangeBandFor(5, LEGEND)).toBe('warn');
@@ -45,18 +34,19 @@ describe('band grading (MODEL-SERVE-031)', () => {
   });
 });
 
-describe('summarizePsi', () => {
-  it('takes the worst PSI column and the largest out-of-range share', () => {
+describe('summarizeDrift', () => {
+  it('names the input with the largest out-of-range share (MODEL-SERVE-036)', () => {
     const report = {
       status: 'WARN',
       columns: [
-        { column: 'A', psi: 0.05, outOfRangePct: 9 },
-        { column: 'B', psi: 0.2, outOfRangePct: 1 },
+        { column: 'A', status: 'WARN', outOfRangePct: 9 },
+        { column: 'B', status: 'OK', outOfRangePct: 1 },
+        // Ungraded columns never name the worst input.
+        { column: 'C', status: 'INSUFFICIENT_DATA', outOfRangePct: 80 },
       ],
-    } as unknown as PsiReport;
-    expect(summarizePsi(report)).toEqual({
-      worstColumn: 'B',
-      worstPsi: 0.2,
+    } as unknown as RangeDriftReport;
+    expect(summarizeDrift(report)).toEqual({
+      worstColumn: 'A',
       maxOutOfRangePct: 9,
     });
   });
@@ -64,11 +54,10 @@ describe('summarizePsi', () => {
   it('keeps nulls when no column has a computed value', () => {
     const report = {
       status: 'UNKNOWN',
-      columns: [{ column: 'A', psi: null, outOfRangePct: null }],
-    } as unknown as PsiReport;
-    expect(summarizePsi(report)).toEqual({
+      columns: [{ column: 'A', status: 'UNKNOWN', outOfRangePct: null }],
+    } as unknown as RangeDriftReport;
+    expect(summarizeDrift(report)).toEqual({
       worstColumn: null,
-      worstPsi: null,
       maxOutOfRangePct: null,
     });
   });
@@ -78,10 +67,19 @@ describe('parseMetrics', () => {
   it('returns null for a non-object and nulls for wrong-typed fields', () => {
     expect(parseMetrics(null)).toBeNull();
     expect(parseMetrics([1])).toBeNull();
-    expect(parseMetrics({ worstPsi: 'x', sdRatio: 2 })).toMatchObject({
-      worstPsi: null,
+    expect(parseMetrics({ maxOutOfRangePct: 'x', sdRatio: 2 })).toMatchObject({
+      maxOutOfRangePct: null,
       sdRatio: 2,
     });
+  });
+
+  it('reads a row persisted before MODEL-SERVE-036 (worstPsiColumn)', () => {
+    expect(
+      parseMetrics({ worstPsiColumn: 'FI-1', worstPsi: 0.3 }),
+    ).toMatchObject({ worstColumn: 'FI-1' });
+    expect(
+      parseMetrics({ worstColumn: 'TI-2', worstPsiColumn: 'FI-1' }),
+    ).toMatchObject({ worstColumn: 'TI-2' });
   });
 });
 
@@ -111,18 +109,18 @@ describe('buildDigestRows', () => {
     expect(rows.map((r) => r.model)).toEqual(['Alert', 'Warn']);
   });
 
-  it('shows frozen rows with no PSI / OoR and the frozen columns', () => {
+  it('shows frozen rows with no OoR and the frozen columns', () => {
     const [row] = buildDigestRows(
       [
         state({
           status: 'FROZEN',
           frozenColumns: ['FI-1', 'TI-2'],
-          metrics: { worstPsi: 0.9, maxOutOfRangePct: 50 },
+          metrics: { worstColumn: 'FI-1', maxOutOfRangePct: 50 },
         }),
       ],
       LEGEND,
     );
-    expect(row.psi).toBeNull();
+    expect(row.worstInput).toBeNull();
     expect(row.outOfRangePct).toBeNull();
     expect(row.reason).toBe('Frozen: FI-1, TI-2');
   });
@@ -134,8 +132,7 @@ describe('buildDigestRows', () => {
           status: 'ALERT',
           reason: 'DRIFT_CRITICAL',
           metrics: {
-            worstPsiColumn: 'FI-1001',
-            worstPsi: 0.31,
+            worstColumn: 'FI-1001',
             maxOutOfRangePct: 24,
             sdRatio: null,
             warnSd: 1.5,
@@ -148,7 +145,6 @@ describe('buildDigestRows', () => {
     expect(row).toMatchObject({
       reason: 'Drift',
       worstInput: 'FI-1001',
-      psiBand: 'crit',
       outOfRangeBand: 'crit',
       sdRatio: null,
       sdBand: null,
@@ -227,8 +223,7 @@ describe('status since / longest (MODEL-SERVE-031)', () => {
     now,
   };
   const prev = (statusWord: string, statusSince: string | null) => ({
-    worstPsiColumn: null,
-    worstPsi: null,
+    worstColumn: null,
     maxOutOfRangePct: null,
     sdRatio: null,
     warnSd: null,

@@ -3,14 +3,14 @@ import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import { readFeatureSpec } from '@/lib/python-preprocess-client';
 import { PythonColumnStatsSchema } from '@/api/v1/dataset-version/authorized/dto/dataset-version.authorized.dto';
 import type { ColumnBaselineMap } from '@/lib/feature-stats';
-import type { PsiReferenceMap } from '@/lib/prediction-psi';
+import type { DriftReferenceMap } from '@/lib/input-range-drift';
 
 const log = new Logger('ArtifactBaseline');
 
 /**
  * MODEL-SERVE-001-T17. Extracted verbatim (behaviour-preserving) from
  * `PredictionLogAuthorizedService`'s own private `resolveBaseline`/
- * `resolvePsiReference` — a PRODUCTION version's training-artifact baseline
+ * `resolveDriftReference` — a PRODUCTION version's training-artifact baseline
  * is the same fact regardless of which LIVE plane (`/predict`'s
  * `PredictionLog`, or scheduled inference's `InferenceWindow`) is being
  * compared against it. Moved here so the window-plane monitoring service
@@ -23,7 +23,7 @@ const log = new Logger('ArtifactBaseline');
  *
  * No caller passes a `user` here — access to the owning Model was already
  * checked once, on the Model, by whichever plane's public service method
- * is calling in. Same reasoning `getPsiService`'s own original doc comment
+ * is calling in. Same reasoning `getInputDriftService`'s own original doc comment
  * gave for calling python directly rather than through a request-scoped
  * service method.
  */
@@ -38,7 +38,7 @@ const log = new Logger('ArtifactBaseline');
  *
  * WHY THIS EXISTS NOW, NOT WHEN THE FUNCTION WAS WRITTEN. Every existing
  * caller reads a baseline for ONE model, once, inside a single request —
- * `getPsiService`/`getHealthStatus`. `deriveDeployStatuses`
+ * `getInputDriftService`/`getHealthStatus`. `deriveDeployStatuses`
  * (deploy-status.ts) is the first caller to run this on the LIST path, which
  * means the SAME set of models' SAME keys get re-fetched on every Alerts/
  * Overview/sidebar poll. Uncached, that is an HTTP round trip to apps/python
@@ -77,7 +77,7 @@ export function resetColumnBaselineCacheForTests(): void {
  *  PSI reference — the list path (`deriveDeployStatuses`) now reads it per
  *  enabled model on every Alerts/Overview/sidebar load, exactly the cost
  *  `columnBaselineCache` exists to avoid. Cleared by the reset above. */
-const psiReferenceCache = new Map<string, Promise<PsiReferenceMap>>();
+const psiReferenceCache = new Map<string, Promise<DriftReferenceMap>>();
 
 /**
  * Reads `column_stats.json` for a PRODUCTION version's own training
@@ -137,11 +137,11 @@ export async function resolveColumnBaseline(
  * descriptor already uses (`model-serving.authorized.service.ts`'s
  * `buildDescriptor`) — and un-flattens its four parallel per-tag maps
  * (`psiRefEdges`/`psiBinCount`/`psiBinMode`/`psiRefCounts`) back into one
- * `PsiReference` object per tag, the shape `computePsi` consumes.
+ * `DriftReference` object per tag, the shape `computeRangeDrift` consumes.
  *
  * A tag missing ANY of the four (a malformed or partially-written spec) is
  * skipped entirely, never assembled from whichever fields happen to be
- * present — an incomplete reference is not a usable one, and `computePsi`
+ * present — an incomplete reference is not a usable one, and `computeRangeDrift`
  * already reports a clean UNKNOWN for a tag with no reference at all, so
  * silently dropping it here is the same honest "no reference" outcome, not
  * a lossy one.
@@ -150,9 +150,9 @@ export async function resolveColumnBaseline(
  * error — same discipline `resolveColumnBaseline` uses for a missing
  * column_stats.json: every column reports UNKNOWN with a named reason.
  */
-export async function resolvePsiReference(
+export async function resolveDriftReference(
   goldObjectKey: string,
-): Promise<PsiReferenceMap> {
+): Promise<DriftReferenceMap> {
   const cached = psiReferenceCache.get(goldObjectKey);
   if (cached) return cached;
 
@@ -163,7 +163,7 @@ export async function resolvePsiReference(
     const binModes = spec.psiBinMode ?? {};
     const refCounts = spec.psiRefCounts ?? {};
 
-    const reference: PsiReferenceMap = {};
+    const reference: DriftReferenceMap = {};
     for (const tag of Object.keys(edges)) {
       const binMode = binModes[tag];
       const binCount = binCounts[tag];
@@ -188,7 +188,7 @@ export async function resolvePsiReference(
   } catch (err) {
     psiReferenceCache.delete(goldObjectKey);
     log.warn(
-      `feature_spec unavailable for ${goldObjectKey}; PSI will report every column UNKNOWN: ${(err as Error).message}`,
+      `feature_spec unavailable for ${goldObjectKey}; input drift will report every column UNKNOWN: ${(err as Error).message}`,
     );
     return {};
   }

@@ -120,6 +120,8 @@ from schemas.preprocess import (
     ScatterResponse,
     SplitStatsRequest,
     SplitStatsResponse,
+    InferenceWindowInputSeriesRequest,
+    InferenceWindowInputSeriesResponse,
     TagCatalogRequest,
     TagCatalogResponse,
     ValidateRequest,
@@ -129,6 +131,7 @@ from services import (
     artifact_service,
     ground_truth_service,
     inference_window_service,
+    input_series_service,
     prediction_log_service,
 )
 from services.boxplot_service import build_boxplot
@@ -1224,6 +1227,25 @@ async def read_inference_window_metrics_series(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(ground_truth_service.metrics_series, store, body)
+
+
+@router.post(
+    "/inference-window/input-series",
+    response_model=InferenceWindowInputSeriesResponse,
+    summary="Raw input values per tag across scheduled windows",
+    description=(
+        "MODEL-SERVE-036. Reads each window's input Parquet and returns, per "
+        "tag, the trend (raw, or bucketed with min/max kept), per-window "
+        "stats, and below/above counts against the frozen training edges — "
+        "counted with the same bucket primitive as the window histograms. "
+        "A key that does not resolve is counted in `missing` and skipped."
+    ),
+)
+async def read_inference_window_input_series(
+    body: InferenceWindowInputSeriesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(input_series_service.build_input_series, store, body)
 
 
 @router.post(

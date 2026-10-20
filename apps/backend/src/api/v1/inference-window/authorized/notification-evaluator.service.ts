@@ -186,7 +186,7 @@ export class NotificationEvaluatorService
       deployStatus as Parameters<typeof monitoringTransitionDetail>[3],
     );
     const metrics = buildMetrics({
-      psiSummary: health.psiSummary,
+      driftSummary: health.driftSummary,
       sdRatio: health.residualSd.ratio,
       thresholds: health.thresholds,
       statusWord,
@@ -316,10 +316,8 @@ export class NotificationEvaluatorService
       ]);
     }
     const legend = {
-      warn: env.PSI_WARN,
-      critical: env.PSI_CRITICAL,
-      outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
-      outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
+      outOfRangeWarnPct: env.INPUT_DRIFT_OUT_OF_RANGE_WARN_PCT,
+      outOfRangeCriticalPct: env.INPUT_DRIFT_OUT_OF_RANGE_CRITICAL_PCT,
     };
 
     for (const [workspaceId, wsTransitions] of byWorkspace) {
