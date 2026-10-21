@@ -34,6 +34,26 @@ export interface ScheduleSourceRef {
   status: string
 }
 
+/** MODEL-SERVE-037. A live PI source bound in place of the dataset's own
+ *  (a CSV upload), with each training column mapped to a PI tag. */
+export interface LiveSourceSettings {
+  intervalTime: string
+  calcType: string
+  calcBasis: string
+  /** Training column -> PI tag. */
+  columnTagMap: Record<string, string>
+}
+
+export interface LiveSourceOverrideInfo {
+  /** True when none of the dataset's sources can be read on a schedule. */
+  required: boolean
+  /** Training columns to map; null when not required or not readable. */
+  columns: string[] | null
+  /** The target column — optional to map (only the lab-truth join reads it). */
+  target: string | null
+  current: LiveSourceSettings | null
+}
+
 export interface InferenceSchedule {
   enabled: boolean
   cadenceMinutes: number | null
@@ -45,6 +65,7 @@ export interface InferenceSchedule {
   /** The pinned PRODUCTION version's dataset's sources, in the dataset's own
    *  order. Empty when nothing is in production. */
   sourceCandidates: ScheduleSourceRef[]
+  liveSource: LiveSourceOverrideInfo
   autoRetrain: boolean
   warnSd: number
   criticalSd: number
@@ -529,6 +550,8 @@ export const inferenceWindowService = {
       cadenceMinutes?: number
       lagMinutes?: number
       sourceId?: string
+      /** MODEL-SERVE-037. Never sent together with `sourceId`. */
+      liveSource?: LiveSourceSettings & { sourceId: string }
       autoRetrain?: boolean
       warnSd?: number
       criticalSd?: number

@@ -22,6 +22,8 @@ import { ExternalLink, ServerCog } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { sourceLabel } from '@/lib/model-data-source'
 import { useModelDataSource } from '@/hooks/model/use-model-data-source'
+import { useLiveSourceOverride } from '@/hooks/model/use-live-source-override'
+import { LiveSourceOverrideSection } from './live-source-override-section'
 import { useModelForm } from '@/hooks/model/use-model-form'
 import { AIModel, Workspace } from '@/types'
 
@@ -44,12 +46,23 @@ export function ModelUpsertDialog({
   // binding is a SECOND record (the model's InferenceSchedule) behind its
   // own endpoint, and the form hook stays the owner of the model row alone.
   const dataSource = useModelDataSource(model?.id ?? null, open)
+  // MODEL-SERVE-037-T05. A CSV-trained model binds a live PI source here
+  // instead of picking among its dataset's sources. One save slot for the
+  // form: whichever of the two the user actually changed.
+  const liveSource = useLiveSourceOverride({
+    modelId: model?.id ?? null,
+    workspaceId: model?.workspaceId ?? null,
+    schedule: dataSource.schedule,
+  })
+  const sourceWrite = liveSource.active
+    ? { isDirty: liveSource.isDirty, save: liveSource.save }
+    : dataSource
   const { state, actions } = useModelForm({
     open,
     model,
     onSuccess,
     onClose,
-    dataSource,
+    dataSource: sourceWrite,
   })
   const {
     name,
@@ -64,7 +77,12 @@ export function ModelUpsertDialog({
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isSubmitting && onClose()}>
-      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+      <DialogContent
+        className={cn(
+          'max-h-[85vh] overflow-y-auto',
+          liveSource.active ? 'max-w-2xl' : 'max-w-lg',
+        )}
+      >
         <DialogHeader>
           <DialogTitle>{model ? 'Edit Model' : 'New Model'}</DialogTitle>
         </DialogHeader>
@@ -193,6 +211,13 @@ export function ModelUpsertDialog({
                         <ExternalLink className="h-3 w-3" />
                       </Link>
                     </div>
+
+                    {liveSource.active && (
+                      <LiveSourceOverrideSection
+                        override={liveSource}
+                        disabled={isSubmitting}
+                      />
+                    )}
 
                     {dataSource.view.canRelink && (
                       <Select

@@ -125,6 +125,10 @@ function buildInputStatus(overrides = {}) {
     preflightSourceService: jest
       .fn()
       .mockResolvedValue({ ok: true, reason: null }),
+    // MODEL-SERVE-037-T02. Read only when a dataset has no schedulable source.
+    resolveOverrideColumnsService: jest
+      .fn()
+      .mockResolvedValue({ baseTags: [], targetY: null }),
     ...overrides,
   };
 }
@@ -439,10 +443,12 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
       user,
     );
 
+    // `{}`: a dataset-derived binding maps no column (MODEL-SERVE-037-T04).
     expect(inputStatus.preflightSourceService).toHaveBeenCalledWith(
       'model-1',
       user,
       'src-b',
+      {},
     );
   });
 
@@ -2918,5 +2924,372 @@ describe('InferenceWindowAuthorizedService.getManualPredictionsService', () => {
         modelVersionId: 'ver-1',
       },
     ]);
+  });
+});
+
+describe('InferenceWindowAuthorizedService.putScheduleService — live source override (MODEL-SERVE-037-T02)', () => {
+  const OVERRIDE_FETCH = {
+    type: 'pi',
+    intervalTime: '1m',
+    calcType: 'Average',
+    calcBasis: 'TimeWeighted',
+    baseTags: ['PI_A.PV', 'PI_B.PV'],
+    columnTagMap: { a: 'PI_A.PV', b: 'PI_B.PV' },
+    liveSourceOverride: true,
+  };
+  const LIVE = {
+    sourceId: 'pi-1',
+    intervalTime: '1m',
+    calcType: 'Average' as const,
+    calcBasis: 'TimeWeighted' as const,
+    columnTagMap: { a: 'PI_A.PV', b: 'PI_B.PV' },
+  };
+
+  function buildOverridePrisma(
+    opts: {
+      datasetSourceTypes?: string[];
+      piSource?: Record<string, unknown> | null;
+      stored?: Record<string, unknown> | null;
+    } = {},
+  ) {
+    const {
+      datasetSourceTypes = ['csv'],
+      piSource = { id: 'pi-1', type: 'aveva', workspaceId: 'ws-1' },
+      stored = null,
+    } = opts;
+    return buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+        findFirstOrThrow: jest.fn(),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['csv-1'],
+          // A CSV dataset records no PI fetch config — the reason a plain
+          // re-resolve would refuse (or rebind to CSV).
+          pipelineConfig: {
+            sourceFetchConfigs: { 'csv-1': { type: 'csv' } },
+            baseTags: ['a', 'b', 'y'],
+          },
+        }),
+      },
+      dataSource: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue(datasetSourceTypes.map((type) => ({ type }))),
+        findFirst: jest.fn().mockResolvedValue(piSource),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn().mockResolvedValue({}),
+        findUnique: jest.fn().mockResolvedValue(stored),
+      },
+    });
+  }
+
+  function overrideInputStatus() {
+    return buildInputStatus({
+      resolveOverrideColumnsService: jest
+        .fn()
+        .mockResolvedValue({ baseTags: ['a', 'b'], targetY: 'y' }),
+    });
+  }
+
+  function svc(
+    prisma: ReturnType<typeof buildPrisma>,
+    inputStatus = overrideInputStatus(),
+  ) {
+    return makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    );
+  }
+
+  it('binds the PI source with the mapped tags and probes the mapped tags', async () => {
+    const prisma = buildOverridePrisma();
+    const inputStatus = overrideInputStatus();
+    await svc(prisma, inputStatus).putScheduleService(
+      'model-1',
+      { enabled: true, liveSource: LIVE },
+      user,
+    );
+
+    const write = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(write.create).toMatchObject({
+      sourceId: 'pi-1',
+      fetchConfig: OVERRIDE_FETCH,
+    });
+    expect(inputStatus.preflightSourceService).toHaveBeenCalledWith(
+      'model-1',
+      user,
+      'pi-1',
+      { a: 'PI_A.PV', b: 'PI_B.PV' },
+    );
+  });
+
+  it('refuses an override when the dataset already has a PI source', async () => {
+    const prisma = buildOverridePrisma({ datasetSourceTypes: ['aveva'] });
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        { enabled: true, liveSource: LIVE },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('already has a PI or SQL source'),
+    });
+    expect(prisma.inferenceSchedule.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses a source that is not PI (SQL is T07)', async () => {
+    const prisma = buildOverridePrisma({
+      piSource: { id: 'pi-1', type: 'sql', workspaceId: 'ws-1' },
+    });
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        { enabled: true, liveSource: LIVE },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('must be a PI source'),
+    });
+  });
+
+  it("refuses a source shared with a different workspace than the model's", async () => {
+    const prisma = buildOverridePrisma({
+      piSource: { id: 'pi-1', type: 'aveva', workspaceId: 'ws-other' },
+    });
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        { enabled: true, liveSource: LIVE },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("shared with this model's workspace"),
+    });
+  });
+
+  it("refuses a private source, even the caller's own", async () => {
+    const prisma = buildOverridePrisma({
+      piSource: { id: 'pi-1', type: 'aveva', workspaceId: null },
+    });
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        { enabled: true, liveSource: LIVE },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("shared with this model's workspace"),
+    });
+  });
+
+  it('names the unmapped inputs and writes nothing', async () => {
+    const prisma = buildOverridePrisma();
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        {
+          enabled: true,
+          liveSource: { ...LIVE, columnTagMap: { a: 'PI_A.PV' } },
+        },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: 'Map every model input to a PI tag. Unmapped: b.',
+    });
+    expect(prisma.inferenceSchedule.upsert).not.toHaveBeenCalled();
+  });
+
+  it('keeps the override on a settings-only update of a running schedule', async () => {
+    const prisma = buildOverridePrisma({
+      stored: { sourceId: 'pi-1', fetchConfig: OVERRIDE_FETCH, enabled: true },
+    });
+    await svc(prisma).putScheduleService(
+      'model-1',
+      { enabled: true, warnSd: 1.2 },
+      user,
+    );
+    const write = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(write.update).toMatchObject({
+      sourceId: 'pi-1',
+      fetchConfig: OVERRIDE_FETCH,
+    });
+  });
+
+  it('keeps the override on a plain Start after a Stop', async () => {
+    const prisma = buildOverridePrisma({
+      stored: { sourceId: 'pi-1', fetchConfig: OVERRIDE_FETCH, enabled: false },
+    });
+    const inputStatus = overrideInputStatus();
+    await svc(prisma, inputStatus).putScheduleService(
+      'model-1',
+      { enabled: true },
+      user,
+    );
+    const write = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(write.update).toMatchObject({ sourceId: 'pi-1' });
+    expect(inputStatus.preflightSourceService).toHaveBeenCalledWith(
+      'model-1',
+      user,
+      'pi-1',
+      { a: 'PI_A.PV', b: 'PI_B.PV' },
+    );
+  });
+
+  it('drops a kept override once the PRODUCTION version reads a PI dataset', async () => {
+    // Promotion never rebinds the schedule, so the next Start must notice.
+    const prisma = buildOverridePrisma({
+      datasetSourceTypes: ['aveva'],
+      stored: { sourceId: 'pi-1', fetchConfig: OVERRIDE_FETCH, enabled: false },
+    });
+    prisma.dataset.findUnique = jest.fn().mockResolvedValue({
+      sourceIds: ['pi-ds'],
+      pipelineConfig: {
+        sourceFetchConfigs: { 'pi-ds': { type: 'pi', intervalTime: '1m' } },
+        baseTags: ['a', 'b'],
+      },
+    });
+    await svc(prisma).putScheduleService('model-1', { enabled: true }, user);
+    const write = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(write.update.sourceId).toBe('pi-ds');
+    expect(write.update.fetchConfig.liveSourceOverride).toBeUndefined();
+  });
+
+  it('refuses a kept override whose map no longer covers the new version', async () => {
+    const prisma = buildOverridePrisma({
+      stored: { sourceId: 'pi-1', fetchConfig: OVERRIDE_FETCH, enabled: true },
+    });
+    const inputStatus = buildInputStatus({
+      resolveOverrideColumnsService: jest
+        .fn()
+        .mockResolvedValue({ baseTags: ['a', 'c'], targetY: 'y' }),
+    });
+    await expect(
+      svc(prisma, inputStatus).putScheduleService(
+        'model-1',
+        { enabled: true, warnSd: 1.2 },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('no longer matches'),
+    });
+    expect(prisma.inferenceSchedule.upsert).not.toHaveBeenCalled();
+  });
+
+  it('creates a STOPPED schedule when a never-deployed model gets an override', async () => {
+    const prisma = buildOverridePrisma({ stored: null });
+    const create = jest.fn().mockResolvedValue({});
+    (prisma.inferenceSchedule as Record<string, unknown>).create = create;
+    const inputStatus = overrideInputStatus();
+    await svc(prisma, inputStatus).putScheduleService(
+      'model-1',
+      { enabled: false, liveSource: LIVE },
+      user,
+    );
+    expect(create.mock.calls[0][0].data).toMatchObject({
+      modelId: 'model-1',
+      enabled: false,
+      sourceId: 'pi-1',
+      fetchConfig: OVERRIDE_FETCH,
+    });
+    expect(inputStatus.preflightSourceService).not.toHaveBeenCalled();
+    expect(prisma.inferenceSchedule.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('relinks a STOPPED schedule to an override', async () => {
+    const prisma = buildOverridePrisma({ stored: { cadenceMinutes: 60 } });
+    await svc(prisma).putScheduleService(
+      'model-1',
+      { enabled: false, liveSource: LIVE },
+      user,
+    );
+    const write = prisma.inferenceSchedule.updateMany.mock.calls[0][0];
+    expect(write.data).toMatchObject({
+      enabled: false,
+      sourceId: 'pi-1',
+      fetchConfig: OVERRIDE_FETCH,
+      minRows: 30,
+    });
+  });
+});
+
+describe('InferenceWindowAuthorizedService.getScheduleService — live source override (MODEL-SERVE-037-T02)', () => {
+  it('marks a CSV-only dataset as requiring an override and lists its columns', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue({ sourceDatasetId: 'ds-1' }),
+        findFirstOrThrow: jest.fn(),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({ sourceIds: ['csv-1'] }),
+      },
+      dataSource: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { id: 'csv-1', name: 'upload', type: 'csv', status: 'active' },
+          ]),
+      },
+    });
+    const inputStatus = buildInputStatus({
+      resolveOverrideColumnsService: jest
+        .fn()
+        .mockResolvedValue({ baseTags: ['a', 'b'], targetY: 'y' }),
+    });
+    const res = await makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    ).getScheduleService('model-1', user);
+
+    expect(res.data.liveSource).toEqual({
+      required: true,
+      columns: ['a', 'b'],
+      target: 'y',
+      current: null,
+    });
+  });
+
+  it('does not offer an override when the dataset reads PI', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue({ sourceDatasetId: 'ds-1' }),
+        findFirstOrThrow: jest.fn(),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({ sourceIds: ['pi-1'] }),
+      },
+      dataSource: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { id: 'pi-1', name: 'PI', type: 'aveva', status: 'active' },
+          ]),
+      },
+    });
+    const inputStatus = buildInputStatus({
+      resolveOverrideColumnsService: jest.fn(),
+    });
+    const res = await makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    ).getScheduleService('model-1', user);
+
+    expect(res.data.liveSource.required).toBe(false);
+    expect(inputStatus.resolveOverrideColumnsService).not.toHaveBeenCalled();
   });
 });

@@ -148,7 +148,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h2 className="text-sm font-medium text-foreground">
-            Training configuration
+            Model configuration
           </h2>
           <p className="text-xs text-muted-foreground mt-1">
             Configure the model and hyperparameters for{' '}

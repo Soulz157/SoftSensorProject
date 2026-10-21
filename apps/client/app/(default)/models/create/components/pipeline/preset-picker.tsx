@@ -282,7 +282,7 @@ export function PresetPicker({ workspaceId, dirty }: Props) {
             </AlertDialogTitle>
             <AlertDialogDescription>
               What you have entered here — the name, the selected dataset and
-              any training configuration — is replaced by this model&apos;s data
+              any model configuration — is replaced by this model&apos;s data
               source, tags and processing rules. None of it has been saved yet,
               so it cannot be brought back.
             </AlertDialogDescription>

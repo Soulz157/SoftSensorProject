@@ -868,3 +868,45 @@ describe('InferenceWindowSchedulerService per-tag observations (MODEL-SERVE-009-
     expect(updates[0][0].data.inputKey).toContain('input.parquet');
   });
 });
+
+describe('InferenceWindowSchedulerService.resolveSource — live source override (MODEL-SERVE-037-T03)', () => {
+  const PI_ROW = {
+    type: 'aveva',
+    host: 'https://pi.invalid',
+    username: 'u',
+    dbName: 'PI',
+    secretCiphertext: 'enc',
+    config: {},
+  };
+
+  it('fetches the mapped PI tags and forwards the map for the rename', async () => {
+    const prisma = buildPrisma({
+      dataSource: { findUnique: jest.fn().mockResolvedValue(PI_ROW) },
+    });
+    const service = makeService(prisma);
+    const fc = service.asFetchConfig({
+      type: 'pi',
+      intervalTime: '1m',
+      baseTags: ['PI_A.PV'],
+      columnTagMap: { a: 'PI_A.PV' },
+      liveSourceOverride: true,
+    });
+
+    const source = await service.resolveSource('pi-1', fc);
+
+    expect(source.column_tag_map).toEqual({ a: 'PI_A.PV' });
+    expect(source.pi?.tag_list).toEqual(['PI_A.PV']);
+  });
+
+  it('sends no map for an ordinary dataset binding', async () => {
+    const prisma = buildPrisma({
+      dataSource: { findUnique: jest.fn().mockResolvedValue(PI_ROW) },
+    });
+    const service = makeService(prisma);
+    const source = await service.resolveSource(
+      'pi-1',
+      service.asFetchConfig({ intervalTime: '1m', baseTags: ['A'] }),
+    );
+    expect(source).not.toHaveProperty('column_tag_map');
+  });
+});

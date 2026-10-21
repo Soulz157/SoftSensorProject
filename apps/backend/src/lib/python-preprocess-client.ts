@@ -273,6 +273,7 @@ export async function materializeInferenceWindow(input: {
   interval: string;
   pi?: Record<string, unknown>;
   sql?: Record<string, unknown>;
+  column_tag_map?: Record<string, string>;
 }): Promise<InferenceWindowMaterializeResult> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/inference-window',
@@ -329,6 +330,7 @@ export async function joinInferenceWindowTruth(input: {
   tolerance_seconds: number;
   pi?: Record<string, unknown>;
   sql?: Record<string, unknown>;
+  column_tag_map?: Record<string, string>;
 }): Promise<InferenceWindowTruthJoinResult> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/inference-window/truth-join',

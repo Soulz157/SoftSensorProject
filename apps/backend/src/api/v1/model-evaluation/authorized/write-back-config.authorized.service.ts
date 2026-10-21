@@ -132,12 +132,14 @@ export class WriteBackConfigAuthorizedService {
 
     const predictionTag = cleanTag(dto.predictionTag);
     const labTag = cleanTag(dto.labTag);
-    const inputTags =
-      this.scheduler.asFetchConfig(schedule.fetchConfig).tags ?? [];
+    const fetchConfig = this.scheduler.asFetchConfig(schedule.fetchConfig);
+    const inputTags = fetchConfig.tags ?? [];
     const rule = validateOutputTags({
       predictionTag,
       labTag,
-      targetTag,
+      // PI names on both sides: under a live source override the target's
+      // PI tag is its mapped one (MODEL-SERVE-037-T03).
+      targetTag: fetchConfig.columnTagMap?.[targetTag] ?? targetTag,
       inputTags,
     });
     if (rule) throw unprocessable(rule);

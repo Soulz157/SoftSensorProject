@@ -4562,6 +4562,88 @@
         "A model without a recorded training range shows UNKNOWN with a retrain note, never a fabricated range."
       ],
       "verification": []
+    },
+    {
+      "id": "MODEL-SERVE-037",
+      "title": "Live data source for models trained on a non-schedulable dataset (CSV upload)",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": [
+        "MODEL-SERVE-013"
+      ],
+      "description": "A CSV upload is a DataSource of type 'csv', so a CSV-trained model's only schedule candidate is that CSV source. Start was allowed (preflight returned ok:null 'Not probed' for any non-PI type) and every scheduled window would then fail with \"DataSource ... has unsupported type 'csv' for scheduled inference.\" (inference-window-scheduler.service.ts resolveSource handles aveva and sql only). Relink candidates come only from the pinned version's dataset sourceIds (resolveScheduleSources / resolveSourceBinding), so the user cannot pick a PI source instead. T01 (option A) refuses Start; T02+ (option B) let the user bind a PI/SQL source with an explicit column-to-tag mapping.",
+      "userDecisions": [
+        "2026-10-20: user chose 'do A first, then plan B'.",
+        "2026-10-21: CSV column names are sometimes the PI tag and sometimes not; the user maps them by hand, like the feature preset Apply Mapping sheet (preset-apply-modal.tsx).",
+        "2026-10-21: PI first. SQL override is deferred to T07 (pending, future work).",
+        "2026-10-21: only PI sources SHARED INTO THE MODEL'S WORKSPACE qualify (private sources refused, even the caller's own).",
+        "2026-10-21: under an override, Start is refused when ANY mapped input tag gets no PI reading (user's answer was cut off; the recommended option was applied)."
+      ],
+      "findings": [
+        "resolveSourceBinding (inference-window.authorized.service.ts) requires sourceId in Dataset.sourceIds AND a pipelineConfig.sourceFetchConfigs[sourceId] entry; schedule.fetchConfig = that entry + baseTags.",
+        "Scheduler fetchConfig shape: {intervalTime, calcType?, calcBasis?, table?, timeColumn?, tags?}; PI fetch uses tags as tag_list and the frame columns are named by PI tag, so a CSV column name that differs from its PI tag needs a rename step in materialize.",
+        "Deploy step (phase-6) sends no sourceId and relies on the single-source fallback; the model Edit dialog relink uses lib/model-data-source.ts describeRelink (single-source = read-only).",
+        "Local DB has no CSV-only dataset or model (only 'asd' with csv+aveva); nothing here was live-verified with a real CSV-trained model."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-037-T01",
+          "title": "Option A: refuse Start when the bound source type is not schedulable",
+          "status": "completed",
+          "result": "2026-10-20: model-input-status.authorized.service.ts exports SCHEDULABLE_SOURCE_TYPES=['aveva','sql']; preflightSourceService returns ok:false with a reason naming the type and pointing to Run Predict / retrain, so putScheduleService's existing refusal path answers 422 'Cannot start: ...' and leaves no schedule row on a first enable. SQL stays ok:null (not probed). 3 new spec cases; model-input-status + inference-window.authorized specs 114/114 pass; tsc/eslint clean. Not browser-verified."
+        },
+        {
+          "id": "MODEL-SERVE-037-T02",
+          "title": "Backend: live source override - bind a workspace PI/SQL source that is NOT in the dataset's sourceIds when none of the dataset's sources is schedulable",
+          "status": "completed",
+          "result": "2026-10-21: PI only. DTO liveSource {sourceId, intervalTime, calcType, calcBasis, columnTagMap} (strict, not with sourceId). lib/live-source-override.ts: checkColumnTagMap (every base tag mapped, optional target, no unknown columns, no tag shared by two columns), buildOverrideFetchConfig {type:pi, intervalTime, calcType, calcBasis, baseTags = mapped PI tags, columnTagMap, liveSourceOverride:true}, readLiveSourceOverride. resolveOverrideBinding refuses when any dataset source is schedulable, a non-PI source, and a source shared with a different workspace than the model (access via dataSourceAccessWhere). Override is STICKY: a settings-only update or a plain Start keeps the stored binding (keptOverrideBinding). Stopped-schedule relink accepts liveSource. getScheduleService returns liveSource {required, columns, target, current}. Base tags come from ModelInputStatusAuthorizedService.resolveOverrideColumnsService (shared resolveInputs with the live status read). jest: live-source-override 7, inference-window.authorized +12 cases (incl. promotion re-check of a kept override), model-input-status +3; inference-window + model-version suites 218/218; tsc + eslint clean. NOT live: windows cannot succeed until T03 renames the fetched columns.",
+          "detail": "Extend resolveSourceBinding: if the dataset has no schedulable source, accept dto.sourceId of a schedulable DataSource readable in the model's workspace plus dto.liveFetchConfig {intervalTime, calcType, calcBasis | table, timeColumn} and dto.columnTagMap {column: tag}. Validate every model base column is mapped and the source is readable by the user (same workspace-share rule as the DataSource list). Persist into InferenceSchedule.fetchConfig (tags = mapped tags, columnTagMap) - Json column, no schema change. getScheduleService reports override-eligible sources."
+        },
+        {
+          "id": "MODEL-SERVE-037-T03",
+          "title": "Python materialize: rename fetched columns back to model column names via columnTagMap",
+          "status": "completed",
+          "result": "2026-10-21: python frame_service.rename_mapped_tags (value + __status sidecar); column_tag_map on InferenceWindowMaterializeRequest / InferenceEvalFrameRequest / InferenceWindowTruthJoinRequest; _build_window_frame renames before the recipe runs; the truth fetch reads the target by its mapped tag and renames back. Backend: scheduler.asFetchConfig exposes columnTagMap and resolveSource returns column_tag_map, so the scheduled window, Run Predict/live score, truth sweeper and evaluation compare all forward it; compare display tags use training names; write-back checks the target by its PI name. pytest 65 passed (new test_rename_mapped_tags 3 + 1 truth case), no new ruff findings; jest +2 resolveSource cases. Not live-verified (no CSV-trained model locally); the python service must be restarted to load it.",
+          "detail": "materialize_window gets an optional column_tag_map and renames each tag and its __status sidecar to the model column before select_columns, so feature_spec, scoring and TagObservation keep the training names. pytest. Backend: scheduler.asFetchConfig exposes columnTagMap (readLiveSourceOverride) and EVERY consumer of the schedule fetchConfig must pass or apply it (grep 2026-10-21): inference-window-scheduler dispatch (materialize), inference-truth-sweeper (target_column = CSV target name; rename the mapped target on the truth fetch or the join stays empty), live-predict-driver (Run Predict / live score, the path T01's message points CSV users to), model-evaluation.authorized.service (compare X panel uses fetchConfig.tags as display tags and filters the target by name), write-back-config + pi-write-back (inputTags from fetchConfig.tags). Each should show training column names, fetching by mapped PI tag."
+        },
+        {
+          "id": "MODEL-SERVE-037-T04",
+          "title": "Preflight with the mapping",
+          "status": "completed",
+          "result": "2026-10-21: preflight and the Input Data read ask PI for the MAPPED tags and file answers under training columns; under an override Start is refused when any mapped input tag gets no reading (reason lists column -> tag pairs). getInputStatusService returns unreadBaseTags. jest +3 cases.",
+          "detail": "preflightSourceService / getInputStatusService probe the MAPPED PI tags, not the CSV column names, so a wrong mapping is refused at Start ('PI reachable but no reading')."
+        },
+        {
+          "id": "MODEL-SERVE-037-T05",
+          "title": "Client: Deploy step + model Edit dialog source override UI",
+          "status": "completed",
+          "result": "2026-10-21: Edit dialog (model-upsert-dialog) shows LiveSourceOverrideSection when getSchedule.liveSource.required: PI source picker limited to sources shared with the model workspace, interval/calculation/basis, and a column-to-tag table like the preset Apply Mapping sheet (Matched/Missing pills, search, All/Matched/Needs attention, a tag field on missing or remapped rows); tags checked by useTagResolution, which now takes source ids. Save refused until every input resolves; enabled is echoed so binding never starts/stops the model. Backend creates a STOPPED schedule row when a never-deployed model gets its first override. RelinkState override-required. The wizard Deploy step was NOT given a mapping table: the mapping needs the saved PRODUCTION version, so Save & Deploy of a CSV model is refused with the T01 message, which now points to Edit > Data Source. vitest: live-source-mapping 5, model-data-source +2; client 597/597 in the related run; tsc + eslint clean. Not browser-verified.",
+          "detail": "When the dataset's only source is not schedulable: say why, offer a PI/SQL source picker (workspace sources), interval/calc fields, and a column-to-tag table modelled on the feature preset Apply Mapping sheet (preset-apply-modal.tsx CheckRow/StatusPill + compareTags in lib/feature-preset.ts): every model input column is checked by name against the chosen PI source (dataSourceService.resolveTags, as useTagResolution does - that hook reads dwSelectedSourcesAtom, so the model page needs a source-id parameter, not the Data Studio store); Matched / Missing pills, search + All / Matched / Needs attention filter, a missing column gets a 'Map to a PI tag' picker, Start stays disabled until every column resolves. Pure matching in lib/, tested. lib/model-data-source.ts gets a new RelinkState 'override-required'. vitest."
+        },
+        {
+          "id": "MODEL-SERVE-037-T06",
+          "title": "Verification",
+          "status": "pending",
+          "detail": "Build a CSV dataset whose columns are real PI tags, train, Deploy with override: windows SUCCEED and inputs keep training names; a wrong mapping is refused at Start; PI-trained models' relink and start specs unchanged."
+        },
+        {
+          "id": "MODEL-SERVE-037-T07",
+          "title": "Future: SQL live source override",
+          "status": "pending",
+          "detail": "Deferred by the user 2026-10-21 (PI first). Same override binding as T02 for a 'sql' DataSource: the user picks a table and time column instead of interval/calc, and maps each model input column to a TABLE COLUMN (there is no tag search for SQL, so the picker lists the table's columns from the connector's schema read). fetchConfig {table, timeColumn, baseTags: mapped columns, columnTagMap}; the T03 rename applies unchanged. Preflight stays not-probed for SQL unless a schema check is added."
+        }
+      ],
+      "acceptance_criteria": [
+        "A model whose bound source is CSV cannot be started; the error says why and what to do (T01).",
+        "A CSV-trained model can be bound to a PI/SQL source with an explicit column-to-tag mapping and its scheduled windows succeed (T02-T06).",
+        "PI-trained models' deploy and relink behave exactly as before."
+      ],
+      "verification": [
+        "T01: jest model-input-status (3 new cases) + inference-window.authorized specs, 114/114 pass, 2026-10-20.",
+        "T03-T05: backend 895/895 (inference-window, model-version, model-evaluation, lib), python 65 passed, client 597/597, tsc/eslint clean, 2026-10-21. No live run: no CSV-trained model exists locally.",
+        "T02: jest inference-window + model-version suites + live-source-override, 218/218 (incl. 2 promotion cases: kept override dropped for a PI-trained version, refused when the map no longer covers) pass, tsc/eslint clean, 2026-10-21. Not live-verified."
+      ]
     }
   ],
   "global_definition_of_done": [

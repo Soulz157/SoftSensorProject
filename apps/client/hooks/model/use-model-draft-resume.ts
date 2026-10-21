@@ -163,7 +163,7 @@ export function useModelDraftResume(): UseModelDraftResumeResult {
             setHighestUnlocked(2)
             if (droppedTarget) {
               toast.warning(
-                `Target “${droppedTarget}” is no longer in this dataset — pick a new one in Training Config.`,
+                `Target “${droppedTarget}” is no longer in this dataset — pick a new one in Model Config.`,
               )
             } else {
               toast.success(RESUME_MESSAGE)

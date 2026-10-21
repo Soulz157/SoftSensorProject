@@ -72,6 +72,7 @@ from services.frame_service import (
     diagnose_empty_pi_fetch,
     from_pi_response,
     from_sql_response,
+    rename_mapped_tags,
     utc_iso,
     utc_to_wall_clock,
 )
@@ -399,6 +400,10 @@ def _build_window_frame(store, request) -> tuple[pd.DataFrame, dict, pd.Timestam
             timestamp_column=sql_spec.timestamp_column,
             tags=sql_spec.tags,
         )
+
+    # MODEL-SERVE-037-T03. Before the recipe runs: it, the scalers and the
+    # model all address columns by their TRAINING names.
+    frame = rename_mapped_tags(frame, request.column_tag_map)
 
     if len(frame) == 0:
         # Two different failures used to share one sentence, and the sentence

@@ -413,11 +413,13 @@ export class PiWriteBackAuthorizedService implements OnModuleInit {
         'This model has no trained version to take a lab target from.',
       );
     }
+    const fetchConfig = this.scheduler.asFetchConfig(schedule.fetchConfig);
     const rule = validateOutputTags({
       predictionTag: config.predictionTag,
       labTag: config.labTag,
-      targetTag,
-      inputTags: this.scheduler.asFetchConfig(schedule.fetchConfig).tags ?? [],
+      // PI names, as in WriteBackConfigService (MODEL-SERVE-037-T03).
+      targetTag: fetchConfig.columnTagMap?.[targetTag] ?? targetTag,
+      inputTags: fetchConfig.tags ?? [],
     });
     if (rule)
       throw refuse(422, `Write-back config is no longer valid: ${rule}`);

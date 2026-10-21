@@ -110,7 +110,13 @@ export class ModelEvaluationAuthorizedService {
     const targetTag = d.targetY;
     // The X panel shows the model's raw base tags, minus the lab target (which
     // is Y, charted on its own). Never scored.
-    const displayTags = (fetchConfig.tags ?? []).filter((t) => t !== targetTag);
+    // Training names: under a live source override (MODEL-SERVE-037-T03)
+    // `tags` are the PI names python renames away before building rows.
+    const displayTags = (
+      fetchConfig.columnTagMap
+        ? Object.keys(fetchConfig.columnTagMap)
+        : (fetchConfig.tags ?? [])
+    ).filter((t) => t !== targetTag);
 
     let source: Awaited<
       ReturnType<InferenceWindowSchedulerService['resolveSource']>

@@ -11,6 +11,7 @@ import {
 } from '@/lib/feature-sources';
 import { DataSourceConnectService } from '@/api/v1/data-source/authorized/data-source.connect.service';
 import { canReadWithGrant } from '@/lib/workspace-permission';
+import { readLiveSourceOverride } from '@/lib/live-source-override';
 
 /**
  * MODEL-SERVE-001-T15. The Input Data tab's per-tag data-quality column —
@@ -41,6 +42,9 @@ import { canReadWithGrant } from '@/lib/workspace-permission';
 /** PI's own quality vocabulary, mapped into this system's display terms.
  *  `UNKNOWN` means PI returned nothing for the tag (or was unreachable) —
  *  never "assume Good". */
+/** DataSource types the inference scheduler can fetch a window from. */
+export const SCHEDULABLE_SOURCE_TYPES: readonly string[] = ['aveva', 'sql'];
+
 export type PiTagStatus = 'Good' | 'Questionable' | 'Bad' | 'UNKNOWN';
 
 export interface FeatureTagStatus {
@@ -155,6 +159,9 @@ export class ModelInputStatusAuthorizedService {
     modelId: string,
     user: Auth.UserPayload,
     sourceId: string,
+    // MODEL-SERVE-037-T04. The binding being STARTED, not the stored one: a
+    // live source override probes the PI tags its columns map to.
+    columnTagMap?: Record<string, string>,
   ): Promise<{ ok: boolean | null; reason: string | null }> {
     const source = await this.prisma.dataSource.findUnique({
       where: { id: sourceId },
@@ -162,6 +169,20 @@ export class ModelInputStatusAuthorizedService {
     });
     if (!source) {
       return { ok: false, reason: `Data source ${sourceId} not found.` };
+    }
+    // MODEL-SERVE-037-T01. A source the scheduler cannot read at all (a CSV
+    // upload) is a REFUSAL, not "not probed": started anyway, every window
+    // would fail hourly with "unsupported type". Same list as
+    // `InferenceWindowSchedulerService.resolveSource`.
+    if (!SCHEDULABLE_SOURCE_TYPES.includes(source.type)) {
+      return {
+        ok: false,
+        reason:
+          `This model's data source is a "${source.type}" source, which ` +
+          `scheduled inference cannot read (PI and SQL sources only). ` +
+          `Set a live PI source with a column-to-tag mapping in Edit > ` +
+          `Data Source, or retrain on a dataset from a PI or SQL source.`,
+      };
     }
     // The same guard `tagsCurrentById` applies, read UP FRONT so a non-PI
     // source is recorded as not-probed rather than as a failure wearing the
@@ -175,7 +196,8 @@ export class ModelInputStatusAuthorizedService {
       };
     }
 
-    const res = await this.getInputStatusService(modelId, user, sourceId);
+    const map = columnTagMap ?? {};
+    const res = await this.getInputStatusService(modelId, user, sourceId, map);
     const { features, unavailableReason } = res.data;
 
     // The connector's OWN TEXT, verbatim, straight through. V09 exists
@@ -198,6 +220,22 @@ export class ModelInputStatusAuthorizedService {
       };
     }
 
+    // MODEL-SERVE-037-T04 (user decision 2026-10-21). Under a live source
+    // override every mapped tag must answer: a tag PI has never heard of is
+    // a mapping mistake, and the Deploy table blocks it too — this keeps a
+    // direct API call from skipping that rule. Dataset-derived bindings keep
+    // the any-tag-readable rule above.
+    const unread = 'unreadBaseTags' in res.data ? res.data.unreadBaseTags : [];
+    if (Object.keys(map).length > 0 && unread.length > 0) {
+      return {
+        ok: false,
+        reason:
+          'PI returned no current reading for these mapped tags: ' +
+          unread.map((c) => `${c} → ${map[c] ?? c}`).join(', ') +
+          '. Check the column-to-tag mapping.',
+      };
+    }
+
     return { ok: true, reason: null };
   }
 
@@ -205,6 +243,9 @@ export class ModelInputStatusAuthorizedService {
     modelId: string,
     user: Auth.UserPayload,
     sourceIdOverride?: string,
+    // Only read with `sourceIdOverride`; otherwise the stored schedule's
+    // own map (if any) applies, so both answers come from one binding.
+    columnTagMapOverride?: Record<string, string>,
   ) {
     await this.assertModelAccess(modelId, user, 'monitoring-read');
 
@@ -227,50 +268,41 @@ export class ModelInputStatusAuthorizedService {
       });
     }
 
-    const featureColumns = await this.resolveFeatureColumns(
+    const inputs = await this.resolveInputs(
       version.sourceRun.manifestKey,
+      version.goldObjectKey,
     );
-    if (!featureColumns) {
-      return this.unavailable(
-        "This model's training run did not record its feature columns.",
-      );
-    }
+    if ('reason' in inputs) return this.unavailable(inputs.reason);
+    const { featureColumns, baseSourcesByColumn, unresolved, baseTags } =
+      inputs;
 
-    const specFeatures = await this.readSpecFeatures(version.goldObjectKey);
-    const { baseSourcesByColumn, unresolved } =
-      resolveFeatureSources(specFeatures);
-
-    const sourceId =
-      sourceIdOverride ??
-      (await this.resolveSourceId(modelId, version.sourceDatasetId));
-    if (!sourceId) {
+    const binding = sourceIdOverride
+      ? { sourceId: sourceIdOverride, columnTagMap: columnTagMapOverride ?? {} }
+      : await this.resolveBinding(modelId, version.sourceDatasetId);
+    if (!binding) {
       return this.unavailable(
         'Could not resolve which data source to read live tag status from — ' +
           'this model has no inference schedule, and its dataset has no single source.',
       );
     }
-
-    // Every BASE tag this model depends on: the feature columns that are not
-    // themselves derived, plus the base sources behind the ones that are.
-    const baseTags = new Set<string>();
-    for (const column of featureColumns) {
-      const sources = baseSourcesByColumn[column];
-      if (sources) {
-        for (const s of sources) baseTags.add(s);
-      } else if (!unresolved.has(column)) {
-        baseTags.add(column);
-      }
-    }
-
-    if (baseTags.size === 0) {
-      return this.unavailable(
-        'No base PI tags could be resolved for this model’s feature columns.',
-      );
-    }
+    const { sourceId, columnTagMap } = binding;
 
     let byTag: Map<string, TagCurrentRow>;
     try {
-      byTag = await this.fetchCurrent(user.id, sourceId, [...baseTags]);
+      // MODEL-SERVE-037-T04. Under a live source override PI is asked for
+      // the MAPPED tag, and the answer is filed back under the training
+      // column so everything below reads column names as before.
+      const piTag = (column: string) => columnTagMap[column] ?? column;
+      const byPiTag = await this.fetchCurrent(
+        user.id,
+        sourceId,
+        baseTags.map(piTag),
+      );
+      byTag = new Map();
+      for (const column of baseTags) {
+        const row = byPiTag.get(piTag(column));
+        if (row) byTag.set(column, row);
+      }
     } catch (err) {
       // PI unreachable, a non-PI source, or a source this user cannot read
       // (`resolveById` scopes by `createdById`). All three degrade this one
@@ -319,6 +351,8 @@ export class ModelInputStatusAuthorizedService {
         versionId: version.id,
         sourceId,
         features,
+        // Base columns PI returned nothing for (by training name).
+        unreadBaseTags: baseTags.filter((t) => !byTag.has(t)),
         unavailableReason: null,
       },
     };
@@ -423,22 +457,121 @@ export class ModelInputStatusAuthorizedService {
    *  the dataset's single source, the same rule `putScheduleService` uses;
    *  more than one source with no schedule is genuinely ambiguous, and
    *  guessing would attribute another source's tag health to this model. */
-  private async resolveSourceId(
+  private async resolveBinding(
     modelId: string,
     sourceDatasetId: string,
-  ): Promise<string | null> {
+  ): Promise<{
+    sourceId: string;
+    columnTagMap: Record<string, string>;
+  } | null> {
     const schedule = await this.prisma.inferenceSchedule.findFirst({
       where: { modelId },
-      select: { sourceId: true },
+      select: { sourceId: true, fetchConfig: true },
     });
-    if (schedule?.sourceId) return schedule.sourceId;
+    if (schedule?.sourceId) {
+      return {
+        sourceId: schedule.sourceId,
+        columnTagMap:
+          readLiveSourceOverride(schedule.fetchConfig)?.columnTagMap ?? {},
+      };
+    }
 
     const dataset = await this.prisma.dataset.findUnique({
       where: { id: sourceDatasetId },
       select: { sourceIds: true },
     });
-    if (dataset?.sourceIds.length === 1) return dataset.sourceIds[0];
+    if (dataset?.sourceIds.length === 1) {
+      return { sourceId: dataset.sourceIds[0], columnTagMap: {} };
+    }
     return null;
+  }
+
+  /**
+   * MODEL-SERVE-037-T02. The columns a live source override must map, off
+   * the PRODUCTION version — the same version `putScheduleService` binds.
+   * Throws: this answers a write, where "cannot say" must refuse.
+   */
+  async resolveOverrideColumnsService(
+    modelId: string,
+  ): Promise<{ baseTags: string[]; targetY: string | null }> {
+    const version = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+      include: { sourceRun: { select: { manifestKey: true, targetY: true } } },
+    });
+    if (!version) {
+      throw new AppException({
+        statusCode: 422,
+        message: `Model ${modelId} has no PRODUCTION version.`,
+        type: 'ERROR',
+      });
+    }
+    const inputs = await this.resolveInputs(
+      version.sourceRun.manifestKey,
+      version.goldObjectKey,
+    );
+    if ('reason' in inputs) {
+      throw new AppException({
+        statusCode: 422,
+        message: inputs.reason,
+        type: 'ERROR',
+      });
+    }
+    return {
+      baseTags: inputs.baseTags,
+      targetY: version.sourceRun.targetY ?? null,
+    };
+  }
+
+  /**
+   * Every BASE tag this model depends on: the feature columns that are not
+   * themselves derived, plus the base sources behind the ones that are. One
+   * derivation for the live status read and the override's coverage check,
+   * so the two can never disagree about what must be mapped.
+   */
+  private async resolveInputs(
+    manifestKey: string | null,
+    goldObjectKey: string,
+  ): Promise<
+    | {
+        featureColumns: string[];
+        baseSourcesByColumn: Record<string, string[]>;
+        unresolved: Set<string>;
+        baseTags: string[];
+      }
+    | { reason: string }
+  > {
+    const featureColumns = await this.resolveFeatureColumns(manifestKey);
+    if (!featureColumns) {
+      return {
+        reason: "This model's training run did not record its feature columns.",
+      };
+    }
+
+    const specFeatures = await this.readSpecFeatures(goldObjectKey);
+    const { baseSourcesByColumn, unresolved } =
+      resolveFeatureSources(specFeatures);
+
+    const baseTags = new Set<string>();
+    for (const column of featureColumns) {
+      const sources = baseSourcesByColumn[column];
+      if (sources) {
+        for (const s of sources) baseTags.add(s);
+      } else if (!unresolved.has(column)) {
+        baseTags.add(column);
+      }
+    }
+    if (baseTags.size === 0) {
+      return {
+        reason:
+          'No base PI tags could be resolved for this model’s feature columns.',
+      };
+    }
+    return {
+      featureColumns,
+      baseSourcesByColumn,
+      unresolved,
+      baseTags: [...baseTags],
+    };
   }
 
   private async fetchCurrent(

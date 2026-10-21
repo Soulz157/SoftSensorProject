@@ -16,7 +16,7 @@ import { Phase4ModelSelection } from './pipeline/phase-4-model-selection'
 const STEP_LABELS = [
   'Select Dataset',
   'Dataset Review',
-  'Training Config',
+  'Model Config',
   'Model Selection',
   'Evaluation',
   'Save Model',

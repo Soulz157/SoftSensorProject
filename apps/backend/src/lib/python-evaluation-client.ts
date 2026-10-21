@@ -45,6 +45,7 @@ export async function evaluationFrame(input: {
   max_rows: number;
   pi?: Record<string, unknown>;
   sql?: Record<string, unknown>;
+  column_tag_map?: Record<string, string>;
 }): Promise<EvaluationFrameResult> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/evaluation-frame',

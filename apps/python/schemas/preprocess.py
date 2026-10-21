@@ -951,6 +951,9 @@ class InferenceWindowMaterializeRequest(BaseModel):
     interval: str = Field(..., examples=["1m"])
     pi: Optional[PIFetchRequest] = None
     sql: Optional[SqlMaterializeSpec] = None
+    #: MODEL-SERVE-037-T03. Live source override: training column -> PI tag.
+    #: The source is fetched by tag and renamed back to the training names.
+    column_tag_map: Optional[dict[str, str]] = None
     #: A retry re-materializing the same window writes over its own prior
     #: (failed) attempt — the window row, not the object key, is this
     #: entity's immutability boundary (unlike a committed dataset version).
@@ -989,6 +992,9 @@ class InferenceEvalFrameRequest(BaseModel):
     max_rows: int = Field(2000, ge=1, le=20000)
     pi: Optional[PIFetchRequest] = None
     sql: Optional[SqlMaterializeSpec] = None
+    #: MODEL-SERVE-037-T03. Live source override: training column -> PI tag.
+    #: The source is fetched by tag and renamed back to the training names.
+    column_tag_map: Optional[dict[str, str]] = None
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "InferenceEvalFrameRequest":
@@ -1115,6 +1121,9 @@ class InferenceWindowTruthJoinRequest(BaseModel):
     tolerance_seconds: int = Field(..., gt=0, examples=[1800])
     pi: Optional[PIFetchRequest] = None
     sql: Optional[SqlMaterializeSpec] = None
+    #: MODEL-SERVE-037-T03. Live source override: training column -> PI tag.
+    #: The source is fetched by tag and renamed back to the training names.
+    column_tag_map: Optional[dict[str, str]] = None
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "InferenceWindowTruthJoinRequest":

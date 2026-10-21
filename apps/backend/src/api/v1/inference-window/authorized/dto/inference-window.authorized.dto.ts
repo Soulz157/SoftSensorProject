@@ -18,12 +18,41 @@ import { z } from 'zod';
  * the SERVICE against the row's final, merged state, since this schema has
  * no view of what is already persisted.
  */
+/**
+ * MODEL-SERVE-037-T02. A PI source the model's dataset never named, for a
+ * model whose dataset has no source the scheduler can read (a CSV upload).
+ * The dataset recorded no PI summary settings, so they arrive here, and
+ * `columnTagMap` says which PI tag carries each training column live.
+ * Option lists match the client's (lib/fetch-config.ts).
+ */
+export const LiveSourceOverrideSchema = z
+  .object({
+    sourceId: z.string().trim().min(1),
+    // The shape `deriveMinRows` parses (lib/inference-windows.ts).
+    intervalTime: z
+      .string()
+      .trim()
+      .regex(
+        /^[1-9]\d*\s*[smhd]$/,
+        'intervalTime must look like 1m, 5m or 1h.',
+      ),
+    calcType: z
+      .enum(['Average', 'Minimum', 'Maximum', 'Total', 'StdDev', 'Count'])
+      .default('Average'),
+    calcBasis: z
+      .enum(['TimeWeighted', 'EventWeighted', 'TimeWeightedContinuous'])
+      .default('TimeWeighted'),
+    columnTagMap: z.record(z.string().trim().min(1), z.string().max(512)),
+  })
+  .strict();
+
 export const PutInferenceScheduleSchema = z
   .object({
     enabled: z.boolean(),
     cadenceMinutes: z.number().int().positive().max(1440).optional(),
     lagMinutes: z.number().int().nonnegative().max(1440).optional(),
     sourceId: z.string().trim().min(1).optional(),
+    liveSource: LiveSourceOverrideSchema.optional(),
     autoRetrain: z.boolean().optional(),
     warnSd: z.number().positive().optional(),
     criticalSd: z.number().positive().optional(),
@@ -50,6 +79,10 @@ export const PutInferenceScheduleSchema = z
     frozenTolerancePct: z.number().nonnegative().max(100).optional(),
   })
   .strict()
+  // One binding per request: `liveSource` carries its own source id.
+  .refine((dto) => !(dto.liveSource && dto.sourceId), {
+    message: 'Send either sourceId or liveSource, not both.',
+  })
   .refine(
     (dto) =>
       dto.warnSd === undefined ||

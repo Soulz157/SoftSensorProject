@@ -360,3 +360,26 @@ def mark_questionable(
     out = frame.copy()
     out.loc[out.index[positions], column] = STATUS_QUESTIONABLE
     return out
+
+
+def rename_mapped_tags(
+    frame: pd.DataFrame, column_tag_map: Mapping[str, str] | None
+) -> pd.DataFrame:
+    """MODEL-SERVE-037-T03. Rename fetched PI tags back to training columns.
+
+    A live source override fetches each training column under the PI tag it
+    is mapped to (`column_tag_map`: training column -> PI tag). Everything
+    downstream -- the feature recipe, scaling, the model, TagObservation --
+    knows only the training names, so each mapped tag AND its `__status`
+    sidecar are renamed back before anything else reads the frame. A tag
+    mapped to its own name, or absent from the frame, is left alone.
+    """
+    if not column_tag_map:
+        return frame
+    renames: dict[str, str] = {}
+    for column, tag in column_tag_map.items():
+        if tag == column or tag not in frame.columns:
+            continue
+        renames[tag] = column
+        renames[status_column(tag)] = status_column(column)
+    return frame.rename(columns=renames) if renames else frame

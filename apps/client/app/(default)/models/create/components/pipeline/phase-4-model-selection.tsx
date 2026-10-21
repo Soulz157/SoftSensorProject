@@ -46,7 +46,7 @@ export function Phase4ModelSelection({ nav }: Props) {
         </EmptyPanel>
         <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
           <Button variant="outline" onClick={() => nav.goTo(3)}>
-            Go to Training Configuration
+            Go to Model Configuration
           </Button>
         </div>
       </div>

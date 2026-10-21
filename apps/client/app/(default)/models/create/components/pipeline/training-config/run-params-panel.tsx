@@ -666,7 +666,7 @@ function RunCard({
             title={
               nonTerminal
                 ? 'Available once this run finishes.'
-                : 'Load these parameters into Training Config'
+                : 'Load these parameters into Model Config'
             }
             onClick={() => onApply(run)}
           >
@@ -741,7 +741,7 @@ function RunCard({
               <Provenance
                 icon={Ruler}
                 value={splitText}
-                title={`Train ${splitPct}% / test ${100 - splitPct}% — Apply writes this ratio back into Training Config.`}
+                title={`Train ${splitPct}% / test ${100 - splitPct}% — Apply writes this ratio back into Model Config.`}
               />
             )}
             {/* MODEL-FLOW-019-T34, closing MODEL-FLOW-014-T07/V06's own open

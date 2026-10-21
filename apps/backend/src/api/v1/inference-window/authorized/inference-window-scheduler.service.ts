@@ -16,6 +16,7 @@ import { formatDtHour, windowStartsBetween } from '@/lib/inference-windows';
 import { env } from '@/config/env.config';
 import { buildPiCredentials } from '@/lib/source-block';
 import { nextTagObservation, type FetchOutcome } from '@/lib/tag-observation';
+import { readLiveSourceOverride } from '@/lib/live-source-override';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
 
@@ -589,6 +590,9 @@ export class InferenceWindowSchedulerService
     table?: string;
     timeColumn?: string;
     tags?: string[];
+    /** MODEL-SERVE-037-T03. Training column -> PI tag, only under a live
+     *  source override. `tags` are then the PI names (what is fetched). */
+    columnTagMap?: Record<string, string>;
   } {
     const raw = (value ?? {}) as Record<string, unknown>;
     return {
@@ -602,6 +606,7 @@ export class InferenceWindowSchedulerService
       tags: Array.isArray(raw.baseTags)
         ? raw.baseTags.filter((t): t is string => typeof t === 'string')
         : undefined,
+      columnTagMap: readLiveSourceOverride(value)?.columnTagMap,
     };
   }
 
@@ -620,7 +625,13 @@ export class InferenceWindowSchedulerService
   async resolveSource(
     sourceId: string,
     fetchConfig: ReturnType<InferenceWindowSchedulerService['asFetchConfig']>,
-  ): Promise<{ pi?: Record<string, unknown>; sql?: Record<string, unknown> }> {
+  ): Promise<{
+    pi?: Record<string, unknown>;
+    sql?: Record<string, unknown>;
+    // MODEL-SERVE-037-T03. Rides along with the credentials so every python
+    // call that spreads this result renames the fetched tags back.
+    column_tag_map?: Record<string, string>;
+  }> {
     const row = await this.prisma.dataSource.findUnique({
       where: { id: sourceId },
     });
@@ -629,9 +640,13 @@ export class InferenceWindowSchedulerService
     }
     const secret = decryptSecret(row.secretCiphertext);
     const config = (row.config ?? {}) as Record<string, unknown>;
+    const mapped = fetchConfig.columnTagMap
+      ? { column_tag_map: fetchConfig.columnTagMap }
+      : {};
 
     if (row.type === 'aveva') {
       return {
+        ...mapped,
         pi: {
           credentials: buildPiCredentials(row, secret),
           tag_list: fetchConfig.tags ?? [],
@@ -647,6 +662,7 @@ export class InferenceWindowSchedulerService
     }
     if (row.type === 'sql') {
       return {
+        ...mapped,
         sql: {
           query: {
             credentials: {

@@ -424,3 +424,27 @@ def test_a_healthy_but_quiet_pi_source_still_returns_an_honest_empty_result(
 
     assert result["n"] == 0
     assert result["truth_rows"] == 0
+
+
+def test_override_reads_the_target_by_its_mapped_pi_tag(monkeypatch):
+    """MODEL-SERVE-037-T03. A CSV-trained model's target lives in PI under a
+    different name: PI is asked for the mapped tag, and the join still
+    reads the training name."""
+    asked: list[list[str]] = []
+
+    async def fake_fetch(body, interval):
+        asked.append(list(body.tag_list))
+        kind = body.summary_type[0]
+        is_count = getattr(kind, "value", kind) == "Count"
+        data = [{"timestamp": "2026-09-14 15:00:00", "value": 1 if is_count else 40.0}]
+        return {"results": [{"tag_name": "PI_LAB.PV", "status": "ok", "data": data}]}
+
+    monkeypatch.setattr(ground_truth_service._pi, "fetch", fake_fetch)
+    store = RecordingStore()
+    _write_predictions(store, [("2026-09-14 15:00:00", 41.0)])
+    request = _pi_request().model_copy(update={"column_tag_map": {TAG: "PI_LAB.PV"}})
+
+    result = ground_truth_service.join_window_truth(store, request)
+
+    assert asked == [["PI_LAB.PV"], ["PI_LAB.PV"]]
+    assert result["n"] == 1
