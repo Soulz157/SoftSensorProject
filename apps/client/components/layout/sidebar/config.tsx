@@ -69,7 +69,7 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
       // },
       {
         id: 'models-evaluation',
-        name: 'Model Evaluation',
+        name: 'BackFill',
         icon: <Gauge className="h-4 w-4" />,
         href: '/models/evaluation',
       },

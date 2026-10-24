@@ -4578,6 +4578,90 @@
         "pnpm check-types and pnpm lint clean.",
         "Live: Round 1 with 2 algorithms -> pick non-winner -> fine-tune with grid + 1 row -> Step 4 shows Round 2 Recommended and Round 1 runs in earlier group (PENDING: app not running; not verified)."
       ]
+    },
+    {
+      "id": "MODEL-FLOW-036",
+      "title": "Step 3 order: Algorithm -> Core configuration -> Fine-tune -> ONE Start button (Start Training / Start Fine-tune) -> Run parameters",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-FLOW-035"
+      ],
+      "description": "Recompose Step 3 so the sections follow the user's decisions: pick algorithm(s) + card values first (they gate CV, seed and split stats), then core configuration, then train the base models (Run parameters right below), then fine-tune the picked run from its own section with its own Start Fine-tune button. Pure client recomposition of existing components; no backend, trainer, store schema or planner change. Save Model stays the only final commit.",
+      "userDecisions": [
+        "2026-10-22: layout B — Fine-tune is the LAST section with its own Start Fine-tune button. Supersedes MODEL-FLOW-035's 'layout A, inside Algorithm & hyperparameters, ONE Start button'.",
+        "2026-10-22: hyperparameter fields stay on the algorithm cards (AlgorithmStack unchanged).",
+        "2026-10-22 (later the same day): Train and Fine-tune are ONE button again (label = mode: 'Start Training' / 'Start Fine-tune'), and a second training press stays 'Start Training', never 'Retrain'. Supersedes the two-Start layout B above; Fine-tune stays its own section, now directly above the button.",
+        "2026-10-22: the Fine-tune section's algorithm cards fold/unfold like the algorithm selector's cards, to save space."
+      ],
+      "findings": [
+        "Split stats need an applied target (use-artifact-split-stats enabled requires targetY); target is set only in Step 3, so with Algorithm first, GPR's size check (ineligibleReason, grp only) is unknown until the target is applied.",
+        "Existing gap kept out of scope: CV is disabled with 2+ algorithms, so a fine-tune after a multi-algorithm Round 1 can never cross-validate."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-036-T01",
+          "title": "Extract the Runtime estimate + Start button + status lines block into training-config/training-actions.tsx (TrainingActions); no new UI",
+          "status": "completed",
+          "result": "DONE 2026-10-22. training-config/training-actions.tsx: the old phase-3 L289-374 block (Timer heading, RuntimeEstimate, Start button, refusal/dirty/log/error/done lines) moved as-is, plus `owner` (only the owner shows progress/log/error/done; a non-owner says 'Training in progress…'). training-actions.test.tsx 5 cases."
+        },
+        {
+          "id": "MODEL-FLOW-036-T02",
+          "title": "phase-3: reorder to Algorithm -> Core config (+ split panel, Apply bar) -> Train base models (+ Run parameters) -> Fine-tune; drop AlgorithmStackSummary branch; two buttons with own refusals; progress shown only in the launching section",
+          "status": "completed",
+          "result": "DONE 2026-10-22. phase-3-training-config.tsx order: Algorithm & hyperparameters (AlgorithmStack, always — the AlgorithmStackSummary branch is gone) -> Core configuration (CoreConfig + SplitDistributionPanel, props unchanged) -> Apply bar -> TrainingActions 'Train base models' (training.start, launchRefusal) -> RunParamsPanel -> FineTuneSection -> TrainingActions 'Fine-tune' (rendered while fineTune.active; training.fineTune(fineTune.input), fineTune.refusal). canStart shared; canTrainBase / canFineTune split. launchedBy useState('base'|'fineTune') picks the owner, defaults to 'base' after reload/resume. [SUPERSEDED IN PART by T07: back to one Start button; launchedBy removed.]"
+        },
+        {
+          "id": "MODEL-FLOW-036-T03",
+          "title": "Copy: fine-tune-section strings name Start Fine-tune; phase-3 done line says 'below'; delete AlgorithmStackSummary",
+          "status": "completed",
+          "result": "DONE 2026-10-22. fine-tune-section.tsx: 'Start Fine-tune tunes the model picked below…' / 'Turn on to tune one of the trained models.'; header comment rewritten. Base done text: 'Training complete — compare the runs below, then fine-tune one or continue to Model Selection.' AlgorithmStackSummary deleted (no consumer left; it had no test of its own). [SUPERSEDED IN PART by T07: AlgorithmStackSummary restored; switch-off text again says what Start Training does.]"
+        },
+        {
+          "id": "MODEL-FLOW-036-T04",
+          "title": "AlgorithmStack: grp item shows 'Size check runs once a target is applied.' while trainLabelledRows is null",
+          "status": "completed",
+          "result": "DONE 2026-10-22. Wording changed from the plan: 'Size not checked until a target and train/test split are applied.' — train_labelled_rows is null in CV mode even with a target, so 'once a target is applied' would have been false there. algorithm-stack.test +1 case, +1 assertion."
+        },
+        {
+          "id": "MODEL-FLOW-036-T05",
+          "title": "Tests: phase-3 order + launching-section progress + Start Fine-tune; fine-tune-section copy; algorithm-stack summary removed + grp hint; training-actions",
+          "status": "completed",
+          "result": "DONE 2026-10-22. phase-3-training-config.test: the 035 one-Start block replaced by 4 cases (section order via compareDocumentPosition; switch disabled + no Start Fine-tune before a run; Fine-tune on adds Start Fine-tune after Start Training while the cards stay; a run in flight shows progress in exactly one section). fine-tune-section.test copy updated. Four suites: 47/47."
+        },
+        {
+          "id": "MODEL-FLOW-036-T06",
+          "title": "Verification: case counts, full client suite vs the 25 HEAD failures, check-types, lint; live browser run if available",
+          "status": "in_progress",
+          "result": "PARTIAL 2026-10-22. Client tsc clean; eslint clean on all changed files. Four suites 47/47 (phase-3 9, fine-tune-section + algorithm-stack 33, training-actions 5). Full client run: 27 failed / 3398 passed, 11 files. 25 are the known HEAD failures listed in MODEL-FLOW-035-T09 (core-config Seed x7, feature-count-sweep x8, phase-4 x4, chart-time-axis, model-selection-contract, model-detail-dialog x2, monitoring x2, store/useAtom file). The other 2 (retrain-validation-window timeout, use-dataset-edit-hydration) import none of the changed files and pass in isolation (21/21) — load-flaky. NOT done: live browser check (dev server up on :3000, Claude browser extension not connected)."
+        },
+        {
+          "id": "MODEL-FLOW-036-T07",
+          "title": "One Start button for both rounds; no 'Retrain' label; order Algorithm -> Core -> Fine-tune -> Start -> Run params",
+          "status": "completed",
+          "result": "DONE 2026-10-22. Design by Laws of UX (DESIGN_SYSTEM.md §12) + 'buttons name the action': Hick — one primary action in Step 3 (footer owns Next); Proximity/Common Region — Fine-tune (the last input) sits directly above the Start it arms, Run parameters (the output) below it; Fitts — the button never moves between rounds; Tesler — the switch text states what Start does in each mode; Run-1 scores already sit on the fine-tune choice cards, so picking needs no scroll to Run parameters. TrainingActions lost owner/title (one caller); launchedBy removed; AlgorithmStackSummary restored from HEAD (cards fold while fine-tuning — Start reads none of them). phase-3 test: 036 block = order + exactly one /^Start / button, switch disabled before a run, switch toggles Start Training <-> Start Fine-tune with summary/Edit, done state still 'Start Training' (no Retrain). training-actions test 5 cases. Run: training-config/__tests__ + phase-3 + hooks/model 312 passed, 7 failed = core-config Seed x7 (known HEAD failure). tsc clean; eslint 0 errors (warnings only in untouched core-config/run-params-panel/runtime-estimate)."
+        },
+        {
+          "id": "MODEL-FLOW-036-T08",
+          "title": "Fine-tune choice cards collapse/expand on a chevron like AlgorithmStack's cards",
+          "status": "completed",
+          "result": "DONE 2026-10-22. fine-tune-section.tsx: collapsedId state in FineTuneSection; ChoiceCard gains expanded/onToggle and a chevron button styled exactly like AlgorithmCard's (h-8 w-8, ChevronDown rotate-180, aria-expanded + aria-controls, label 'Hide/Show <algorithm> hyperparameters'). The radio and the chevron are separate controls (a radio cannot carry aria-expanded). Only the picked card has fields, so only it has a chevron; others keep an aria-hidden h-8 w-8 spacer so score columns align. Picking a card opens it (setCollapsedId(null)), even after a fold; folding never changes the picked run. fine-tune-section.test +2 cases (fine-tune-section 12, phase-3 9: 21/21). tsc clean, eslint clean."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Step 3 order: Algorithm & hyperparameters, Core configuration, Fine-tune, the one Start button, Run parameters.",
+        "One Start button: 'Start Training' trains every selected algorithm once with card values; with Fine-tune on it reads 'Start Fine-tune' and tunes the picked run.",
+        "A second press after a finished run still reads 'Start Training' (no 'Retrain').",
+        "The button is disabled while a run is in flight or while edits are unapplied, and shows the current mode's refusal.",
+        "No component is duplicated."
+      ],
+      "verification": [
+        "Client: fine-tune-section 12 + phase-3 9 — 21/21 after T08 (2026-10-22).",
+        "Client: phase-3 + training-config/__tests__ + hooks/model — 312 passed; only core-config Seed x7 fail (known at HEAD) (2026-10-22).",
+        "Client tsc clean; eslint 0 errors on changed files (2026-10-22).",
+        "Live: Round 1 -> Fine-tune via the same button on /models/create (PENDING: Claude browser extension not connected)."
+      ]
     }
   ],
   "global_definition_of_done": [

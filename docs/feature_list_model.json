@@ -4644,6 +4644,53 @@
         "T03-T05: backend 895/895 (inference-window, model-version, model-evaluation, lib), python 65 passed, client 597/597, tsc/eslint clean, 2026-10-21. No live run: no CSV-trained model exists locally.",
         "T02: jest inference-window + model-version suites + live-source-override, 218/218 (incl. 2 promotion cases: kept override dropped for a PI-trained version, refused when the map no longer covers) pass, tsc/eslint clean, 2026-10-21. Not live-verified."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-038",
+      "title": "Deploy preflight / live tag status send only base tags to PI, never engineered (lag/roll) columns",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-037"
+      ],
+      "description": "User asked 2026-10-22 to check that a deployed model never fetches Feature-engineering columns (lag, roll…) from PI — only base tags. Scheduled inference already fetches only Dataset.pipelineConfig.baseTags and rebuilds derived columns from feature_spec in Python. The leak was in model-input-status (enable-time preflight + Input Data live tag status): a feature column with no recipe in feature_spec was ASSUMED to be a base tag and sent to PI.",
+      "findings": [
+        "ROOT CAUSE CONFIRMED 2026-10-22: DatasetTest has TWO FINAL artifacts — bc8606d0 (03:11, spec: 108 recipes, raw-unit psiRefEdges/scalingParams, e.g. FI001.PV 0..827) and bbf2db7d (03:16, the one ModelTest 1 trained on) which was re-committed FROM the first, already min-max-scaled GOLD: its spec has features: [] AND psiRefEdges/scalingParams in [0,1]. So besides the lost recipes, replay would scale raw PI values with an identity transform and the model would score garbage (offline check: R2 -1.4). The re-commit path (likely artifact_service commit-from-feature-stage with request.features empty and a GOLD source) is not yet identified. ModelTest 1 (c1f7180b…) / DatasetTest (755b962d…): pipelineConfig.features holds 108 auto lag/rolling/datetime recipes but its GOLD feature_spec.json has features: [] — so preflight sent all 116 columns to PI and refused Start. Dataset-s611water2 (auto features, 2026-10-19) has all 120 recipes in its spec, so not every auto-features save loses them; the losing save path is NOT identified (DatasetTest was created 2026-10-22 while another session had uncommitted dataset-hook edits). Not fixed here — open its own item.",
+        "Observed, not diagnosed: one name PI does not know in a TagService.current_values batch nulled every tag in that batch against the fake PI (Flow-1 included). Not yet checked whether real PI behaves the same or it is the fake's not-found item shape.",
+        "The toast listed mock names (Flow-1…) because mockup-names display mode rewrites API text; the model's real columns are FI001.PV etc."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-038-T01",
+          "title": "resolveInputs takes the dataset's pipelineConfig.baseTags; a recipe-less column that is not one of them is `unrecorded`, never sent to PI; feature status UNKNOWN 'not read from PI'; data.unrecordedColumns",
+          "status": "completed",
+          "result": "DONE 2026-10-22. model-input-status.authorized.service.ts: datasetBaseTags(version.sourceDatasetId) -> resolveInputs(..., knownBaseTags). Only applied when the dataset records non-empty baseTags; resolveOverrideColumnsService (CSV override path) keeps the old rule."
+        },
+        {
+          "id": "MODEL-SERVE-038-T02",
+          "title": "Preflight refuses when any feature column is unrecorded, naming up to 5 and saying to re-save the dataset and retrain",
+          "status": "completed",
+          "result": "DONE 2026-10-22. Scheduled replay could not rebuild such a column either, so starting would fail every window."
+        },
+        {
+          "id": "MODEL-SERVE-038-T03",
+          "title": "Tests + verification",
+          "status": "in_progress",
+          "result": "model-input-status spec 22/22 (19 existing + 3 new: lost recipe never sent to PI; preflight refuses naming it; spec with recipe passes and asks PI for the base tag only). Backend tsc clean, eslint clean on both files. NOT done: live Start on ModelTest 1 to see the new message (needs a signed-in click)."
+        }
+      ],
+      "acceptance_criteria": [
+        "PI is asked only for dataset base tags and spec-traced sources.",
+        "A model whose spec lost engineered recipes is refused at Start with a reason naming the columns.",
+        "Existing behaviour unchanged when the dataset records no baseTags."
+      ],
+      "verification": [
+        "model-input-status spec 22/22 (2026-10-22).",
+        "backend tsc + eslint clean (2026-10-22).",
+        "Live: press Start on ModelTest 1 -> new refusal text (PENDING)."
+      ],
+      "userDecisions": []
     }
   ],
   "global_definition_of_done": [

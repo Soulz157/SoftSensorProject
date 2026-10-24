@@ -39,7 +39,7 @@ export interface UseFineTuneResult {
   /** The switch the user flips. Read `active` to decide what Start does. */
   enabled: boolean
   setEnabled: (on: boolean) => void
-  /** `enabled` AND there is a run to tune: Start Training fine-tunes. */
+  /** `enabled` AND there is a run to tune: Step 3's Start fine-tunes. */
   active: boolean
   metric: ScoreMetric
   /** The selector's cards: one per trained algorithm, its best run, best
@@ -71,11 +71,11 @@ export interface UseFineTuneResult {
 }
 
 /**
- * MODEL-FLOW-035 — the fine-tune (Round 2) state behind Step 3's single Start
- * button. The Fine-tune switch in the Algorithm & hyperparameters section
- * decides what Start does: off, Round 1 (every algorithm once); on, a
- * hyperparameter search over the run the user picked. One hook, so the panel
- * that edits it and the button that launches it can never disagree.
+ * MODEL-FLOW-035 — the fine-tune (Round 2) state behind Step 3's ONE Start
+ * button. The Fine-tune switch (its own section since MODEL-FLOW-036, right
+ * above Start) decides what Start does: off, Round 1 (every algorithm once);
+ * on, a hyperparameter search over the run the user picked. One hook, so the
+ * panel that edits it and the button that launches it can never disagree.
  */
 export function useFineTune({
   nav,

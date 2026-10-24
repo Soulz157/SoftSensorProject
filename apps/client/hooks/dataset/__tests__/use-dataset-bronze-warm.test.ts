@@ -131,6 +131,44 @@ describe('useDatasetBronzeWarm (DS-LAKE-005B-B-T01)', () => {
     expect(datasetDraftService.materialize).toHaveBeenCalledTimes(1)
   })
 
+  it('fresh: a new Step 2 fetch (new range) re-materializes instead of reusing the old BRONZE', async () => {
+    vi.mocked(datasetDraftService.create).mockResolvedValue({
+      data: { id: 'draft-1' },
+    } as never)
+    vi.mocked(datasetDraftService.materialize)
+      .mockResolvedValueOnce({ data: { id: 'artifact-short' } } as never)
+      .mockResolvedValueOnce({ data: { id: 'artifact-long' } } as never)
+
+    const { result, store, rerender } = renderWithStore()
+
+    act(() => {
+      result.current(['TI-101'], { fresh: true })
+    })
+    await waitFor(() =>
+      expect(store.get(dwDraftArtifactIdAtom)).toBe('artifact-short'),
+    )
+
+    act(() => {
+      store.set(dwCustomDateRangeAtom, {
+        from: '2025-06-01T00:00',
+        to: '2026-01-02T00:00',
+      })
+    })
+    rerender()
+    act(() => {
+      result.current(['TI-101'], { fresh: true })
+    })
+    await waitFor(() =>
+      expect(store.get(dwDraftArtifactIdAtom)).toBe('artifact-long'),
+    )
+
+    expect(datasetDraftService.create).toHaveBeenCalledTimes(1)
+    expect(datasetDraftService.materialize).toHaveBeenCalledTimes(2)
+    expect(
+      vi.mocked(datasetDraftService.materialize).mock.calls[1]?.[1],
+    ).toMatchObject({ startTime: expect.stringContaining('2025-06-01') })
+  })
+
   describe('dwBronzeWarmStateAtom (DS-LAKE-015-T01)', () => {
     it('goes idle -> materializing -> ready on success', async () => {
       vi.mocked(datasetDraftService.create).mockResolvedValue({

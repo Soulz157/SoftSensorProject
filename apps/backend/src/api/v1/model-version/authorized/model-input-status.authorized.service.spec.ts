@@ -445,3 +445,87 @@ describe('preflightSourceService — override needs every mapped tag (MODEL-SERV
     expect(res.ok).toBe(true);
   });
 });
+
+/**
+ * MODEL-SERVE-038. A feature column with no recipe in the feature spec used
+ * to be assumed a base tag and sent to PI — an engineered `X__lag1` whose
+ * recipe the spec lost then nulled the readings it was batched with and
+ * blocked Start with a list of every column. With the dataset's own
+ * `pipelineConfig.baseTags` known, only those (and spec-traced sources) reach PI.
+ */
+describe('ModelInputStatusAuthorizedService — only base tags reach PI (MODEL-SERVE-038)', () => {
+  const DATASET = {
+    sourceIds: ['src-1'],
+    pipelineConfig: { baseTags: ['TI-101', 'LAB.y'] },
+  };
+
+  it('never sends a recipe-less engineered column to PI, and marks it UNKNOWN', async () => {
+    mockedGetRunManifest.mockResolvedValue({
+      feature_columns: ['TI-101', 'TI-101__lag1'],
+    });
+    mockedReadFeatureSpec.mockResolvedValue({ spec: { features: [] } });
+    const prisma = makePrisma({ dataset: DATASET });
+    const connect = makeConnect([
+      { tag_name: 'TI-101', value: 1, isGood: true },
+    ]);
+    const data = (
+      await build(prisma, connect).getInputStatusService('m1', ADMIN)
+    ).data as StatusData & { unrecordedColumns: string[] };
+
+    expect(connect.tagsCurrentById).toHaveBeenCalledWith('u1', 'src-1', {
+      tagList: ['TI-101'],
+    });
+    expect(data.unrecordedColumns).toEqual(['TI-101__lag1']);
+    expect(data.features.map((f) => [f.column, f.status])).toEqual([
+      ['TI-101', 'Good'],
+      ['TI-101__lag1', 'UNKNOWN'],
+    ]);
+    expect(data.features[1]?.reason).toMatch(/not read from PI/);
+  });
+
+  function preflight(spec: { features: unknown[] }) {
+    mockedGetRunManifest.mockResolvedValue({
+      feature_columns: ['TI-101', 'TI-101__lag1'],
+    });
+    mockedReadFeatureSpec.mockResolvedValue({ spec });
+    const prisma = {
+      ...makePrisma({ dataset: DATASET }),
+      dataSource: {
+        findUnique: jest.fn().mockResolvedValue({ type: 'aveva' }),
+      },
+    };
+    const connect = makeConnect([
+      { tag_name: 'TI-101', value: 1, isGood: true },
+    ]);
+    return {
+      run: () =>
+        build(prisma, connect).preflightSourceService('m1', ADMIN, 'src-1'),
+      connect,
+    };
+  }
+
+  it('preflight refuses a lost recipe, naming the column instead of probing PI for it', async () => {
+    const { run, connect } = preflight({ features: [] });
+    const res = await run();
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/1 feature column\(s\)/);
+    expect(res.reason).toMatch(/TI-101__lag1/);
+    expect(res.reason).toMatch(/Re-save the dataset/);
+    expect(connect.tagsCurrentById).toHaveBeenCalledWith('u1', 'src-1', {
+      tagList: ['TI-101'],
+    });
+  });
+
+  it('preflight passes when the spec records the recipe — PI is asked for the base tag only', async () => {
+    const { run, connect } = preflight({
+      features: [
+        { name: 'TI-101__lag1', kind: 'lag', config: { tag: 'TI-101', k: 1 } },
+      ],
+    });
+    const res = await run();
+    expect(res).toEqual({ ok: true, reason: null });
+    expect(connect.tagsCurrentById).toHaveBeenCalledWith('u1', 'src-1', {
+      tagList: ['TI-101'],
+    });
+  });
+});

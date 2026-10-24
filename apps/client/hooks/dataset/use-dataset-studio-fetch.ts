@@ -282,8 +282,9 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
         // success. A partial/failed run has no complete tag list to
         // materialize correctly, and `ctx.allTags` still refers to the
         // FULL requested set (not per-batch), which is what `materialize`
-        // needs.
-        warmBronze(ctx.allTags)
+        // needs. `fresh`: this run's data replaces whatever BRONZE an
+        // earlier fetch (e.g. a shorter range) left on the draft.
+        warmBronze(ctx.allTags, { fresh: true })
       }
     },
     [setFetchState, setProgress, setRawDataset, tagConstants, warmBronze],

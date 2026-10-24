@@ -196,6 +196,15 @@ export function AlgorithmStack({
                 // all" outranks "this dataset is too big for it" when both
                 // apply.
                 const reason = DEFERRED_REASON[a] ?? oversizedReason[a]
+                // MODEL-FLOW-036. Algorithms now come before the target, and
+                // the GPR size check reads the train split's labelled rows,
+                // known only once a target and a train/test split (not CV)
+                // are applied — say so rather than drop GPR silently later.
+                const pending =
+                  !reason && a === 'grp' && trainLabelledRows === null
+                    ? 'Size not checked until a target and train/test split are applied.'
+                    : null
+                const note = reason ?? pending
                 return (
                   <DropdownMenuCheckboxItem
                     key={a}
@@ -206,9 +215,9 @@ export function AlgorithmStack({
                   >
                     <span className="flex flex-col">
                       <span>{ALGORITHM_LABELS[a]}</span>
-                      {reason && (
+                      {note && (
                         <span className="text-[10px] leading-snug whitespace-normal text-muted-foreground">
-                          {reason}
+                          {note}
                         </span>
                       )}
                     </span>

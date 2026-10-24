@@ -328,11 +328,11 @@ describe('Phase3TrainingConfig — V08: Evaluation reachability gates on Apply, 
 })
 
 /**
- * MODEL-FLOW-035. Step 3 has ONE Start button for both rounds; the Fine-tune
- * switch inside Algorithm & hyperparameters decides what it does, and the
- * algorithm cards fold to a summary while it is on (Start reads none of them).
+ * MODEL-FLOW-036. Step 3's inputs read in the order the user decides them —
+ * algorithm, core configuration, Fine-tune — followed by ONE Start button
+ * whose mode is the Fine-tune switch, then Run parameters.
  */
-describe('Phase3TrainingConfig — one Start button for both rounds (MODEL-FLOW-035)', () => {
+describe('Phase3TrainingConfig — Algorithm → Core → Fine-tune → one Start (MODEL-FLOW-036)', () => {
   const SUCCEEDED_RUN = {
     id: 'run-1',
     status: 'SUCCEEDED',
@@ -367,37 +367,29 @@ describe('Phase3TrainingConfig — one Start button for both rounds (MODEL-FLOW-
     finishedAt: '2026-08-27T00:00:30.000Z',
   }
 
-  it('the Fine-tune switch turns Start Training into Start Fine-tune and back', async () => {
+  const withSucceededRun = () =>
     h.runsList.mockResolvedValue({
       data: [SUCCEEDED_RUN],
       statusCode: 200,
       message: 'ok',
       type: 'success',
     })
+
+  const follows = (a: Element, b: Element) =>
+    Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+  it('renders the inputs in decision order, then the one Start button', async () => {
     renderStep3()
-
-    const fineTune = await screen.findByRole('switch', { name: 'Fine-tune' })
-    await waitFor(() => expect(fineTune).toBeEnabled(), { timeout: 2000 })
-    expect(
+    const order = [
+      screen.getByRole('heading', { name: 'Algorithm & hyperparameters' }),
+      screen.getByRole('heading', { name: 'Core configuration' }),
+      await screen.findByRole('switch', { name: 'Fine-tune' }),
       screen.getByRole('button', { name: /Start Training/ }),
-    ).toBeInTheDocument()
-
-    fireEvent.click(fineTune)
-
-    expect(
-      await screen.findByRole('button', { name: /Start Fine-tune/ }),
-    ).toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', { name: /Start Training/ }),
-    ).not.toBeInTheDocument()
-    expect(screen.getByText(/not used while fine-tuning/)).toBeInTheDocument()
-
-    // Edit on the folded algorithm summary turns Fine-tune off again.
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    expect(
-      await screen.findByRole('button', { name: /Start Training/ }),
-    ).toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: 'Fine-tune' })).not.toBeChecked()
+    ]
+    for (let i = 1; i < order.length; i++) {
+      expect(follows(order[i - 1]!, order[i]!)).toBe(true)
+    }
+    expect(screen.getAllByRole('button', { name: /^Start / })).toHaveLength(1)
   })
 
   it('before any run succeeds the switch is disabled and Start trains the algorithms', async () => {
@@ -407,5 +399,43 @@ describe('Phase3TrainingConfig — one Start button for both rounds (MODEL-FLOW-
     expect(
       screen.getByRole('button', { name: /Start Training/ }),
     ).toBeInTheDocument()
+  })
+
+  it('the Fine-tune switch turns the one Start into Start Fine-tune and back', async () => {
+    withSucceededRun()
+    renderStep3()
+
+    const fineTune = await screen.findByRole('switch', { name: 'Fine-tune' })
+    await waitFor(() => expect(fineTune).toBeEnabled(), { timeout: 2000 })
+    fireEvent.click(fineTune)
+
+    expect(
+      await screen.findByRole('button', { name: /Start Fine-tune/ }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /Start Training/ }),
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^Start / })).toHaveLength(1)
+    // Start reads none of the algorithm cards while fine-tuning, so they fold.
+    expect(screen.getByText(/not used while fine-tuning/)).toBeInTheDocument()
+
+    // Edit on the folded summary turns Fine-tune off again.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(
+      await screen.findByRole('button', { name: /Start Training/ }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Fine-tune' })).not.toBeChecked()
+  })
+
+  it('after a finished run the button still says Start Training, never Retrain', async () => {
+    store.set(mpTrainStateAtom, { status: 'done', progress: 100 })
+    renderStep3()
+    await screen.findByRole('switch', { name: 'Fine-tune' })
+    expect(
+      screen.getByRole('button', { name: /Start Training/ }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /Retrain/ }),
+    ).not.toBeInTheDocument()
   })
 })

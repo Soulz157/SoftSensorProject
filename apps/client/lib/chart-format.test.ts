@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatDayMonth } from './chart-format'
+import { formatDayMonth, formatDayMonthTime } from './chart-format'
 
 describe('formatDayMonth', () => {
   // Naive strings (no Z / no offset) are the pipeline's own dialect — Bangkok
@@ -43,5 +43,16 @@ describe('formatDayMonth', () => {
 
   it('returns empty string for an unparseable value', () => {
     expect(formatDayMonth('not-a-date')).toBe('')
+  })
+})
+
+describe('formatDayMonthTime', () => {
+  it('keeps day and month on a short-span tick, read verbatim', () => {
+    expect(formatDayMonthTime('2026-10-21 10:00:00')).toBe('21 Oct 10:00')
+    expect(formatDayMonthTime('2026-01-05T23:59:00')).toBe('5 Jan 23:59')
+  })
+
+  it('returns empty for an unreadable value', () => {
+    expect(formatDayMonthTime('not a date')).toBe('')
   })
 })

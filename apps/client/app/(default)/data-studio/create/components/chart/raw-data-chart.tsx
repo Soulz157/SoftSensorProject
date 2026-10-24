@@ -17,12 +17,11 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart'
 import {
-  rangeConfig,
   resolveTagMeta,
   chartColorVar,
   type TimeRange,
 } from '@/lib/mock-readings'
-import { formatDayMonth } from '@/lib/chart-format'
+import { formatDayMonth, formatDayMonthTime } from '@/lib/chart-format'
 import type { SensorChartRow } from '@/hooks/use-sensor-readings'
 import { RangeDisplay } from './range-display'
 import { TrendTooltip } from './trend-tooltip'
@@ -33,17 +32,21 @@ import { SegmentedToggle } from '@/components/segmented-toggle'
 interface Props {
   rows: SensorChartRow[]
   tags: string[]
-  range: TimeRange
   hideTagSelector?: boolean
+  /**
+   * The fetch range. No longer read: ticks used to take their format from
+   * it (24h -> clock time, 7d -> weekday), neither of which names a date.
+   * Kept so callers stay unchanged.
+   */
+  range?: TimeRange
   /** Emphasized tag(s) from the sidebar — non-focused lines dim when set. */
   focusedTag?: string[]
   /** Master override: when true, every line renders at full opacity. */
   isViewAll?: boolean
   /**
-   * X-axis ticks as `12 Sep` (date + month, no time) instead of the
-   * range-derived clock format. Opt-in — this component is also used by the
-   * EDA line chart (`data-analysis-card.tsx`), which keeps `rangeConfig`'s
-   * default formatting.
+   * X-axis ticks as `12 Sep` (date + month, no time). Off, ticks read
+   * `12 Sep 10:00`: the range-derived clock time / weekday used to show no
+   * date at all on the EDA line chart's short spans.
    */
   dateOnlyTicks?: boolean
   /**
@@ -107,7 +110,6 @@ function durStr(ms: number): string {
 export function RawTrendChart({
   rows,
   tags,
-  range,
   hideTagSelector = false,
   focusedTag,
   isViewAll = false,
@@ -115,7 +117,6 @@ export function RawTrendChart({
   loading = false,
 }: Props) {
   const reducedMotion = usePrefersReducedMotion()
-  const { tickFormat } = rangeConfig(range)
 
   const [hidden, setHidden] = useState<Set<string>>(new Set())
   const handleVisible = (next: string[] | null) =>
@@ -382,7 +383,7 @@ export function RawTrendChart({
               tickFormatter={value =>
                 dateOnlyTicks
                   ? formatDayMonth(String(value))
-                  : tickFormat(String(value))
+                  : formatDayMonthTime(String(value))
               }
             />
             <YAxis

@@ -1,6 +1,7 @@
 'use client'
 
-import { SlidersHorizontal } from 'lucide-react'
+import { useState } from 'react'
+import { ChevronDown, SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
@@ -32,10 +33,10 @@ interface Props {
 }
 
 /**
- * MODEL-FLOW-035 — Round 2, as a panel inside Algorithm & hyperparameters.
- * Its switch decides what Step 3's single Start button does: off, train every
- * algorithm above once; on, a hyperparameter search over the model picked
- * here. The model is picked the way Round 1's algorithms are shown — one card
+ * MODEL-FLOW-035 — Round 2. Since MODEL-FLOW-036 its own section, the last
+ * input above Step 3's ONE Start button; its switch decides what that button
+ * does: off, train every algorithm above once; on, a hyperparameter search
+ * over the model picked here. The model is picked the way Round 1's algorithms are shown — one card
  * per trained algorithm, the best by the Loss function preselected — and the
  * open card carries the same hyperparameter fields, starting at that run's
  * values, so the fine-tune's starting point can be adjusted before the
@@ -63,6 +64,11 @@ export function FineTuneSection({ fineTune, nSplits, datasetSize }: Props) {
     setUseGrid,
   } = fineTune
   const open = enabled && source !== null
+  // MODEL-FLOW-036-T08. The picked card opens on its fields, like a newly
+  // added algorithm card; its chevron folds it to save room. Only the picked
+  // card has fields (the fine-tune's base belongs to the picked run), so the
+  // one id folded is all the state there is. Picking another card opens it.
+  const [collapsedId, setCollapsedId] = useState<string | null>(null)
 
   return (
     <div
@@ -80,8 +86,8 @@ export function FineTuneSection({ fineTune, nSplits, datasetSize }: Props) {
             {!available
               ? 'Available once a training run succeeds — train the algorithms above first.'
               : open
-                ? `Start Training tunes the model picked below — the best by ${SCORE_METRIC_LABELS[metric]} is preselected.`
-                : 'Off: Start Training trains every algorithm above once. Turn on to tune one model.'}
+                ? `Start Fine-tune tunes the model picked below — the best by ${SCORE_METRIC_LABELS[metric]} is preselected.`
+                : 'Off: Start Training trains every algorithm above once. Turn on to tune one of the trained models.'}
           </p>
         </div>
         <Switch
@@ -109,8 +115,19 @@ export function FineTuneSection({ fineTune, nSplits, datasetSize }: Props) {
                   choice={choice}
                   metric={metric}
                   selected={choice.run.id === source.id}
+                  expanded={
+                    choice.run.id === source.id && collapsedId !== source.id
+                  }
+                  onToggle={() =>
+                    setCollapsedId(prev =>
+                      prev === choice.run.id ? null : choice.run.id,
+                    )
+                  }
                   best={choice.run.id === defaultRunId}
-                  onSelect={() => setSourceRunId(choice.run.id)}
+                  onSelect={() => {
+                    setSourceRunId(choice.run.id)
+                    setCollapsedId(null)
+                  }}
                   hyperparameters={base}
                   onChange={setBaseValue}
                   datasetSize={datasetSize}
@@ -158,12 +175,16 @@ export function FineTuneSection({ fineTune, nSplits, datasetSize }: Props) {
 /**
  * One trained algorithm, styled like Round 1's algorithm card. Picking it
  * tunes its best run; once picked it opens on that run's hyperparameters,
- * editable as on Round 1's card.
+ * editable as on Round 1's card, and folds/unfolds on its chevron the way
+ * Round 1's cards do. The radio and the chevron are separate controls: a
+ * radio cannot carry `aria-expanded`.
  */
 function ChoiceCard({
   choice,
   metric,
   selected,
+  expanded,
+  onToggle,
   best,
   onSelect,
   hyperparameters,
@@ -173,6 +194,9 @@ function ChoiceCard({
   choice: FineTuneChoice
   metric: ScoreMetric
   selected: boolean
+  /** Picked AND not folded: the fields show. */
+  expanded: boolean
+  onToggle: () => void
   best: boolean
   onSelect: () => void
   /** The fine-tune's starting values — read only while `selected`. */
@@ -193,58 +217,81 @@ function ChoiceCard({
         selected ? 'border-primary/60 bg-primary/3' : 'border-border',
       )}
     >
-      <button
-        type="button"
-        role="radio"
-        aria-checked={selected}
-        aria-controls={selected ? panelId : undefined}
-        onClick={onSelect}
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-      >
-        <span
-          aria-hidden="true"
-          className={cn(
-            'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border',
-            selected ? 'border-primary' : 'border-muted-foreground/50',
-          )}
+      <div className="flex items-center gap-0.5 pr-1">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={selected}
+          onClick={onSelect}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
-          {selected && <span className="h-1.5 w-1.5 rounded-full bg-primary" />}
-        </span>
-        <span className="min-w-0 truncate text-sm font-medium text-foreground">
-          {label}
-        </span>
-        {best && (
-          <Badge
-            variant="outline"
-            className="h-4 shrink-0 px-1.5 text-[9px] font-medium"
-            title={`Lowest ${SCORE_METRIC_LABELS[metric]} of the trained models.`}
+          <span
+            aria-hidden="true"
+            className={cn(
+              'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border',
+              selected ? 'border-primary' : 'border-muted-foreground/50',
+            )}
           >
-            best
-          </Badge>
-        )}
-        {choice.runCount > 1 && (
-          <span className="shrink-0 text-[10px] text-muted-foreground">
-            best of {choice.runCount} runs
+            {selected && (
+              <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+            )}
           </span>
-        )}
-        <span className="ml-auto flex shrink-0 items-baseline gap-2 font-mono text-xs tabular-nums text-foreground">
-          <span>
-            <span className="mr-1 font-sans text-[9px] uppercase text-muted-foreground">
-              {head.isCv ? 'cv ' : ''}
-              {SCORE_METRIC_LABELS[metric]}
+          <span className="min-w-0 truncate text-sm font-medium text-foreground">
+            {label}
+          </span>
+          {best && (
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 px-1.5 text-[9px] font-medium"
+              title={`Lowest ${SCORE_METRIC_LABELS[metric]} of the trained models.`}
+            >
+              best
+            </Badge>
+          )}
+          {choice.runCount > 1 && (
+            <span className="shrink-0 text-[10px] text-muted-foreground">
+              best of {choice.runCount} runs
             </span>
-            {formatCvScore(head.value, METRIC_META[metric].format)}
-          </span>
-          <span>
-            <span className="mr-1 font-sans text-[9px] uppercase text-muted-foreground">
-              {head.isCv ? 'cv ' : ''}R²
+          )}
+          <span className="ml-auto flex shrink-0 items-baseline gap-2 font-mono text-xs tabular-nums text-foreground">
+            <span>
+              <span className="mr-1 font-sans text-[9px] uppercase text-muted-foreground">
+                {head.isCv ? 'cv ' : ''}
+                {SCORE_METRIC_LABELS[metric]}
+              </span>
+              {formatCvScore(head.value, METRIC_META[metric].format)}
             </span>
-            {formatCvScore(head.r2, METRIC_META.r2.format)}
+            <span>
+              <span className="mr-1 font-sans text-[9px] uppercase text-muted-foreground">
+                {head.isCv ? 'cv ' : ''}R²
+              </span>
+              {formatCvScore(head.r2, METRIC_META.r2.format)}
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+        {selected ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={expanded}
+            aria-controls={panelId}
+            aria-label={`${expanded ? 'Hide' : 'Show'} ${label} hyperparameters`}
+            className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            <ChevronDown
+              className={cn(
+                'h-3.5 w-3.5 transition-transform',
+                expanded && 'rotate-180',
+              )}
+            />
+          </button>
+        ) : (
+          // Keeps every card's score column aligned with the picked one's.
+          <span aria-hidden="true" className="h-8 w-8 shrink-0" />
+        )}
+      </div>
 
-      {selected && (
+      {expanded && (
         <div
           id={panelId}
           className="border-t border-border/60 px-3 pt-2.5 pb-3"

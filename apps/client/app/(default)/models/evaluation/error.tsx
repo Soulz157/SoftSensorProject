@@ -19,7 +19,7 @@ export default function EvaluationError({ error, reset }: Props) {
       <AlertCircle className="h-10 w-10 text-destructive" />
       <div>
         <p className="text-base font-semibold text-foreground">
-          Failed to load model evaluation
+          Failed to load BackFill
         </p>
         <p className="mt-1 text-sm text-muted-foreground">
           Could not fetch models across workspaces.

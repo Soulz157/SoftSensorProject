@@ -180,7 +180,7 @@ export function AutoFeaturesDialog({
                     <span className="text-muted-foreground">
                       {pairBlocked
                         ? family === 'loop'
-                          ? '- no loop with 2 or more tags (e.g. AI602A and AI602B) in this dataset'
+                          ? '- no loop with 2 or more tags in this dataset'
                           : '- star at least 2 critical tags in Step 1 to pair them'
                         : family === 'pairwise'
                           ? `- ${detail}: ${pairTags.join(', ')}`

@@ -43,13 +43,24 @@ export class DataSourceAuthorizedService {
     };
   }
 
-  /** A source can only be shared into a workspace the caller belongs to. */
-  private async assertWorkspaceMember(workspaceId: string, userId: string) {
+  /**
+   * A source can only be shared into a workspace the caller belongs to. An
+   * ADMIN is exempt, as on every other workspace check: the workspace picker
+   * lists every workspace to an admin, so a membership rule here refused
+   * most of what the picker offered with "Workspace not found".
+   */
+  private async assertWorkspaceMember(
+    workspaceId: string,
+    userId: string,
+    userRole?: string,
+  ) {
     const workspace = await this.prisma.workspace.findFirst({
       where: {
         id: workspaceId,
         deletedAt: null,
-        OR: [{ ownerId: userId }, { members: { some: { userId } } }],
+        ...(userRole !== 'ADMIN' && {
+          OR: [{ ownerId: userId }, { members: { some: { userId } } }],
+        }),
       },
       select: { id: true },
     });
@@ -87,9 +98,13 @@ export class DataSourceAuthorizedService {
     };
   }
 
-  async createDataSourceService(userId: string, dto: CreateDataSourceDto) {
+  async createDataSourceService(
+    userId: string,
+    dto: CreateDataSourceDto,
+    userRole?: string,
+  ) {
     if (dto.workspaceId) {
-      await this.assertWorkspaceMember(dto.workspaceId, userId);
+      await this.assertWorkspaceMember(dto.workspaceId, userId, userRole);
     }
     const item = await this.prisma.dataSource.create({
       data: {
@@ -119,6 +134,7 @@ export class DataSourceAuthorizedService {
     userId: string,
     id: string,
     dto: UpdateDataSourceDto,
+    userRole?: string,
   ) {
     const existing = await this.prisma.dataSource.findUnique({ where: { id } });
     if (!existing || existing.createdById !== userId) {
@@ -129,7 +145,7 @@ export class DataSourceAuthorizedService {
       });
     }
     if (dto.workspaceId) {
-      await this.assertWorkspaceMember(dto.workspaceId, userId);
+      await this.assertWorkspaceMember(dto.workspaceId, userId, userRole);
     }
     const item = await this.prisma.dataSource.update({
       where: { id },

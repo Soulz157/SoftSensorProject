@@ -205,6 +205,26 @@ export class ModelInputStatusAuthorizedService {
     // already correct.
     if (unavailableReason) return { ok: false, reason: unavailableReason };
 
+    // MODEL-SERVE-038. An engineered column (`X__lag3`) with no recipe in the
+    // version's feature_spec is not a PI tag, and the scheduled replay could
+    // not rebuild it from PI either — every window would fail on a missing
+    // column. Say which, rather than probing PI for names it never had.
+    const unrecorded =
+      'unrecordedColumns' in res.data ? res.data.unrecordedColumns : [];
+    if (unrecorded.length > 0) {
+      const shown = unrecorded.slice(0, 5).join(', ');
+      const more =
+        unrecorded.length > 5 ? ` and ${unrecorded.length - 5} more` : '';
+      return {
+        ok: false,
+        reason:
+          `${unrecorded.length} feature column(s) are neither a base tag of ` +
+          `this model's dataset nor recorded in its feature spec (${shown}${more}), ` +
+          'so scheduled inference could not rebuild them from PI. Re-save the ' +
+          'dataset so its feature spec records them, then retrain.',
+      };
+    }
+
     // PI answered, but for nothing this model reads. Every window would fetch
     // an empty frame and fail hourly — the same 70-FAILED-window outcome as
     // an unreachable host, reached by a different route. T27 delegates
@@ -271,10 +291,16 @@ export class ModelInputStatusAuthorizedService {
     const inputs = await this.resolveInputs(
       version.sourceRun.manifestKey,
       version.goldObjectKey,
+      await this.datasetBaseTags(version.sourceDatasetId),
     );
     if ('reason' in inputs) return this.unavailable(inputs.reason);
-    const { featureColumns, baseSourcesByColumn, unresolved, baseTags } =
-      inputs;
+    const {
+      featureColumns,
+      baseSourcesByColumn,
+      unresolved,
+      unrecorded,
+      baseTags,
+    } = inputs;
 
     const binding = sourceIdOverride
       ? { sourceId: sourceIdOverride, columnTagMap: columnTagMapOverride ?? {} }
@@ -316,6 +342,15 @@ export class ModelInputStatusAuthorizedService {
     }
 
     const features: FeatureTagStatus[] = featureColumns.map((column) => {
+      if (unrecorded.has(column)) {
+        return {
+          column,
+          status: 'UNKNOWN' as const,
+          reason:
+            'Not a base tag of the dataset and not recorded in the feature ' +
+            'spec — not read from PI.',
+        };
+      }
       if (unresolved.has(column)) {
         return {
           column,
@@ -353,6 +388,8 @@ export class ModelInputStatusAuthorizedService {
         features,
         // Base columns PI returned nothing for (by training name).
         unreadBaseTags: baseTags.filter((t) => !byTag.has(t)),
+        // MODEL-SERVE-038. Feature columns never sent to PI (see resolveInputs).
+        unrecordedColumns: featureColumns.filter((c) => unrecorded.has(c)),
         unavailableReason: null,
       },
     };
@@ -531,11 +568,21 @@ export class ModelInputStatusAuthorizedService {
   private async resolveInputs(
     manifestKey: string | null,
     goldObjectKey: string,
+    /**
+     * MODEL-SERVE-038. The dataset's own `pipelineConfig.baseTags` — what the
+     * scheduler actually fetches. When given (non-empty), a feature column
+     * with no spec recipe is a base tag ONLY if it is one of these; anything
+     * else (an engineered `X__lag3` whose recipe the spec lost) is
+     * `unrecorded` and never sent to PI. Omitted: the old rule — every
+     * recipe-less column is assumed to be a base tag.
+     */
+    knownBaseTags?: ReadonlySet<string>,
   ): Promise<
     | {
         featureColumns: string[];
         baseSourcesByColumn: Record<string, string[]>;
         unresolved: Set<string>;
+        unrecorded: Set<string>;
         baseTags: string[];
       }
     | { reason: string }
@@ -551,12 +598,18 @@ export class ModelInputStatusAuthorizedService {
     const { baseSourcesByColumn, unresolved } =
       resolveFeatureSources(specFeatures);
 
+    const checkBase = knownBaseTags !== undefined && knownBaseTags.size > 0;
     const baseTags = new Set<string>();
+    const unrecorded = new Set<string>();
     for (const column of featureColumns) {
       const sources = baseSourcesByColumn[column];
       if (sources) {
         for (const s of sources) baseTags.add(s);
-      } else if (!unresolved.has(column)) {
+      } else if (unresolved.has(column)) {
+        continue;
+      } else if (checkBase && !knownBaseTags.has(column)) {
+        unrecorded.add(column);
+      } else {
         baseTags.add(column);
       }
     }
@@ -570,8 +623,26 @@ export class ModelInputStatusAuthorizedService {
       featureColumns,
       baseSourcesByColumn,
       unresolved,
+      unrecorded,
       baseTags: [...baseTags],
     };
+  }
+
+  /** MODEL-SERVE-038. The dataset's recorded base tags (what the scheduler
+   *  fetches), or undefined when there is no dataset or none are recorded. */
+  private async datasetBaseTags(
+    datasetId: string | null,
+  ): Promise<Set<string> | undefined> {
+    if (!datasetId) return undefined;
+    const dataset = await this.prisma.dataset.findUnique({
+      where: { id: datasetId },
+      select: { pipelineConfig: true },
+    });
+    const raw = (dataset?.pipelineConfig as { baseTags?: unknown } | null)
+      ?.baseTags;
+    if (!Array.isArray(raw)) return undefined;
+    const tags = raw.filter((t): t is string => typeof t === 'string');
+    return tags.length > 0 ? new Set(tags) : undefined;
   }
 
   private async fetchCurrent(

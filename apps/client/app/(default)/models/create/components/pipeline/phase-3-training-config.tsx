@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { AlertTriangle, Cpu, Loader2, Timer, Upload } from 'lucide-react'
+import { AlertTriangle, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useModelTraining } from '@/hooks/model/use-model-training'
 import { useModelDraftSync } from '@/hooks/model/use-model-draft-sync'
@@ -20,7 +20,6 @@ import { planTrainingLaunch } from '@/lib/training-launch'
 import { useFineTune } from '@/hooks/model/use-fine-tune'
 import { baseHyperparamsFor } from '@/lib/tuning-preview'
 import { CoreConfig } from './training-config/core-config'
-import { RuntimeEstimate } from './training-config/runtime-estimate'
 import { RunParamsPanel } from './training-config/run-params-panel'
 import { SplitDistributionPanel } from './training-config/split-distribution-panel'
 import {
@@ -28,6 +27,7 @@ import {
   AlgorithmStackSummary,
 } from './training-config/algorithm-stack'
 import { FineTuneSection } from './training-config/fine-tune-section'
+import { TrainingActions } from './training-config/training-actions'
 
 interface Props {
   nav: UsePipelineNavResult
@@ -121,9 +121,10 @@ export function Phase3TrainingConfig({ nav }: Props) {
     }
   }, [draft])
 
-  // MODEL-FLOW-035. ONE Start button for both rounds: the Fine-tune switch
-  // (inside Algorithm & hyperparameters) decides whether it trains every
-  // algorithm once or fine-tunes the picked run.
+  // MODEL-FLOW-036. ONE Start for both rounds (Hick's law: one primary
+  // action per decision, the wizard footer owns Next). Its mode is the
+  // Fine-tune switch: off trains every algorithm once with its card values,
+  // on fine-tunes the run picked in the Fine-tune section right above it.
   const fineTune = useFineTune({
     nav,
     training: training.status === 'training',
@@ -176,9 +177,35 @@ export function Phase3TrainingConfig({ nav }: Props) {
         </div>
       )}
 
-      {/* Main Content: 2-Column Layout */}
+      {/* MODEL-FLOW-036. Inputs in the order the user decides them — the
+          algorithm(s) first (they gate CV, seed and the split stats below),
+          then core configuration, then Fine-tune — then the ONE action, then
+          its output (Run parameters). */}
       <div className="space-y-5">
-        {/* Left Column: Form Configurations (takes up 2/3 space on large screens) */}
+        <section className="space-y-4 rounded-xl border border-border/60 p-4 sm:p-5">
+          <h3 className="text-sm font-medium text-foreground">
+            Algorithm &amp; hyperparameters
+          </h3>
+          {fineTuning ? (
+            <AlgorithmStackSummary
+              algorithms={draft.algorithms}
+              onEdit={() => fineTune.setEnabled(false)}
+            />
+          ) : (
+            <AlgorithmStack
+              algorithms={draft.algorithms}
+              onAlgorithmsChange={runConfigDraft.setAlgorithms}
+              trainLabelledRows={
+                splitStats.splitStats?.train_labelled_rows ?? null
+              }
+              perAlgorithmHyperparameters={draft.perAlgorithmHyperparameters}
+              hyperparameters={draft.hyperparameters}
+              onHyperparameterChange={runConfigDraft.setHyperparameter}
+              datasetSize={datasetSize}
+            />
+          )}
+        </section>
+
         <section className="space-y-4 rounded-xl border border-border/60 p-4 sm:p-5">
           <h3 className="text-sm font-medium text-foreground">
             Core configuration
@@ -226,44 +253,12 @@ export function Phase3TrainingConfig({ nav }: Props) {
           />
         </section>
 
-        <section className="space-y-4 rounded-xl border border-border/60 p-4 sm:p-5">
-          <h3 className="text-sm font-medium text-foreground">
-            Algorithm &amp; hyperparameters
-          </h3>
-          {fineTuning ? (
-            <AlgorithmStackSummary
-              algorithms={draft.algorithms}
-              onEdit={() => fineTune.setEnabled(false)}
-            />
-          ) : (
-            <AlgorithmStack
-              algorithms={draft.algorithms}
-              onAlgorithmsChange={runConfigDraft.setAlgorithms}
-              trainLabelledRows={
-                splitStats.splitStats?.train_labelled_rows ?? null
-              }
-              perAlgorithmHyperparameters={draft.perAlgorithmHyperparameters}
-              hyperparameters={draft.hyperparameters}
-              onHyperparameterChange={runConfigDraft.setHyperparameter}
-              datasetSize={datasetSize}
-            />
-          )}
-          {/* MODEL-FLOW-035. Round 2 in the same section as the algorithms it
-              tunes, so the Start button below reads its mode from one place
-              and Run parameters (which grows per run) is never in the way. */}
-          <FineTuneSection
-            fineTune={fineTune}
-            nSplits={nav.nSplits}
-            datasetSize={datasetSize}
-          />
-        </section>
-
         {dirty && (
           <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 ring-1 ring-amber-500/20 sm:flex-row sm:items-center sm:justify-between dark:text-amber-400">
             <span className="flex items-center gap-1.5">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              Unapplied changes — Start Training uses the last applied
-              configuration until you Apply.
+              Unapplied changes — Start uses the last applied configuration
+              until you Apply.
             </span>
             <div className="flex items-center gap-2 shrink-0">
               <Button
@@ -285,24 +280,24 @@ export function Phase3TrainingConfig({ nav }: Props) {
           </div>
         )}
 
-        {/* Training Actions */}
-        <section className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 sm:p-5">
-          <div className="flex items-center gap-2 border-b border-border/50 pb-2">
-            <Timer className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-medium text-foreground">
-              {training.status === 'training'
-                ? 'Training progress'
-                : 'Estimated runtime'}
-            </h3>
-          </div>
+        {/* MODEL-FLOW-035/036. Round 2's choices sit right above the one Start
+            they arm (proximity); each card already carries its run's score,
+            so picking needs no scroll down to Run parameters. Locked until a
+            run succeeds. */}
+        <FineTuneSection
+          fineTune={fineTune}
+          nSplits={nav.nSplits}
+          datasetSize={datasetSize}
+        />
 
-          <RuntimeEstimate
-            rows={rowCount}
-            features={featureCount}
-            targets={draft.targetVariables.length}
-            nSplits={draft.nSplits}
-            {...(fineTuning
+        <TrainingActions
+          estimate={
+            fineTuning
               ? {
+                  rows: rowCount,
+                  features: featureCount,
+                  targets: draft.targetVariables.length,
+                  nSplits: draft.nSplits,
                   algorithms: [fineTune.algorithm],
                   findBestParams: fineTune.useGrid,
                   tuningVariants: fineTune.tuningVariants,
@@ -313,65 +308,29 @@ export function Phase3TrainingConfig({ nav }: Props) {
                       : undefined,
                 }
               : {
+                  rows: rowCount,
+                  features: featureCount,
+                  targets: draft.targetVariables.length,
+                  nSplits: draft.nSplits,
                   algorithms: draft.algorithms,
                   findBestParams: false,
                   nEstimators,
-                })}
-            status={training.status}
-            progress={training.progress}
-          />
-
-          {/* The action and its own feedback on one line — the estimate above is
-      read first by position, not by hoping the user looks right. */}
-          <div className="flex flex-col gap-3 border-t border-border/50 pt-4 sm:flex-row-reverse sm:items-center sm:justify-between">
-            <Button
-              onClick={startTraining}
-              disabled={!canTrain}
-              className="w-full shrink-0 cursor-pointer gap-2 sm:w-auto"
-            >
-              {training.status === 'training' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Cpu className="h-4 w-4" />
-              )}
-              {training.status === 'training'
-                ? 'Training…'
-                : fineTuning
-                  ? 'Start Fine-tune'
-                  : training.status === 'done'
-                    ? 'Retrain'
-                    : 'Start Training'}
-            </Button>
-
-            <div className="min-w-0 flex-1 space-y-1">
-              {refusal && training.status !== 'training' && (
-                <p className="text-xs text-destructive">{refusal}</p>
-              )}
-              {dirty && training.status !== 'training' && (
-                <p className="text-xs text-muted-foreground">
-                  Apply the changes above to start training with them.
-                </p>
-              )}
-              {training.status === 'training' && (
-                // A fit has no reportable percentage (MODEL-FLOW-003-T09) —
-                // train.py emits log lines, not a fraction. Showing the latest one
-                // is more honest than a bar that fakes a fraction.
-                <p className="truncate text-xs text-muted-foreground">
-                  {training.lastLog ?? 'Training container starting…'}
-                </p>
-              )}
-              {training.status === 'error' && (
-                <p className="text-xs text-destructive">{training.error}</p>
-              )}
-              {training.status === 'done' && (
-                <p className="text-xs text-emerald-600 dark:text-emerald-400">
-                  Training complete — turn on Fine-tune above to tune a run, or
-                  continue to Model Selection.
-                </p>
-              )}
-            </div>
-          </div>
-        </section>
+                }
+          }
+          train={training}
+          // The action keeps its name on every press: a second Start Training
+          // is another training run, not a different operation.
+          label={fineTuning ? 'Start Fine-tune' : 'Start Training'}
+          onStart={startTraining}
+          disabled={!canTrain}
+          refusal={refusal}
+          dirty={dirty}
+          doneText={
+            fineTuning
+              ? 'Fine-tune complete — continue to Model Selection.'
+              : 'Training complete — turn on Fine-tune above to tune a run, or continue to Model Selection.'
+          }
+        />
       </div>
       <RunParamsPanel />
     </div>

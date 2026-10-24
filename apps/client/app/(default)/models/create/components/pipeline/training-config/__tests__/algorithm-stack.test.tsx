@@ -105,6 +105,16 @@ describe('AlgorithmStack — MODEL-FLOW-020-T06 GPR size refusal', () => {
 
     expect(gpItem()).not.toHaveAttribute('aria-disabled', 'true')
     expect(screen.queryByText(/kernel matrix/)).not.toBeInTheDocument()
+    // MODEL-FLOW-036: the algorithms sit above the target now, so the
+    // unchecked state is stated instead of left silent.
+    expect(gpItem()).toHaveTextContent(/Size not checked until a target/)
+  })
+
+  it('drops the unchecked note once the train-split figure is known', async () => {
+    renderStack({ trainLabelledRows: UNDER })
+    await openAddMenu()
+
+    expect(screen.queryByText(/Size not checked/)).not.toBeInTheDocument()
   })
 
   it('refuses ONLY Gaussian Process — the ceiling is its own, not the dataset being too big to model', async () => {

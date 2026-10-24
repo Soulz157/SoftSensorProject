@@ -172,7 +172,7 @@ export const mpExtraVariantsAtom = atom<
  */
 export const mpFineTuneSourceRunIdAtom = atom<string | null>(null)
 /**
- * MODEL-FLOW-035. The Fine-tune switch: decides what Step 3's single Start
+ * MODEL-FLOW-035/036. The Fine-tune switch: decides what Step 3's one Start
  * button does — off, train every selected algorithm once (Round 1); on,
  * fine-tune the picked run (Round 2). Only takes effect once a run has
  * succeeded. Not run-config draft state, so it does not ask for an Apply.

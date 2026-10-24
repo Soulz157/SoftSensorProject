@@ -13,8 +13,8 @@ import { useFineTune } from '@/hooks/model/use-fine-tune'
 import { FineTuneSection } from '../fine-tune-section'
 
 /**
- * MODEL-FLOW-035 — Round 2 as a panel inside Algorithm & hyperparameters,
- * driven by `useFineTune` (the same hook Step 3's single Start button reads).
+ * MODEL-FLOW-035 — Round 2, Step 3's last section since MODEL-FLOW-036,
+ * driven by `useFineTune` (the same hook Step 3's one Start button reads).
  * The network hooks are mocked; the store is real, so the switches, the
  * picker and the Loss function behave as they do in the wizard.
  */
@@ -131,7 +131,7 @@ describe('FineTuneSection + useFineTune (MODEL-FLOW-035)', () => {
     expect(screen.getByTestId('active')).toHaveTextContent('false')
   })
 
-  it('is off by default: Start trains every algorithm, no picker shown', () => {
+  it('is off by default: no picker shown, inactive', () => {
     renderSection()
     expect(fineTuneSwitch()).not.toBeChecked()
     expect(
@@ -184,6 +184,49 @@ describe('FineTuneSection + useFineTune (MODEL-FLOW-035)', () => {
         base: expect.objectContaining({ alpha: 7 }),
       }),
     )
+  })
+
+  it('the picked card folds and unfolds on its chevron, like an algorithm card (MODEL-FLOW-036-T08)', () => {
+    renderSection(on)
+    fireEvent.click(screen.getByRole('radio', { name: /Ridge Regression/ }))
+    expect(screen.getByLabelText(/Alpha/)).toBeInTheDocument()
+
+    const hide = screen.getByRole('button', {
+      name: 'Hide Ridge Regression hyperparameters',
+    })
+    expect(hide).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(hide)
+    expect(screen.queryByLabelText(/Alpha/)).not.toBeInTheDocument()
+    // Folding changes nothing about which run is tuned.
+    expect(
+      screen.getByRole('radio', { name: /Ridge Regression/ }),
+    ).toHaveAttribute('aria-checked', 'true')
+
+    const show = screen.getByRole('button', {
+      name: 'Show Ridge Regression hyperparameters',
+    })
+    expect(show).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(show)
+    expect(screen.getByLabelText(/Alpha/)).toBeInTheDocument()
+  })
+
+  it('only the picked card has a chevron, and picking a card opens it even after a fold', () => {
+    renderSection(on)
+    fireEvent.click(screen.getByRole('radio', { name: /Ridge Regression/ }))
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Hide Ridge Regression hyperparameters',
+      }),
+    )
+    expect(
+      screen.queryByRole('button', {
+        name: /Linear Regression hyperparameters/,
+      }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('radio', { name: /Linear Regression/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /Ridge Regression/ }))
+    expect(screen.getByLabelText(/Alpha/)).toBeInTheDocument()
   })
 
   it('Start sends a one-algorithm fine-tune from the chosen run, Find Best Parameters on', () => {

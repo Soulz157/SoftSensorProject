@@ -125,7 +125,18 @@ export async function ensureBronzeArtifactId(
   tags: string[],
 ): Promise<string> {
   if (artifactId) return artifactId
-  const key = `${draftId}:${[...tags].sort().join(',')}`
+  // The fetch window and summary settings are part of the key: a materialize
+  // still in flight for the PREVIOUS Step 2 range must not be handed to a
+  // caller asking for the new one (it would return the old, shorter BRONZE).
+  const key = [
+    draftId,
+    ctx.customDateRange?.from ?? '',
+    ctx.customDateRange?.to ?? '',
+    JSON.stringify(
+      piSummaryParams(ctx.fetchConfig, ctx.period, ctx.customInterval),
+    ),
+    [...tags].sort().join(','),
+  ].join('|')
   return dedup(inFlightArtifacts, key, async () => {
     const guard = piFetchInputError(
       ctx.selectedSources,

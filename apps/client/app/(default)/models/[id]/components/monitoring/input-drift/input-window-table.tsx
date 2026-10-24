@@ -2,9 +2,10 @@
 
 import { useState } from 'react'
 import { format } from 'date-fns'
-import { Button } from '@/components/ui/button'
+import { ListPagination } from '@/components/list-pagination'
 import type { InputDriftWindow } from '@/services/model-monitoring'
 import { formatDriftValue, formatPct, windowTableRows } from '@/lib/input-drift'
+import { paginate } from '@/lib/workspace-list'
 import { cn } from '@/lib/utils'
 
 interface Props {
@@ -13,13 +14,16 @@ interface Props {
   unit: 'window' | 'hour'
 }
 
-const PAGE = 24
+const PAGE = 12
 
 /** MODEL-SERVE-036. One row per window, newest first — where in time the
- *  out-of-range values arrived. */
+ *  out-of-range values arrived. Paged, not "show more": a 31-day range is
+ *  up to 744 windows, which would stretch the expanded tag off-screen. */
 export function InputWindowTable({ windows, unit }: Props) {
-  const [shown, setShown] = useState(PAGE)
+  const [page, setPage] = useState(1)
   const rows = windowTableRows(windows)
+  // Clamped, so a range change that shrinks the list never shows an empty page.
+  const view = paginate(rows, page, PAGE)
   if (rows.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
@@ -47,7 +51,7 @@ export function InputWindowTable({ windows, unit }: Props) {
             </tr>
           </thead>
           <tbody className="font-mono tabular-nums">
-            {rows.slice(0, shown).map(r => {
+            {view.items.map(r => {
               const out = r.below + r.above > 0
               return (
                 <tr key={r.windowStart} className="border-t border-border">
@@ -96,16 +100,17 @@ export function InputWindowTable({ windows, unit }: Props) {
           </tbody>
         </table>
       </div>
-      {rows.length > shown && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 text-xs"
-          onClick={() => setShown(s => s + PAGE)}
-        >
-          Show {Math.min(PAGE, rows.length - shown)} more ({rows.length - shown}{' '}
-          left)
-        </Button>
+      {view.pageCount > 1 && (
+        <div className="space-y-1">
+          <ListPagination
+            currentPage={view.page}
+            totalPages={view.pageCount}
+            onPageChange={setPage}
+          />
+          <p className="text-xs text-muted-foreground">
+            {view.from}–{view.to} of {view.total} {unit}s
+          </p>
+        </div>
       )}
     </div>
   )

@@ -90,6 +90,36 @@ describe('DataSourceAuthorizedService — workspace sharing', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('an ADMIN may share into any live workspace, member or not', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ id: 'ws-9' });
+    const create = jest.fn().mockResolvedValue(row({ workspaceId: 'ws-9' }));
+    const service = new DataSourceAuthorizedService({
+      workspace: { findFirst },
+      dataSource: { create },
+    } as never);
+
+    await service.createDataSourceService(
+      'admin-1',
+      {
+        name: 'x',
+        type: 'aveva',
+        host: '',
+        username: '',
+        password: '',
+        dbName: '',
+        workspaceId: 'ws-9',
+      },
+      'ADMIN',
+    );
+
+    // Existence and soft-delete still apply; only membership is skipped.
+    expect(findFirst.mock.calls[0][0].where).toEqual({
+      id: 'ws-9',
+      deletedAt: null,
+    });
+    expect(create).toHaveBeenCalled();
+  });
+
   it('a teammate still cannot edit or delete a shared source', async () => {
     const update = jest.fn();
     const del = jest.fn();
