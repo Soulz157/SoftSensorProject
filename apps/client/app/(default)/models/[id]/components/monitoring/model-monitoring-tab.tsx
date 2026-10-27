@@ -542,7 +542,9 @@ export function ModelMonitoringTab({
           drifting outside it is the signal to look at. Diamonds are on-demand
           predictions from Run Predict, placed at the time of the data they
           scored
-          {targetHeld?.value == null
+          {/* Joined pairs ARE reported Actuals — only say "none yet" when
+              there is neither a pair nor a last-reported value. */}
+          {targetHeld?.value == null && points.length === 0
             ? ' — no Actual has been reported yet, so there is nothing beside them to compare'
             : ''}
           .
@@ -780,9 +782,7 @@ export function ModelMonitoringTab({
           recomputed on load; the card states the windows it read. */}
       <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
         <div className="mb-4 space-y-1">
-          <h2 className="text-sm font-semibold text-foreground">
-            Input Drift
-          </h2>
+          <h2 className="text-sm font-semibold text-foreground">Input Drift</h2>
           <p className="text-xs text-muted-foreground">
             Live input values vs. the range each tag had in the production
             version&apos;s training data. A value outside that range means the
