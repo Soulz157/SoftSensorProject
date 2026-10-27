@@ -1,12 +1,6 @@
 'use client'
 
-import {
-  AlertCircle,
-  CheckCircle2,
-  Database,
-  Loader2,
-  Plus,
-} from 'lucide-react'
+import { Database, Loader2, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -25,15 +19,12 @@ import type {
   StudioSource,
   useDataStudio,
 } from '@/hooks/dataset/use-data-studio'
-import { StatCard } from './stat-card'
 
 type Studio = ReturnType<typeof useDataStudio>
 
 interface Props {
   loading: Studio['loading']
   filteredSources: Studio['filteredSources']
-  connectedCount: number
-  offlineCount: number
   hasFilter: boolean
   onEditSource: (source: StudioSource) => void
   onDeleteSource: (id: string) => void
@@ -43,8 +34,6 @@ interface Props {
 export function DataSourcesTab({
   loading,
   filteredSources,
-  connectedCount,
-  offlineCount,
   hasFilter,
   onEditSource,
   onDeleteSource,
@@ -54,22 +43,6 @@ export function DataSourcesTab({
 
   return (
     <div className="space-y-6">
-      {/* Stats row */}
-      <div className="mb-2 grid grid-cols-1 gap-4  sm:grid-cols-2">
-        <StatCard
-          label="Online Connections"
-          value={connectedCount}
-          accent="emerald"
-          icon={CheckCircle2}
-        />
-        <StatCard
-          label="Offline"
-          value={offlineCount}
-          accent="destructive"
-          icon={AlertCircle}
-        />
-      </div>
-
       {loading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

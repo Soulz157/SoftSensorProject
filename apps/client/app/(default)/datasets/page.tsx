@@ -45,8 +45,6 @@ export default function DatasetsPage() {
         workspaceFilter={s.workspaceFilter}
         setWorkspaceFilter={s.setWorkspaceFilter}
         workspaces={s.workspaces}
-        statusFilter={s.statusFilter}
-        setStatusFilter={s.setStatusFilter}
         typeFilter={s.typeFilter}
         setTypeFilter={s.setTypeFilter}
       />

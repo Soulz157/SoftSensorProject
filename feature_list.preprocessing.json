@@ -5262,6 +5262,45 @@
         "apps/python must be restarted to pick up the new kind; the serving image needs no rebuild (it never names group columns)."
       ],
       "progress_note": "90%: code and tests done (client, python, parity); live wizard check pending."
+    },
+    {
+      "id": "DS-LAKE-041",
+      "title": "Data Sources page: drop the Online/Offline status filter and the Online/Offline stat cards",
+      "priority": "low",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [],
+      "description": "User request 2026-10-27: remove the connection-status filter and the Offline view from the Data Sources tab, because a connection is already checked when it is created (Add Connection test) and again on every raw-data fetch, so a status filter here only repeated it. Removed the All / Online / Offline toggle from the filter bar (Search, Workspace and Type stay) and the 'Online Connections' / 'Offline' stat cards above the source grid.",
+      "decisions": [
+        "2026-10-27 user: status is not a filter on Data Sources; it is checked at create and at fetch.",
+        "Kept the per-card StatusBadge on each source card and the Connected/Offline filter in the Create Dataset source picker (source-picker-sheet.tsx): neither was asked for, and the picker is a different screen."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-041-T01",
+          "title": "Remove the status toggle, the stat cards and their state",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-10-27. studio-filter-bar.tsx (toggle + statusFilter props gone), data-sources-tab.tsx (stats row + connectedCount/offlineCount props gone), data-sources/page.tsx and datasets/page.tsx (props), hooks/dataset/use-data-studio.ts (statusFilter, matchesStatus, connectedCount, offlineCount; hasFilter and Clear all filters no longer count a status), store/data-sources.ts (dsStatusFilterAtom). stat-card.tsx deleted (no other user)."
+        },
+        {
+          "id": "DS-LAKE-041-T02",
+          "title": "Live check: /data-sources shows no status toggle or stat cards; Type and Workspace filters and Clear all filters still work",
+          "status": "pending",
+          "progress": 0,
+          "result": "NOT VERIFIED — no browser session."
+        }
+      ],
+      "acceptance_criteria": [
+        "The Data Sources filter bar has Search, Workspace and Type only.",
+        "No Online Connections / Offline stat cards on the Data Sources page.",
+        "No dead status-filter state left in the hook or store."
+      ],
+      "verification": [
+        "tsc clean for the touched files; eslint + prettier clean (2026-10-27).",
+        "vitest app/(default)/data-studio: 221/222 — the one failure is a 5 s timeout in raw-readings-table.test.tsx (untouched; passes 6/6 alone).",
+        "Live check PENDING (no browser)."
+      ]
     }
   ],
   "deferred": [
