@@ -120,6 +120,62 @@ export function buildNotificationMessage(
   };
 }
 
+export interface ParsedNotificationBody {
+  workspace: string | null;
+  detail: string | null;
+  reason: string | null;
+  frozen: string | null;
+  /** Already formatted by `formatTimestamp`: "22 Oct 2026 01:29 UTC". */
+  timestamp: string | null;
+}
+
+type BodyKey = keyof ParsedNotificationBody | 'model';
+
+/** The labels `buildNotificationMessage` writes, one per line. */
+const BODY_PREFIXES: Array<[string, BodyKey]> = [
+  ['Workspace: ', 'workspace'],
+  ['Model: ', 'model'],
+  ['Detail: ', 'detail'],
+  ['Reason: ', 'reason'],
+  ['Frozen: ', 'frozen'],
+  ['Timestamp: ', 'timestamp'],
+];
+
+/**
+ * MODEL-SERVE-039. The inverse of `buildNotificationMessage`: reads the
+ * stored `bodyText` (already redacted) back into fields, so the in-app bell
+ * can show the SAME content the e-mail and Teams alert carried instead of a
+ * second wording. A line without a known label continues the field above it
+ * (a Reason may span lines); parsing stops at Timestamp, after which only
+ * the model link follows. A field the text does not carry is null, so an
+ * older or partial payload degrades to "nothing to show", never to a guess.
+ */
+export function parseNotificationBody(
+  bodyText: string,
+): ParsedNotificationBody {
+  const out: ParsedNotificationBody = {
+    workspace: null,
+    detail: null,
+    reason: null,
+    frozen: null,
+    timestamp: null,
+  };
+  let current: BodyKey | null = null;
+  for (const line of bodyText.split('\n')) {
+    const hit = BODY_PREFIXES.find(([prefix]) => line.startsWith(prefix));
+    if (hit) {
+      current = hit[1];
+      if (current !== 'model') out[current] = line.slice(hit[0].length);
+      if (current === 'timestamp') break;
+      continue;
+    }
+    if (current !== null && current !== 'model' && out[current] !== null) {
+      out[current] = `${out[current]}\n${line}`;
+    }
+  }
+  return out;
+}
+
 /**
  * The five-word vocabulary sentence for a MONITORING transition — shared by
  * every monitoring-axis event so the wording matches the Model Detail badge

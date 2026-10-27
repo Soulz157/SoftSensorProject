@@ -4691,6 +4691,68 @@
         "Live: press Start on ModelTest 1 -> new refusal text (PENDING)."
       ],
       "userDecisions": []
+    },
+    {
+      "id": "MODEL-SERVE-039",
+      "title": "Bell notifications use the e-mail/Teams alert's own wording: short feed row, expand in place to Workspace / Detail / Reason / UTC time / Open model",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-022"
+      ],
+      "description": "User asked 2026-10-26 to make the navbar bell follow the Design System and the same format as the Email/Teams alert. Chosen design: short history-style rows (alert title + severity chip, then 'detail · time ago') that expand on click to the alert's fields, with the alert's UTC timestamp and an Open model link.",
+      "userDecisions": [
+        "2026-10-26: short row that expands in place, over an always-expanded compact card or verbatim alert text.",
+        "2026-10-26: time shown as the alert's UTC string plus relative ('22 Oct 2026 01:29 UTC · 5 min ago')."
+      ],
+      "findings": [
+        "No schema change was needed: every NotificationEvent already stores payload {title, bodyText, modelUrl} — the exact redacted message the alert channels received (notification-outbox.service.ts). The feed endpoint just did not return it.",
+        "The parser reads the fixed labels buildNotificationMessage writes; a Reason that itself contains a line starting with a known label (e.g. 'Detail: ') would mis-parse. Accepted: the labels are written by the builder and a reason is machine text; falls back to the visible text, never throws."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-039-T01",
+          "title": "Backend: parseNotificationBody (inverse of buildNotificationMessage) and the feed returns title, workspaceName, detailText, reasonText, frozenText, alertTimestamp",
+          "status": "completed",
+          "result": "DONE 2026-10-26. apps/backend/src/lib/notification-message.ts parseNotificationBody; notification-feed.authorized.service.ts selects payload + workspace.name and adds the six fields (older payloads give null). Existing item fields unchanged. Specs: notification-message 4 new, feed 2 new; both suites 46/46. tsc + eslint clean."
+        },
+        {
+          "id": "MODEL-SERVE-039-T02",
+          "title": "Client: NotificationEventItem optional fields; lib/notification-row.ts (rowTitle/rowSummary/rowFields/rowTimestamp/formatUtcTimestamp) with fallbacks",
+          "status": "completed",
+          "result": "DONE 2026-10-26. types/index.ts +6 optional nullable fields; lib/notification-row.ts reuses notificationToastTitle and notificationEventDetail for the fallback. lib/__tests__/notification-row.test.ts 8/8."
+        },
+        {
+          "id": "MODEL-SERVE-039-T03",
+          "title": "Client UI: NotificationRow (collapsed feed line, expand in place, Open model, X and Mute unchanged); bell dropdown w-96 / max-h-28rem",
+          "status": "completed",
+          "result": "DONE 2026-10-26. components/layout/navbar/components/notification-row.tsx; navbar-notification.tsx renders it (shadcn components untouched; severity chip reuses NOTIFICATION_SEVERITY_CLASS/LABEL). navbar tests: the old 'row is one link' test replaced by 'no button nested in any menu item'; 5 new cases (collapsed, fallback row, expand, fold, remove). navbar + row tests 19/19. tsc + eslint clean."
+        },
+        {
+          "id": "MODEL-SERVE-039-T04",
+          "title": "docs/DESIGN_SYSTEM.md Bell history rewritten",
+          "status": "completed",
+          "result": "DONE 2026-10-26."
+        },
+        {
+          "id": "MODEL-SERVE-039-T05",
+          "title": "Live check in a browser: press Start on a model that fails preflight, open the bell, expand the row",
+          "status": "pending",
+          "result": "NOT VERIFIED — Claude browser extension not connected; the dev app needs a signed-in session."
+        }
+      ],
+      "acceptance_criteria": [
+        "Collapsed row shows the alert's title, a severity chip and 'detail · time ago'.",
+        "Expanded row shows Workspace, Detail, Reason, the UTC timestamp and an Open model link to the explaining tab.",
+        "An event without the alert fields still renders (model · event, transition).",
+        "X, Mute and Clear all behave exactly as before; no button is nested in a link."
+      ],
+      "verification": [
+        "Backend notification-message + feed specs 46/46, tsc, eslint (2026-10-26).",
+        "Client navbar + notification-row tests 19/19, tsc, eslint (2026-10-26).",
+        "Live bell check PENDING (no browser)."
+      ]
     }
   ],
   "global_definition_of_done": [

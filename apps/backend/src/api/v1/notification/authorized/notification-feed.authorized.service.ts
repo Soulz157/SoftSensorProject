@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { env } from '@/config/env.config';
+import { parseNotificationBody } from '@/lib/notification-message';
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 50;
@@ -123,6 +124,10 @@ export class NotificationFeedAuthorizedService {
         reason: true,
         createdAt: true,
         model: { select: { name: true } },
+        // MODEL-SERVE-039. The bell shows what the e-mail and Teams alert
+        // said: `payload` is that exact (already redacted) message.
+        payload: true,
+        workspace: { select: { name: true } },
       },
     });
     const lastReadAt = marker?.lastReadAt ?? new Date(0);
@@ -132,19 +137,34 @@ export class NotificationFeedAuthorizedService {
       message: 'Notification events fetched',
       type: 'SUCCESS' as const,
       data: {
-        items: events.map((e) => ({
-          id: e.id,
-          modelId: e.modelId,
-          modelName: e.model.name,
-          axis: e.axis,
-          kind: e.kind,
-          severity: e.severity,
-          fromStatus: e.fromStatus,
-          toStatus: e.toStatus,
-          reason: e.reason,
-          createdAt: e.createdAt.toISOString(),
-          unread: e.createdAt > lastReadAt,
-        })),
+        items: events.map((e) => {
+          const payload = e.payload as {
+            title?: unknown;
+            bodyText?: unknown;
+          } | null;
+          const alert = parseNotificationBody(
+            typeof payload?.bodyText === 'string' ? payload.bodyText : '',
+          );
+          return {
+            id: e.id,
+            modelId: e.modelId,
+            modelName: e.model.name,
+            axis: e.axis,
+            kind: e.kind,
+            severity: e.severity,
+            fromStatus: e.fromStatus,
+            toStatus: e.toStatus,
+            reason: e.reason,
+            createdAt: e.createdAt.toISOString(),
+            unread: e.createdAt > lastReadAt,
+            title: typeof payload?.title === 'string' ? payload.title : null,
+            workspaceName: alert.workspace ?? e.workspace.name,
+            detailText: alert.detail,
+            reasonText: alert.reason,
+            frozenText: alert.frozen,
+            alertTimestamp: alert.timestamp,
+          };
+        }),
         nextCursor:
           events.length === take
             ? events[events.length - 1].createdAt.toISOString()

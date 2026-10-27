@@ -459,6 +459,20 @@ export interface NotificationEventItem {
   reason: string | null
   createdAt: string
   unread: boolean
+  /**
+   * MODEL-SERVE-039. What the e-mail / Teams alert for this event said,
+   * read back from its stored message so the bell uses the same wording.
+   * Optional and nullable: a server that predates them, or an event whose
+   * payload carries no body, sends nothing and the bell falls back to
+   * `modelName` + `notificationEventDetail`.
+   */
+  title?: string | null
+  workspaceName?: string | null
+  detailText?: string | null
+  reasonText?: string | null
+  frozenText?: string | null
+  /** The alert's own "22 Oct 2026 01:29 UTC". */
+  alertTimestamp?: string | null
 }
 
 export interface AdminWorkspaceOwner {

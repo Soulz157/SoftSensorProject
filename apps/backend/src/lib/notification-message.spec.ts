@@ -3,6 +3,7 @@ import {
   buildDigestMessage,
   buildNotificationMessage,
   monitoringTransitionDetail,
+  parseNotificationBody,
   renderEmail,
   renderTeamsCard,
 } from './notification-message';
@@ -404,5 +405,71 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     const legacy = { title: 't', bodyText: 'a\nb', modelUrl: 'u' };
     expect(renderEmail(legacy).html).toContain('a<br/>b');
     expect(JSON.stringify(renderTeamsCard(legacy))).not.toContain('ColumnSet');
+  });
+});
+
+describe('parseNotificationBody — the bell reads the alert back (MODEL-SERVE-039)', () => {
+  const base = {
+    modelId: 'model-1',
+    modelName: 'Lab Quality-1 Soft Sensor',
+    workspaceName: 'Plant A',
+    axis: 'DEPLOY' as const,
+    title: 'Lab Quality-1 Soft Sensor: deploy failed',
+    detail: 'running -> error (deploy failed)',
+    severity: 'CRITICAL' as const,
+    at: new Date('2026-10-22T01:29:00Z'),
+  };
+
+  it('returns every field the builder wrote, and ignores the Model and link lines', () => {
+    const msg = buildNotificationMessage({
+      ...base,
+      rawDetailSuffix: 'PI returned no current reading for these mapped tags.',
+    });
+    expect(parseNotificationBody(msg.bodyText)).toEqual({
+      workspace: 'Plant A',
+      detail: 'running -> error (deploy failed)',
+      reason: 'PI returned no current reading for these mapped tags.',
+      frozen: null,
+      timestamp: '22 Oct 2026 01:29 UTC',
+    });
+  });
+
+  it('reads the Frozen line and leaves Reason null when none was given', () => {
+    const msg = buildNotificationMessage({
+      ...base,
+      axis: 'MONITORING',
+      detail: 'normal -> frozen',
+      frozenColumns: [{ column: 'TI-101', flatMinutes: 90 }],
+    });
+    const parsed = parseNotificationBody(msg.bodyText);
+    expect(parsed.frozen).toBe('TI-101 (flat 90min)');
+    expect(parsed.reason).toBeNull();
+  });
+
+  it('keeps a multi-line Reason whole and does not swallow the link into Timestamp', () => {
+    const msg = buildNotificationMessage({
+      ...base,
+      rawDetailSuffix: 'first line\nsecond line',
+    });
+    const parsed = parseNotificationBody(msg.bodyText);
+    expect(parsed.reason).toBe('first line\nsecond line');
+    expect(parsed.timestamp).toBe('22 Oct 2026 01:29 UTC');
+  });
+
+  it('gives all nulls for text the builder never wrote', () => {
+    expect(parseNotificationBody('')).toEqual({
+      workspace: null,
+      detail: null,
+      reason: null,
+      frozen: null,
+      timestamp: null,
+    });
+    expect(parseNotificationBody('something else\nentirely')).toEqual({
+      workspace: null,
+      detail: null,
+      reason: null,
+      frozen: null,
+      timestamp: null,
+    });
   });
 });
