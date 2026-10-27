@@ -66,7 +66,11 @@ import {
   AdminLimitsCard,
   type WorkspaceLimitValues,
 } from './components/admin-limits-card'
-import { formatLimit, limitReachedNote } from '@/lib/workspace-limits'
+import {
+  effectiveLimit,
+  formatLimit,
+  limitReachedNote,
+} from '@/lib/workspace-limits'
 
 function roleBadgeVariant(
   role: WorkspaceRole,
@@ -104,10 +108,19 @@ export default function WorkspaceSettingsPage() {
     maxMembers: workspace?.maxMembers ?? null,
   }
   const modelCount = workspace?._count.models ?? 0
+  // MODEL-SERVE-040. An empty override hands the workspace to the owner's
+  // plan, so the figures and the invite block use the cap that applies.
+  const planQuota = workspace?.planQuota
+  const effectiveModels = effectiveLimit(limits.maxModels, planQuota?.maxModels)
+  const effectiveMembers = effectiveLimit(
+    limits.maxMembers,
+    planQuota?.maxMembers,
+  )
   const inviteBlocked = limitReachedNote(
     'members',
-    limits.maxMembers,
+    effectiveMembers.limit,
     members.length,
+    effectiveMembers.source,
   )
   const [searchQuery, setSearchQuery] = useState('')
   const [inviteOpen, setInviteOpen] = useState(false)
@@ -297,6 +310,7 @@ export default function WorkspaceSettingsPage() {
                 key={workspace.id}
                 workspaceId={workspaceId}
                 limits={limits}
+                planDefault={planQuota}
                 usage={{ models: modelCount, members: members.length }}
                 onSaved={setSavedLimits}
               />
@@ -416,7 +430,7 @@ export default function WorkspaceSettingsPage() {
                     <Skeleton className="h-7 w-10" />
                   ) : (
                     <span className="text-2xl font-bold text-foreground">
-                      {formatLimit(members.length, limits.maxMembers)}
+                      {formatLimit(members.length, effectiveMembers.limit)}
                     </span>
                   )}
                 </div>
@@ -429,7 +443,7 @@ export default function WorkspaceSettingsPage() {
                     <Skeleton className="h-7 w-10" />
                   ) : (
                     <span className="text-2xl font-bold text-foreground">
-                      {formatLimit(modelCount, limits.maxModels)}
+                      {formatLimit(modelCount, effectiveModels.limit)}
                     </span>
                   )}
                 </div>

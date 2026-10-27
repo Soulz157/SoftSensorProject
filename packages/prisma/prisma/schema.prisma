@@ -265,6 +265,11 @@ model Plan {
   id             String @id @default(uuid())
   name           String @unique
   maxWorkspaces  Int    @default(1)
+  /// MODEL-SERVE-040. Per-workspace quota for workspaces this plan's
+  /// subscriber owns; null = no limit. A Workspace.maxModels / maxMembers an
+  /// admin set overrides it.
+  maxModelsPerWorkspace  Int?
+  maxMembersPerWorkspace Int?
   price          Float?
   durationMonths Int    @default(1)
 

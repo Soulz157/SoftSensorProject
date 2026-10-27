@@ -24,6 +24,8 @@ import { toast } from 'sonner'
 import { useSession } from 'next-auth/react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { useUpdateWorkspace } from '@/hooks/workspace/use-update-workspace'
+import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
+import { WorkspaceQuota } from '@/components/workspace/workspace-quota'
 import { useDeleteWorkspace } from '@/hooks/workspace/use-delete-workspace'
 import type { Workspace } from '@/types'
 import { WorkspaceMembers } from '@/app/(default)/workspaces/[id]/components/workspace-members'
@@ -69,6 +71,10 @@ export function WorkspaceTab() {
   }
 
   const isOwner = session?.user?.id === selectedWorkspace?.ownerId
+  // MODEL-SERVE-040. Quota + owner name come from the workspace detail
+  // endpoint, not the list the picker is built from.
+  const { workspace: quotaDetail, loading: quotaLoading } =
+    useWorkspace(selectedWorkspaceId)
 
   const saveWorkspace = async () => {
     if (!selectedWorkspaceId) return
@@ -395,6 +401,25 @@ export function WorkspaceTab() {
             {isUpdating ? 'Saving...' : 'Save Changes'}
           </Button>
         </div>
+      )}
+
+      {/* MODEL-SERVE-040. Read-only: the cap is the owner's subscription, or
+          an admin's override. Same card as the workspace's own settings. */}
+      {selectedWorkspace && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base font-medium">
+              Usage &amp; Limits
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <WorkspaceQuota
+              quota={quotaDetail?.quota}
+              owner={quotaDetail?.owner}
+              loading={quotaLoading}
+            />
+          </CardContent>
+        </Card>
       )}
 
       {selectedWorkspace && isOwner && (

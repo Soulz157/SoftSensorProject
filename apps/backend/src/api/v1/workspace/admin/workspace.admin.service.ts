@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
-import { assertWorkspaceCapacity, limitUsage } from '@/lib/workspace-limits';
+import {
+  assertWorkspaceCapacity,
+  buildQuota,
+  loadWorkspaceLimits,
+  pickLimit,
+} from '@/lib/workspace-limits';
 import { PrismaService } from '@softsensor/prisma';
 import {
   AdminInviteMemberDto,
@@ -188,11 +193,26 @@ export class WorkspaceAdminService {
       });
     }
 
+    // MODEL-SERVE-040. `quota` = usage against the effective cap and where it
+    // came from; `planQuota` = what the owner's plan alone gives, so the
+    // limits card can say "Plan default: 30".
+    const loaded = await loadWorkspaceLimits(this.prisma, id);
+    const quota = loaded
+      ? buildQuota(loaded.resolved, workspace._count)
+      : undefined;
+
     return {
       statusCode: 200,
       message: 'Workspace fetched successfully',
       type: 'SUCCESS' as const,
-      data: workspace,
+      data: {
+        ...workspace,
+        quota,
+        planQuota: {
+          maxModels: loaded?.plan?.maxModelsPerWorkspace ?? null,
+          maxMembers: loaded?.plan?.maxMembersPerWorkspace ?? null,
+        },
+      },
     };
   }
 
@@ -486,6 +506,23 @@ export class WorkspaceAdminService {
       },
     });
 
+    // MODEL-SERVE-040. Clearing a cap hands the workspace back to the
+    // owner's plan, so usage is measured against the EFFECTIVE cap.
+    const loaded = await loadWorkspaceLimits(this.prisma, workspaceId);
+    const quota = buildQuota(
+      {
+        models: pickLimit(
+          updated.maxModels,
+          loaded?.plan?.maxModelsPerWorkspace,
+        ),
+        members: pickLimit(
+          updated.maxMembers,
+          loaded?.plan?.maxMembersPerWorkspace,
+        ),
+      },
+      updated._count,
+    );
+
     return {
       statusCode: 200,
       message: 'Workspace limits updated',
@@ -493,9 +530,10 @@ export class WorkspaceAdminService {
       data: {
         maxModels: updated.maxModels,
         maxMembers: updated.maxMembers,
-        usage: {
-          models: limitUsage(updated.maxModels, updated._count.models),
-          members: limitUsage(updated.maxMembers, updated._count.members),
+        usage: { models: quota.models, members: quota.members },
+        planQuota: {
+          maxModels: loaded?.plan?.maxModelsPerWorkspace ?? null,
+          maxMembers: loaded?.plan?.maxMembersPerWorkspace ?? null,
         },
       },
     };

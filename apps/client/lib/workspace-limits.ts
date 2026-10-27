@@ -1,4 +1,4 @@
-import type { WorkspaceLimitUsage } from '@/types'
+import type { QuotaSource, WorkspaceLimitUsage } from '@/types'
 
 /**
  * MODEL-SERVE-035. Per-workspace caps on models and members, client side.
@@ -33,9 +33,56 @@ export function limitReachedNote(
   kind: LimitKind,
   limit: number | null | undefined,
   current: number,
+  source: QuotaSource = 'admin',
 ): string | null {
   if (!limitUsage(limit, current).full) return null
-  return `${NOUN[kind][0]!.toUpperCase()}${NOUN[kind].slice(1)} limit reached (${limit}). An admin can raise it.`
+  const head = `${NOUN[kind][0]!.toUpperCase()}${NOUN[kind].slice(1)} limit reached (${limit}).`
+  return source === 'plan'
+    ? `${head} The owner can upgrade, or an admin can raise it.`
+    : `${head} An admin can raise it.`
+}
+
+/**
+ * MODEL-SERVE-040. The cap that applies: an admin override wins, else the
+ * owner's plan quota, else none. Mirrors the backend's `pickLimit`.
+ */
+export function effectiveLimit(
+  adminCap: number | null | undefined,
+  planCap: number | null | undefined,
+): { limit: number | null; source: QuotaSource } {
+  if (adminCap != null) return { limit: adminCap, source: 'admin' }
+  if (planCap != null) return { limit: planCap, source: 'plan' }
+  return { limit: null, source: 'none' }
+}
+
+/** One line saying where a cap comes from. */
+export function quotaSourceLabel(source: QuotaSource): string {
+  if (source === 'admin') return 'Set by admin'
+  if (source === 'plan') return "From owner's subscription"
+  return 'No limit'
+}
+
+/** "Phoorich Maliwan"; one name alone; "Unknown" when the owner has none. */
+export function ownerDisplayName(
+  owner:
+    | { firstName: string | null; lastName: string | null }
+    | null
+    | undefined,
+): string {
+  const name = [owner?.firstName, owner?.lastName]
+    .map(part => part?.trim())
+    .filter(Boolean)
+    .join(' ')
+  return name || 'Unknown'
+}
+
+/** Bar fill 0..100 for a capped quota; 0 with no limit. */
+export function quotaPercent(item: {
+  current: number
+  limit: number | null
+}): number {
+  if (item.limit == null || item.limit <= 0) return 0
+  return Math.min(100, Math.round((item.current / item.limit) * 100))
 }
 
 /**

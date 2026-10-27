@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Building2,
   ChevronRight,
+  Cpu,
   Database,
   X,
   AlertTriangle,
@@ -16,6 +17,11 @@ import { cn } from '@/lib/utils'
 import { workspaceIcons } from '@/store/workspace'
 import { useModels } from '@/hooks/workspace/use-models'
 import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
+import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
+import {
+  CountRow,
+  WorkspaceQuota,
+} from '@/components/workspace/workspace-quota'
 import { failedDeploys, isModelAbnormal } from '@/lib/model-status'
 import { OverviewAssetTree } from './overview-asset-tree'
 import type { Workspace } from '@/types'
@@ -69,6 +75,9 @@ function PanelContent({
   )
   const models = modelsRaw ?? []
   const { plants } = useWorkspacePlants(workspace.id)
+  const { workspace: detail, loading: detailLoading } = useWorkspace(
+    workspace.id,
+  )
   const modelsLoading =
     (modelsFetching && modelsRaw === null) || plants === null
 
@@ -154,30 +163,31 @@ function PanelContent({
             )}
           </div>
 
-          {/* Three stats in a 2-column grid. Abnormal spans the full row so
-              the grid has no empty fourth cell (Law of Prägnanz), and the
-              one status figure gets the widest cell (Von Restorff). */}
+          {/* One Summary (MODEL-SERVE-040 folded Quota into it). The one status
+              figure keeps the full-width cell on top (Von Restorff); under it
+              the counts share one list — Equipment, then Models and Members
+              against their cap (Proximity: all "what is in this workspace"). */}
           <div className="border-b border-border/50 px-4 py-4">
             <div className="mb-3 text-xs font-medium text-muted-foreground">
               Summary
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <StatCell label="Equipment" value={equipmentCount} />
-              <StatCell
-                label="Models"
-                value={workspace._count.models ? workspace._count.models : 0}
-              />
-              <div className="col-span-2">
-                <StatCell
-                  label="Abnormal"
-                  value={abnormalCount}
-                  valueClass={
-                    abnormalCount > 0
-                      ? 'text-destructive'
-                      : 'text-green-700 dark:text-green-400'
-                  }
-                />
-              </div>
+            <StatCell
+              label="Abnormal"
+              value={abnormalCount}
+              valueClass={
+                abnormalCount > 0
+                  ? 'text-destructive'
+                  : 'text-green-700 dark:text-green-400'
+              }
+            />
+            <div className="mt-4">
+              <WorkspaceQuota
+                quota={detail?.quota}
+                owner={detail?.owner}
+                loading={detailLoading}
+              >
+                <CountRow label="Equipment" icon={Cpu} value={equipmentCount} />
+              </WorkspaceQuota>
             </div>
           </div>
 

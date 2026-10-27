@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { deriveNodeSummary, type NodeSummary } from '@/lib/node-summary';
 import { AppException } from '@softsensor/common';
-import { assertWorkspaceCapacity } from '@/lib/workspace-limits';
+import {
+  assertWorkspaceCapacity,
+  buildQuota,
+  loadWorkspaceLimits,
+} from '@/lib/workspace-limits';
 import { PrismaService } from '@softsensor/prisma';
 import { deriveDeployStatuses, overlayDeployStatus } from '@/lib/deploy-status';
 import { writeFile, mkdir } from 'fs/promises';
@@ -202,6 +206,9 @@ export class WorkspaceAuthorizedService {
         maxMembers: true,
         createdAt: true,
         updatedAt: true,
+        // MODEL-SERVE-040: name only — this route has no membership check, so
+        // the owner's e-mail must not ride along.
+        owner: { select: { firstName: true, lastName: true } },
         _count: { select: { members: true, models: true } },
       },
     });
@@ -214,11 +221,18 @@ export class WorkspaceAuthorizedService {
       });
     }
 
+    // MODEL-SERVE-040. Effective caps: an admin override, else the owner's
+    // plan quota — with where each came from.
+    const loaded = await loadWorkspaceLimits(this.prisma, id);
+    const quota = loaded
+      ? buildQuota(loaded.resolved, workspace._count)
+      : undefined;
+
     return {
       statusCode: 200,
       message: 'ดึงข้อมูล workspace สำเร็จ',
       type: 'SUCCESS' as const,
-      data: workspace,
+      data: { ...workspace, quota },
     };
   }
 

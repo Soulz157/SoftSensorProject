@@ -4753,6 +4753,86 @@
         "Client navbar + notification-row tests 19/19, tsc, eslint (2026-10-26).",
         "Live bell check PENDING (no browser)."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-040",
+      "title": "Workspace model/member quota comes from the workspace owner's subscription plan (admin override wins); shown in the Overview detail panel and Workspace Settings",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-035"
+      ],
+      "description": "User asked 2026-10-27 for a quota (max models, max members) per workspace that depends on the owner's Plan subscription, shown in the Overview detail panel and in Workspace Settings. MODEL-SERVE-035 already had admin-set Workspace.maxModels / maxMembers enforced at one choke point (assertWorkspaceCapacity), so this changes only where the cap comes from: Plan gains maxModelsPerWorkspace / maxMembersPerWorkspace (null = no limit); the effective cap is Workspace.maxX (admin override) else the owner's newest ACTIVE/TRIALING subscription's plan, else the FREE plan, else no limit. The UI names the source (From owner's subscription / Set by admin) and the owner's name, never the plan name.",
+      "userDecisions": [
+        "2026-10-27: plan is the default, admin override wins (not the stricter of the two, not plan-only).",
+        "2026-10-27: per plan models/members/max workspaces: FREE 5/3/1, STANDARD 30/10/3, PRO 100/20/10, ENTERPRISE no limit/no limit/999.",
+        "2026-10-27: show the owner's name only, do not show the plan name.",
+        "2026-10-27: maxWorkspaces is NOT enforced at workspace create (not asked); only its STANDARD seed value changed 5 -> 3."
+      ],
+      "findings": [
+        "Plan.maxWorkspaces existed but nothing enforced it; this feature does not change that.",
+        "The owner's name is selected without the e-mail on the authorized getWorkspaceById because that route has no membership check.",
+        "A subscription is chosen by status only (ACTIVE/TRIALING, newest). endDate is not checked, because nothing in the repo expires subscriptions on a schedule and checking it would silently drop every owner to FREE after a month.",
+        "Existing STANDARD/PRO owners get the new numbers on the next seed; migration was hand-applied (never migrate dev here) and is unrecorded in _prisma_migrations like the others.",
+        "The user Settings → Workspace tab reads quota from the detail endpoint (the picker's list has none), and WorkspaceMembers on the same tab fetches the same detail — two identical GETs per selection. Lifting the fetch to the tab would cut one; not done."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-040-T01",
+          "title": "Schema + migration + seed: Plan.maxModelsPerWorkspace / maxMembersPerWorkspace",
+          "status": "completed",
+          "result": "DONE 2026-10-27. schema.prisma, migrations/20261027100000_plan_workspace_quota/migration.sql applied by hand to the dev DB, seed.ts upserts the new values; prisma generate + build run; 4 plan rows verified in the DB."
+        },
+        {
+          "id": "MODEL-SERVE-040-T02",
+          "title": "Backend resolver: pickLimit, loadWorkspaceLimits, buildQuota; assertWorkspaceCapacity and limitBlocker use the source",
+          "status": "completed",
+          "result": "DONE 2026-10-27. apps/backend/src/lib/workspace-limits.ts; all five assertWorkspaceCapacity callers unchanged. workspace-limits.spec 22/22 incl. 11 new cases."
+        },
+        {
+          "id": "MODEL-SERVE-040-T03",
+          "title": "Backend read endpoints: authorized getWorkspaceById returns quota + owner name; admin getWorkspaceById returns quota + planQuota; updateWorkspaceLimits measures usage against the effective cap",
+          "status": "completed",
+          "result": "DONE 2026-10-27. workspace.authorized.service.ts, workspace.admin.service.ts; workspace.admin.limits.spec extended. tsc and eslint clean."
+        },
+        {
+          "id": "MODEL-SERVE-040-T04",
+          "title": "Client types + lib: effectiveLimit, quotaSourceLabel, ownerDisplayName, quotaPercent, limitReachedNote(source)",
+          "status": "completed",
+          "result": "DONE 2026-10-27. types/index.ts, lib/workspace-limits.ts, lib/workspace-limits.test.ts."
+        },
+        {
+          "id": "MODEL-SERVE-040-T05",
+          "title": "Client UI: shared WorkspaceQuota; Overview detail panel Summary (quota folded in, Abnormal kept on top); Usage & Limits card in Workspace Settings → General Info and in user Settings → Workspace tab; member tab and admin page use the effective cap; admin Limits card shows the plan default as placeholder",
+          "status": "completed",
+          "result": "DONE 2026-10-27. components/workspace/workspace-quota.tsx (+ test), overview-detail-panel.tsx, workspace-info.tsx, workspace-member.tsx, admin settings page.tsx and admin-limits-card.tsx. Client tests 76/76, tsc and eslint clean. Follow-ups the same day (user): (1) the panel's separate Quota section merged into Summary — Abnormal stays the full-width status cell on top, then Owner, Equipment as a plain CountRow, Models and Members against their cap (WorkspaceQuota takes children; workspace-quota test 7/7 incl. the ordering case); (2) user Settings → Workspace tab (app/(default)/settings/components/workspace.tsx) shows the same Usage & Limits card above Danger Zone for the selected workspace, fed by useWorkspace(selectedWorkspaceId). tsc, eslint, prettier clean; settings tests 4/4."
+        },
+        {
+          "id": "MODEL-SERVE-040-T06",
+          "title": "docs/DESIGN_SYSTEM.md Workspace quota pattern",
+          "status": "completed",
+          "result": "DONE 2026-10-27."
+        },
+        {
+          "id": "MODEL-SERVE-040-T07",
+          "title": "Live check in a browser with a FREE owner: panel, workspace settings and the user Settings → Workspace tab show 0 / 5 models and the owner name; a 4th member invite is refused with the plan wording; an admin override flips the source to Set by admin",
+          "status": "pending",
+          "result": "NOT VERIFIED — no browser session."
+        }
+      ],
+      "acceptance_criteria": [
+        "A workspace with no admin override is capped by its owner's subscription plan, for models and for members.",
+        "An admin override on the workspace wins over the plan, per kind; clearing it hands the workspace back to the plan.",
+        "ENTERPRISE (null quotas) means no limit; an owner with no live subscription is treated as FREE.",
+        "The Overview detail panel (inside Summary, under Abnormal), Workspace Settings and the user Settings → Workspace tab show the owner's name and each count against its cap with where the cap comes from; the plan name is not shown.",
+        "A refusal at the plan cap says the owner can upgrade or an admin can raise it."
+      ],
+      "verification": [
+        "Backend workspace-limits + workspace + model + model-draft specs pass (the two controller specs that fail are Nest DI errors in files this work did not touch); tsc, eslint clean (2026-10-27).",
+        "Client workspace-limits, workspace-quota, settings, admin and overview tests 76/76; tsc, eslint clean (2026-10-27).",
+        "Live check PENDING (no browser)."
+      ]
     }
   ],
   "global_definition_of_done": [

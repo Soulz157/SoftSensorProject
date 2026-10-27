@@ -92,8 +92,36 @@ describe('WorkspaceAdminService.updateWorkspaceLimits', () => {
       limit: 5,
       full: true,
       over: true,
+      source: 'admin',
     });
     expect(res.data.usage.members.limit).toBeNull();
+  });
+
+  it('MODEL-SERVE-040: a cleared cap falls back to the owner plan and says so', async () => {
+    const { prisma, service } = build({ maxMembers: null, memberCount: 4 });
+    prisma.workspace.findUnique.mockResolvedValue({
+      id: 'ws-1',
+      maxModels: null,
+      maxMembers: null,
+      owner: {
+        subscriptions: [
+          {
+            plan: { maxModelsPerWorkspace: 30, maxMembersPerWorkspace: 10 },
+          },
+        ],
+      },
+    });
+    const res = await service.updateWorkspaceLimits('ws-1', {
+      maxModels: null,
+      maxMembers: null,
+    });
+    expect(res.data.usage.models).toMatchObject({
+      limit: 30,
+      source: 'plan',
+      current: 8,
+    });
+    expect(res.data.usage.members).toMatchObject({ limit: 10, source: 'plan' });
+    expect(res.data.planQuota).toEqual({ maxModels: 30, maxMembers: 10 });
   });
 
   it('404s a missing workspace', async () => {

@@ -110,11 +110,21 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
 
   const { members, loading, isFetching, isOwner, currentMember, fetchMembers } =
     useWorkspaceMembers(workspaceId, currentUserId)
-  // MODEL-SERVE-035. The admin-set member cap (null = none): shown as 4 / 5,
-  // and a full workspace disables Invite with the reason.
+  // MODEL-SERVE-035 / 040. The member cap that applies (an admin override,
+  // else the owner's subscription; null = none): shown as 4 / 5, and a full
+  // workspace disables Invite with the reason. An older server without
+  // `quota` still reports the admin cap.
   const { workspace } = useWorkspace(workspaceId)
-  const maxMembers = workspace?.maxMembers ?? null
-  const inviteBlocked = limitReachedNote('members', maxMembers, members.length)
+  const quotaMembers = workspace?.quota?.members
+  const maxMembers = quotaMembers
+    ? quotaMembers.limit
+    : (workspace?.maxMembers ?? null)
+  const inviteBlocked = limitReachedNote(
+    'members',
+    maxMembers,
+    members.length,
+    quotaMembers?.source,
+  )
   // MODEL-SERVE-034. Owners manage everyone; a STAFF member only what an
   // owner granted (Assign roles / Invite members). The backend enforces it.
   const access = memberManagementAccess(currentMember, isOwner)

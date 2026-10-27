@@ -28,6 +28,8 @@ export interface WorkspaceLimitValues {
 interface AdminLimitsCardProps {
   workspaceId: string
   limits: WorkspaceLimitValues
+  /** MODEL-SERVE-040. What the owner's plan gives; a blank field uses it. */
+  planDefault?: { maxModels: number | null; maxMembers: number | null }
   usage: { models: number; members: number }
   onSaved: (limits: WorkspaceLimitValues) => void
 }
@@ -43,6 +45,10 @@ const FIELDS: ReadonlyArray<{
 
 const toText = (v: number | null) => (v == null ? '' : String(v))
 
+/** The blank-field hint: what the plan gives, or "No limit" without one. */
+const planPlaceholder = (planCap: number | null | undefined) =>
+  planCap == null ? 'No limit' : `Plan default: ${planCap}`
+
 /**
  * MODEL-SERVE-035. The workspace's caps on models and members. Blank = no
  * limit. A cap below the current count saves as asked: nothing is removed,
@@ -52,6 +58,7 @@ const toText = (v: number | null) => (v == null ? '' : String(v))
 export function AdminLimitsCard({
   workspaceId,
   limits,
+  planDefault,
   usage,
   onSaved,
 }: AdminLimitsCardProps) {
@@ -105,7 +112,8 @@ export function AdminLimitsCard({
           Workspace Limits
         </CardTitle>
         <CardDescription>
-          Cap models and members in this workspace. Leave blank for no limit.
+          Override the owner&apos;s subscription quota for this workspace. Leave
+          blank to use the plan&apos;s.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -128,7 +136,7 @@ export function AdminLimitsCard({
               <Input
                 id={inputId}
                 inputMode="numeric"
-                placeholder="No limit"
+                placeholder={planPlaceholder(planDefault?.[key])}
                 value={text[key]}
                 aria-invalid={invalid}
                 aria-describedby={`${inputId}-note`}

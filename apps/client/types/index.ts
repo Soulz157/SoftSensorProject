@@ -268,12 +268,36 @@ export interface WorkspaceDetail {
   icon: string
   color: string
   description: string | null
-  /** MODEL-SERVE-035. Read-only for members; null = no limit. */
+  /** MODEL-SERVE-035. Read-only for members; null = no limit. These are the
+   *  admin overrides only — `quota` is what actually applies. */
   maxModels?: number | null
   maxMembers?: number | null
+  /** MODEL-SERVE-040. Usage against the EFFECTIVE cap (admin override, else
+   *  the owner's subscription plan), with where each cap came from. */
+  quota?: WorkspaceQuota
+  /** MODEL-SERVE-040. The workspace owner's name (never the e-mail). */
+  owner?: { firstName: string | null; lastName: string | null } | null
   createdAt: string
   updatedAt: string
   _count: { members: number; models: number }
+}
+
+/** MODEL-SERVE-040. Where a cap comes from. */
+export type QuotaSource = 'admin' | 'plan' | 'none'
+
+export interface WorkspaceQuotaItem extends WorkspaceLimitUsage {
+  source: QuotaSource
+}
+
+export interface WorkspaceQuota {
+  models: WorkspaceQuotaItem
+  members: WorkspaceQuotaItem
+}
+
+/** MODEL-SERVE-040. What the owner's plan alone gives (null = no limit). */
+export interface PlanQuotaValues {
+  maxModels: number | null
+  maxMembers: number | null
 }
 
 export interface AdminWorkspaceDetail {
@@ -282,9 +306,12 @@ export interface AdminWorkspaceDetail {
   icon: string
   color: string
   description: string | null
-  /** MODEL-SERVE-035. null = no limit. */
+  /** MODEL-SERVE-035. null = no limit. Admin overrides only. */
   maxModels: number | null
   maxMembers: number | null
+  /** MODEL-SERVE-040. */
+  quota?: WorkspaceQuota
+  planQuota?: PlanQuotaValues
   createdAt: string
   updatedAt: string
   _count: { members: number; models: number }
@@ -302,7 +329,9 @@ export interface WorkspaceLimitUsage {
 export interface WorkspaceLimits {
   maxModels: number | null
   maxMembers: number | null
-  usage: { models: WorkspaceLimitUsage; members: WorkspaceLimitUsage }
+  usage: { models: WorkspaceQuotaItem; members: WorkspaceQuotaItem }
+  /** MODEL-SERVE-040. What the owner's plan alone gives. */
+  planQuota?: PlanQuotaValues
 }
 
 export type AuthAction = 'LOGIN' | 'LOGOUT'
@@ -341,6 +370,9 @@ export interface PlanInfo {
   name: string
   price: number | null
   maxWorkspaces: number
+  /** MODEL-SERVE-040. Per-workspace quota; null = no limit. */
+  maxModelsPerWorkspace?: number | null
+  maxMembersPerWorkspace?: number | null
   durationMonths: number
 }
 
