@@ -30,6 +30,8 @@ import {
 import { useForm, Controller, useWatch } from 'react-hook-form'
 import z from 'zod'
 import { useCreateWorkspace } from '@/hooks/workspace/use-create-workspace'
+import { useMyWorkspaceQuota } from '@/hooks/workspace/use-my-workspace-quota'
+import { formatLimit } from '@/lib/workspace-limits'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { cn } from '@/lib/utils'
 import Image from 'next/image'
@@ -75,6 +77,8 @@ export function CreateWorkspaceDialog({
   onClose,
 }: CreateWorkspaceDialogProps) {
   const { createWorkspace } = useCreateWorkspace()
+  // MODEL-SERVE-041. Read only while the dialog is open.
+  const { quota: slotQuota, note: slotNote } = useMyWorkspaceQuota(open)
   const [thumbnailPreview, setThumbnailPreview] = useState<string | null>()
 
   const form = useForm<CreateWorkspaceFormValues>({
@@ -370,11 +374,19 @@ export function CreateWorkspaceDialog({
           </div>
 
           {/* ── Actions ─────────────────────────────────────────────────── */}
+          {slotQuota && slotQuota.limit !== null && (
+            <p className="text-right text-xs text-muted-foreground">
+              Your workspaces: {formatLimit(slotQuota.current, slotQuota.limit)}
+              {slotNote && <> · {slotNote}</>}
+            </p>
+          )}
           <div className="flex justify-end gap-3 pt-2">
             <Button type="button" variant="ghost" onClick={handleClose}>
               Cancel
             </Button>
-            <Button type="submit">Create Workspace</Button>
+            <Button type="submit" disabled={slotNote !== null}>
+              Create Workspace
+            </Button>
           </div>
         </form>
       </Card>

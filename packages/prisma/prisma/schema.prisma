@@ -2112,6 +2112,15 @@ model InferenceSchedule {
 
   enabled Boolean @default(false)
 
+  /// MODEL-SERVE-042. When this schedule last went OFF -> ON. The scheduler
+  /// never inserts a window that starts before the clock hour containing it,
+  /// so a fresh Start scores from "now", not from the 48 h backfill horizon.
+  /// Written in the SAME upsert that flips `enabled`, only on that edge — a
+  /// settings tweak on a running schedule must not move it. Null on rows that
+  /// predate the column and had no `Model.data.deployedAt` to copy from; the
+  /// scheduler then falls back to the horizon alone.
+  enabledAt DateTime?
+
   /// Minutes. `lagMinutes` is MODEL-SERVE-006-T04's deliberate ingestion
   /// lag: windowEnd = now() - lag. It is never zero and never derived from
   /// the cadence — PI tags do not arrive together, so a window ending at

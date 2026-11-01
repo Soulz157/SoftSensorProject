@@ -97,6 +97,9 @@ export function Phase6Deploy({ nav }: Props) {
   } = nav
 
   const savedLabel = mode === 'edit' ? 'Changes saved' : 'Model saved'
+  // MODEL-SERVE-041. A resumed draft can reach here without passing Step 1's
+  // check; the draft is kept, only the save waits for room.
+  const limitNote = mode === 'edit' ? null : (nav.modelLimitNote ?? null)
 
   /**
    * Save is the persistence boundary; deploying is a second, separate write on
@@ -354,11 +357,17 @@ export function Phase6Deploy({ nav }: Props) {
         </div>
       )}
 
+      {limitNote && (
+        <p className="text-right text-xs text-muted-foreground">
+          {limitNote} Your draft is kept.
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-4">
         <Button
           variant="outline"
           onClick={() => handleSave(false)}
-          disabled={busy !== null}
+          disabled={busy !== null || limitNote !== null}
           className="gap-2"
         >
           {busy === 'save' ? (
@@ -377,7 +386,7 @@ export function Phase6Deploy({ nav }: Props) {
 
         <Button
           onClick={() => handleSave(true)}
-          disabled={busy !== null}
+          disabled={busy !== null || limitNote !== null}
           className="gap-2"
         >
           {busy === 'deploy' ? (

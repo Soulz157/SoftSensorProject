@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useModels } from '@/hooks/workspace/use-models'
+import { useWorkspaceModelLimit } from '@/hooks/workspace/use-workspace-model-limit'
 import type { SavedDataset } from '@/store/datasets'
 import {
   MP_TOTAL_STEPS,
@@ -45,6 +46,9 @@ export interface UsePipelineNavResult {
   currentStep: number
   highestUnlocked: number
   nameConflict: boolean
+  /** MODEL-SERVE-041. Why the chosen workspace takes no more models (its cap
+   *  is reached), or null. Never set while editing a saved model. */
+  modelLimitNote: string | null
   selectedDataset: SavedDataset | null
   algorithm: Algorithm
   algorithms: Algorithm[]
@@ -114,6 +118,9 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     )
   }, [workspaceModels, name, editModelId])
 
+  // MODEL-SERVE-041. Warn here, not at Save Model after a whole training run.
+  const modelLimitNote = useWorkspaceModelLimit(workspaceId, !editModelId)
+
   const [selectedDataset, setSelectedDatasetAtom] = useAtom(
     mpSelectedDatasetAtom,
   )
@@ -156,6 +163,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
             plantId !== '' &&
             equipmentId !== '' &&
             !nameConflict &&
+            modelLimitNote === null &&
             selectedDataset !== null
           )
         case 2:
@@ -190,6 +198,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
       plantId,
       equipmentId,
       nameConflict,
+      modelLimitNote,
       selectedDataset,
       trainState,
     ],
@@ -328,6 +337,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     currentStep,
     highestUnlocked,
     nameConflict,
+    modelLimitNote,
     selectedDataset,
     algorithm,
     algorithms,

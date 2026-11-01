@@ -4,6 +4,7 @@ import { AIModel, WorkspacePlant } from '@/types'
 import { getWorkspacePlants } from '@/services/workspace-plant'
 import { getNodes, type CanvasNode } from '@/services/canvas'
 import { createModel, updateModel } from '@/services/model'
+import { useWorkspaceModelLimit } from '@/hooks/workspace/use-workspace-model-limit'
 
 type State = {
   name: string
@@ -209,8 +210,13 @@ export function useModelForm({
     }
   }, [state, model, onSuccess, onClose, dataSource])
 
+  // MODEL-SERVE-041. Creating into a full workspace is refused up front;
+  // editing a saved model adds nothing, so it is never blocked.
+  const modelLimitNote = useWorkspaceModelLimit(state.workspaceId, !model)
+
   return {
     state,
+    modelLimitNote,
     actions: {
       setName: (name: string) => dispatch({ type: 'SET_NAME', name }),
       handleWorkspaceChange: (id: string) =>

@@ -1191,6 +1191,8 @@ export class InferenceWindowAuthorizedService {
         preflightAt: new Date(),
         preflightOk: preflight.ok,
         preflightReason: preflight.reason,
+        // MODEL-SERVE-042. A first enable IS an OFF -> ON edge.
+        enabledAt: new Date(),
         createdById: user.id,
       },
       update: {
@@ -1228,6 +1230,11 @@ export class InferenceWindowAuthorizedService {
               preflightAt: new Date(),
               preflightOk: preflight.ok,
               preflightReason: preflight.reason,
+              // MODEL-SERVE-042. Same edge, same reason: the scheduler starts
+              // hourly windows here, not at the 48 h horizon. A settings
+              // tweak on a running schedule must not move it, and a
+              // Stop -> Start does — a stopped period is not auto-scored.
+              enabledAt: new Date(),
             }),
       },
     });

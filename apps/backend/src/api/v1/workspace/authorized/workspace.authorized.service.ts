@@ -4,6 +4,7 @@ import { AppException } from '@softsensor/common';
 import {
   assertWorkspaceCapacity,
   buildQuota,
+  buildWorkspaceSlotQuota,
   loadWorkspaceLimits,
 } from '@/lib/workspace-limits';
 import { PrismaService } from '@softsensor/prisma';
@@ -182,6 +183,17 @@ export class WorkspaceAuthorizedService {
       message: 'ดึงข้อมูล workspace สำเร็จ',
       type: 'SUCCESS',
       data,
+    };
+  }
+
+  /** MODEL-SERVE-041. Owned workspaces against the caller's plan cap. */
+  async getMyWorkspaceQuota(user: Auth.UserPayload) {
+    const workspaces = await buildWorkspaceSlotQuota(this.prisma, user);
+    return {
+      statusCode: 200,
+      message: 'Workspace quota fetched successfully',
+      type: 'SUCCESS' as const,
+      data: { workspaces },
     };
   }
 

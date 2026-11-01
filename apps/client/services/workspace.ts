@@ -4,6 +4,7 @@ import type {
   AdminWorkspaceSummary,
   AdminWorkspaceDetail,
   CreateWorkspaceInput,
+  MyWorkspaceQuota,
   Paginated,
   UpdateWorkspacePayload,
   Workspace,
@@ -31,6 +32,10 @@ export const workspaceService = {
     fetchClient('/api/v1/authorized/workspace', { method: 'GET' }),
   getAllWorkspaces: () =>
     fetchClient('/api/v1/authorized/workspace/all', { method: 'GET' }),
+
+  /** MODEL-SERVE-041. Owned workspaces vs the caller's plan cap. */
+  getMyWorkspaceQuota: (): Promise<{ data: MyWorkspaceQuota }> =>
+    fetchClient('/api/v1/authorized/workspace/quota', { method: 'GET' }),
 
   getWorkspaceById: (id: string): Promise<{ data: WorkspaceDetail }> =>
     fetchClient(`/api/v1/authorized/workspace/${id}`, { method: 'GET' }),

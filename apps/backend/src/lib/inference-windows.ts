@@ -56,6 +56,24 @@ export function windowStartsBetween(
   return starts;
 }
 
+/**
+ * MODEL-SERVE-042. The epoch-aligned boundary at or before `at` — the start of
+ * the window that CONTAINS `at`. A schedule started at 06:12 with a 60 min
+ * cadence floors to 06:00, so the hour it was started in is the first one it
+ * scores and nothing earlier is.
+ *
+ * Same alignment as `windowStartsBetween` (a multiple of the cadence since the
+ * Unix epoch), so a floored anchor can never mint a boundary the backfill
+ * route would not.
+ */
+export function windowFloor(at: Date, cadenceMinutes: number): Date {
+  if (cadenceMinutes <= 0) {
+    throw new Error(`cadenceMinutes must be positive, got ${cadenceMinutes}`);
+  }
+  const cadenceMs = cadenceMinutes * MS_PER_MINUTE;
+  return new Date(Math.floor(at.getTime() / cadenceMs) * cadenceMs);
+}
+
 /** The paired `windowEnd` for a given `windowStart` — always exactly one
  *  cadence later. A separate function rather than inlining `+cadenceMs`
  *  everywhere: the ONE place this arithmetic lives is the one place a

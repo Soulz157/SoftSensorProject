@@ -67,6 +67,7 @@ export function CreateModelForm() {
           equipmentList={equipmentList}
           plantsLoading={plantsLoading}
           nameConflict={nav.nameConflict}
+          modelLimitNote={nav.modelLimitNote}
           selectedDataset={nav.selectedDataset}
           onName={setName}
           onDescription={setDescription}

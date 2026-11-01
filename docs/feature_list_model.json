@@ -4833,6 +4833,125 @@
         "Client workspace-limits, workspace-quota, settings, admin and overview tests 76/76; tsc, eslint clean (2026-10-27).",
         "Live check PENDING (no browser)."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-041",
+      "title": "Block and warn before a user goes over quota: enforce Plan.maxWorkspaces at workspace create; warn early (wizard Step 1 / Step 6, Models dialog) when the workspace's model cap is full",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-040"
+      ],
+      "description": "User asked 2026-10-28 whether the system blocks or warns when a user goes over quota. Audit: a model past the cap was refused (409) only at Save Model / Models-page create, after the whole training run, with no earlier warning; Plan.maxWorkspaces was read by nothing, so a FREE user could create unlimited workspaces. Fixed: createWorkspace now runs assertWorkspaceSlot in its transaction (locks the user row, counts owned non-deleted workspaces, 409 at the plan cap; ADMIN exempt), GET authorized/workspace/quota feeds the create forms, and the wizard / Models dialog read the workspace's effective model cap up front.",
+      "userDecisions": [
+        "2026-10-28: all three fixes — enforce maxWorkspaces, warn early in the model wizard, warn in the Models page create dialog.",
+        "ADMIN role is exempt from maxWorkspaces (admins create workspaces in the admin portal under their own id); not asked, flagged for the user."
+      ],
+      "findings": [
+        "Only workspaces the user OWNS and that are not soft-deleted count; membership in others does not.",
+        "The plan is the user's newest ACTIVE/TRIALING subscription, else FREE, else no limit (same rule as the owner's plan in MODEL-SERVE-040; endDate not checked).",
+        "The create-workspace dialog still carries a hard-coded line 'Each workspace can contain up to 100 models' that no longer matches the plan quotas; left untouched, not asked.",
+        "Existing users already over their plan keep their workspaces; only new creates are refused."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-041-T01",
+          "title": "Backend: assertWorkspaceSlot / buildWorkspaceSlotQuota / workspaceSlotBlocker; createWorkspace in an interactive transaction; GET authorized/workspace/quota",
+          "status": "completed",
+          "result": "DONE 2026-10-28. lib/workspace-limits.ts, workspace.admin.service.ts, workspace.authorized.{controller,service}.ts. workspace-limits.spec + workspace.admin.limits.spec 75/75 (8 new lib cases, 2 new createWorkspace cases); tsc, eslint clean. Pre-existing Nest DI failures in workspace-plant / workspace.authorized.controller specs are untouched."
+        },
+        {
+          "id": "MODEL-SERVE-041-T02",
+          "title": "Client: useMyWorkspaceQuota + workspaceSlotNote; create-workspace dialog and onboarding form show 'Your workspaces: n / N' and disable Create when full",
+          "status": "completed",
+          "result": "DONE 2026-10-28. components/create-workspace.tsx, components/auth/create-workspace-form.tsx, hooks/workspace/use-my-workspace-quota.ts, lib/workspace-limits.ts (+tests). A failed quota read never blocks."
+        },
+        {
+          "id": "MODEL-SERVE-041-T03",
+          "title": "Client: useWorkspaceModelLimit; wizard Step 1 gates canAdvance(1) and shows the note, Step 6 disables Save Model / Save & Deploy, Models page New Model dialog disables Create",
+          "status": "completed",
+          "result": "DONE 2026-10-28. hooks/workspace/use-workspace-model-limit.ts, use-model-pipeline-nav.ts (modelLimitNote), model-metadata-section.tsx, phase-1-details.tsx, phase-6-deploy.tsx, use-model-form.ts, model-upsert-dialog.tsx. Edit mode never blocked. New tests 12/12 (use-workspace-model-limit, use-model-pipeline-nav-limit); tsc, eslint, prettier clean."
+        },
+        {
+          "id": "MODEL-SERVE-041-T04",
+          "title": "docs/DESIGN_SYSTEM.md: going-over behaviour in the Workspace quota paragraph",
+          "status": "completed",
+          "result": "DONE 2026-10-28."
+        },
+        {
+          "id": "MODEL-SERVE-041-T05",
+          "title": "Live check in a browser: FREE owner of 1 workspace sees 1 / 1 and a disabled Create, POST /admin/workspace/create returns 409; a workspace at its model cap blocks Step 1 Next, Step 6 save and the Models dialog Create",
+          "status": "pending",
+          "result": "NOT VERIFIED — no browser session."
+        }
+      ],
+      "acceptance_criteria": [
+        "A user who owns as many non-deleted workspaces as their plan's maxWorkspaces gets a 409 on create; an admin does not.",
+        "The create-workspace dialog and onboarding form say how many they own and disable Create when full.",
+        "A workspace at its model cap stops the wizard at Step 1 with the reason, disables save at Step 6, and disables Create in the Models dialog; editing a saved model is unaffected.",
+        "A stale page still ends in the backend's 409 message."
+      ],
+      "verification": [
+        "Backend workspace-limits + admin workspace specs 75/75; tsc, eslint clean (2026-10-28).",
+        "Client new hook/nav tests 12/12 and workspace-limits.test; tsc, eslint, prettier clean (2026-10-28). Wider models/workspaces/settings/overview/admin run: only the known baseline failures (feature-count-sweep, core-config, phase-4, chart-time-axis, model-selection-contract, model-detail-dialog) plus two load-flaky files that pass alone.",
+        "Live check PENDING (no browser)."
+      ]
+    },
+    {
+      "id": "MODEL-SERVE-042",
+      "title": "Hourly inference starts at the deploy (and at a promote), not 48 h before it",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-006"
+      ],
+      "description": "User asked 2026-10-29 to review the hourly model scheduler and start the 1-hour cycle from when the model is deployed. Audit: InferenceWindowSchedulerService.insertDueWindows inserted every window in [now - INFERENCE_BACKFILL_HORIZON_HOURS (48), now - lag - cadence) on the first tick after a Start, and again for a newly promoted version (windows key on modelVersionId), so each deploy scored two days of history from before the model ran. Local DB: s611water deployed 2026-10-16 06:12 had 48 of 48 windows before the deploy; TM 149, TM2 120, TS 48 pre-deploy rows. Cost: up to 48 container spawns per deploy against INFERENCE_MAX_CONCURRENCY=1, and Monitoring rows for hours the model never ran live. Fixed: InferenceSchedule.enabledAt (written in the same upsert as enabled:true, on the OFF->ON edge only) and ModelVersion.promotedAt floor the window grid; from = max(now - horizon, floor(enabledAt), floor(promotedAt)).",
+      "userDecisions": [
+        "2026-10-29: keep clock-hour windows (:00 grid, matches PI / lab / charts); the first window is the hour CONTAINING the deploy (deploy 06:12 -> 06:00-07:00), nothing before it.",
+        "2026-10-29: a promote also starts from the promote time, so a new version does not backfill 48 h.",
+        "History stays reachable through the existing explicit POST /inference/backfill route, unchanged."
+      ],
+      "findings": [
+        "The 48 h horizon is kept as a catch-up cap for a backend outage AFTER the deploy; only history from before the anchor is dropped.",
+        "A Stop -> Start moves the anchor, so a stopped period is not auto-scored; a settings tweak on a running schedule does not move it (same edge as preflight and stampDeployed).",
+        "Model.data.deployedAt was rejected as the anchor: stampDeployed runs AFTER the upsert, so a tick in between, or a failed stamp, would backfill again. The column is written atomically with enabled.",
+        "Rows that predate the column were backfilled from Model.data.deployedAt in the migration; a row with neither keeps the old horizon-only behaviour.",
+        "Windows already in the DB from before this change are left as they are.",
+        "Scheduler stays setInterval (5 min tick, no queue library); single-replica assumption unchanged."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-042-T01",
+          "title": "Schema + hand-written migration: InferenceSchedule.enabledAt DateTime?, backfilled from Model.data.deployedAt",
+          "status": "completed",
+          "result": "DONE 2026-10-29. packages/prisma/prisma/migrations/20261029100000_inference_schedule_enabled_at/migration.sql applied BY HAND to the local docker DB (4 rows backfilled; never migrate dev); pnpm build in packages/prisma regenerated dist."
+        },
+        {
+          "id": "MODEL-SERVE-042-T02",
+          "title": "putScheduleService writes enabledAt on create and on the OFF->ON update only",
+          "status": "completed",
+          "result": "DONE 2026-10-29. inference-window.authorized.service.ts. Specs: first enable writes both arms, running settings update has no enabledAt, re-enable of a stopped row replaces the old anchor."
+        },
+        {
+          "id": "MODEL-SERVE-042-T03",
+          "title": "windowFloor() in lib/inference-windows.ts; insertDueWindows starts from max(horizon, floor(enabledAt), floor(promotedAt))",
+          "status": "completed",
+          "result": "DONE 2026-10-29. Specs: deploy 06:12 -> first window 06:00 and nothing earlier; later promote moves the floor; null anchors fall back to the horizon; horizon still caps an old Start; a Start inside the unfinished hour inserts nothing. jest inference-window + lib 198/198; tsc, eslint (1 pre-existing warning), prettier clean."
+        },
+        {
+          "id": "MODEL-SERVE-042-T04",
+          "title": "Live check: Start a model at :xx and Promote a version, then read InferenceWindow",
+          "status": "pending",
+          "detail": "After the next tick the oldest windowStart for the version must be the floor of the Start (or promote) hour, with zero earlier rows. Not run: no backend was started in this session."
+        }
+      ],
+      "acceptance": [
+        "A fresh Start inserts no InferenceWindow whose windowStart is before the clock hour containing the Start.",
+        "A promote inserts no window for the new version before the clock hour containing the promote.",
+        "A settings update on a running schedule does not move the anchor; Stop -> Start does."
+      ]
     }
   ],
   "global_definition_of_done": [

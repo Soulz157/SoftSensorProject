@@ -23,6 +23,8 @@ interface Props {
   equipmentList: CanvasNode[]
   plantsLoading: boolean
   nameConflict: boolean
+  /** MODEL-SERVE-041. The chosen workspace takes no more models. */
+  modelLimitNote: string | null
   selectedDataset: SavedDataset | null
   totalSteps: number
   onName: (v: string) => void

@@ -29,20 +29,7 @@ from torch import nn
 
 DEVICE = torch.device("cpu")
 
-# MODEL-FLOW-009-T04. LIVE-VERIFIED necessary, not precautionary: torch's
-# default intra-op thread pool sizes itself off every LOGICAL core the
-# kernel reports, which under `docker run --cpus=N` is still the HOST's
-# full core count — cgroups throttle CPU TIME, they do not shrink what
-# `os.cpu_count()`/`sched_getaffinity` report inside the container. A
-# first benchmark run against this image, on a host with more cores than
-# the production NanoCpus=2 budget, measured 500 windows x 3 epochs taking
-# 10+ minutes pegged at ~196% CPU — thread-count oversubscription thrashing
-# the 2-CPU quota, not real fit time. Capped to the SAME 2 the production
-# container's own NanoCpus is set to (trainning-container.authorized.
-# service.ts) — a container given a different CPU budget should still get
-# this right, but 2 is what this trainer's own resource comments already
-# treat as the fixed production number, not a value read from the
-# environment at every call site.
+
 _TORCH_THREADS = int(os.environ.get("TRAINER_CPU_BUDGET", "2"))
 torch.set_num_threads(_TORCH_THREADS)
 torch.set_num_interop_threads(1)
@@ -67,9 +54,6 @@ class _RNNHead(nn.Module):
         self.head = nn.Linear(hidden_size, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # output: (batch, seq, hidden); take the LAST timestep's hidden
-        # state — the window's own final position, matching build_windows'
-        # nowcast convention (window i predicts the target AT row i).
         output, _ = self.rnn(x)
         last = output[:, -1, :]
         return self.head(last).squeeze(-1)
@@ -99,9 +83,6 @@ class SequenceRegressor:
         self.batch_size = batch_size
         self.seed = seed
         self._model: _RNNHead | None = None
-        # Populated by fit(); read by train.py's extract_loss_history the
-        # same way every other algorithm exposes ITS native trajectory
-        # attribute (model.loss_curve_, model.train_score_, ...).
         self.train_loss_: list[float] = []
         self.validation_loss_: list[float] = []
 
@@ -126,8 +107,6 @@ class SequenceRegressor:
         val_X_t: torch.Tensor | None = None
         val_y_t: torch.Tensor | None = None
         if eval_set:
-            # main() passes [(train...), (test...)] to mirror lightgbm/
-            # xgboost's own eval_set shape — index 1 is the held-out side.
             val_X, val_y = eval_set[1]
             val_X_t = torch.as_tensor(val_X, dtype=torch.float32, device=DEVICE)
             val_y_t = torch.as_tensor(val_y, dtype=torch.float32, device=DEVICE)
@@ -166,12 +145,6 @@ class SequenceRegressor:
         return pred.cpu().numpy()
 
     def __getstate__(self) -> dict[str, Any]:
-        # nn.Module is picklable directly, but going through its own
-        # state_dict is the documented-stable path across torch versions —
-        # the same "don't trust bare pickling of a live framework object"
-        # discipline MODEL-FLOW-007-T11's framework_versions manifest field
-        # exists to make visible for every algorithm, applied here at the
-        # object level for the one algorithm where it is a live risk.
         state = self.__dict__.copy()
         state["_model_state_dict"] = (
             self._model.state_dict() if self._model is not None else None

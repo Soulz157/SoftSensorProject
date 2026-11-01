@@ -201,3 +201,87 @@ export async function assertWorkspaceCapacity(
     });
   }
 }
+
+/**
+ * MODEL-SERVE-041. How many workspaces a user may OWN, from their own plan's
+ * `maxWorkspaces`. A user's plan is their newest ACTIVE / TRIALING
+ * subscription, else FREE (same rule as the workspace owner's plan above).
+ * Admins are exempt: they create workspaces in the admin portal under their
+ * own id, and a plan quota is not what governs them.
+ */
+export function workspaceSlotBlocker(
+  limit: number | null,
+  current: number,
+): string | null {
+  if (!limitUsage(limit, current).full) return null;
+  return `You have reached your workspace limit (${limit}) on your current plan. Upgrade your plan to create more.`;
+}
+
+/** The caller's workspace-count limit; null = no limit (admin, or no plan row). */
+async function loadWorkspaceSlotLimit(
+  db: PrismaTypes.TransactionClient,
+  user: { id: string; role: string },
+): Promise<{ limit: number | null; source: LimitSource }> {
+  if (user.role === 'ADMIN') return { limit: null, source: 'none' };
+
+  const subscription = await db.subscription.findFirst({
+    where: { userId: user.id, status: { in: ['ACTIVE', 'TRIALING'] } },
+    orderBy: { createdAt: 'desc' },
+    select: { plan: { select: { maxWorkspaces: true } } },
+  });
+  const plan =
+    subscription?.plan ??
+    (await db.plan.findUnique({
+      where: { name: 'FREE' },
+      select: { maxWorkspaces: true },
+    }));
+  if (!plan) return { limit: null, source: 'none' };
+  return { limit: plan.maxWorkspaces, source: 'plan' };
+}
+
+function countOwnedWorkspaces(
+  db: PrismaTypes.TransactionClient,
+  userId: string,
+): Promise<number> {
+  return db.workspace.count({ where: { ownerId: userId, deletedAt: null } });
+}
+
+/**
+ * Refuse (409) when `user` already owns as many workspaces as their plan
+ * allows. Call it inside the transaction that creates the workspace: it
+ * locks the user row first, so two concurrent creates cannot both take the
+ * last slot.
+ */
+export async function assertWorkspaceSlot(
+  tx: PrismaTypes.TransactionClient,
+  user: { id: string; role: string },
+): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${user.id} FOR UPDATE`;
+
+  const { limit } = await loadWorkspaceSlotLimit(tx, user);
+  if (limit === null) return;
+
+  const blocker = workspaceSlotBlocker(
+    limit,
+    await countOwnedWorkspaces(tx, user.id),
+  );
+  if (blocker) {
+    throw new AppException({
+      statusCode: 409,
+      message: blocker,
+      type: 'ERROR',
+    });
+  }
+}
+
+/** The caller's workspace count against their plan, for the create dialog. */
+export async function buildWorkspaceSlotQuota(
+  db: PrismaTypes.TransactionClient,
+  user: { id: string; role: string },
+): Promise<QuotaItem> {
+  const { limit, source } = await loadWorkspaceSlotLimit(db, user);
+  return {
+    ...limitUsage(limit, await countOwnedWorkspaces(db, user.id)),
+    source,
+  };
+}

@@ -27,6 +27,7 @@ interface Props {
   plantsLoading: boolean
   disabled: boolean
   nameConflict: boolean
+  modelLimitNote?: string | null
   onName: (v: string) => void
   onDescription: (v: string) => void
   onWorkspace: (id: string) => void
@@ -51,6 +52,7 @@ export function ModelMetadataSection({
   plantsLoading,
   disabled,
   nameConflict,
+  modelLimitNote,
   onName,
   onDescription,
   onWorkspace,
@@ -133,6 +135,9 @@ export function ModelMetadataSection({
               onPlantChange={onPlant}
               plantsLoading={plantsLoading}
             />
+            {modelLimitNote && (
+              <p className="text-xs text-muted-foreground">{modelLimitNote}</p>
+            )}
           </div>
 
           <div className="space-y-1.5 flex-1 w-full">

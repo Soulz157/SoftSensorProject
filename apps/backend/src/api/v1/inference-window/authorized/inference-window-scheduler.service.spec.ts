@@ -212,6 +212,102 @@ describe('InferenceWindowSchedulerService.insertDueWindows (MODEL-SERVE-006-T02)
       jest.useRealTimers();
     }
   });
+
+  /**
+   * MODEL-SERVE-042. Windows start at the clock hour containing the Start,
+   * not at the 48 h horizon. Measured on the local DB: s611water, deployed
+   * 06:12, had 48 of 48 windows before the deploy.
+   *
+   * NEGATIVE CONTROL: with the anchors ignored (`from = now - horizon` only)
+   * the oldest start is 2026-10-14T11:00 — the 'null anchors' case below —
+   * not 06:00 on the 16th, so the first case fails.
+   */
+  describe('MODEL-SERVE-042 start from deploy, not the horizon', () => {
+    const NOW = new Date('2026-10-16T10:20:00.000Z');
+
+    async function run(schedule: Record<string, unknown>, version: unknown) {
+      jest.useFakeTimers().setSystemTime(NOW);
+      try {
+        const prisma = buildPrisma({
+          inferenceSchedule: {
+            findMany: jest.fn().mockResolvedValue([
+              {
+                modelId: 'model-1',
+                enabled: true,
+                cadenceMinutes: 60,
+                lagMinutes: 15,
+                ...schedule,
+              },
+            ]),
+          },
+          modelVersion: { findFirst: jest.fn().mockResolvedValue(version) },
+        });
+        await (
+          makeService(prisma) as unknown as {
+            insertDueWindows(): Promise<void>;
+          }
+        )['insertDueWindows']();
+        const call = prisma.inferenceWindow.createMany.mock.calls[0]?.[0];
+        return (call?.data ?? []).map((row: { windowStart: Date }) =>
+          row.windowStart.toISOString(),
+        ) as string[];
+      } finally {
+        jest.useRealTimers();
+      }
+    }
+
+    it('first window is the hour the schedule was started in; nothing earlier', async () => {
+      const starts = await run(
+        { enabledAt: new Date('2026-10-16T06:12:16.875Z') },
+        { id: 'version-1', promotedAt: new Date('2026-10-10T00:00:00.000Z') },
+      );
+      expect(starts[0]).toBe('2026-10-16T06:00:00.000Z');
+      // Newest due window at 10:20 is 09:00 (ends 10:00, +15 min lag = 10:15).
+      expect(starts).toEqual([
+        '2026-10-16T06:00:00.000Z',
+        '2026-10-16T07:00:00.000Z',
+        '2026-10-16T08:00:00.000Z',
+        '2026-10-16T09:00:00.000Z',
+      ]);
+    });
+
+    it('a promote later than the Start moves the floor to the promote hour', async () => {
+      const starts = await run(
+        { enabledAt: new Date('2026-10-14T06:12:00.000Z') },
+        { id: 'version-2', promotedAt: new Date('2026-10-16T08:40:00.000Z') },
+      );
+      expect(starts).toEqual([
+        '2026-10-16T08:00:00.000Z',
+        '2026-10-16T09:00:00.000Z',
+      ]);
+    });
+
+    it('a null enabledAt and promotedAt fall back to the horizon alone', async () => {
+      const starts = await run(
+        { enabledAt: null },
+        { id: 'version-1', promotedAt: null },
+      );
+      // 48 h before 10:20 on the 16th -> first aligned start 11:00 on the 14th
+      expect(starts[0]).toBe('2026-10-14T11:00:00.000Z');
+      expect(starts[starts.length - 1]).toBe('2026-10-16T09:00:00.000Z');
+    });
+
+    it('the horizon still caps catch-up when the Start is older than it', async () => {
+      const starts = await run(
+        { enabledAt: new Date('2026-09-01T00:00:00.000Z') },
+        { id: 'version-1', promotedAt: new Date('2026-09-01T00:00:00.000Z') },
+      );
+      expect(starts[0]).toBe('2026-10-14T11:00:00.000Z');
+    });
+
+    it('a Start inside the current, unfinished hour inserts nothing yet', async () => {
+      const starts = await run(
+        { enabledAt: new Date('2026-10-16T10:05:00.000Z') },
+        { id: 'version-1', promotedAt: null },
+      );
+      expect(starts).toEqual([]);
+    });
+  });
 });
 
 describe('InferenceWindowSchedulerService.reconcileStuckWindows (MODEL-SERVE-006-T02)', () => {

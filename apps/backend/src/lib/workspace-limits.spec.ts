@@ -10,11 +10,14 @@ jest.mock('@softsensor/common', () => ({
 
 import {
   assertWorkspaceCapacity,
+  assertWorkspaceSlot,
   buildQuota,
+  buildWorkspaceSlotQuota,
   limitBlocker,
   limitUsage,
   loadWorkspaceLimits,
   pickLimit,
+  workspaceSlotBlocker,
 } from './workspace-limits';
 import { UpdateWorkspaceRequestSchema } from '@/api/v1/workspace/admin/dto/workspace.admin.dto';
 
@@ -252,5 +255,107 @@ describe('owner-facing workspace update cannot set limits', () => {
       maxMembers: 1000,
     });
     expect(parsed).toEqual({ name: 'X' });
+  });
+});
+
+describe('MODEL-SERVE-041 — a user may own only as many workspaces as their plan allows', () => {
+  function tx(opts: {
+    subscriptionCap?: number | null;
+    freeCap?: number | null;
+    owned: number;
+  }) {
+    return {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      subscription: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(
+            opts.subscriptionCap === undefined
+              ? null
+              : { plan: { maxWorkspaces: opts.subscriptionCap } },
+          ),
+      },
+      plan: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue(
+            opts.freeCap === undefined ? null : { maxWorkspaces: opts.freeCap },
+          ),
+      },
+      workspace: { count: jest.fn().mockResolvedValue(opts.owned) },
+    };
+  }
+  const user = { id: 'u-1', role: 'USER' };
+
+  it('words the refusal for the plan', () => {
+    expect(workspaceSlotBlocker(1, 1)).toBe(
+      'You have reached your workspace limit (1) on your current plan. Upgrade your plan to create more.',
+    );
+    expect(workspaceSlotBlocker(3, 2)).toBeNull();
+    expect(workspaceSlotBlocker(null, 99)).toBeNull();
+  });
+
+  it('allows a create under the cap and locks the user row first', async () => {
+    const t = tx({ subscriptionCap: 3, owned: 2 });
+    await assertWorkspaceSlot(t as never, user);
+    expect(t.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      t.workspace.count.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('refuses with 409 at the cap', async () => {
+    const t = tx({ subscriptionCap: 3, owned: 3 });
+    await expect(assertWorkspaceSlot(t as never, user)).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining('workspace limit (3)') as string,
+    });
+  });
+
+  it('counts only workspaces the user owns that are not deleted', async () => {
+    const t = tx({ subscriptionCap: 3, owned: 0 });
+    await assertWorkspaceSlot(t as never, user);
+    expect(t.workspace.count).toHaveBeenCalledWith({
+      where: { ownerId: 'u-1', deletedAt: null },
+    });
+  });
+
+  it('uses FREE when there is no live subscription', async () => {
+    const t = tx({ freeCap: 1, owned: 1 });
+    await expect(assertWorkspaceSlot(t as never, user)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(t.subscription.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'u-1', status: { in: ['ACTIVE', 'TRIALING'] } },
+      }),
+    );
+  });
+
+  it('has no limit when no plan row exists at all', async () => {
+    const t = tx({ owned: 50 });
+    await assertWorkspaceSlot(t as never, user);
+    expect(t.workspace.count).not.toHaveBeenCalled();
+  });
+
+  it('exempts an ADMIN without reading a plan or counting', async () => {
+    const t = tx({ subscriptionCap: 1, owned: 9 });
+    await assertWorkspaceSlot(t as never, { id: 'a-1', role: 'ADMIN' });
+    expect(t.subscription.findFirst).not.toHaveBeenCalled();
+    expect(t.workspace.count).not.toHaveBeenCalled();
+  });
+
+  it('reports the count against the plan for the create dialog', async () => {
+    const t = tx({ subscriptionCap: 1, owned: 1 });
+    await expect(buildWorkspaceSlotQuota(t as never, user)).resolves.toEqual({
+      current: 1,
+      limit: 1,
+      full: true,
+      over: false,
+      source: 'plan',
+    });
+    const admin = tx({ owned: 4 });
+    await expect(
+      buildWorkspaceSlotQuota(admin as never, { id: 'a-1', role: 'ADMIN' }),
+    ).resolves.toMatchObject({ limit: null, full: false, source: 'none' });
   });
 });

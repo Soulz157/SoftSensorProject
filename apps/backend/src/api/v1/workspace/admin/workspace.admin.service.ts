@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import {
   assertWorkspaceCapacity,
+  assertWorkspaceSlot,
   buildQuota,
   loadWorkspaceLimits,
   pickLimit,
@@ -222,8 +223,11 @@ export class WorkspaceAdminService {
   ) {
     const { name, color, icon } = args;
 
-    const [workspace] = await this.prisma.$transaction([
-      this.prisma.workspace.create({
+    // MODEL-SERVE-041: refuse when the user already owns as many workspaces
+    // as their plan allows (admins are exempt).
+    const workspace = await this.prisma.$transaction(async (tx) => {
+      await assertWorkspaceSlot(tx, user);
+      return tx.workspace.create({
         data: {
           name,
           color,
@@ -234,8 +238,8 @@ export class WorkspaceAdminService {
           },
         },
         select: { id: true, name: true, color: true, icon: true },
-      }),
-    ]);
+      });
+    });
 
     return {
       statusCode: 201,

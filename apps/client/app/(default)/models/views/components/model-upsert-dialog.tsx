@@ -57,7 +57,7 @@ export function ModelUpsertDialog({
   const sourceWrite = liveSource.active
     ? { isDirty: liveSource.isDirty, save: liveSource.save }
     : dataSource
-  const { state, actions } = useModelForm({
+  const { state, actions, modelLimitNote } = useModelForm({
     open,
     model,
     onSuccess,
@@ -119,6 +119,9 @@ export function ModelUpsertDialog({
                 ))}
               </SelectContent>
             </Select>
+            {modelLimitNote && (
+              <p className="text-xs text-muted-foreground">{modelLimitNote}</p>
+            )}
           </div>
 
           {workspaceId && (
@@ -276,7 +279,10 @@ export function ModelUpsertDialog({
           <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
             Cancel
           </Button>
-          <Button onClick={actions.submitForm} disabled={isSubmitting}>
+          <Button
+            onClick={actions.submitForm}
+            disabled={isSubmitting || modelLimitNote !== null}
+          >
             {isSubmitting ? 'Saving…' : model ? 'Save Changes' : 'Create Model'}
           </Button>
         </DialogFooter>

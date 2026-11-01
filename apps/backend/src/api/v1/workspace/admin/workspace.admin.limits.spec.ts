@@ -132,3 +132,46 @@ describe('WorkspaceAdminService.updateWorkspaceLimits', () => {
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 });
+
+describe('MODEL-SERVE-041 — createWorkspace refuses past the owner plan cap', () => {
+  const dto = { name: 'New', color: 'blue', icon: 'building' } as never;
+
+  it('creates nothing when the user already owns their plan allowance', async () => {
+    const { prisma, service } = build({ maxMembers: null, memberCount: 0 });
+    Object.assign(prisma, {
+      subscription: {
+        findFirst: jest.fn().mockResolvedValue({ plan: { maxWorkspaces: 1 } }),
+      },
+      plan: { findUnique: jest.fn() },
+    });
+    const create = jest.fn();
+    Object.assign(prisma.workspace, {
+      count: jest.fn().mockResolvedValue(1),
+      create,
+    });
+    await expect(
+      service.createWorkspace({ id: 'u-1', role: 'USER' } as never, dto),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('creates the workspace and its OWNER member under the cap', async () => {
+    const { prisma, service } = build({ maxMembers: null, memberCount: 0 });
+    Object.assign(prisma, {
+      subscription: {
+        findFirst: jest.fn().mockResolvedValue({ plan: { maxWorkspaces: 3 } }),
+      },
+      plan: { findUnique: jest.fn() },
+    });
+    Object.assign(prisma.workspace, {
+      count: jest.fn().mockResolvedValue(2),
+      create: jest.fn().mockResolvedValue({ id: 'ws-new' }),
+    });
+    const res = await service.createWorkspace(
+      { id: 'u-1', role: 'USER' } as never,
+      dto,
+    );
+    expect(res.statusCode).toBe(201);
+    expect(res.data).toEqual({ id: 'ws-new' });
+  });
+});

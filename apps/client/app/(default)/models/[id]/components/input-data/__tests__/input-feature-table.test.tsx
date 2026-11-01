@@ -38,7 +38,7 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
 }
 
 describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
-  it('names the drift column Out of range, and keeps Status for the real quality reading', () => {
+  it('names the drift column Out of range, and the PI quality column Is connected', () => {
     render(<InputFeatureTable rows={[row()]} />)
 
     // T12 renamed this header away from "Status" because a drift verdict is
@@ -46,12 +46,13 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
     // for the other. T15 then gave "Status" back its honest meaning: PI's
     // own Good/Bad flag. Both headers now exist, each saying what it is.
     // MODEL-SERVE-036: drift is the share of live values outside the
-    // training range, so the header names that.
+    // training range, so the header names that. "Status" was then renamed
+    // "Is connected" so PI's Good/Bad no longer reads as a drift verdict.
     expect(
       screen.getByRole('columnheader', { name: 'Out of range' }),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('columnheader', { name: 'Status' }),
+      screen.getByRole('columnheader', { name: 'Is connected' }),
     ).toBeInTheDocument()
   })
 
@@ -65,7 +66,7 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
       />,
     )
 
-    expect(screen.getByRole('columnheader', { name: 'Status' })).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: 'Is connected' })).toBeVisible()
 
     // Two different questions, two different answers on the same row: a
     // tag can be Bad in PI while its distribution has not drifted at all.
@@ -306,10 +307,11 @@ describe('InputFeatureTable — Sensor Frozen (MODEL-SERVE-001-T30)', () => {
       .getByText('TI010.PV')
       .closest('tr')!
       .querySelectorAll('td')
+    // The Frozen badge sits after the tag name, describing the instrument.
+    expect(cells[1]?.textContent).toBe('TI010.PVFrozen')
     expect(cells[2]?.textContent).toBe('Good') // drift
-    // The Frozen badge lives INSIDE the PI cell, so this reads
-    // "GoodFrozen" — PI itself still says Good, which is the point.
-    expect(cells[3]?.textContent).toBe('GoodFrozen')
+    // PI itself still says Good, which is the point.
+    expect(cells[3]?.textContent).toBe('Good')
   })
 })
 

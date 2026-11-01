@@ -12,7 +12,11 @@ import {
   materializeInferenceWindow,
   type InferenceWindowMaterializeResult,
 } from '@/lib/python-preprocess-client';
-import { formatDtHour, windowStartsBetween } from '@/lib/inference-windows';
+import {
+  formatDtHour,
+  windowFloor,
+  windowStartsBetween,
+} from '@/lib/inference-windows';
 import { env } from '@/config/env.config';
 import { buildPiCredentials } from '@/lib/source-block';
 import { nextTagObservation, type FetchOutcome } from '@/lib/tag-observation';
@@ -93,19 +97,9 @@ export class InferenceWindowSchedulerService
     } catch (err) {
       this.logger.warn(`Inference window reconcile sweep failed: ${msg(err)}`);
     }
-    // Not awaited by the tick's own error handling above on purpose — a
-    // dispatch failure is per-window (caught inside dispatchDue itself) and
-    // must never be conflated with an insert/reconcile sweep failure.
     void this.dispatchDue();
   }
 
-  /**
-   * T01/T02/T11. For every enabled schedule, insert PENDING rows for every
-   * due window that has none — `createMany({ skipDuplicates: true })`
-   * against the `(modelVersionId, windowStart)` unique index makes a
-   * repeated insert a no-op, so there is no idempotency key of the kind
-   * PredictionJob needs.
-   */
   private async insertDueWindows(): Promise<void> {
     const schedules = await this.prisma.inferenceSchedule.findMany({
       where: { enabled: true },
@@ -116,27 +110,18 @@ export class InferenceWindowSchedulerService
     for (const schedule of schedules) {
       const version = await this.prisma.modelVersion.findFirst({
         where: { modelId: schedule.modelId, stage: 'PRODUCTION' },
-        select: { id: true },
+        select: { id: true, promotedAt: true },
       });
-      // No PRODUCTION version — nothing to pin a window to. Not an error:
-      // a demote-then-no-promote leaves a schedule enabled with nothing to
-      // run, and T10's staleness alarm is exactly what surfaces this to a
-      // human, not a background exception.
+
       if (!version) continue;
 
-      const from = new Date(
-        now.getTime() - env.INFERENCE_BACKFILL_HORIZON_HOURS * 3_600_000,
-      );
-      // T11: a window is due once it has ELAPSED and its lag has passed —
-      // windowEnd = now() - lag (schema.prisma's own documented contract
-      // on InferenceSchedule.lagMinutes). Gating on windowStart alone (the
-      // prior code) made a window due at windowStart + lag, one whole
-      // cadence before windowEnd — so the fetch asked the historian for a
-      // window whose end was still up to `cadenceMinutes` in the FUTURE.
-      // Measured live: 20 fully-elapsed windows returned 60/60 rows at
-      // 0% missing while 4 windows read this early returned 19-30 rows,
-      // tracking elapsed minutes linearly. windowEnd = windowStart +
-      // cadenceMinutes, so "due" becomes windowStart <= now - lag - cadence.
+      const horizonMs =
+        now.getTime() - env.INFERENCE_BACKFILL_HORIZON_HOURS * 3_600_000;
+      const anchorsMs = [schedule.enabledAt, version.promotedAt]
+        .filter((at): at is Date => at instanceof Date)
+        .map((at) => windowFloor(at, schedule.cadenceMinutes).getTime());
+      const from = new Date(Math.max(horizonMs, ...anchorsMs));
+
       const to = new Date(
         now.getTime() -
           (schedule.lagMinutes + schedule.cadenceMinutes) * 60_000,
@@ -148,14 +133,6 @@ export class InferenceWindowSchedulerService
         Date.now() + env.INFERENCE_WINDOW_TOKEN_TTL_MS,
       );
 
-      // MODEL-SERVE-001-T20, decided 2026-09-15: `skipDuplicates` keys on
-      // (modelVersionId, windowStart), the same slot a CANCELED row already
-      // occupies — so re-enabling a schedule does NOT resurrect a window a
-      // Stop cancelled while it fell inside INFERENCE_BACKFILL_HORIZON_HOURS.
-      // That windowStart is permanently skipped here, forever. Deliberate:
-      // "cancelled means cancelled," not "cancelled means paused" — the
-      // rejected alternative was flipping CANCELED back to PENDING on the
-      // enable path instead.
       await this.prisma.inferenceWindow.createMany({
         data: starts.map((windowStart) => {
           const { tokenHash } = mintRunToken();

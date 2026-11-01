@@ -9,6 +9,7 @@ import {
   parseLimitInput,
   quotaPercent,
   quotaSourceLabel,
+  workspaceSlotNote,
 } from './workspace-limits'
 
 describe('workspace quota from the owner plan (MODEL-SERVE-040)', () => {
@@ -99,5 +100,17 @@ describe('workspace limits (MODEL-SERVE-035)', () => {
     expect(parseLimitInput('12')).toBe(12)
     for (const bad of ['0', '-1', '1.5', 'abc', '10001'])
       expect(parseLimitInput(bad)).toBeUndefined()
+  })
+})
+
+describe('workspaceSlotNote (MODEL-SERVE-041)', () => {
+  it('explains a full plan allowance and is silent otherwise', () => {
+    expect(workspaceSlotNote({ current: 1, limit: 1 })).toBe(
+      'You have reached your workspace limit (1) on your current plan. Upgrade your plan to create more.',
+    )
+    expect(workspaceSlotNote({ current: 0, limit: 1 })).toBeNull()
+    expect(workspaceSlotNote({ current: 40, limit: null })).toBeNull()
+    expect(workspaceSlotNote(null)).toBeNull()
+    expect(workspaceSlotNote(undefined)).toBeNull()
   })
 })

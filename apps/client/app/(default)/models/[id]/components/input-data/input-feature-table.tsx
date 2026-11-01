@@ -81,8 +81,10 @@ export function InputFeatureTable({ rows, driftThresholds }: Props) {
           {/* MODEL-SERVE-001-T15. PI's OWN quality flag, read live — a
               different question from Drift, and the one an operator opens
               this tab to ask. For a derived feature it is its source tags'
-              verdict, with the failing ones named. */}
-          <TableHead>Status</TableHead>
+              verdict, with the failing ones named. Headed "Is connected",
+              not "Status": "Status" read as one more drift verdict beside
+              Out of range. */}
+          <TableHead>Is connected</TableHead>
           <TableHead className="text-right">Last value</TableHead>
           {/* MODEL-SERVE-009-T04. "Last seen" is ARRIVAL; "Last changed" is
               MOVEMENT. They are different questions and a stuck instrument
@@ -100,7 +102,44 @@ export function InputFeatureTable({ rows, driftThresholds }: Props) {
               {i + 1}
             </TableCell>
             <TableCell className="font-mono text-xs font-medium text-foreground">
-              {row.column}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span>{row.column}</span>
+                {/* MODEL-SERVE-001-T29/T30. A THIRD verdict, beside PI's — a
+                    stuck instrument can report Good and un-drifted while its
+                    value has not changed in hours, so neither neighbouring
+                    badge can carry this.
+
+                    AMBER (`Questionable`), never `Bad`/red: red already means
+                    "PI itself calls this tag bad", and a tag that is reporting
+                    cleanly but not moving is a different finding that wants a
+                    different look. Tags flat in TRAINING are already excluded
+                    server-side, so a setpoint never lands here. Sits
+                    after the tag name: it describes the instrument, not
+                    PI's connection verdict. */}
+                {row.frozen && (
+                  <Badge
+                    className={`border-0 font-sans ${PI_STATUS_CLASS.Questionable}`}
+                    title={
+                      // MODEL-SERVE-009-T03. The badge still comes from
+                      // MODEL-SERVE-001-T29's three-window detection; the
+                      // duration is EVIDENCE beside it, measured from the
+                      // per-tag row's own timestamps rather than inferred
+                      // from a pooled range. Unknown stays unstated — a
+                      // missing per-tag row must not read as "just changed".
+                      row.frozenFlatMinutes === null
+                        ? "No movement across the schedule's last frozenWindows windows"
+                        : `No movement across the schedule's last frozenWindows windows — unchanged for ${formatFlatDuration(row.frozenFlatMinutes)}`
+                    }
+                  >
+                    Frozen
+                    {row.frozenFlatMinutes !== null && (
+                      <span className="ml-1 font-normal opacity-80">
+                        {formatFlatDuration(row.frozenFlatMinutes)}
+                      </span>
+                    )}
+                  </Badge>
+                )}
+              </div>
               {/* T12. The equation behind a derived (formula) feature, under
                   its name — names which SOURCE COLUMNS feed it, never which
                   one is Bad (no per-tag status exists on this stream).
@@ -143,39 +182,6 @@ export function InputFeatureTable({ rows, driftThresholds }: Props) {
               >
                 {row.piStatus}
               </Badge>
-              {/* MODEL-SERVE-001-T29/T30. A THIRD verdict, beside PI's — a
-                  stuck instrument can report Good and un-drifted while its
-                  value has not changed in hours, so neither neighbouring
-                  badge can carry this.
-
-                  AMBER (`Questionable`), never `Bad`/red: red already means
-                  "PI itself calls this tag bad", and a tag that is reporting
-                  cleanly but not moving is a different finding that wants a
-                  different look. Tags flat in TRAINING are already excluded
-                  server-side, so a setpoint never lands here. */}
-              {row.frozen && (
-                <Badge
-                  className={`ml-1 border-0 ${PI_STATUS_CLASS.Questionable}`}
-                  title={
-                    // MODEL-SERVE-009-T03. The badge still comes from
-                    // MODEL-SERVE-001-T29's three-window detection; the
-                    // duration is EVIDENCE beside it, measured from the
-                    // per-tag row's own timestamps rather than inferred
-                    // from a pooled range. Unknown stays unstated — a
-                    // missing per-tag row must not read as "just changed".
-                    row.frozenFlatMinutes === null
-                      ? "No movement across the schedule's last frozenWindows windows"
-                      : `No movement across the schedule's last frozenWindows windows — unchanged for ${formatFlatDuration(row.frozenFlatMinutes)}`
-                  }
-                >
-                  Frozen
-                  {row.frozenFlatMinutes !== null && (
-                    <span className="ml-1 font-normal opacity-80">
-                      {formatFlatDuration(row.frozenFlatMinutes)}
-                    </span>
-                  )}
-                </Badge>
-              )}
               {/* The actionable half for a derived feature: WHICH source
                   tag is not Good. "Bad" alone says nothing at six sources. */}
               {row.failingSources && row.failingSources.length > 0 && (

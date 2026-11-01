@@ -30,7 +30,7 @@ LogFn = Callable[..., None]
 #     2,000    5.68     0.28
 #     4,000    16.15    0.54
 #     8,000    43.73    1.60
-#     10,000   62.33    2.44   <- chosen ceiling
+#     10,000   62.33    2.44   
 #     12,000   89.78    3.39
 #
 # Peak RSS fits ~24 bytes * n^2 (three n x n float64 matrices — kernel,
@@ -111,7 +111,6 @@ GPR_MAX_TRAIN_ROWS = 10_000
 # the identical trap if that fix is not already in whatever module they
 # add.
 #
-# Measured 2026-08-31 against scgc/soft-sensor-trainer:1.0.4.
 LSTM_MAX_TRAIN_WINDOWS = 50_000
 
 SEQUENCE_ALGORITHMS = ("lstm", "gru")

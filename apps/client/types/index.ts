@@ -294,6 +294,11 @@ export interface WorkspaceQuota {
   members: WorkspaceQuotaItem
 }
 
+/** MODEL-SERVE-041. Workspaces the caller owns against their plan's cap. */
+export interface MyWorkspaceQuota {
+  workspaces: WorkspaceQuotaItem
+}
+
 /** MODEL-SERVE-040. What the owner's plan alone gives (null = no limit). */
 export interface PlanQuotaValues {
   maxModels: number | null

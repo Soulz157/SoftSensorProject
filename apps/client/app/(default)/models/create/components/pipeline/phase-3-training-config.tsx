@@ -280,16 +280,11 @@ export function Phase3TrainingConfig({ nav }: Props) {
           </div>
         )}
 
-        {/* MODEL-FLOW-035/036. Round 2's choices sit right above the one Start
-            they arm (proximity); each card already carries its run's score,
-            so picking needs no scroll down to Run parameters. Locked until a
-            run succeeds. */}
         <FineTuneSection
           fineTune={fineTune}
           nSplits={nav.nSplits}
           datasetSize={datasetSize}
         />
-
         <TrainingActions
           estimate={
             fineTuning

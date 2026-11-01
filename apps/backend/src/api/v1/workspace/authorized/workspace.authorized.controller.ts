@@ -39,6 +39,16 @@ export class WorkspaceAuthorizedController {
     return this.workspaceAuthorizedService.getAllWorkspaces(user);
   }
 
+  // Declared before '/:id' so 'quota' is not read as a workspace id.
+  @Get('/quota')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "How many workspaces the current user owns vs their plan's cap",
+  })
+  async getMyWorkspaceQuota(@Users() user: Auth.UserPayload) {
+    return this.workspaceAuthorizedService.getMyWorkspaceQuota(user);
+  }
+
   @Get('/:id')
   @HttpCode(200)
   @ApiOperation({ summary: 'Get workspace by ID' })

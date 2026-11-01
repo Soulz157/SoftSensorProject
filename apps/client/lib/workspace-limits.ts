@@ -43,6 +43,18 @@ export function limitReachedNote(
 }
 
 /**
+ * MODEL-SERVE-041. Why the caller cannot create another workspace, for a
+ * disabled button; null when they can (or have no cap). Same words as the
+ * backend's refusal.
+ */
+export function workspaceSlotNote(
+  item: { current: number; limit: number | null } | null | undefined,
+): string | null {
+  if (!item || !limitUsage(item.limit, item.current).full) return null
+  return `You have reached your workspace limit (${item.limit}) on your current plan. Upgrade your plan to create more.`
+}
+
+/**
  * MODEL-SERVE-040. The cap that applies: an admin override wins, else the
  * owner's plan quota, else none. Mirrors the backend's `pickLimit`.
  */

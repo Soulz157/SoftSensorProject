@@ -478,6 +478,10 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
     expect(call.create.preflightReason).toBeNull();
     expect(call.create.preflightAt).toBeInstanceOf(Date);
     expect(call.update.preflightOk).toBe(true);
+    // MODEL-SERVE-042. The scheduler's start anchor is written in the SAME
+    // upsert as `enabled: true`, on both the create and update arms.
+    expect(call.create.enabledAt).toBeInstanceOf(Date);
+    expect(call.update.enabledAt).toBeInstanceOf(Date);
   });
 
   it('does NOT probe a settings-only update on an already-running schedule', async () => {
@@ -548,7 +552,55 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
     const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
     expect(call.update).not.toHaveProperty('preflightOk');
     expect(call.update).not.toHaveProperty('preflightAt');
+    // MODEL-SERVE-042. Same edge: a settings tweak must not move the start
+    // anchor, or every threshold edit would re-open an hourly window grid.
+    expect(call.update).not.toHaveProperty('enabledAt');
     expect(prisma.inferenceSchedule.update).not.toHaveBeenCalled();
+  });
+
+  it('MODEL-SERVE-042: re-enabling a STOPPED schedule moves the start anchor', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-a': { intervalTime: '1m' } },
+            baseTags: [],
+          },
+        }),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        update: jest.fn().mockResolvedValue({}),
+        // STOPPED, with an old anchor — Start must replace it.
+        findUnique: jest.fn().mockResolvedValue({
+          enabled: false,
+          enabledAt: new Date('2026-09-01T00:00:00.000Z'),
+          autoRetrain: false,
+          warnSd: 1.5,
+          criticalSd: 3.0,
+          driftMonitor: false,
+          truthLagMinutes: 1440,
+          truthToleranceMinutes: 30,
+          truthHorizonHours: 168,
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.putScheduleService('model-1', { enabled: true }, user);
+
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(call.update.enabledAt).toBeInstanceOf(Date);
+    expect((call.update.enabledAt as Date).getTime()).toBeGreaterThan(
+      new Date('2026-09-01T00:00:00.000Z').getTime(),
+    );
   });
 
   it('enables a SQL-sourced schedule with preflightOk NULL — not probed is not a pass, and not a refusal', async () => {
