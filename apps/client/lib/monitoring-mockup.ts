@@ -65,7 +65,7 @@ const WARN_PCT = 5
 const CRITICAL_PCT = 20
 const MIN_SAMPLES = 30
 const TREND_MAX_POINTS = 600
-const WARN_SD = 1.5
+const WARN_SD = 2
 const CRITICAL_SD = 3.0
 const HEALTH_WINDOWS = 24
 
@@ -482,14 +482,24 @@ export function inferenceStatus(
   const shift = shiftMsFor(fixture, now)
   const lastEnd = Date.parse(fixture.hours.at(-1)!) + shift + HOUR
   const pairs = pairsIn(fixture, shift, -Infinity, Infinity)
-  const metrics = errorMetrics(pairs)
-  const ratio = metrics ? round(metrics.sd / model.baselineSd, 3) : null
+  // MODEL-SERVE-046. Same rule as the backend's classifyResidualPoints: the
+  // worst single |residual| of the latest 24 h of pairs, in reference SDs,
+  // strictly beyond the multiple.
+  const newestPair = pairs.reduce((m, p) => Math.max(m, p.t), -Infinity)
+  const recentPairs = pairs.filter(p => p.t >= newestPair - 24 * HOUR)
+  const worstAbsResidual = recentPairs.length
+    ? Math.max(...recentPairs.map(p => Math.abs(p.predicted - p.actual)))
+    : null
+  const ratio =
+    worstAbsResidual === null
+      ? null
+      : round(worstAbsResidual / model.baselineSd, 3)
   const sdStatus =
-    ratio === null || pairs.length < 2
+    ratio === null
       ? 'UNKNOWN'
-      : ratio >= CRITICAL_SD
+      : ratio > CRITICAL_SD
         ? 'ALERT'
-        : ratio >= WARN_SD
+        : ratio > WARN_SD
           ? 'WARN'
           : 'OK'
   const drift = inputDrift(
@@ -532,10 +542,11 @@ export function inferenceStatus(
       frozenColumns: [],
       residualSd: {
         status: sdStatus,
-        liveSd: metrics?.sd ?? null,
+        worstAbsResidual,
         ratio,
+        basis: ratio === null ? null : 'pairs',
         baselineSd: model.baselineSd,
-        n: pairs.length,
+        n: recentPairs.length,
       },
       frozenSince: [],
       thresholds: { warnSd: WARN_SD, criticalSd: CRITICAL_SD },

@@ -465,7 +465,7 @@ export class InferenceWindowAuthorizedService {
             // wizard itself would — never a second, silently different
             // default.
             autoRetrain: false,
-            warnSd: 1.5,
+            warnSd: 2,
             criticalSd: 3.0,
             driftMonitor: false,
             // T28, the SAME defaults the schema and the merge above use —
@@ -1027,7 +1027,7 @@ export class InferenceWindowAuthorizedService {
       },
     });
     const autoRetrain = dto.autoRetrain ?? existing?.autoRetrain ?? false;
-    const warnSd = dto.warnSd ?? existing?.warnSd ?? 1.5;
+    const warnSd = dto.warnSd ?? existing?.warnSd ?? 2;
     const criticalSd = dto.criticalSd ?? existing?.criticalSd ?? 3.0;
     const driftMonitor = dto.driftMonitor ?? existing?.driftMonitor ?? false;
     // MODEL-SERVE-005-T03, merged the same way and for the same reason: a

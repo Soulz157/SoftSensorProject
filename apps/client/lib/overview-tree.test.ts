@@ -96,9 +96,9 @@ describe('abnormalEquipment', () => {
     expect(out[0]!.models[0]!.deployFailed).toBe(true)
   })
 
-  it('lists only Abnormal (alerting) equipment — warning and offline read Normal', () => {
-    // MODEL-SERVE-024-D02. Warning/offline equipment still raises a row on
-    // the Alerts page, but it is not Abnormal, so the hover card omits it.
+  it('lists alerting and warning equipment — offline reads Normal', () => {
+    // MODEL-SERVE-024-D02, widened 2026-11-03: a Warning is Abnormal now, so
+    // the hover card lists it; offline equipment is still omitted.
     const out = abnormalEquipment(
       [
         node('n1', 'warning', 'Warn'),
@@ -107,7 +107,7 @@ describe('abnormalEquipment', () => {
       ],
       [],
     )
-    expect(out.map(n => n.status)).toEqual(['alarm'])
+    expect(out.map(n => n.status).sort()).toEqual(['alarm', 'warning'])
   })
 })
 
@@ -143,9 +143,7 @@ describe('normalizeModelStatus — a running model is never offline on the map',
       // THE REPORTED BUG. The detail page showed the model running while
       // the asset tree drew it offline — because "no health claim" and
       // "stopped" share one wire value on this side.
-      expect(normalizeModelStatus(listModel('running', verdict))).toBe(
-        'normal',
-      )
+      expect(normalizeModelStatus(listModel('running', verdict))).toBe('normal')
     },
   )
 
@@ -167,9 +165,7 @@ describe('normalizeModelStatus — a running model is never offline on the map',
     // Alerts page, and 'offline' ranks BELOW normal in worstStatus, so the
     // old mapping made a stuck instrument unable to mark its own equipment
     // abnormal — green map, alerting Alerts page, same model.
-    expect(normalizeModelStatus(listModel('running', 'FROZEN'))).toBe(
-      'warning',
-    )
+    expect(normalizeModelStatus(listModel('running', 'FROZEN'))).toBe('warning')
     // A failed deploy outranks everything, is checked first, and is Abnormal
     // (MODEL-SERVE-024-D02), so it maps to 'alarm'.
     expect(normalizeModelStatus(listModel('error', 'OFF'))).toBe('alarm')
@@ -198,9 +194,11 @@ describe('monitoringReason reaches the hover card (MODEL-SERVE-012-T13)', () => 
   })
 
   it('is null when the axis made no claim, so nothing renders an empty label', () => {
-    const [plant] = buildOverviewTree([], [node('n1', 'normal')], [
-      model('m-1', 'M1', { nodesId: 'n1' }),
-    ])
+    const [plant] = buildOverviewTree(
+      [],
+      [node('n1', 'normal')],
+      [model('m-1', 'M1', { nodesId: 'n1' })],
+    )
 
     expect(plant!.nodes[0]!.models[0]!.monitoringReason).toBeNull()
   })
@@ -216,11 +214,12 @@ describe('monitoringReason reaches the hover card (MODEL-SERVE-012-T13)', () => 
 describe('overview parity with the Alerts page (MODEL-SERVE-012-T13, MODEL-SERVE-024)', () => {
   // The two surfaces must agree about the same model. Since MODEL-SERVE-024
   // that means: an ALERT is an Alert row on the Alerts page AND Abnormal
-  // equipment here; a WARN/FROZEN is a Warning row there AND Normal here.
+  // equipment here; a WARN/FROZEN is a Warning row there AND Abnormal here
+  // too (widened 2026-11-03).
   it.each([
     ['ALERT', 'alarm', 1],
-    ['WARN', 'warning', 0],
-    ['FROZEN', 'warning', 0],
+    ['WARN', 'warning', 1],
+    ['FROZEN', 'warning', 1],
   ] as const)(
     'a %s model maps to %s and makes %i equipment abnormal',
     (status, expected, abnormalRows) => {

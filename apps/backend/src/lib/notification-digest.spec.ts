@@ -26,10 +26,13 @@ describe('band grading (MODEL-SERVE-031)', () => {
   });
 
   it('grades the SD ratio against the per-model warn/crit bands', () => {
-    expect(sdBandFor(1.4, 1.5, 3)).toBe('ok');
-    expect(sdBandFor(1.5, 1.5, 3)).toBe('warn');
-    expect(sdBandFor(3, 1.5, 3)).toBe('crit');
-    expect(sdBandFor(null, 1.5, 3)).toBeNull();
+    expect(sdBandFor(1.9, 2, 3)).toBe('ok');
+    // Strictly beyond: a point exactly on the guard line is on the band.
+    expect(sdBandFor(2, 2, 3)).toBe('ok');
+    expect(sdBandFor(2.1, 2, 3)).toBe('warn');
+    expect(sdBandFor(3, 2, 3)).toBe('warn');
+    expect(sdBandFor(3.1, 2, 3)).toBe('crit');
+    expect(sdBandFor(null, 2, 3)).toBeNull();
     expect(sdBandFor(2, null, null)).toBeNull();
   });
 });

@@ -12,6 +12,15 @@ import {
   WorkspaceIconTile,
 } from '@/components/workspace/workspace-parts'
 
+/** "3 minutes ago", or "—" for a missing or unreadable time. A row appended
+ *  from a response without `updatedAt` used to throw `RangeError: Invalid
+ *  time value` here and take the whole list down with it. */
+function updatedAgo(value: string | null | undefined): string {
+  const at = value ? new Date(value) : null
+  if (!at || Number.isNaN(at.getTime())) return '—'
+  return formatDistanceToNow(at, { addSuffix: true })
+}
+
 /** Column template shared by the header, rows and skeletons. */
 export const ROW_GRID =
   'grid items-center gap-x-4 md:grid-cols-[minmax(0,2.2fr)_7rem_minmax(0,1.3fr)_4rem_5rem_8rem_9rem]'
@@ -63,7 +72,7 @@ export function WorkspaceRow({ ws }: { ws: WorkspaceListItem }) {
       <span className="hidden text-xs whitespace-nowrap text-muted-foreground md:block">
         {/* The column header is aria-hidden; say what this time is. */}
         <span className="sr-only">Updated </span>
-        {formatDistanceToNow(new Date(ws.updatedAt), { addSuffix: true })}
+        {updatedAgo(ws.updatedAt)}
       </span>
       <div className="relative z-10 mt-2 flex items-center gap-1 md:mt-0">
         <Button

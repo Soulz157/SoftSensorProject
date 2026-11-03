@@ -238,6 +238,9 @@ describe('deriveDeployStatuses (batched)', () => {
       // defines as silent.
       modelVersion: { findMany: jest.fn().mockResolvedValue([]) },
       inferenceWindowTruth: { groupBy: jest.fn().mockResolvedValue([]) },
+      // MODEL-SERVE-046. Held-deviation fallback reads: empty by default.
+      tagObservation: { findMany: jest.fn().mockResolvedValue([]) },
+      predictionLog: { findMany: jest.fn().mockResolvedValue([]) },
       ...overrides,
     } as unknown as Parameters<typeof deriveDeployStatuses>[0];
   }
@@ -400,16 +403,11 @@ describe('deriveDeployStatuses (batched)', () => {
         groupBy: jest.fn().mockResolvedValue([
           {
             modelVersionId: 'v1',
-            // 40 pairs whose residual SD is 8 -> ratio 4 against a
-            // reference of 2, which is past criticalSd.
-            _sum: {
-              n: 40,
-              sumSe: 40 * 64,
-              sumAe: 40 * 8,
-              sumSigned: 0,
-              sumActual: 4000,
-              sumActualSq: 401000,
-            },
+            windowStart: new Date(),
+            // One window whose worst residual is 8 against a reference SD
+            // of 2 -> 4 SD out, past criticalSd.
+            _sum: { n: 40 },
+            _max: { maxAbsResidual: 8 },
           },
         ]),
       },
@@ -429,6 +427,110 @@ describe('deriveDeployStatuses (batched)', () => {
     // m2 has a production version but NO joined pairs — UNKNOWN, never OK,
     // and so it stays OFF on this liveness-only payload.
     expect(result.m2.monitoring.status).toBe('OFF');
+  });
+
+  /**
+   * MODEL-SERVE-046. No joined pair yet, but the newest prediction sits 4 SD
+   * from the last reported lab value: the LIST must say Alert, the same as the
+   * Monitoring chart's held deviation.
+   */
+  it('grades the held deviation when no pair has joined, and ignores it once one has', async () => {
+    const schedule = (modelId: string) => ({
+      modelId,
+      enabled: true,
+      cadenceMinutes: 60,
+      lagMinutes: 15,
+      preflightOk: true,
+      skipStreakAlert: 3,
+      missingPctWarn: 5,
+      missingPctAlert: 20,
+      warnSd: 2,
+      criticalSd: 3.0,
+    });
+    const observation = (modelId: string) => ({
+      modelId,
+      tag: 'Lab',
+      lastValue: 100,
+      lastSeenAt: new Date(),
+    });
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest.fn().mockResolvedValue([schedule('m1'), schedule('m2')]),
+      },
+      inferenceWindow: {
+        groupBy: jest.fn().mockResolvedValue([
+          { modelId: 'm1', _max: { windowStart: new Date() } },
+          { modelId: 'm2', _max: { windowStart: new Date() } },
+        ]),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      modelVersion: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'v1',
+            modelId: 'm1',
+            metrics: { sd: 10 },
+            sourceRun: { targetY: 'Lab' },
+          },
+          {
+            id: 'v2',
+            modelId: 'm2',
+            metrics: { sd: 10 },
+            sourceRun: { targetY: 'Lab' },
+          },
+        ]),
+      },
+      // m2 HAS a joined pair whose worst point is only 5 (0.5 SD).
+      inferenceWindowTruth: {
+        groupBy: jest.fn().mockResolvedValue([
+          {
+            modelVersionId: 'v2',
+            windowStart: new Date(),
+            _sum: { n: 3 },
+            _max: { maxAbsResidual: 5 },
+          },
+        ]),
+      },
+      tagObservation: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([observation('m1'), observation('m2')]),
+      },
+      predictionLog: {
+        findMany: jest.fn().mockResolvedValue([
+          // 100 held vs a prediction of 65 -> 35 away = 3.5 SD of 10.
+          {
+            modelVersionId: 'v1',
+            requestedAt: new Date(),
+            predictionStats: { n: 1, min: 65, max: 65 },
+          },
+          {
+            modelVersionId: 'v2',
+            requestedAt: new Date(),
+            predictionStats: { n: 1, min: 65, max: 65 },
+          },
+        ]),
+      },
+    });
+
+    const result = await deriveDeployStatuses(prisma, ['m1', 'm2']);
+
+    expect(result.m1.monitoring.status).toBe('ALERT');
+    expect(result.m1.monitoring.reason).toBe('RESIDUAL_SD_CRITICAL');
+    // m2's joined pair wins: held evidence is not consulted once one exists,
+    // and its worst point (0.5 SD) is in spec -> a measured OK.
+    expect(result.m2.monitoring.status).toBe('OK');
+    const mock = prisma as unknown as {
+      predictionLog: { findMany: jest.Mock };
+    };
+    expect(mock.predictionLog.findMany).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        mock.predictionLog.findMany.mock.calls[0][0] as {
+          where: { modelVersionId: { in: string[] } };
+        }
+      ).where.modelVersionId.in,
+    ).toEqual(['v1']);
   });
 
   it('returns an empty object for an empty id list without querying', async () => {
@@ -784,6 +886,9 @@ describe('deriveDeployStatuses — frozen detection (MODEL-SERVE-001-T30)', () =
       },
       modelVersion: { findMany: jest.fn().mockResolvedValue([]) },
       inferenceWindowTruth: { groupBy: jest.fn().mockResolvedValue([]) },
+      // MODEL-SERVE-046. Held-deviation fallback reads: empty by default.
+      tagObservation: { findMany: jest.fn().mockResolvedValue([]) },
+      predictionLog: { findMany: jest.fn().mockResolvedValue([]) },
       ...overrides,
     } as unknown as Parameters<typeof deriveDeployStatuses>[0];
   }

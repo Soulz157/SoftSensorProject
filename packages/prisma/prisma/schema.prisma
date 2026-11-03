@@ -1983,6 +1983,11 @@ model InferenceWindowTruth {
   sumActual   Float
   sumActualSq Float
 
+  /// MODEL-SERVE-046. The window's worst single |predicted - actual|. The
+  /// sums above only pool a spread; the per-point status needs the extreme.
+  /// 0 with `n = 0`.
+  maxAbsResidual Float @default(0)
+
   /// The tolerance actually in force for THIS join, on the row — never
   /// re-derived from current config when read back later. Same rule and
   /// same reason as PredictionLog.samplingRate.
@@ -2190,7 +2195,7 @@ model InferenceSchedule {
   autoRetrain  Boolean @default(false)
   /// Invariant enforced client-side (use-model-pipeline-nav.ts's clamped
   /// setters) and re-checked server-side at write: warnSd < criticalSd.
-  warnSd       Float   @default(1.5)
+  warnSd       Float   @default(2.0)
   criticalSd   Float   @default(3.0)
   driftMonitor Boolean @default(false)
   /// MODEL-SERVE-001-T31 dropped `driftThresholdPct Float @default(10)` from

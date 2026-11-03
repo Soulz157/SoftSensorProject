@@ -128,12 +128,22 @@ describe('monitoring mockup (dev document fixture)', () => {
     expect(s.health.residualSd).toMatchObject({ status: 'OK', baselineSd: 2 })
   })
 
-  it('a live residual SD 1.5x the baseline raises RESIDUAL_SD_WARN', () => {
-    const s = inferenceStatus(fixture(), { ...MODEL, baselineSd: 1 }, NOW)
-    expect(s.health.residualSd.status).toBe('WARN')
-    expect(s.health).toMatchObject({
+  it('grades the WORST point of the latest 24 h: beyond 2 SD warns, beyond 3 SD alerts, exactly on the line is still OK', () => {
+    const worst = inferenceStatus(fixture(), { ...MODEL, baselineSd: 1 }, NOW)
+      .health.residualSd.worstAbsResidual
+    expect(worst).toBeGreaterThan(0)
+    const at = (sds: number) =>
+      inferenceStatus(fixture(), { ...MODEL, baselineSd: worst! / sds }, NOW)
+        .health
+
+    expect(at(1.5).residualSd.status).toBe('OK')
+    expect(at(2.5)).toMatchObject({
       status: 'WARN',
       reason: 'RESIDUAL_SD_WARN',
+    })
+    expect(at(3.5)).toMatchObject({
+      status: 'ALERT',
+      reason: 'RESIDUAL_SD_CRITICAL',
     })
   })
 

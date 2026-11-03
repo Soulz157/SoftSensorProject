@@ -10,6 +10,7 @@ import {
   abnormalModelCountByEquipmentId,
   abnormalModelCountByWorkspace,
 } from '@/lib/model-status'
+import { isAbnormal } from '@/lib/overview-status'
 
 import { useWorkspaceFilter } from '@/hooks/workspace/use-workspace-filter'
 import { useWorkspaceSelection } from '@/hooks/workspace/use-workspace-selection'
@@ -70,7 +71,7 @@ export default function PlantsPage() {
       workspaces.map(ws => {
         const equipmentList = equipmentListByWorkspace[ws.id] ?? []
         const hasAlarm = equipmentList.some(
-          n => n.data.status === 'alarm' || abnormalEquipmentIds.has(n.id),
+          n => isAbnormal(n.data.status) || abnormalEquipmentIds.has(n.id),
         )
         const allOffline =
           equipmentList.length > 0 &&

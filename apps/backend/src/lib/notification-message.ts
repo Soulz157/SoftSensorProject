@@ -322,7 +322,7 @@ function rowDescription(r: DigestRow): string {
         : '';
     candidates.push({
       band: r.sdBand,
-      text: `SD ratio ${r.sdRatio.toFixed(1)}x ${BAND_LABEL[r.sdBand]}${band}`,
+      text: `Worst residual ${r.sdRatio.toFixed(1)}x SD ${BAND_LABEL[r.sdBand]}${band}`,
     });
   }
   const worst = candidates.reduce<(typeof candidates)[number] | null>(

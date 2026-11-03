@@ -72,12 +72,8 @@ function node(id: string, status: string): CanvasNode {
 }
 
 describe('equipmentAlertChip (MODEL-SERVE-033)', () => {
-  it('is null when nothing is abnormal (warning and offline read Normal)', () => {
-    const list = [
-      node('a', 'normal'),
-      node('b', 'warning'),
-      node('c', 'offline'),
-    ]
+  it('is null when nothing is abnormal (offline reads Normal)', () => {
+    const list = [node('a', 'normal'), node('b', 'offline')]
     expect(equipmentAlertChip(countBinary(list))).toBeNull()
   })
 
@@ -89,7 +85,7 @@ describe('equipmentAlertChip (MODEL-SERVE-033)', () => {
       node('d', 'warning'),
     ]
     expect(equipmentAlertChip(countBinary(list, new Set(['c'])))).toEqual({
-      abnormal: 2,
+      abnormal: 3,
       total: 4,
     })
   })

@@ -400,8 +400,8 @@ export const mpArtifactRefAtom = atom<string | null>(null)
 // to `Model.data.config.deployment`. No runtime retrain/drift engine yet.
 /** Master toggle for the auto-retrain policy. */
 export const mpAutoRetrainAtom = atom<boolean>(false)
-/** Layer 1 (Warning, amber) — tighter ±SD band. Invariant: warn < critical. */
-export const mpRetrainWarnSdAtom = atom<number>(1.5)
+/** Layer 1 (Warning, amber) — a residual beyond this many SD. Invariant: warn < critical. */
+export const mpRetrainWarnSdAtom = atom<number>(2)
 /** Layer 2 (Critical, red) — wider ±SD band; reaching it triggers auto-retrain. */
 export const mpRetrainCriticalSdAtom = atom<number>(3.0)
 /** Master toggle for input-sensor drift monitoring. */

@@ -309,6 +309,9 @@ const InferenceWindowTruthJoinSchema = z.object({
   sum_signed: z.number(),
   sum_actual: z.number(),
   sum_actual_sq: z.number(),
+  // MODEL-SERVE-046. Worst single |residual| in the window; python from before
+  // this field omits it, and 0 is its "nothing paired" value.
+  max_abs_residual: z.number().nonnegative().default(0),
 });
 
 export type InferenceWindowTruthJoinResult = z.infer<

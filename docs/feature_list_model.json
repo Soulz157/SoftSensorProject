@@ -5131,6 +5131,113 @@
         "Run Predict on lstm/gru answers from Serving; a failed live score falls back to the window.",
         "The live line never scores the same newest row twice, and hourly rows sit on the training grid."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-046",
+      "title": "Residual status per point (beyond 2 SD warns, beyond 3 SD alerts) + a running model is never badged Offline",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 70,
+      "dependencies": [
+        "MODEL-SERVE-012"
+      ],
+      "description": "The output-error axis graded a pooled spread ratio (live SD / reference SD, 30-pair minimum, 30 days). It now grades the WORST single residual of the latest 24 h of joined windows in reference SDs: strictly beyond warnSd (default 2, was 1.5) warns, strictly beyond criticalSd (3) alerts. Each InferenceWindowTruth row records maxAbsResidual (python join) so the list still needs one grouped query and no object read. The 24 h span is anchored to the newest JOINED window (truthLagMinutes makes a now-24h cut empty); evidence older than 7 days is UNKNOWN. Separately, a running deploy whose health axis made no claim (OFF/UNKNOWN: drift watching off, no lab pairs) was badged Offline; it now reads Normal (user: Running and Normal are one status) and Offline means stopped/errored only. Before any lab pair has joined (a day, for a daily lab) the axis grades the HELD deviation instead: the newest PredictionLog request's min/max vs the target's last reported value (TagObservation), so a prediction 3 SD off the last lab value is Alert at once, as the Monitoring chart already shows. Once a pair joins it is ignored (verdict basis 'pairs' vs 'held'). Model 1 in workspace Olifiens (7a8f833d) is the motivating model; its accuracy work (Part A: cleaned dataset version + NEW_DATA_ONLY retrain) is an app workflow, not code.",
+      "decisions": [
+        "2026-11-03 (user): really improve Model 1 rather than ship mockup data.",
+        "2026-11-03 (user): per residual POINT, not spread ratio; latest 24 h decides; warnSd/criticalSd are reused as the 2/3 multipliers (default 2/3).",
+        "2026-11-03 (user): fix 'model is running but monitoring status is offline'."
+      ],
+      "findings": [
+        "Model 1 v1 is extra_trees with fully grown trees: test R2 0.10, RMSE 11.6, train R2 ~1.0. The fake PI injects 10% bad lab values (+/-30-60%) and glitches 46.6% of rows' inputs; a perfect model scores R2 ~0.24 on RAW test labels, so real gains need a cleaned dataset version.",
+        "Model 1 shows Offline because driftMonitor=false and no lab pairs join -> classifyModelHealth returns OFF -> monitoringStatusFromHealth mapped OFF/UNKNOWN to 'offline' even for a live deploy.",
+        "model-detail-dialog.test.tsx frozen tests set the old hand-set prodStatus on a stopped deploy and had been failing since the badges merged; retargeted to the measured FROZEN verdict."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-046-T01",
+          "title": "python join returns max_abs_residual",
+          "status": "completed",
+          "progress": 100,
+          "result": "ground_truth_service + InferenceWindowTruthJoinResponse; pytest 13 passed."
+        },
+        {
+          "id": "MODEL-SERVE-046-T02",
+          "title": "migration: maxAbsResidual column, warnSd default 2",
+          "status": "completed",
+          "progress": 100,
+          "result": "20261103100000_residual_point_status hand-applied to the local DB (9 schedules moved 1.5 -> 2); prisma dist rebuilt."
+        },
+        {
+          "id": "MODEL-SERVE-046-T03",
+          "title": "zod + sweeper write maxAbsResidual",
+          "status": "completed",
+          "progress": 100,
+          "result": "python-preprocess-client.ts, inference-truth-sweeper.service.ts (backOff writes 0)."
+        },
+        {
+          "id": "MODEL-SERVE-046-T04",
+          "title": "classifyResidualPoints replaces classifyResidualSd in both callers",
+          "status": "completed",
+          "progress": 100,
+          "result": "residual-sd-health.ts, deploy-status.ts (grouped by version+window), getHealthStatus; backend jest 315 passed across the 10 touched suites."
+        },
+        {
+          "id": "MODEL-SERVE-046-T05",
+          "title": "threshold defaults 2/3 in service fallbacks, wizard atom, wizard mode",
+          "status": "completed",
+          "progress": 100,
+          "result": "inference-window service, store/model-pipeline.ts, use-model-wizard-mode.ts."
+        },
+        {
+          "id": "MODEL-SERVE-046-T06",
+          "title": "labels, digest band, notification wording",
+          "status": "completed",
+          "progress": 100,
+          "result": "'residual beyond 2SD', Deploy step 'Warning beyond (x SD)' / 'Alert beyond (x SD)', sdBandFor strict, 'Worst residual Nx SD'."
+        },
+        {
+          "id": "MODEL-SERVE-046-T07",
+          "title": "client verdict type + monitoring mockup on the same rule",
+          "status": "completed",
+          "progress": 100,
+          "result": "services/inference-window.ts, lib/monitoring-mockup.ts; client tsc clean."
+        },
+        {
+          "id": "MODEL-SERVE-046-T09",
+          "title": "a live deploy with no evidence reads Normal, not Offline",
+          "status": "completed",
+          "progress": 100,
+          "result": "monitoringStatusFromHealth: live deploy + OFF/UNKNOWN -> normal (no separate Running status, per user); stopped/error stay offline. Frozen dialog tests retargeted; model-status tests pass."
+        },
+        {
+          "id": "MODEL-SERVE-046-T11",
+          "title": "held-deviation fallback: grade newest prediction vs last reported lab value until a pair joins",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/held-deviation.ts (DB reads only: TagObservation + newest PredictionLog stats), classifyResidualPoints heldFallback, both callers; verdict.basis pairs|held. Backend jest 813 passed (42 suites)."
+        },
+        {
+          "id": "MODEL-SERVE-046-T12",
+          "title": "Overview: a monitoring Warning is Abnormal",
+          "status": "completed",
+          "progress": 100,
+          "result": "2026-11-03 (user): toBinaryStatus alarm|warning -> abnormal; isModelAbnormal adds WARN and FROZEN; overview page, detail panel count and hover card follow. Reverses MODEL-SERVE-024-D02 'warning reads Normal'. Offline still Normal. Eight old-rule tests updated; client vitest 2556 passed, 3 unrelated failures (feature-count-sweep, formatAxisValue)."
+        },
+        {
+          "id": "MODEL-SERVE-046-T08",
+          "title": "Model 1: cleaned dataset version + NEW_DATA_ONLY retrain + promote (app workflow)",
+          "status": "pending",
+          "progress": 0,
+          "result": ""
+        },
+        {
+          "id": "MODEL-SERVE-046-T10",
+          "title": "live verification: Model 1 pill Running -> Normal/Warning/Alert once lab pairs join",
+          "status": "pending",
+          "progress": 0,
+          "result": "Blocked on InferenceWindowTruth.n > 0 for Model 1 (truthLagMinutes 1440; windows start 2026-11-03 13:00)."
+        }
+      ]
     }
   ],
   "global_definition_of_done": [

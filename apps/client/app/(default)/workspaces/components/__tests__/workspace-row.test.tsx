@@ -51,7 +51,7 @@ describe('WorkspaceRow', () => {
     // and offline read Normal.
     const cases: Array<[NodeStatus, 'normal' | 'abnormal']> = [
       ['normal', 'normal'],
-      ['warning', 'normal'],
+      ['warning', 'abnormal'],
       ['alarm', 'abnormal'],
       ['offline', 'normal'],
     ]
@@ -181,5 +181,21 @@ describe('WorkspaceRow', () => {
   it('never renders the string "undefined" for a count', () => {
     renderRow(make({ modelsCount: undefined }))
     expect(screen.queryByText(/undefined/i)).toBeNull()
+  })
+})
+
+describe('WorkspaceRow — a just-created workspace', () => {
+  // Adding a workspace appended the create response to the list; it carried
+  // no updatedAt, so the row threw `RangeError: Invalid time value` and the
+  // whole /workspaces tree was thrown away and rebuilt.
+  it('renders a dash, not a crash, when updatedAt is missing', () => {
+    renderRow(make({ updatedAt: undefined as unknown as string }))
+    expect(screen.getByText('Refinery A')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+
+  it('renders a dash for an unreadable timestamp', () => {
+    renderRow(make({ updatedAt: 'not-a-date' }))
+    expect(screen.getByText('—')).toBeInTheDocument()
   })
 })

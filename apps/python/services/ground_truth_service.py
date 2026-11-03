@@ -112,6 +112,7 @@ def _empty_result(prediction_rows: int, truth_rows: int = 0) -> dict[str, Any]:
         "sum_signed": 0.0,
         "sum_actual": 0.0,
         "sum_actual_sq": 0.0,
+        "max_abs_residual": 0.0,
     }
 
 
@@ -378,6 +379,10 @@ def join_window_truth(
         "sum_signed": float(residual.sum()),
         "sum_actual": float(actual.sum()),
         "sum_actual_sq": float((actual**2).sum()),
+        # MODEL-SERVE-046. The window's WORST single residual. The sums above
+        # cannot say whether one point fell beyond k x SD — only a pooled
+        # spread — and the per-point status rule needs exactly that.
+        "max_abs_residual": float(residual.abs().max()),
     }
 
 

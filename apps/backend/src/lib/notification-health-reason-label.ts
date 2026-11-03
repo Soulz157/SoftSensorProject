@@ -21,7 +21,7 @@ export const HEALTH_REASON_LABEL: Record<HealthReason, string> = {
   SENSOR_FROZEN: 'tag not moving',
   DRIFT_CRITICAL: 'Input outside training range (critical)',
   DRIFT_WARN: 'Input outside training range',
-  RESIDUAL_SD_WARN: 'residual 1–2SD',
+  RESIDUAL_SD_WARN: 'residual beyond 2SD',
   RESIDUAL_SD_CRITICAL: 'residual beyond 3SD',
 };
 

@@ -210,15 +210,17 @@ export function outOfRangeBandFor(
   return fromStatus(outOfRangeStatusFor(pct, { ...t, minSamples: 0 }));
 }
 
-/** Same `>=` rule as `classifyResidualSd`. */
+/** Same strictly-beyond rule as `classifyResidualPoints`. `ratio` is the
+ *  worst residual in SDs (the persisted key keeps its old name, `sdRatio`,
+ *  so alert state written before MODEL-SERVE-046 still parses). */
 export function sdBandFor(
   ratio: number | null,
   warnSd: number | null,
   criticalSd: number | null,
 ): DigestBand | null {
   if (ratio === null || warnSd === null || criticalSd === null) return null;
-  if (ratio >= criticalSd) return 'crit';
-  if (ratio >= warnSd) return 'warn';
+  if (ratio > criticalSd) return 'crit';
+  if (ratio > warnSd) return 'warn';
   return 'ok';
 }
 

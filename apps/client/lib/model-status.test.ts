@@ -53,10 +53,33 @@ describe('monitoringStatus (MODEL-SERVE-012)', () => {
     )
   })
 
-  it('maps UNKNOWN to offline, never normal — no reading is not health', () => {
+  it('maps UNKNOWN on a live deploy to normal — Running and Normal are one status', () => {
     expect(
       monitoringStatus(
         model('m1', {
+          deployStatus: 'running',
+          monitoring: { status: 'UNKNOWN', reason: null, frozenColumns: [] },
+        }),
+      ),
+    ).toBe('normal')
+  })
+
+  it('maps OFF (drift watching off, no evidence) on a live deploy to normal', () => {
+    expect(
+      monitoringStatus(
+        model('m1', {
+          deployStatus: 'running',
+          monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
+        }),
+      ),
+    ).toBe('normal')
+  })
+
+  it('maps UNKNOWN on a stopped deploy to offline', () => {
+    expect(
+      monitoringStatus(
+        model('m1', {
+          deployStatus: 'stopped',
           monitoring: { status: 'UNKNOWN', reason: null, frozenColumns: [] },
         }),
       ),

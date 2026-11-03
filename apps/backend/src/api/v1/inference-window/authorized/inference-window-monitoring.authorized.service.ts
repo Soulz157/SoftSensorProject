@@ -29,11 +29,12 @@ import { isStale } from '@/lib/deploy-status';
 import { detectFrozenColumns } from '@/lib/sensor-frozen';
 import { computeTargetDrift } from '@/lib/target-monitoring';
 import {
-  classifyResidualSd,
+  classifyResidualPoints,
   truthPoolSince,
   type ResidualSdVerdict,
 } from '@/lib/residual-sd-health';
 import { baselineResidualSd } from '@/lib/model-version-residual-sd';
+import { loadHeldFallbacks } from '@/lib/held-deviation';
 import { summarizeDrift, type DriftSummary } from '@/lib/notification-digest';
 
 /**
@@ -360,7 +361,8 @@ export class InferenceWindowMonitoringService {
         // spread to report — UNKNOWN with nulls, never a zero.
         residualSd: {
           status: 'UNKNOWN',
-          liveSd: null,
+          worstAbsResidual: null,
+          basis: null,
           ratio: null,
           baselineSd: null,
           n: 0,
@@ -522,54 +524,67 @@ export class InferenceWindowMonitoringService {
             .filter((e) => e.lastChangedAt !== null)
         : [];
 
-    // MODEL-SERVE-012. THE OUTPUT-ERROR AXIS. One query over the SAME
+    // MODEL-SERVE-012 / 046. THE OUTPUT-ERROR AXIS. One query over the SAME
     // production version the PSI half already resolved —
-    // `InferenceWindowTruth` carries sufficient statistics per window, so the
-    // pooled live residual SD needs no object read and no second HTTP round
-    // trip.
+    // `InferenceWindowTruth` carries each window's worst residual
+    // (`maxAbsResidual`), so the per-point verdict needs no object read and
+    // no second HTTP round trip.
     //
     // Runs even when `driftMonitor` is off, and even when there is no
     // baseline artifact: this axis compares the model against ITS OWN
     // recorded error, not against a column baseline, so nothing above gates
-    // it. `classifyResidualSd` answers UNKNOWN whenever the comparison
+    // it. `classifyResidualPoints` answers UNKNOWN whenever the comparison
     // cannot be made.
-    const residualSd = classifyResidualSd({
-      windows: production
-        ? await this.prisma.inferenceWindowTruth.findMany({
-            // A TIME horizon, not a row count, and the SAME one
-            // `deriveDeployStatuses` bounds its grouped aggregate by — see
-            // `TRUTH_POOL_DAYS`. A row-count `take` cannot be expressed as a
-            // group-by bound, so the list could not have matched it, and two
-            // bounds would let the list badge and this badge grade the same
-            // model from different samples.
-            //
-            // DELIBERATELY NOT `PRODUCTION_WINDOW_TAKE`: that is 24 windows
-            // because drift reads a rolling day of feature stats. A residual
-            // needs a MEASURED lab actual, which arrives at roughly daily
-            // cadence, so a one-day horizon could never reach
-            // `MIN_RESIDUAL_SD_PAIRS` and the axis would report UNKNOWN
-            // forever — a silent no-op no test would catch, since every test
-            // supplies its own rows.
-            where: {
-              modelVersionId: production.id,
-              windowStart: { gte: truthPoolSince() },
-            },
-            orderBy: { windowStart: 'desc' },
-            select: {
-              n: true,
-              sumSe: true,
-              sumAe: true,
-              sumSigned: true,
-              sumActual: true,
-              sumActualSq: true,
-            },
-          })
-        : [],
+    const truthWindows = production
+      ? await this.prisma.inferenceWindowTruth.findMany({
+          // A TIME horizon, not a row count, and the SAME one
+          // `deriveDeployStatuses` bounds its grouped aggregate by — see
+          // `TRUTH_POOL_DAYS`. A row-count `take` cannot be expressed as a
+          // group-by bound, so the list could not have matched it, and two
+          // bounds would let the list badge and this badge grade the same
+          // model from different samples.
+          //
+          // DELIBERATELY NOT `PRODUCTION_WINDOW_TAKE`: that is 24 windows
+          // because drift reads a rolling day of feature stats. A residual
+          // needs a MEASURED lab actual, which arrives at roughly daily
+          // cadence and only after `truthLagMinutes`, so the newest joined
+          // window can be days old; the latest-24h cut is anchored to it
+          // inside `classifyResidualPoints`.
+          where: {
+            modelVersionId: production.id,
+            windowStart: { gte: truthPoolSince() },
+          },
+          orderBy: { windowStart: 'desc' },
+          select: {
+            windowStart: true,
+            n: true,
+            maxAbsResidual: true,
+          },
+        })
+      : [];
+    // MODEL-SERVE-046. Until a lab pair has joined, grade the held deviation
+    // (newest prediction vs the last reported lab value) instead — see
+    // `lib/held-deviation.ts`. Not even read once a pair exists.
+    const heldFallback =
+      production && !truthWindows.some((w) => w.n > 0)
+        ? ((
+            await loadHeldFallbacks(this.prisma, [
+              {
+                id: production.id,
+                modelId,
+                targetY: production.sourceRun?.targetY || null,
+              },
+            ])
+          ).get(modelId) ?? null)
+        : null;
+    const residualSd = classifyResidualPoints({
+      windows: truthWindows,
       baselineSd: baselineResidualSd(production?.metrics ?? null),
       thresholds: {
         warnSd: schedule.warnSd,
         criticalSd: schedule.criticalSd,
       },
+      heldFallback,
     });
 
     return {

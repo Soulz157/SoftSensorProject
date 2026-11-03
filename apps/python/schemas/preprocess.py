@@ -1197,6 +1197,9 @@ class InferenceWindowTruthJoinResponse(BaseModel):
     sum_signed: float
     sum_actual: float
     sum_actual_sq: float
+    #: MODEL-SERVE-046. Largest |predicted - actual| over this window's
+    #: pairs; 0.0 when `n == 0`. The per-point residual status reads it.
+    max_abs_residual: float = 0.0
 
 
 class InferenceWindowTruthSeriesRequest(BaseModel):

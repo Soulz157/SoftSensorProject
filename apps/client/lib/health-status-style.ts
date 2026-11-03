@@ -52,7 +52,7 @@ export const HEALTH_REASON_LABEL: Record<HealthReason, string> = {
   // with no wiring of their own — that field is filled from
   // `monitoring.reason` and rendered through this very map, which is why the
   // map has one home and two readers.
-  RESIDUAL_SD_WARN: 'residual 1–2SD',
+  RESIDUAL_SD_WARN: 'residual beyond 2SD',
   RESIDUAL_SD_CRITICAL: 'residual beyond 3SD',
 }
 

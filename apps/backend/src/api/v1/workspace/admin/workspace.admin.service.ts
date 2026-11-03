@@ -237,7 +237,20 @@ export class WorkspaceAdminService {
             create: { userId: user.id, role: 'OWNER' },
           },
         },
-        select: { id: true, name: true, color: true, icon: true },
+        // Everything the client's `Workspace` row reads. The list view appends
+        // this response as-is; without `updatedAt` its "Updated" cell called
+        // formatDistanceToNow(new Date(undefined)) and threw on render.
+        select: {
+          id: true,
+          name: true,
+          color: true,
+          icon: true,
+          ownerId: true,
+          description: true,
+          thumbnailUrl: true,
+          createdAt: true,
+          updatedAt: true,
+        },
       });
     });
 

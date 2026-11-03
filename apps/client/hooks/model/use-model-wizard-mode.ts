@@ -216,7 +216,7 @@ export function useModelWizardMode(): UseModelWizardModeResult {
         // Deploy step (Step 6) — fall back to defaults for legacy configs.
         const deploy = config.deployment
         setAutoRetrain(deploy?.autoRetrain ?? false)
-        setWarnSd(deploy?.warnSd ?? 1.5)
+        setWarnSd(deploy?.warnSd ?? 2)
         setCriticalSd(deploy?.criticalSd ?? 3.0)
         setDriftMonitor(deploy?.driftMonitor ?? false)
 

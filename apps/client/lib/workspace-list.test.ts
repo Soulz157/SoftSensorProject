@@ -31,8 +31,8 @@ describe('workspaceStatus', () => {
     expect(workspaceStatus(ws({ abnormalModels: 2 }))).toBe('abnormal')
   })
 
-  it('treats warning and offline nodes as normal, like the sidebar', () => {
-    expect(workspaceStatus(ws({ status: 'warning' }))).toBe('normal')
+  it('treats a warning node as abnormal and an offline node as normal, like the sidebar', () => {
+    expect(workspaceStatus(ws({ status: 'warning' }))).toBe('abnormal')
     expect(workspaceStatus(ws({ status: 'offline' }))).toBe('normal')
   })
 })

@@ -9,11 +9,13 @@ import { classifyModelHealth, type ModelHealth } from '@/lib/model-health';
 // rather than reimplemented, so the list and the detail page grade a model by
 // one rule over one sample. Acyclic: neither module imports this one.
 import {
-  classifyResidualSd,
+  classifyResidualPoints,
+  type ResidualPointWindow,
   truthPoolSince,
   type ResidualSdStatus,
 } from '@/lib/residual-sd-health';
 import { baselineResidualSd } from '@/lib/model-version-residual-sd';
+import { loadHeldFallbacks } from '@/lib/held-deviation';
 // MODEL-SERVE-001-T30 (list-payload frozen detection). THE SAME detector the
 // single-model path uses (`InferenceWindowMonitoringService.getHealthStatus`)
 // — one rule for "is this tag frozen", not a second one that could disagree
@@ -325,7 +327,14 @@ export async function deriveDeployStatuses(
   // comment) rather than by avoiding the call.
   const productionVersions = await prisma.modelVersion.findMany({
     where: { modelId: { in: modelIds }, stage: 'PRODUCTION' },
-    select: { id: true, modelId: true, metrics: true, goldObjectKey: true },
+    select: {
+      id: true,
+      modelId: true,
+      metrics: true,
+      goldObjectKey: true,
+      // MODEL-SERVE-046. The target tag, for the held-deviation fallback.
+      sourceRun: { select: { targetY: true } },
+    },
   });
   const versionByModel = new Map(productionVersions.map((v) => [v.modelId, v]));
 
@@ -453,50 +462,59 @@ export async function deriveDeployStatuses(
   // this feature exists to remove.
   const truthGroups = productionVersions.length
     ? await prisma.inferenceWindowTruth.groupBy({
-        by: ['modelVersionId'],
+        // MODEL-SERVE-046. Per WINDOW, not per version: the latest-24h cut
+        // is anchored to the newest joined window and applied in memory
+        // (`classifyResidualPoints`), so it needs the windows themselves.
+        // Still ONE query for every model — a window is unique per version,
+        // so this is a row-per-window read of two numbers.
+        by: ['modelVersionId', 'windowStart'],
         where: {
           modelVersionId: { in: productionVersions.map((v) => v.id) },
           windowStart: { gte: truthPoolSince() },
         },
-        _sum: {
-          n: true,
-          sumSe: true,
-          sumAe: true,
-          sumSigned: true,
-          sumActual: true,
-          sumActualSq: true,
-        },
+        _sum: { n: true },
+        _max: { maxAbsResidual: true },
       })
     : [];
-  const truthByVersion = new Map(
-    truthGroups.map((g) => [
-      g.modelVersionId,
-      {
-        // A group with no rows sums to null, which is zero pairs — and
-        // `poolTruthStats` skips an n <= 0 row rather than adding its zeros.
-        n: g._sum.n ?? 0,
-        sumSe: g._sum.sumSe ?? 0,
-        sumAe: g._sum.sumAe ?? 0,
-        sumSigned: g._sum.sumSigned ?? 0,
-        sumActual: g._sum.sumActual ?? 0,
-        sumActualSq: g._sum.sumActualSq ?? 0,
-      },
-    ]),
+  const truthByVersion = new Map<string, ResidualPointWindow[]>();
+  for (const g of truthGroups) {
+    const windows = truthByVersion.get(g.modelVersionId) ?? [];
+    windows.push({
+      windowStart: g.windowStart,
+      // A group with no rows sums to null, which is zero pairs.
+      n: g._sum.n ?? 0,
+      maxAbsResidual: g._max.maxAbsResidual ?? 0,
+    });
+    truthByVersion.set(g.modelVersionId, windows);
+  }
+
+  // MODEL-SERVE-046. Held-deviation fallback, ONLY for versions with no joined
+  // pair at all — two more batched reads for the whole page, none per model.
+  const heldFallbacks = await loadHeldFallbacks(
+    prisma,
+    productionVersions
+      .filter((v) => !(truthByVersion.get(v.id) ?? []).some((w) => w.n > 0))
+      .map((v) => ({
+        id: v.id,
+        modelId: v.modelId,
+        targetY: v.sourceRun?.targetY || null,
+      })),
   );
 
   const residualSdByModel = new Map<string, ResidualSdStatus>();
   for (const schedule of schedules) {
     const version = versionByModel.get(schedule.modelId);
-    const pooled = version ? truthByVersion.get(version.id) : undefined;
+    const windows = version ? truthByVersion.get(version.id) : undefined;
     residualSdByModel.set(
       schedule.modelId,
-      classifyResidualSd({
-        windows: pooled ? [pooled] : [],
+      classifyResidualPoints({
+        windows: windows ?? [],
         baselineSd: baselineResidualSd(version?.metrics ?? null),
         thresholds: {
           warnSd: schedule.warnSd,
           criticalSd: schedule.criticalSd,
         },
+        heldFallback: heldFallbacks.get(schedule.modelId) ?? null,
       }).status,
     );
   }

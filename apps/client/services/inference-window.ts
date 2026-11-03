@@ -155,8 +155,13 @@ export interface InferenceStatus {
      */
     residualSd: {
       status: 'UNKNOWN' | 'OK' | 'WARN' | 'ALERT'
-      liveSd: number | null
+      /** MODEL-SERVE-046. Worst single |residual| in the latest 24 h of joined pairs. */
+      worstAbsResidual: number | null
+      /** `worstAbsResidual / baselineSd` — SDs out. */
       ratio: number | null
+      /** What the figure was measured against: joined lab pairs, or the last
+       *  reported lab value carried forward ('held') while none has joined. */
+      basis: 'pairs' | 'held' | null
       baselineSd: number | null
       n: number
     }

@@ -50,9 +50,13 @@ export function monitoringStatusFromHealth(
       return 'warning'
     case 'OK':
       return 'normal'
-    // OFF, UNKNOWN, and an absent payload all mean "no claim".
+    // OFF, UNKNOWN, and an absent payload all mean "no claim" — about a
+    // deploy that is UP, which is Normal: a running model with nothing
+    // outside its band (MODEL-SERVE-046, user: Running and Normal are one
+    // status). A model that is out of band is WARN/ALERT above; Offline is
+    // reserved for a deploy that is not running.
     default:
-      return 'offline'
+      return 'normal'
   }
 }
 
@@ -242,16 +246,21 @@ export function deployVerdict(models: AIModel[]): DeployVerdict {
 }
 
 /**
- * MODEL-SERVE-024-D02. THE model side of the one Normal/Abnormal rule: a model
- * makes its equipment, plant and workspace Abnormal only for a failed deploy
- * or a monitoring ALERT. A monitoring WARN or FROZEN (drift warn, residual
- * 1–2SD, tag not moving) still lists on the Alerts page as Warning, but turns
- * nothing red — the same line `toBinaryStatus` draws for equipment.
+ * MODEL-SERVE-024-D02, widened 2026-11-03 (user). THE model side of the one
+ * Normal/Abnormal rule: a model makes its equipment, plant and workspace
+ * Abnormal for a failed deploy, a monitoring ALERT, or now a monitoring WARN
+ * or FROZEN (drift warn, residual beyond 2SD, tag not moving) — the same line
+ * `toBinaryStatus` draws for equipment, where warning is Abnormal too.
  */
 export function isModelAbnormal(m: AIModel): boolean {
   if (isDeployFailed(m)) return true
   const status = m.data?.monitoring?.status
-  return status === 'ALERT' || status === 'CRITICAL'
+  return (
+    status === 'ALERT' ||
+    status === 'CRITICAL' ||
+    status === 'WARN' ||
+    status === 'FROZEN'
+  )
 }
 
 /** Abnormal models per `workspaceId` (see `isModelAbnormal`). */

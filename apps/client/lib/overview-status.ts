@@ -22,11 +22,13 @@ export function deriveStatus(equipmentList: CanvasNode[]): NodeStatus {
  * Binary status layer for physical/organizational entities (Workspace, Plant,
  * Equipment/Node) — THE one Normal/Abnormal rule (MODEL-SERVE-024-D02).
  *
- * ABNORMAL only for `alarm` (read "Alert"). Warning and offline read Normal:
- * they still list on the Alerts page, but they do not turn a plant or
- * workspace red. A model's own fault folds in by mapping to `alarm` first
- * (`normalizeModelStatus` in lib/overview-tree.ts: a failed deploy or a
- * monitoring ALERT), so this one function decides for nodes and models alike.
+ * ABNORMAL for `alarm` (read "Alert") AND `warning` (user decision
+ * 2026-11-03, reversing MODEL-SERVE-024-D02's "warning reads Normal"): a
+ * monitoring Warning now turns its equipment, plant and workspace Abnormal.
+ * Offline still reads Normal. A model's own fault folds in through
+ * `normalizeModelStatus` in lib/overview-tree.ts (a failed deploy, a
+ * monitoring ALERT, or a monitoring WARN/FROZEN, which map to `alarm` or
+ * `warning`), so this one function decides for nodes and models alike.
  * Every caller asks this function rather than testing `!== 'normal'` itself.
  */
 export type BinaryStatus = 'normal' | 'abnormal'
@@ -34,7 +36,7 @@ export type BinaryStatus = 'normal' | 'abnormal'
 export function toBinaryStatus(
   status: NodeStatus | string | null | undefined,
 ): BinaryStatus {
-  return status === 'alarm' ? 'abnormal' : 'normal'
+  return status === 'alarm' || status === 'warning' ? 'abnormal' : 'normal'
 }
 
 /** `toBinaryStatus(status) === 'abnormal'`, for conditions. */

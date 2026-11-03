@@ -48,6 +48,8 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     // case here keeps asserting the drift verdict it was written for: no
     // joined pairs means UNKNOWN, which this axis defines as silent.
     inferenceWindowTruth: { findMany: jest.fn().mockResolvedValue([]) },
+    // MODEL-SERVE-046. Held-deviation fallback read: empty by default.
+    predictionLog: { findMany: jest.fn().mockResolvedValue([]) },
     ...overrides,
   };
 }
@@ -116,7 +118,8 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       // been scored, so there is no spread to report.
       residualSd: {
         status: 'UNKNOWN',
-        liveSd: null,
+        worstAbsResidual: null,
+        basis: null,
         ratio: null,
         baselineSd: null,
         n: 0,
@@ -168,7 +171,8 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       // been scored, so there is no spread to report.
       residualSd: {
         status: 'UNKNOWN',
-        liveSd: null,
+        worstAbsResidual: null,
+        basis: null,
         ratio: null,
         baselineSd: null,
         n: 0,

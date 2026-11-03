@@ -23,6 +23,7 @@ import {
   WorkspaceQuota,
 } from '@/components/workspace/workspace-quota'
 import { failedDeploys, isModelAbnormal } from '@/lib/model-status'
+import { isAbnormal as isAbnormalStatus } from '@/lib/overview-status'
 import { OverviewAssetTree } from './overview-asset-tree'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
@@ -82,12 +83,14 @@ function PanelContent({
     (modelsFetching && modelsRaw === null) || plants === null
 
   const equipmentCount = equipmentList.length
-  const alarmCount = equipmentList.filter(n => n.data.status === 'alarm').length
+  const alarmCount = equipmentList.filter(n =>
+    isAbnormalStatus(n.data.status),
+  ).length
   const failedCount = failedDeploys(models).length
 
-  // MODEL-SERVE-024-D02. Abnormal = equipment ALERT + abnormal models
-  // (failed deploy or monitoring ALERT). Warning/offline equipment and
-  // monitoring warnings are not Abnormal; they stay on the Alerts page.
+  // MODEL-SERVE-024-D02 (widened 2026-11-03). Abnormal = equipment ALERT or
+  // WARNING + abnormal models (failed deploy, monitoring ALERT/WARN/FROZEN).
+  // Offline equipment is not Abnormal.
   const abnormalModelCount = models.filter(isModelAbnormal).length
   const abnormalCount = alarmCount + abnormalModelCount
 

@@ -292,7 +292,7 @@ export function Phase6Deploy({ nav }: Props) {
                 htmlFor="warn-sd"
                 className="text-xs font-normal text-muted-foreground"
               >
-                Residual warning (±SD)
+                Warning beyond (× SD)
               </Label>
               <Input
                 id="warn-sd"
@@ -309,7 +309,7 @@ export function Phase6Deploy({ nav }: Props) {
                 htmlFor="critical-sd"
                 className="text-xs font-normal text-muted-foreground"
               >
-                Residual critical (±SD)
+                Alert beyond (× SD)
               </Label>
               <Input
                 id="critical-sd"
