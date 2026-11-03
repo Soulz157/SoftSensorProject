@@ -27,13 +27,13 @@ logger = logging.getLogger("serving.loader")
 # necessarily run read-only).
 SCRATCH = Path("/tmp/serving-cache")
 
-#: T02's own stated v1 boundary — algorithms whose pickle needs torch and
-#: whose training-time input is a WINDOW of history
-#: (images/trainer/app/holdout.py's build_windows), which a row-list
-#: /predict request cannot express. Refused at load time, before the
-#: download and unpickle even start — read from the descriptor's own
-#: `algorithm` field, never by sniffing the pickle.
-UNSERVABLE_ALGORITHMS = frozenset({"lstm", "gru"})
+#: T02's own stated v1 boundary — algorithms refused at load time, before the
+#: download and unpickle even start, read from the descriptor's own
+#: `algorithm` field, never by sniffing the pickle. Empty since
+#: MODEL-SERVE-045: lstm/gru unpickle through `sequence_model` (the shared
+#: softsensor_scaling.sequence class, torch now in this image) and /predict
+#: windows their rows with the trainer's own build_inference_windows.
+UNSERVABLE_ALGORITHMS: frozenset[str] = frozenset()
 
 
 class LoadError(RuntimeError):
@@ -71,6 +71,13 @@ def _download(url: str, dest: Path) -> Path:
     return dest
 
 
+def _base_version(version: str) -> str:
+    """`2.5.1+cpu` -> `2.5.1`. The local tag names the wheel's BUILD (the CPU
+    index tags it, a macOS dev wheel does not), not a different library;
+    the numerals are what the pickle depends on."""
+    return version.split("+", 1)[0]
+
+
 def _check_framework_versions(recorded: dict[str, str] | None) -> None:
     """A recorded version differing from the runtime REFUSES the load; an
     absent record loads with a logged warning — missing is not the same
@@ -86,10 +93,16 @@ def _check_framework_versions(recorded: dict[str, str] | None) -> None:
         )
         return
     runtime = {"sklearn": sklearn.__version__}
+    if "torch" in recorded:
+        # MODEL-SERVE-045. Only when the model needs it: importing torch is
+        # not free, and a tabular model's pickle never touches it.
+        import torch
+
+        runtime["torch"] = torch.__version__
     for lib, recorded_version in recorded.items():
         if lib not in runtime:
             continue
-        if runtime[lib] != recorded_version:
+        if _base_version(runtime[lib]) != _base_version(recorded_version):
             raise LoadError(
                 f"Framework version mismatch for {lib}: model recorded "
                 f"{recorded_version}, serving runtime has {runtime[lib]}. "

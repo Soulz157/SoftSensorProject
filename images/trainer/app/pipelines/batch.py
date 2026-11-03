@@ -18,6 +18,9 @@ could drift (decisions.serving_transform_is_an_extracted_module).
 
 from __future__ import annotations
 
+from typing import Any
+
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -26,7 +29,9 @@ from softsensor_scaling import assert_scaling_coverage, to_model_ready
 from api import RunApi
 from artifacts import ArtifactSet, PARQUET_CONTENT_TYPE
 from config import SCRATCH, RunContext
+from models import SEQUENCE_ALGORITHMS
 from storage import download_verified, sha256_of, upload_artifacts
+from windows import DEFAULT_SEQUENCE_LENGTH, build_inference_windows
 
 # Rows per chunk — mirrors apps/python/services/export_service.py's own
 # BATCH_ROWS, the one other bounded-read path in this system.
@@ -46,6 +51,30 @@ def _assert_columns_present(parquet_file: pq.ParquetFile, feature_columns: list[
         raise RuntimeError(
             f"Input is missing required feature column(s): {sorted(missing)}"
         )
+
+
+def _score_sequence_chunk(
+    model: Any,
+    chunk: np.ndarray,
+    carry: np.ndarray,
+    sequence_length: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """MODEL-SERVE-043. One chunk's predictions for a sequence model, NaN
+    where a row has no complete `sequence_length`-row history (the first L-1
+    rows of the file, or a window touching a NaN), plus the carry for the
+    next chunk. File order is time order here: a batch input has no
+    guaranteed timestamp, so there is no step check."""
+    combined = np.vstack([carry, chunk]) if len(carry) else chunk
+    scorable = np.concatenate(
+        [np.zeros(len(carry), dtype=bool), np.ones(len(chunk), dtype=bool)]
+    )
+    X, positions = build_inference_windows(combined, sequence_length, scorable)
+    predictions = np.full(len(chunk), np.nan)
+    if len(positions):
+        predictions[positions - len(carry)] = model.predict(X)
+    keep = sequence_length - 1
+    next_carry = combined[-keep:] if keep > 0 else combined[:0]
+    return predictions, next_carry
 
 
 def run_batch_scoring(context: RunContext, api: RunApi) -> int:
@@ -85,6 +114,14 @@ def run_batch_scoring(context: RunContext, api: RunApi) -> int:
     output_path = SCRATCH / OUTPUT_FILENAME
     writer: pq.ParquetWriter | None = None
     row_count = 0
+    # MODEL-SERVE-043. lstm/gru score (n, L, features) windows. The last
+    # L-1 scaled rows carry into the next chunk so a window can span a chunk
+    # boundary; rows without a full history come out null (user decision
+    # 2026-11-01), so the output keeps one row per input row.
+    sequence = spec.get("algorithm") in SEQUENCE_ALGORITHMS
+    sequence_length = int(spec.get("sequenceLength") or DEFAULT_SEQUENCE_LENGTH)
+    carry = np.empty((0, len(feature_columns)))
+    predicted_rows = 0
     try:
         for record_batch in parquet_file.iter_batches(
             batch_size=BATCH_SIZE, columns=feature_columns
@@ -100,7 +137,16 @@ def run_batch_scoring(context: RunContext, api: RunApi) -> int:
             scaled, _ = to_model_ready(
                 frame, feature_columns, scalers, fitted_params=scaling_params
             )
-            predictions = model.predict(scaled[feature_columns])
+            if sequence:
+                predictions, carry = _score_sequence_chunk(
+                    model,
+                    scaled[feature_columns].to_numpy(dtype=float),
+                    carry,
+                    sequence_length,
+                )
+                predicted_rows += int(np.isfinite(predictions).sum())
+            else:
+                predictions = model.predict(scaled[feature_columns])
 
             out_frame = pd.DataFrame({"prediction": predictions})
             table = pa.Table.from_pandas(out_frame, preserve_index=False)
@@ -116,6 +162,12 @@ def run_batch_scoring(context: RunContext, api: RunApi) -> int:
         raise RuntimeError("Input parquet has zero rows — nothing to score.")
 
     api.log(f"Scored {row_count} row(s).")
+    if sequence:
+        api.log(
+            f"Sequence model (sequence_length={sequence_length}): "
+            f"{predicted_rows} of {row_count} row(s) had a complete history; "
+            f"{row_count - predicted_rows} left null."
+        )
 
     output_checksum = sha256_of(output_path)
     manifest = {

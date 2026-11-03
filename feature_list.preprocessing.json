@@ -5301,6 +5301,69 @@
         "vitest app/(default)/data-studio: 221/222 — the one failure is a 5 s timeout in raw-readings-table.test.tsx (untouched; passes 6/6 alone).",
         "Live check PENDING (no browser)."
       ]
+    },
+    {
+      "id": "DS-LAKE-042",
+      "title": "Edit-mode save lost the feature recipe: feature jobs must start from pre-feature data",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": [
+        "DS-LAKE-022",
+        "DS-LAKE-024"
+      ],
+      "description": "Found 2026-11-02 while deploying LSTM2 (MODEL-SERVE-043 live check): Start refused with '108 feature column(s) are neither a base tag of this model's dataset nor recorded in its feature spec'. DatasetTest v2's feature_spec.json had features=[] while its data held 108 lag columns (v1: 108). Lineage BRONZE -> GOLD 79551d0a (spec 108) -> GOLD 0251f1e1 (spec 0) -> FINAL. Root cause, from DB + code: (1) PreprocessingJobService advances draft.currentArtifactId to every successful job's result, FEATURE jobs included; (2) reopening an edit draft (resolveOrCreateEditDraftService) handed that pointer to the wizard as its pipeline source (dwDraftArtifactIdAtom -> useDatasetGoldWarm); (3) the next FEATURE job ran on the draft's own GOLD, every recipe column collided, apply_features skipped each one, and features() wrote a spec listing only the non-skipped configs — none. The dataset trained, then could not be deployed.",
+      "decisions": [
+        "2026-11-02 (user): fix all three layers as one new DS-LAKE feature.",
+        "Layer 3 is applied server-side at the one place the edit wizard reads its source pointer (resolveOrCreateEditDraftService) rather than in the client: it returns the nearest pre-feature artifact in the lineage and leaves the stored pointer alone, so create-mode resume semantics are untouched.",
+        "Python refuses only GENERATED feature names already present in the source (lag/rolling/ratio/delta/arith/log/datetime); user-named kinds (formula, group) keep the deliberate silent skip apply_features documents (a preset formula named like a real tag)."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-042-T01",
+          "title": "Backend: refuse a feature job/inline features call whose source (or any ancestor) is GOLD/FINAL or FEATURE-produced",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. dataset-draft.authorized.service.ts featureBearingReason() on startDraftFeaturesJobService + createDraftFeaturesArtifactService, 409 with the reason. Local DB evidence: 119/119 successful FEATURE jobs sourced a BRONZE; the only GOLD-sourced ones (27: 24 FAILED, 3 SUCCEEDED) are this defect."
+        },
+        {
+          "id": "DS-LAKE-042-T02",
+          "title": "Python: features() refuses a source that already contains this recipe's generated feature columns",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. artifact_service.features (+ _USER_NAMED_FEATURE_KINDS). tests/test_artifact_service_features_featured_source.py 3/3; full python suite 1151 passed, 100 skipped."
+        },
+        {
+          "id": "DS-LAKE-042-T03",
+          "title": "Edit draft re-entry hands the wizard the pre-feature artifact, not the draft's GOLD",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. resolveOrCreateEditDraftService existing-draft branch -> preFeatureArtifactId(currentArtifactId). dataset-draft spec 121/121 (6 new DS-LAKE-042 cases; 10 edit-resolve fixtures given a null findUnique for the lineage walk). tsc clean, eslint 0 errors, prettier applied."
+        },
+        {
+          "id": "DS-LAKE-042-T04",
+          "title": "Remediate already-saved datasets whose spec lost its recipe",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Local DB: only DatasetTest v2 (FINAL bbf2db7d) came from a GOLD-sourced feature job that SUCCEEDED (the other two never became a saved version). Its v1 (FINAL bc8606d0) still has the full 108-feature spec. Re-save after this fix (edit now sources the pre-feature artifact), or train on v1. Other environments need the same query run."
+        },
+        {
+          "id": "DS-LAKE-042-T05",
+          "title": "Live check: edit a dataset with lag features, leave and re-enter edit, save; the new version's spec lists every feature",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Not run. Requires backend restart to pick up the backend change (python reloads itself)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A feature job sourced from an artifact that already carries features is refused (409) before it runs.",
+        "features() never writes a spec that omits a generated feature column the data holds.",
+        "Re-entering an edit draft after Step 4 ran resumes from the pre-feature artifact, so a re-save keeps the full recipe."
+      ],
+      "verification": [
+        "jest dataset-draft 121/121; pytest full suite 1151 passed / 100 skipped.",
+        "Live re-entry check (T05) not yet run."
+      ]
     }
   ],
   "deferred": [

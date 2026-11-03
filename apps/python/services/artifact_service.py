@@ -67,6 +67,7 @@ from intergrations.object_store import (
     model_run_key,
     prediction_job_key,
     inference_window_key,
+    INFERENCE_CONTEXT_FILENAME,
     INFERENCE_INPUT_FILENAME,
     split_data_key,
     OUTPUT_FILENAME,
@@ -1282,6 +1283,13 @@ def combine_for_retrain(
     return payload
 
 
+#: DS-LAKE-042. Feature kinds whose column name the USER chooses. A collision
+#: on one of these with an existing column is the deliberate, silent skip
+#: `apply_features` keeps (a preset formula named like a real tag); a
+#: collision on any other kind means the source already holds the feature.
+_USER_NAMED_FEATURE_KINDS = frozenset({"formula", "group"})
+
+
 def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     """DS-LAKE-006-T05. `source_key` is the SILVER artifact; `target_key` is
     the GOLD artifact. `_commit`'s `parent_key=request.source_key` is what
@@ -1340,6 +1348,34 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     # would make the hash describe bytes that don't exist.
     effective_selected = force_keep_target(
         request.selected_columns, request.target_y)
+
+    # DS-LAKE-042. A GENERATED feature name (lag/rolling/ratio/delta/arith/
+    # log/datetime) already present in the source means the source already
+    # carries this recipe's output — it is not raw data. apply_features would
+    # skip every such config as a name collision, and the spec below would
+    # then list none of them while the frame keeps the old columns (live:
+    # DatasetTest v2, 108 lag columns, spec features = []). Refused here.
+    # User-NAMED kinds (formula, group) still skip silently: a preset formula
+    # named like a real tag is the deliberate collision apply_features keeps.
+    already_present = [
+        feature_column_name(cfg)
+        for cfg in step_configs
+        if cfg.get("kind") not in _USER_NAMED_FEATURE_KINDS
+        and feature_column_name(cfg) in source.columns
+    ]
+    if already_present:
+        shown = ", ".join(already_present[:5])
+        more = (
+            f" and {len(already_present) - 5} more"
+            if len(already_present) > 5
+            else ""
+        )
+        raise ValueError(
+            f"The source data already contains {len(already_present)} "
+            f"feature column(s) this recipe computes ({shown}{more}). "
+            "Features must be computed from data without them — the source "
+            "is an already feature-engineered artifact."
+        )
 
     skipped_columns: list[str] = []
     result = apply_features(source, step_configs, skipped=skipped_columns)
@@ -2856,9 +2892,38 @@ def presign_inference_window_upload(store: ObjectStore, body) -> dict:
 #: lives under this SAME root. The infer-mode container reads it at claim
 #: time through this endpoint, not /artifacts/presign, which would refuse it
 #: outright (is_committed_artifact_key would reject an inference/ key).
+#: MODEL-SERVE-043: context.parquet — a sequence model's lead-in, written by
+#: `materialize_window` beside input.parquet and read by the container at
+#: claim time exactly like it. Missing from this set, every lstm/gru claim
+#: 400'd (live, 2026-11-02, LSTM 3) before the container could start.
 _ALLOWED_INFERENCE_WINDOW_OBJECT_PRESIGNS = frozenset(
-    {PREDICTIONS_FILENAME, INFERENCE_INPUT_FILENAME}
+    {PREDICTIONS_FILENAME, INFERENCE_INPUT_FILENAME, INFERENCE_CONTEXT_FILENAME}
 )
+
+
+def last_inference_prediction(store: ObjectStore, body) -> dict[str, Any]:
+    """Run Predict for lstm/gru: the newest row of ONE window's
+    predictions.parquet. Serving cannot score a sequence model, so the button
+    reports the hourly window it just dispatched instead — this is that
+    value. Same key guard as `presign_inference_window_object`, narrowed to
+    predictions.parquet: nothing else here is a prediction.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != PREDICTIONS_FILENAME:
+        raise ValueError(f"'{key}' is not a window's {PREDICTIONS_FILENAME}.")
+    if not is_inference_window_key(key):
+        raise ValueError(
+            f"'{key}' is not a well-formed inference-window output key."
+        )
+    frame = store.get_frame(key)
+    if len(frame) == 0:
+        return {"timestamp": None, "prediction": None, "row_count": 0}
+    newest = frame.sort_values(TIMESTAMP_COLUMN).iloc[-1]
+    return {
+        "timestamp": pd.Timestamp(newest[TIMESTAMP_COLUMN]).isoformat(),
+        "prediction": float(newest["prediction"]),
+        "row_count": int(len(frame)),
+    }
 
 
 def presign_inference_window_object(store: ObjectStore, body) -> dict[str, Any]:

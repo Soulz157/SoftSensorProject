@@ -2,9 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { wallClockToUtc } from '@/lib/plant-time';
+import { SEQUENCE_ALGORITHMS } from '@/lib/sequence-model';
 import { mintRunToken } from '@/lib/mint-run-token';
 import {
   presignInferenceWindowObject,
+  readLastInferencePrediction,
   presignInferenceWindowUpload,
 } from '@/lib/python-preprocess-client';
 import { inferenceWindowKey } from '@/lib/artifact-keys';
@@ -1631,7 +1633,7 @@ export class InferenceWindowAuthorizedService {
     }
     const version = await this.prisma.modelVersion.findFirst({
       where: { modelId, stage: 'PRODUCTION' },
-      select: { id: true },
+      select: { id: true, algorithm: true },
     });
     if (!version) {
       throw new AppException({
@@ -1640,6 +1642,21 @@ export class InferenceWindowAuthorizedService {
         type: 'ERROR',
       });
     }
+    // Run Predict for lstm/gru. Since MODEL-SERVE-045 apps/serving scores
+    // sequence models too, so every algorithm tries Serving first — an
+    // instant value from the newest row. If a sequence model's live score
+    // comes back empty (an older serving image, too little history, Serving
+    // down), the press falls back to the window it dispatched: the client
+    // polls `windowPredictionService` (MODEL-SERVE-044) and the same toast
+    // and chart point follow. A tabular model has no such fallback.
+    const isSequence = SEQUENCE_ALGORITHMS.has(version.algorithm);
+    const liveScore = async (): Promise<{
+      live: LiveScoreOutcome;
+      liveVia: 'serving' | 'window';
+    }> => {
+      const live = await this.scoreLiveAndRecord(modelId, version.id, user.id);
+      return { live, liveVia: isSequence && !live.ok ? 'window' : 'serving' };
+    };
 
     const now = Date.now();
     const to = new Date(
@@ -1701,7 +1718,7 @@ export class InferenceWindowAuthorizedService {
     // retry path that does not carry `attempts` forward.
     if (window.status !== 'PENDING') {
       const stamp = window.windowStart.toISOString();
-      const live = await this.scoreLiveAndRecord(modelId, version.id, user.id);
+      const { live, liveVia } = await liveScore();
       return {
         statusCode: 200,
         message:
@@ -1716,6 +1733,7 @@ export class InferenceWindowAuthorizedService {
           status: window.status,
           dispatched: false,
           live,
+          liveVia,
         },
       };
     }
@@ -1738,7 +1756,7 @@ export class InferenceWindowAuthorizedService {
     // /predict, seconds, no container. Firing it and forgetting would let
     // the client's own refetch race the prediction, which is the entire
     // reason an operator pressed the button.
-    const live = await this.scoreLiveAndRecord(modelId, version.id, user.id);
+    const { live, liveVia } = await liveScore();
 
     return {
       statusCode: 202,
@@ -1751,6 +1769,7 @@ export class InferenceWindowAuthorizedService {
         status: window.status,
         dispatched: true,
         live,
+        liveVia,
       },
     };
   }
@@ -1822,6 +1841,104 @@ export class InferenceWindowAuthorizedService {
       );
     }
     return live;
+  }
+
+  /**
+   * Run Predict for lstm/gru, second half. The client polls this with the
+   * window `runNowService` dispatched; once it SUCCEEDED, its newest
+   * prediction is read SERVER-side from its own predictions.parquet (never
+   * taken from the client) and recorded as a ManualPrediction — the same
+   * row a served model's press writes, so the chart draws the same point.
+   * Recording is idempotent per (version, predictedAt): a second poll after
+   * success adds nothing.
+   */
+  async windowPredictionService(
+    modelId: string,
+    windowId: string,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user);
+    const window = await this.prisma.inferenceWindow.findFirst({
+      where: { id: windowId, modelId },
+      select: {
+        id: true,
+        status: true,
+        modelVersionId: true,
+        predictionsKey: true,
+        failureReason: true,
+      },
+    });
+    if (!window) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Inference window ${windowId} not found for this model.`,
+        type: 'ERROR',
+      });
+    }
+
+    const done = (live: LiveScoreOutcome) => ({
+      statusCode: 200,
+      message: 'Window prediction',
+      type: 'SUCCESS' as const,
+      data: { status: window.status, pending: false, live },
+    });
+
+    if (window.status === 'PENDING' || window.status === 'RUNNING') {
+      return {
+        statusCode: 200,
+        message: 'Window still running',
+        type: 'SUCCESS' as const,
+        data: {
+          status: window.status,
+          pending: true,
+          live: {
+            ok: false,
+            reason: 'The window is still running.',
+          } as LiveScoreOutcome,
+        },
+      };
+    }
+    if (window.status !== 'SUCCEEDED' || !window.predictionsKey) {
+      return done({
+        ok: false,
+        reason:
+          window.failureReason ??
+          `The window finished ${window.status} with no prediction.`,
+      });
+    }
+
+    const last = await readLastInferencePrediction({
+      source_key: window.predictionsKey,
+    });
+    if (last.prediction === null || last.timestamp === null) {
+      return done({
+        ok: false,
+        reason: 'The window wrote no prediction rows.',
+      });
+    }
+    const predictedAt = wallClockToUtc(last.timestamp);
+    if (!predictedAt) {
+      return done({
+        ok: false,
+        reason: `Unparseable prediction timestamp "${last.timestamp}".`,
+      });
+    }
+    const existing = await this.prisma.manualPrediction.findFirst({
+      where: { modelId, modelVersionId: window.modelVersionId, predictedAt },
+      select: { id: true },
+    });
+    if (!existing) {
+      await this.prisma.manualPrediction.create({
+        data: {
+          modelId,
+          modelVersionId: window.modelVersionId,
+          predicted: last.prediction,
+          predictedAt,
+          requestedById: user.id,
+        },
+      });
+    }
+    return done({ ok: true, predicted: last.prediction, at: last.timestamp });
   }
 
   /** D9: FAILED is terminal; a retry is explicit and carries `attempts`
@@ -2632,6 +2749,24 @@ export class InferenceWindowAuthorizedService {
       source_key: window.inputKey,
     });
 
+    // MODEL-SERVE-043. A sequence model scores from `sequenceLength` rows of
+    // history: the lead-in (context.parquet) plus this window's own rows,
+    // checked for gaps at the schedule's sampling step. Absent / null for
+    // every other algorithm, whose container never reads them.
+    const contextPresigned =
+      window.contextKey && window.contextChecksum
+        ? await presignInferenceWindowObject({ source_key: window.contextKey })
+        : null;
+    const schedule = d.sequenceLength
+      ? await this.prisma.inferenceSchedule.findUnique({
+          where: { modelId: window.modelId },
+          select: { fetchConfig: true },
+        })
+      : null;
+    const intervalTime = schedule
+      ? this.asRecord(schedule.fetchConfig).intervalTime
+      : undefined;
+
     return {
       modelId: d.modelId,
       modelVersionId: d.versionId,
@@ -2644,6 +2779,11 @@ export class InferenceWindowAuthorizedService {
       scalingParams: d.scalingParams,
       windowStart: window.windowStart.toISOString(),
       windowEnd: window.windowEnd.toISOString(),
+      algorithm: d.algorithm,
+      sequenceLength: d.sequenceLength,
+      intervalTime: typeof intervalTime === 'string' ? intervalTime : null,
+      contextUrl: contextPresigned?.data_url ?? null,
+      contextChecksum: contextPresigned ? window.contextChecksum : null,
     };
   }
 

@@ -22,6 +22,9 @@ applies the SAME fitted transform those paths use, via `softsensor_scaling`
 
 from __future__ import annotations
 
+from typing import Any
+
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -30,10 +33,107 @@ from softsensor_scaling import assert_scaling_coverage, to_model_ready
 from api import RunApi
 from artifacts import ArtifactSet, PARQUET_CONTENT_TYPE
 from config import SCRATCH, TIMESTAMP_COLUMN, RunContext
+from models import SEQUENCE_ALGORITHMS
 from storage import download_verified, sha256_of, upload_artifacts
+from softsensor_scaling.windows import parse_interval
+from windows import DEFAULT_SEQUENCE_LENGTH, build_inference_windows
 
 OUTPUT_FILENAME = "predictions.parquet"
 METRICS_FILENAME = "metrics.json"
+CONTEXT_FILENAME = "context.parquet"
+
+def _modal_step(timestamps: pd.Series) -> pd.Timedelta | None:
+    """The most common positive spacing — the fallback grid step when the
+    claim carries no parseable interval."""
+    steps = pd.to_datetime(timestamps).diff().dropna()
+    steps = steps[steps > pd.Timedelta(0)]
+    if steps.empty:
+        return None
+    return steps.mode().iloc[0]
+
+
+def _score_sequence(
+    model: Any,
+    frame: pd.DataFrame,
+    spec: dict[str, Any],
+    feature_columns: list[str],
+    scalers: dict[str, str],
+    scaling_params: dict[str, dict[str, float]],
+    api: RunApi,
+) -> pd.DataFrame:
+    """MODEL-SERVE-043. lstm/gru: build (n, L, features) windows over the
+    lead-in (`context.parquet`, history only) plus this window's rows, and
+    score only this window's rows whose L-row history is complete.
+
+    The tabular path hands the model a 2-D frame, which a sequence model
+    refuses (`could not determine the shape of object type 'DataFrame'`) —
+    that is the defect this replaces, for these two algorithms only.
+    """
+    sequence_length = int(spec.get("sequenceLength") or DEFAULT_SEQUENCE_LENGTH)
+    columns = [TIMESTAMP_COLUMN] + feature_columns
+
+    context = frame.iloc[0:0][columns]
+    if spec.get("contextUrl"):
+        context_path, _ = download_verified(
+            spec["contextUrl"],
+            SCRATCH / CONTEXT_FILENAME,
+            spec["contextChecksum"],
+            "Context",
+        )
+        context = pq.read_table(context_path, columns=columns).to_pandas()
+
+    combined = pd.concat(
+        [context[columns], frame[columns]], ignore_index=True
+    )
+    scorable = np.concatenate(
+        [np.zeros(len(context), dtype=bool), np.ones(len(frame), dtype=bool)]
+    )
+    order = np.argsort(combined[TIMESTAMP_COLUMN].to_numpy(), kind="stable")
+    combined = combined.iloc[order].reset_index(drop=True)
+    scorable = scorable[order]
+
+    interval = parse_interval(spec.get("intervalTime"))
+    if interval is None:
+        interval = _modal_step(combined[TIMESTAMP_COLUMN])
+        api.log(
+            f"No parseable interval in the claim; using the data's own step "
+            f"({interval}).",
+            "warn",
+        )
+
+    scaled, _ = to_model_ready(
+        combined[feature_columns],
+        feature_columns,
+        scalers,
+        fitted_params=scaling_params,
+    )
+    X, positions = build_inference_windows(
+        scaled[feature_columns].to_numpy(dtype=float),
+        sequence_length,
+        scorable,
+        timestamps=combined[TIMESTAMP_COLUMN],
+        interval=interval,
+    )
+    skipped = len(frame) - len(positions)
+    api.log(
+        f"Sequence model (sequence_length={sequence_length}): "
+        f"{len(context)} lead-in row(s), {len(positions)} of {len(frame)} "
+        f"window row(s) have a complete history; {skipped} skipped."
+    )
+    if len(positions) == 0:
+        raise RuntimeError(
+            f"No row in this window has {sequence_length} consecutive Good "
+            f"rows of history at a {interval} step, so a sequence model "
+            "cannot score it. Bad or missing source data breaks the history."
+        )
+
+    predictions = model.predict(X)
+    return pd.DataFrame(
+        {
+            TIMESTAMP_COLUMN: combined[TIMESTAMP_COLUMN].iloc[positions].to_numpy(),
+            "prediction": predictions,
+        }
+    )
 
 
 def _assert_columns_present(
@@ -95,17 +195,22 @@ def run_inference(context: RunContext, api: RunApi) -> int:
     # the FILE's column order for the requested columns, not necessarily
     # feature_columns' own order, and that order is what model.predict
     # expects.
-    timestamps = frame[TIMESTAMP_COLUMN]
-    feature_frame = frame[feature_columns]
+    if spec.get("algorithm") in SEQUENCE_ALGORITHMS:
+        out_frame = _score_sequence(
+            model, frame, spec, feature_columns, scalers, scaling_params, api
+        )
+    else:
+        timestamps = frame[TIMESTAMP_COLUMN]
+        feature_frame = frame[feature_columns]
 
-    scaled, _ = to_model_ready(
-        feature_frame, feature_columns, scalers, fitted_params=scaling_params
-    )
-    predictions = model.predict(scaled[feature_columns])
+        scaled, _ = to_model_ready(
+            feature_frame, feature_columns, scalers, fitted_params=scaling_params
+        )
+        predictions = model.predict(scaled[feature_columns])
 
-    out_frame = pd.DataFrame(
-        {TIMESTAMP_COLUMN: timestamps.to_numpy(), "prediction": predictions}
-    )
+        out_frame = pd.DataFrame(
+            {TIMESTAMP_COLUMN: timestamps.to_numpy(), "prediction": predictions}
+        )
     row_count = len(out_frame)
     if row_count == 0:
         raise RuntimeError("Input parquet has zero rows — nothing to score.")

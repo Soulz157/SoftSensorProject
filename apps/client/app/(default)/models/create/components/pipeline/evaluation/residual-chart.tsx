@@ -13,6 +13,7 @@ import {
   YAxis,
 } from 'recharts'
 import type { FitRow } from '@/lib/model-metrics'
+import { sequenceAxis } from '@/lib/chart-gaps'
 import { EvaluationTooltip } from './evaluation-tooltip'
 import { AXIS_TICK, EVAL_SYNC_ID } from './actual-vs-predicted-chart'
 import type { LegendEntry } from '@/components/charts/chart-legend'
@@ -43,6 +44,9 @@ interface Props {
   tickFormatter: (t: number) => string
   /** Name of the compared model — renders a second residual line. */
   compareName?: string
+  /** See `ActualVsPredictedChart`'s `axis`: the two charts share a crosshair,
+   *  so they are given the same one. */
+  axis?: 'time' | 'sequence'
 }
 
 /**
@@ -161,12 +165,20 @@ function SdBackground({ sd }: { sd: number }) {
  * fit stays inside the ±1 SD band with no drift or structure; excursions into
  * the ±2 / ±3 layers mark the samples the model misses.
  */
-export function ResidualChart({ rows, sd, tickFormatter, compareName }: Props) {
+export function ResidualChart({
+  rows,
+  sd,
+  tickFormatter,
+  compareName,
+  axis = 'time',
+}: Props) {
   const coverage = useMemo(() => sdCoverage(rows, sd), [rows, sd])
+  const sequence = axis === 'sequence'
+  const plotted = useMemo(() => sequenceAxis(rows), [rows])
   return (
     <ResponsiveContainer width="100%" height={280}>
       <ComposedChart
-        data={rows}
+        data={sequence ? plotted.rows : rows}
         syncId={EVAL_SYNC_ID}
         margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
       >
@@ -176,15 +188,32 @@ export function ResidualChart({ rows, sd, tickFormatter, compareName }: Props) {
           vertical={false}
         />
         <XAxis
-          dataKey="t"
+          dataKey={sequence ? 'x' : 't'}
           type="number"
-          domain={['dataMin', 'dataMax']}
-          scale="time"
-          tickFormatter={tickFormatter}
+          domain={
+            sequence
+              ? [0, Math.max(0, rows.length - 1)]
+              : ['dataMin', 'dataMax']
+          }
+          scale={sequence ? 'linear' : 'time'}
+          tickFormatter={
+            sequence
+              ? (x: number) => tickFormatter(rows[Math.round(x)]?.t ?? 0)
+              : tickFormatter
+          }
           tick={AXIS_TICK}
           stroke="var(--border)"
           minTickGap={40}
         />
+        {sequence &&
+          plotted.gaps.map(gap => (
+            <ReferenceLine
+              key={`gap-${gap.index}`}
+              x={gap.index - 0.5}
+              stroke="var(--muted-foreground)"
+              strokeDasharray="4 3"
+            />
+          ))}
         <YAxis
           domain={['auto', 'auto']}
           tick={AXIS_TICK}

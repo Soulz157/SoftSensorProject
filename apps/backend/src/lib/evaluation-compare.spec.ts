@@ -5,6 +5,7 @@ import {
   featureRow,
   intervalToMs,
   labEvents,
+  overlappingChunks,
   skipReason,
   xSeries,
   type FrameRow,
@@ -161,5 +162,40 @@ describe('chunk', () => {
   it('splits in order with a short tail', () => {
     expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
     expect(chunk([], 3)).toEqual([]);
+  });
+});
+
+describe('overlappingChunks (MODEL-SERVE-045)', () => {
+  it('is plain chunking with no overlap', () => {
+    expect(overlappingChunks([1, 2, 3, 4, 5], 2, 0)).toEqual([
+      { rows: [1, 2], skip: 0 },
+      { rows: [3, 4], skip: 0 },
+      { rows: [5], skip: 0 },
+    ]);
+  });
+
+  it('carries the previous rows as history so no window breaks at a boundary', () => {
+    expect(overlappingChunks([1, 2, 3, 4, 5], 2, 1)).toEqual([
+      { rows: [1, 2], skip: 0 },
+      { rows: [2, 3, 4], skip: 1 },
+      { rows: [4, 5], skip: 1 },
+    ]);
+  });
+});
+
+describe('assemblePoints — sequence-model nulls (MODEL-SERVE-045)', () => {
+  it('a null prediction is a named skip, not a non-finite value', () => {
+    const rows = [
+      row('2026-11-02T05:00:00.000Z', { A: good(1) }),
+      row('2026-11-02T06:00:00.000Z', { A: good(2) }),
+    ];
+    const points = assemblePoints(rows, ['A'], [null, 4.5]);
+    expect(points[0]).toEqual({
+      t: '2026-11-02T05:00:00.000Z',
+      predicted: null,
+      skippedReason:
+        'Not enough consecutive history for this sequence model to score it.',
+    });
+    expect(points[1].predicted).toBe(4.5);
   });
 });

@@ -4662,6 +4662,44 @@
         "Client tsc clean; eslint 0 errors on changed files (2026-10-22).",
         "Live: Round 1 -> Fine-tune via the same button on /models/create (PENDING: Claude browser extension not connected)."
       ]
+    },
+    {
+      "id": "MODEL-FLOW-037",
+      "title": "Evaluation charts close a cut-out gap: row-order x-axis with a dashed line where rows are not adjacent in time",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": [
+        "MODEL-FLOW-030"
+      ],
+      "description": "User 2026-11-03: in Step 5, when a validation range was cut out of the middle of the dataset, the Actual vs Predicted chart left an empty stretch where the data was removed (time x-axis; connectNulls drew one long segment across it). Now Step 5's Actual vs Predicted and Residuals over time charts, and the Model Selection test-split card, use a SEQUENCE axis (row order): the stretch closes, a dashed grey line marks each place the rows are not adjacent (step > 3x the median step), ticks and tooltip still show each row's real time, and Step 5 captions the cut ranges. Retrain charts and Monitoring keep the time axis.",
+      "userDecisions": [
+        "2026-11-03: dashed line at each cut.",
+        "2026-11-03: Step 5 (both charts) + Model Selection test-split chart."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-037-T01",
+          "title": "lib/chart-gaps.ts: sequenceAxis + indexAtOrAfter (+ tests)",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-03. 7/7: even rows no gap; one cut -> one gap with its from/to; downsampled-even no false gap; repeated timestamp; <3 rows; fold-cut mapping."
+        },
+        {
+          "id": "MODEL-FLOW-037-T02",
+          "title": "ActualVsPredictedChart + ResidualChart axis prop; tooltip reads the row's own time; panel caption; candidate card",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-03. tsc, eslint, prettier clean. models/create + models/[id] suites: the only failures are the 5 known baseline files (feature-count-sweep, core-config, phase-4-model-selection, chart-time-axis 'score 2 candidates' button, model-selection-contract)."
+        },
+        {
+          "id": "MODEL-FLOW-037-T03",
+          "title": "Live check in a browser: Step 5 of a draft with a mid-range holdout",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Expect no empty stretch, one dashed line per cut, real times on ticks and tooltip, caption naming the cut range, zoom still working. Not run."
+        }
+      ]
     }
   ],
   "global_definition_of_done": [

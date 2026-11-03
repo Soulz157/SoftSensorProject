@@ -27,9 +27,11 @@ import { methodMetaOf } from './feature-importance-table'
  * disagreement between methods is visible on one scroll.
  *
  * Columns stay exactly rank / Feature (X) / Importance — the same three
- * `FeatureImportanceTable` renders — with the interval inside the
- * Importance cell (`0.0184 ± 0.0021`), never a fourth column: a permutation
- * figure never renders without its spread (finding 4).
+ * `FeatureImportanceTable` renders. The Importance cell is the mean drop
+ * alone (`0.0184`): the `± std` beside it was dropped (user decision
+ * 2026-11-01), the same call already made for the CV fold mean. The spread
+ * still decides ranking — a row whose drop does not clear zero across the
+ * reshuffles stays unranked (`rankPermutationFeatures`).
  */
 export function PermutationImportanceTable({
   importance,
@@ -96,7 +98,7 @@ export function PermutationImportanceTable({
                   )}
                 </TableCell>
                 <TableCell className="px-3 py-2 text-right font-mono tabular-nums">
-                  {row.importanceRaw.toFixed(4)} ± {row.std.toFixed(4)}
+                  {row.importanceRaw.toFixed(4)}
                 </TableCell>
               </TableRow>
             ))}
@@ -106,8 +108,9 @@ export function PermutationImportanceTable({
 
       {ranked.some(row => row.rank === null) && (
         <p className="text-xs text-muted-foreground">
-          A row with no rank permuted no better than chance — its interval does
-          not clear zero, so it is kept in place rather than ranked or hidden.
+          A row with no rank permuted no better than chance — its drop does not
+          clear zero across the reshuffles, so it is kept in place rather than
+          ranked or hidden.
         </p>
       )}
     </section>

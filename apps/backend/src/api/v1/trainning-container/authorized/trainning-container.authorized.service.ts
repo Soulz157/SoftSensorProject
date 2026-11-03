@@ -21,7 +21,6 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   /** Digest, resolved once at boot. See resolveDigest. */
   imageDigest = '';
 
-  
   // 1.0.21 — MODEL-FLOW-028. pipelines/cv_expanding.py keeps each fold's
   // out-of-fold predictions and publishes them as `cv_oof_predictions.parquet`
   // (new TrainingResult.extra_parquet; MIRRORS.md entry 12) instead of
@@ -37,8 +36,25 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // the user (2026-10-15, image 6a078a741f27); the image's own code confirmed
   // to contain the branch and to fit an ExtraTreesRegressor, and the trainer
   // suite passes 89/89 inside it. Not pushed.
+  //
+  // 1.0.24 — MODEL-SERVE-043. pipelines/infer.py and batch.py score lstm/gru
+  // through (n, sequence_length, features) windows (windows.build_inference_
+  // windows, pinned to training's build_windows by a parity test) instead of
+  // the 2-D frame that raised "could not determine the shape of object type
+  // 'DataFrame'" on every window. ADDITIVE: every tabular algorithm is
+  // byte-for-byte 1.0.23. Built by the user (2026-11-01, image 2cfd1b6f1c38);
+  // the image's own code confirmed to carry the new functions, and the trainer
+  // suite passes 103/103 inside it. Not pushed.
+  //
+  // 1.0.25 — MODEL-SERVE-045. SequenceRegressor and build_inference_windows
+  // moved into packages/py-scaling (softsensor_scaling.sequence / .windows),
+  // shared with apps/serving; sequence_model.py and windows.py here are
+  // re-exports. NO behaviour change: a 1.0.24-pickled LSTM (LSTM 3) loads and
+  // predicts 20.334125518798828 in both images, bit-identical. Built by the
+  // user (2026-11-02, image e9d2e2862018); trainer suite 103/103 inside it.
+  // Not pushed.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.23';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.25';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

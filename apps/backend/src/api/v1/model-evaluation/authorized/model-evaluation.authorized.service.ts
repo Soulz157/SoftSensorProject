@@ -11,7 +11,7 @@ import {
 import { predictRows } from '@/lib/serving-client';
 import {
   assemblePoints,
-  chunk,
+  overlappingChunks,
   expectedRows,
   featureRow,
   labEvents,
@@ -144,13 +144,25 @@ export class ModelEvaluationAuthorizedService {
     // Score ONLY usable rows. A row with any non-Good feature is never scored
     // and never imputed -- the rule `LivePredictDriverService.scoreOne` holds.
     const usable = frame.rows.filter((r) => r.usable);
-    const predictions: number[] = [];
-    for (const part of chunk(usable, PREDICT_CHUNK)) {
+    // MODEL-SERVE-045. A sequence model scores row i from its previous
+    // sequenceLength - 1 rows: each chunk carries them as history, and the
+    // row times let serving refuse to score across a dropped (unusable) row.
+    const sequenceLength = d.sequenceLength ?? null;
+    const predictions: (number | null)[] = [];
+    for (const part of overlappingChunks(
+      usable,
+      PREDICT_CHUNK,
+      sequenceLength ? sequenceLength - 1 : 0,
+    )) {
       const res = await predictRows({
         modelId,
-        rows: part.map((r) => featureRow(r, featureColumns)),
+        rows: part.rows.map((r) => featureRow(r, featureColumns)),
+        ...(sequenceLength && {
+          timestamps: part.rows.map((r) => r.timestamp),
+          interval: fetchConfig.intervalTime,
+        }),
       });
-      predictions.push(...res.predictions);
+      predictions.push(...res.predictions.slice(part.skip));
     }
     const points = assemblePoints(frame.rows, featureColumns, predictions);
 

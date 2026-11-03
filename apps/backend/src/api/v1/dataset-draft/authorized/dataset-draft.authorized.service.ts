@@ -313,12 +313,24 @@ export class DatasetDraftAuthorizedService {
       // still readable, and re-pointing at it costs the user only the
       // feature warm that Step 4 recomputes anyway.
       const recovered = await this.recoverReclaimedEditDraftRoot(existing);
+      // DS-LAKE-042. Hand the wizard the pre-feature end of the chain, not
+      // whatever the last job produced: after Step 4 the stored pointer is
+      // the draft's own GOLD, and a feature job sourced from it recomputes on
+      // top of its own output (every column collides; the spec then lists
+      // none). The stored pointer itself is left alone.
+      const pointer = recovered.draft.currentArtifactId;
+      const preFeature = pointer
+        ? ((await this.preFeatureArtifactId(pointer)) ?? pointer)
+        : pointer;
       return {
         statusCode: 200,
         message: 'Edit draft resolved',
         type: 'SUCCESS' as const,
         data: {
-          ...this.mapDraft(recovered.draft),
+          ...this.mapDraft({
+            ...recovered.draft,
+            currentArtifactId: preFeature,
+          }),
           recoveredFromReclaimedArtifact: recovered.recovered,
           rootValidationRowCount: await this.getEditDraftRootValidationRowCount(
             existing.id,
@@ -1122,6 +1134,21 @@ export class DatasetDraftAuthorizedService {
       throw new AppException({
         statusCode: 404,
         message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    // DS-LAKE-042. Same refusal as `startDraftFeaturesJobService`: this route
+    // writes feature_spec.json the same way, so it can lose the recipe the
+    // same way.
+    const featureBearing = await this.featureBearingReason(source.id);
+    if (featureBearing) {
+      throw new AppException({
+        statusCode: 409,
+        message:
+          `Feature engineering must start from data without features; ` +
+          `this artifact ${featureBearing}. Reopen the dataset to rebuild ` +
+          'from its raw data.',
         type: 'ERROR',
       });
     }
@@ -2576,6 +2603,24 @@ export class DatasetDraftAuthorizedService {
       });
     }
 
+    // DS-LAKE-042. Features are computed from a PRE-feature artifact only.
+    // Run on one that already carries them and every recipe column collides,
+    // python skips each as a name collision, and the feature_spec.json it
+    // writes lists none — while the frame still holds the old columns. The
+    // dataset trains, then cannot be deployed (live: DatasetTest v2, 108
+    // lag features, spec features = []).
+    const featureBearing = await this.featureBearingReason(source.id);
+    if (featureBearing) {
+      throw new AppException({
+        statusCode: 409,
+        message:
+          `Feature engineering must start from data without features; ` +
+          `this artifact ${featureBearing}. Reopen the dataset to rebuild ` +
+          'from its raw data.',
+        type: 'ERROR',
+      });
+    }
+
     const job = await this.prisma.preprocessingJob.create({
       data: {
         draftId,
@@ -2618,6 +2663,89 @@ export class DatasetDraftAuthorizedService {
       type: 'SUCCESS' as const,
       data: { jobId: job.id, status: job.status },
     };
+  }
+
+  /**
+   * DS-LAKE-042. Why `artifactId` (or anything it was derived from) already
+   * carries feature columns, or null when it is safe to compute features on.
+   *
+   * Walks the lineage up through `parentArtifactId`: GOLD/FINAL always carry
+   * features, and an artifact any FEATURE job produced does too — that
+   * covers the reordered wizard's features-only SILVER, which is typed
+   * SILVER but is not raw. Every successful FEATURE job in the local DB
+   * (119 of 119, 2026-11-02) sourced a BRONZE; the only GOLD-sourced ones
+   * are the defect this refuses.
+   */
+  private async featureBearingReason(
+    artifactId: string,
+  ): Promise<string | null> {
+    let cursor: string | null = artifactId;
+    const seen = new Set<string>();
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      const artifact = await this.lineageRow(cursor);
+      if (!artifact) return null;
+      const carries = await this.carriesFeatures(artifact);
+      if (carries) {
+        return artifact.id === artifactId ? carries.self : carries.ancestor;
+      }
+      cursor = artifact.parentArtifactId;
+    }
+    return null;
+  }
+
+  /**
+   * DS-LAKE-042. The nearest artifact at or above `artifactId` in its
+   * lineage that carries NO features — the BRONZE, or a SILVER cleaning
+   * built from it — or null when there is none. What an edit draft hands the
+   * wizard as its pipeline source: the server advances
+   * `draft.currentArtifactId` to every successful job's result, FEATURE jobs
+   * included, so a draft reopened after Step 4 ran pointed at its own GOLD
+   * and the next feature job recomputed on top of it.
+   */
+  private async preFeatureArtifactId(
+    artifactId: string,
+  ): Promise<string | null> {
+    let cursor: string | null = artifactId;
+    const seen = new Set<string>();
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      const artifact = await this.lineageRow(cursor);
+      if (!artifact) return null;
+      if (!(await this.carriesFeatures(artifact))) return artifact.id;
+      cursor = artifact.parentArtifactId;
+    }
+    return null;
+  }
+
+  private lineageRow(id: string) {
+    return this.prisma.datasetArtifact.findUnique({
+      where: { id },
+      select: { id: true, type: true, parentArtifactId: true },
+    });
+  }
+
+  /** Why THIS artifact (not its ancestors) carries features, or null. */
+  private async carriesFeatures(artifact: {
+    id: string;
+    type: string;
+  }): Promise<{ self: string; ancestor: string } | null> {
+    if (artifact.type === 'GOLD' || artifact.type === 'FINAL') {
+      return {
+        self: `is ${artifact.type}, which already has features`,
+        ancestor: `was built from a ${artifact.type} artifact, which already has features`,
+      };
+    }
+    const producedByFeatures = await this.prisma.preprocessingJob.findFirst({
+      where: { resultArtifactId: artifact.id, stage: 'FEATURE' },
+      select: { id: true },
+    });
+    return producedByFeatures
+      ? {
+          self: 'was produced by a feature engineering job',
+          ancestor: 'was built from the output of a feature engineering job',
+        }
+      : null;
   }
 
   async getDraftJobService(

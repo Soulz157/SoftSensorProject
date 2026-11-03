@@ -105,7 +105,7 @@ const DURATION_UNIT_MINUTES: Record<string, number> = {
  * the client copy's own contract: "so callers can fall back to a known-good
  * value rather than a wrong one."
  */
-function parseIntervalMinutes(duration: string): number | null {
+export function parseIntervalMinutes(duration: string): number | null {
   const match = /^(\d+)\s*([smhd])$/.exec(duration.trim());
   if (!match) return null;
   const value = Number(match[1]);

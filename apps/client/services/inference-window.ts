@@ -461,6 +461,14 @@ export type LiveScoreOutcome =
   | { ok: true; predicted: number; at: string }
   | { ok: false; reason: string }
 
+/** One poll of `windowPrediction`: `pending` until the window is terminal,
+ *  then `live` is the same outcome shape a served press returns. */
+export interface WindowPredictionResult {
+  status: string
+  pending: boolean
+  live: LiveScoreOutcome
+}
+
 export interface RunNowResult {
   windowId: string
   windowStart: string
@@ -470,6 +478,10 @@ export interface RunNowResult {
    *  happened, so this is not a failure. */
   dispatched: boolean
   live: LiveScoreOutcome
+  /** Who carries this press's value. `serving` = `live` above is final.
+   *  `window` = an lstm/gru model Serving cannot score: poll
+   *  `windowPrediction(windowId)` until the dispatched window finishes. */
+  liveVia?: 'serving' | 'window'
   /** The server's own wording. Success answers two ways (202 queued, 200
    *  already ran) and only this distinguishes them. */
   message: string
@@ -619,6 +631,19 @@ export const inferenceWindowService = {
       { method: 'POST' },
     )
     return { ...res.data, message: res.message }
+  },
+
+  /** Run Predict for lstm/gru: the dispatched window's newest prediction,
+   *  read and recorded server-side once the window finishes. */
+  async windowPrediction(
+    modelId: string,
+    windowId: string,
+  ): Promise<WindowPredictionResult> {
+    const res: ApiResponse<WindowPredictionResult> = await fetchClient(
+      `${base(modelId)}/inference/windows/${windowId}/prediction`,
+      { method: 'POST' },
+    )
+    return res.data
   },
 
   async retryWindow(modelId: string, windowId: string): Promise<void> {

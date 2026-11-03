@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import {
   Area,
   CartesianGrid,
@@ -12,6 +13,7 @@ import {
   YAxis,
 } from 'recharts'
 import type { FitRow } from '@/lib/model-metrics'
+import { indexAtOrAfter, sequenceAxis } from '@/lib/chart-gaps'
 import { EvaluationTooltip } from './evaluation-tooltip'
 import type { LegendEntry } from '@/components/charts/chart-legend'
 
@@ -65,6 +67,11 @@ interface Props {
    *  windows, not one continuous test split. Omitted — every other caller —
    *  and nothing is drawn. */
   foldCuts?: number[]
+  /** `'time'` (default) puts rows at their real time, so a cut-out range is an
+   *  empty stretch. `'sequence'` plots them in row order — the stretch closes —
+   *  closing it. Ticks and
+   *  tooltip still read each row's real time. */
+  axis?: 'time' | 'sequence'
 }
 
 /**
@@ -79,11 +86,15 @@ export function ActualVsPredictedChart({
   height = 320,
   syncId = EVAL_SYNC_ID,
   foldCuts,
+  axis = 'time',
 }: Props) {
+  const sequence = axis === 'sequence'
+  const plotted = useMemo(() => sequenceAxis(rows), [rows])
+  const data = sequence ? plotted.rows : rows
   return (
     <ResponsiveContainer width="100%" height={height}>
       <ComposedChart
-        data={rows}
+        data={data}
         syncId={syncId}
         margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
       >
@@ -93,11 +104,19 @@ export function ActualVsPredictedChart({
           vertical={false}
         />
         <XAxis
-          dataKey="t"
+          dataKey={sequence ? 'x' : 't'}
           type="number"
-          domain={['dataMin', 'dataMax']}
-          scale="time"
-          tickFormatter={tickFormatter}
+          domain={
+            sequence
+              ? [0, Math.max(0, rows.length - 1)]
+              : ['dataMin', 'dataMax']
+          }
+          scale={sequence ? 'linear' : 'time'}
+          tickFormatter={
+            sequence
+              ? (x: number) => tickFormatter(rows[Math.round(x)]?.t ?? 0)
+              : tickFormatter
+          }
           tick={AXIS_TICK}
           stroke="var(--border)"
           minTickGap={40}
@@ -118,7 +137,7 @@ export function ActualVsPredictedChart({
         {foldCuts?.map((x, i) => (
           <ReferenceLine
             key={x}
-            x={x}
+            x={sequence ? indexAtOrAfter(rows, x) : x}
             stroke="var(--border)"
             strokeDasharray="2 3"
             label={{

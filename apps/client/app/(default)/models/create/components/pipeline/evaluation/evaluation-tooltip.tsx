@@ -74,7 +74,13 @@ export function EvaluationTooltip({
   return (
     <div className="min-w-48 rounded-lg border border-border bg-popover p-3 text-xs shadow-xl">
       <p className="mb-2 border-b border-border pb-2 font-mono text-muted-foreground">
-        {formatWallClockFull(label)}
+        {formatWallClockFull(
+          // A sequence axis labels the crosshair with a row POSITION; the
+          // row itself still carries its real time.
+          typeof payload[0]?.payload?.t === 'number'
+            ? payload[0].payload.t
+            : label,
+        )}
       </p>
       <div className="space-y-1.5">
         {variant === 'fit' ? (

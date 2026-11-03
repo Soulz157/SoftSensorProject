@@ -243,6 +243,12 @@ const InferenceWindowMaterializeSchema = z.object({
       }),
     )
     .default({}),
+  // MODEL-SERVE-043. A sequence model's lead-in file (context.parquet).
+  // Defaulted so a python process that predates the field still parses —
+  // and then writes no lead-in, which is what it would have done anyway.
+  context_object_key: z.string().min(1).nullable().default(null),
+  context_checksum: z.string().min(1).nullable().default(null),
+  context_rows: z.number().int().nonnegative().default(0),
 });
 
 export type InferenceWindowMaterializeResult = z.infer<
@@ -274,6 +280,9 @@ export async function materializeInferenceWindow(input: {
   pi?: Record<string, unknown>;
   sql?: Record<string, unknown>;
   column_tag_map?: Record<string, string>;
+  /** MODEL-SERVE-043. Lead-in rows before window_start for a sequence model
+   *  (`sequence_length - 1`); omitted / 0 for every other algorithm. */
+  context_rows?: number;
 }): Promise<InferenceWindowMaterializeResult> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/inference-window',
@@ -1302,6 +1311,25 @@ export type ArtifactRowsResult = z.infer<typeof ArtifactRowsSchema>;
  * hold. So these values are already pre-scale and go to /predict unaltered;
  * scaling them here would be a fourth opinion about what scaling means.
  */
+/** Run Predict for lstm/gru: the newest row of one window's
+ *  predictions.parquet. `timestamp` is Bangkok wall-clock, like the file. */
+const LastInferencePredictionSchema = z.object({
+  timestamp: z.string().nullable(),
+  prediction: z.number().nullable(),
+  row_count: z.number().int().nonnegative(),
+});
+
+export async function readLastInferencePrediction(input: {
+  source_key: string;
+}): Promise<z.infer<typeof LastInferencePredictionSchema>> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/last-prediction',
+    input,
+    PYTHON_TIMEOUT.serving,
+  );
+  return LastInferencePredictionSchema.parse(res);
+}
+
 export async function readArtifactRows(input: {
   source_key: string;
   offset?: number;

@@ -329,6 +329,7 @@ export function EvaluationPopulationPanel({
                 rows={visibleRows}
                 tickFormatter={tickFormatter}
                 foldCuts={foldCuts}
+                axis="sequence"
               />
             </section>
 
@@ -392,6 +393,7 @@ export function EvaluationPopulationPanel({
                 rows={visibleRows}
                 sd={fit.sd}
                 tickFormatter={tickFormatter}
+                axis="sequence"
               />
             </section>
 

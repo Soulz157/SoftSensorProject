@@ -528,6 +528,24 @@ class InferenceWindowUploadPresignResponse(BaseModel):
     expires_at: str
 
 
+class InferenceWindowLastPredictionRequest(BaseModel):
+    """Run Predict for a sequence model: the newest prediction its
+    just-scored window wrote. `source_key` must be that window's own
+    predictions.parquet."""
+
+    source_key: str = Field(..., min_length=1)
+
+
+class InferenceWindowLastPredictionResponse(BaseModel):
+    """`timestamp` is the scored row's Bangkok wall-clock time, the same
+    naive convention predictions.parquet itself carries; null with
+    `prediction` when the file holds no rows."""
+
+    timestamp: str | None = None
+    prediction: float | None = None
+    row_count: int = 0
+
+
 class InferenceWindowObjectPresignRequest(BaseModel):
     """MODEL-SERVE-006-T06. Presigns an inference window's own
     predictions.parquet for READING — deliberately separate from
@@ -958,6 +976,10 @@ class InferenceWindowMaterializeRequest(BaseModel):
     #: (failed) attempt — the window row, not the object key, is this
     #: entity's immutability boundary (unlike a committed dataset version).
     overwrite: bool = True
+    #: MODEL-SERVE-043. Rows of history BEFORE window_start a sequence model
+    #: needs (`sequence_length - 1`), written to context.parquet beside
+    #: input.parquet. 0 for every non-sequence model — then nothing changes.
+    context_rows: int = Field(0, ge=0, le=10_000)
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "InferenceWindowMaterializeRequest":
@@ -1076,6 +1098,11 @@ class InferenceWindowMaterializeResponse(BaseModel):
     #: the frame is OMITTED rather than reported null — absence of evidence
     #: is not evidence of a value. Empty `{}` on an empty frame.
     tag_observations: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    #: MODEL-SERVE-043. The lead-in file, when `context_rows > 0` and at
+    #: least one Good lead-in row survived. `context_rows` is how many did.
+    context_object_key: str | None = None
+    context_checksum: str | None = None
+    context_rows: int = 0
 
 
 class InferenceWindowTruthJoinRequest(BaseModel):

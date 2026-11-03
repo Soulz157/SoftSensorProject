@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
+import { sequenceLengthFor } from '@/lib/sequence-model';
 import {
   getRunManifest,
   presignRunObject,
@@ -143,6 +144,7 @@ export class ModelServingAuthorizedService {
       id: string;
       version: number;
       algorithm: string;
+      hyperparameters: unknown;
       modelObjectKey: string;
       modelChecksum: string | null;
       goldObjectKey: string;
@@ -209,6 +211,12 @@ export class ModelServingAuthorizedService {
         versionId: version.id,
         version: version.version,
         algorithm: version.algorithm,
+        // MODEL-SERVE-043. History length a sequence model (lstm/gru) scores
+        // from; null for every other algorithm. The pickle never stored it.
+        sequenceLength: sequenceLengthFor(
+          version.algorithm,
+          version.hyperparameters,
+        ),
         targetY: version.sourceRun.targetY,
         modelUrl: presigned.data_url,
         modelChecksum: version.modelChecksum,

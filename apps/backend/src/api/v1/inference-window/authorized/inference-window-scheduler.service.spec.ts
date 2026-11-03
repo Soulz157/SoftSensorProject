@@ -1006,3 +1006,107 @@ describe('InferenceWindowSchedulerService.resolveSource — live source override
     expect(source).not.toHaveProperty('column_tag_map');
   });
 });
+
+/**
+ * MODEL-SERVE-043. A sequence model (lstm/gru) needs `sequence_length - 1`
+ * rows of history before windowStart. The descriptor's `sequenceLength`
+ * drives `context_rows`, and the lead-in file python wrote is recorded on
+ * the window for the claim to presign.
+ */
+describe('InferenceWindowSchedulerService.dispatchOne — sequence lead-in (MODEL-SERVE-043)', () => {
+  const window = {
+    id: 'w1',
+    status: 'PENDING',
+    modelId: 'model-1',
+    modelVersionId: 'version-1',
+    windowStart: new Date('2026-09-10T08:00:00.000Z'),
+    windowEnd: new Date('2026-09-10T09:00:00.000Z'),
+  };
+
+  async function dispatch(
+    sequenceLength: number | null,
+    materialized: Record<string, unknown>,
+  ) {
+    (materializeInferenceWindow as jest.Mock).mockResolvedValue({
+      object_key:
+        'inference/model-1/version-1/dt=2026-09-10/hour=08/input.parquet',
+      row_count: 60,
+      scored_rows: 60,
+      missing_pct: 0,
+      checksum: 'abc',
+      context_object_key: null,
+      context_checksum: null,
+      context_rows: 0,
+      ...materialized,
+    });
+    const prisma = buildPrisma({
+      inferenceWindow: {
+        findUnique: jest.fn().mockResolvedValue(window),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      inferenceSchedule: {
+        findUnique: jest.fn().mockResolvedValue({
+          modelId: 'model-1',
+          sourceId: 'source-1',
+          fetchConfig: { intervalTime: '1m' },
+          minRows: 30,
+        }),
+      },
+      modelVersion: {
+        findUniqueOrThrow: jest
+          .fn()
+          .mockResolvedValue({ featureSpecKey: 'spec-key' }),
+      },
+      dataSource: {
+        findUnique: jest.fn().mockResolvedValue({
+          type: 'sql',
+          host: 'h',
+          username: 'u',
+          dbName: 'd',
+          secretCiphertext: 'enc',
+          config: { driver: 'postgres', port: 5432, table: 't' },
+        }),
+      },
+    });
+    const descriptor = buildDescriptor({
+      getDescriptorByVersionIdService: jest.fn().mockResolvedValue({
+        data: { featureColumns: ['a', 'b'], sequenceLength },
+      }),
+    });
+    const service = makeService(prisma, buildRunner(), descriptor);
+    await (service as unknown as { dispatchOne(id: string): Promise<void> })[
+      'dispatchOne'
+    ]('w1');
+    const input = (materializeInferenceWindow as jest.Mock).mock.calls[0][0];
+    const firstUpdate = prisma.inferenceWindow.update.mock.calls[0][0];
+    return { input, firstUpdate };
+  }
+
+  it('asks python for sequence_length - 1 lead-in rows for a sequence model', async () => {
+    const { input } = await dispatch(24, {});
+    expect(input.context_rows).toBe(23);
+  });
+
+  it('asks for no lead-in for every other algorithm', async () => {
+    const { input } = await dispatch(null, {});
+    expect(input.context_rows).toBe(0);
+  });
+
+  it('records the lead-in file beside the input pointer', async () => {
+    const key =
+      'inference/model-1/version-1/dt=2026-09-10/hour=08/context.parquet';
+    const { firstUpdate } = await dispatch(24, {
+      context_object_key: key,
+      context_checksum: 'ctx-sha',
+      context_rows: 23,
+    });
+    expect(firstUpdate.data.contextKey).toBe(key);
+    expect(firstUpdate.data.contextChecksum).toBe('ctx-sha');
+  });
+
+  it("clears a previous attempt's lead-in pointer when none was written", async () => {
+    const { firstUpdate } = await dispatch(24, {});
+    expect(firstUpdate.data).toHaveProperty('contextKey', null);
+    expect(firstUpdate.data).toHaveProperty('contextChecksum', null);
+  });
+});

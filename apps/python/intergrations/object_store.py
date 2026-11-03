@@ -1540,6 +1540,12 @@ INFERENCE_ROOT = "inference/"
 #: input object and the window's two OUTPUTS must never collide under one
 #: hour's prefix.
 INFERENCE_INPUT_FILENAME = "input.parquet"
+#: MODEL-SERVE-043. The rows BEFORE window_start a sequence model (lstm/gru)
+#: needs as history — `sequence_length - 1` of them. A file of its own, never
+#: rows inside input.parquet: every other reader of input.parquet (the input
+#: drift series, the window's own stats) reads all of its rows as THIS
+#: window's data, and lead-in rows there would count the previous hour twice.
+INFERENCE_CONTEXT_FILENAME = "context.parquet"
 #: MODEL-SERVE-005-T03. The late-arriving ground-truth join for this window:
 #: the (timestamp, predicted, actual, residual) pairs, written long AFTER
 #: predictions.parquet (a lab measurement arrives on its own, much longer

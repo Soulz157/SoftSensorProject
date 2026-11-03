@@ -43,6 +43,7 @@ from typing import Any
 import pandas as pd
 
 from intergrations.object_store import (
+    INFERENCE_CONTEXT_FILENAME,
     INFERENCE_INPUT_FILENAME,
     STATUS_BAD,
     STATUS_GOOD,
@@ -364,7 +365,14 @@ def _build_window_frame(store, request) -> tuple[pd.DataFrame, dict, pd.Timestam
     # its own.
     window_start_wall = utc_to_wall_clock(request.window_start)
     window_end_wall = utc_to_wall_clock(request.window_end)
-    fetch_start_wall = window_start_wall - required_rows * interval_td
+    # MODEL-SERVE-043. A sequence model's lead-in: `context_rows` more rows
+    # BEFORE window_start, kept through the trim below (and split off by
+    # `materialize_window`). The feature lookback pads in front of THAT, so
+    # the first lead-in row's lag/rolling values are as correct as row one's.
+    # 0 (every non-sequence caller, and `evaluation_frame`) changes nothing.
+    context_rows = getattr(request, "context_rows", 0) or 0
+    lead_start_wall = window_start_wall - context_rows * interval_td
+    fetch_start_wall = lead_start_wall - required_rows * interval_td
 
     pi_payload: Mapping[str, Any] | None = None
     if request.pi is not None:
@@ -435,11 +443,11 @@ def _build_window_frame(store, request) -> tuple[pd.DataFrame, dict, pd.Timestam
     # Trim AFTER feature computation — the padding rows were scaffolding
     # for lag/rolling, never rows to score (replay_holdout's own phrasing).
     frame = frame[
-        (frame[TIMESTAMP_COLUMN] >= window_start_wall)
+        (frame[TIMESTAMP_COLUMN] >= lead_start_wall)
         & (frame[TIMESTAMP_COLUMN] < window_end_wall)
     ].reset_index(drop=True)
 
-    if len(frame) == 0:
+    if not (frame[TIMESTAMP_COLUMN] >= window_start_wall).any():
         raise ValueError(
             "The fetch returned rows, but none fell inside this window's "
             f"own boundaries [{window_start_wall}, {window_end_wall}) — "
@@ -464,6 +472,15 @@ def materialize_window(
     """
     frame, spec, window_start_wall, window_end_wall = _build_window_frame(
         store, request
+    )
+    # MODEL-SERVE-043. Split the lead-in off FIRST: every figure below
+    # (tag observations, target and feature aggregates, row counts,
+    # missing_pct) describes THIS window, never the history before it.
+    context = frame[frame[TIMESTAMP_COLUMN] < window_start_wall].reset_index(
+        drop=True
+    )
+    frame = frame[frame[TIMESTAMP_COLUMN] >= window_start_wall].reset_index(
+        drop=True
     )
 
     # Narrow to exactly the model's own feature columns (+ their status
@@ -530,7 +547,39 @@ def materialize_window(
     )
     stats = store.put_frame(frame, target_key, overwrite=request.overwrite)
 
+    # MODEL-SERVE-043. The same narrowing and the same never-imputed Bad-row
+    # drop as the window's own rows: a dropped lead-in row leaves a gap the
+    # container sees in the timestamps, and it then refuses to score a row
+    # whose history crosses it — exactly what it does for a gap inside the
+    # window. No Good lead-in row left means no file, not an empty one.
+    context_result: dict[str, Any] = {
+        "context_object_key": None,
+        "context_checksum": None,
+        "context_rows": 0,
+    }
+    if request.context_rows > 0 and len(context) > 0:
+        context = select_columns(context, request.feature_columns)
+        context, _ = drop_bad_feature_rows(context, request.feature_columns)
+        if len(context) > 0:
+            context_stats = store.put_frame(
+                context,
+                inference_window_key(
+                    request.model_id,
+                    request.model_version_id,
+                    request.dt,
+                    request.hour,
+                    INFERENCE_CONTEXT_FILENAME,
+                ),
+                overwrite=request.overwrite,
+            )
+            context_result = {
+                "context_object_key": context_stats.object_key,
+                "context_checksum": context_stats.checksum,
+                "context_rows": len(context),
+            }
+
     return {
+        **context_result,
         "object_key": stats.object_key,
         "row_count": row_count,
         "scored_rows": scored_rows,

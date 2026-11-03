@@ -9,9 +9,12 @@ import { env } from '@/config/env.config';
 import {
   materializeInferenceWindow,
   readArtifactRows,
+  type ArtifactRow,
 } from '@/lib/python-preprocess-client';
 import { predictRows } from '@/lib/serving-client';
-import { formatDtHour } from '@/lib/inference-windows';
+import { formatDtHour, parseIntervalMinutes } from '@/lib/inference-windows';
+import { contextRowsFor } from '@/lib/sequence-model';
+import { wallClockToUtc } from '@/lib/plant-time';
 import { ModelServingAuthorizedService } from '@/api/v1/model-serving/authorized/model-serving.authorized.service';
 import { InferenceWindowSchedulerService } from './inference-window-scheduler.service';
 
@@ -127,15 +130,17 @@ export class LivePredictDriverService
             schedule.livePredictCadenceMinutes * 60_000
           : 0; // never run — due immediately
         if (dueAt > now) continue;
-        await this.scoreOne(schedule.modelId).catch((err) => {
-          // A live chart missing a point is not an incident, and this
-          // driver has no failure row to write: it deliberately owns no
-          // InferenceWindow. Logged and dropped, the same fail-soft shape
-          // MODEL-SERVE-005-T01 gave the prediction-log ingest.
-          this.logger.warn(
-            `Live prediction failed for model ${schedule.modelId}: ${msg(err)}`,
-          );
-        });
+        await this.scoreOne(schedule.modelId, { skipIfNotNew: true }).catch(
+          (err) => {
+            // A live chart missing a point is not an incident, and this
+            // driver has no failure row to write: it deliberately owns no
+            // InferenceWindow. Logged and dropped, the same fail-soft shape
+            // MODEL-SERVE-005-T01 gave the prediction-log ingest.
+            this.logger.warn(
+              `Live prediction failed for model ${schedule.modelId}: ${msg(err)}`,
+            );
+          },
+        );
       }
     } finally {
       this.sweeping = false;
@@ -160,7 +165,10 @@ export class LivePredictDriverService
    * The reasons are written for an operator reading a toast, not for a log
    * grep — they say what to go look at.
    */
-  async scoreOne(modelId: string): Promise<LiveScoreOutcome> {
+  async scoreOne(
+    modelId: string,
+    opts: { skipIfNotNew?: boolean } = {},
+  ): Promise<LiveScoreOutcome> {
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
     });
@@ -168,6 +176,9 @@ export class LivePredictDriverService
       return { ok: false, reason: 'This model has no inference schedule.' };
     }
 
+    // MODEL-SERVE-045. The newest row this call scored, written beside
+    // livePredictLastRunAt so the next TICK can skip an unchanged row.
+    let scoredRowAt: Date | null = null;
     try {
       const version = await this.prisma.modelVersion.findFirst({
         where: { modelId, stage: 'PRODUCTION' },
@@ -185,17 +196,36 @@ export class LivePredictDriverService
       const descriptorResult =
         await this.descriptor.getDescriptorByVersionIdService(version.id);
       const featureColumns = descriptorResult.data.featureColumns;
+      // MODEL-SERVE-045. lstm/gru score from sequenceLength consecutive rows,
+      // not one; null for every other algorithm.
+      const sequenceLength = descriptorResult.data.sequenceLength ?? null;
 
       // The window ends at now - lagMinutes for the SAME reason the
       // scheduled plane does (MODEL-SERVE-006-T04): PI tags do not arrive
       // together, so a window ending at now() is structurally complete and
       // factually empty in places. Its span is one cadence — just wide
       // enough to contain a fresh row at this schedule's own interval.
-      const end = new Date(Date.now() - schedule.lagMinutes * 60_000);
-      const start = new Date(
-        end.getTime() - schedule.livePredictCadenceMinutes * 60_000,
-      );
       const fetchConfig = this.scheduler.asFetchConfig(schedule.fetchConfig);
+      // MODEL-SERVE-045. When the sampling interval is longer than the live
+      // cadence (an hourly model), the window ENDS on an interval boundary:
+      // PI averages each interval from the request's own start time, so an
+      // unaligned window gave 13:25-14:25 averages — off the hour-aligned
+      // grid the model trained on, and a "new" newest row every tick, so the
+      // unchanged-row skip could never fire. At least one interval wide, or
+      // the window can hold no row at all.
+      const stepMinutes = parseIntervalMinutes(fetchConfig.intervalTime) ?? 0;
+      const lagged = Date.now() - schedule.lagMinutes * 60_000;
+      const stepMs = stepMinutes * 60_000;
+      const end = new Date(
+        stepMinutes > schedule.livePredictCadenceMinutes
+          ? Math.floor(lagged / stepMs) * stepMs
+          : lagged,
+      );
+      const spanMinutes = Math.max(
+        schedule.livePredictCadenceMinutes,
+        stepMinutes,
+      );
+      const start = new Date(end.getTime() - spanMinutes * 60_000);
       const source = await this.scheduler.resolveSource(
         schedule.sourceId,
         fetchConfig,
@@ -212,6 +242,7 @@ export class LivePredictDriverService
         window_start: start.toISOString(),
         window_end: end.toISOString(),
         interval: fetchConfig.intervalTime,
+        context_rows: contextRowsFor(sequenceLength),
         ...source,
       });
       // A quiet source is not an incident — the same judgement T05/T01 made
@@ -236,6 +267,16 @@ export class LivePredictDriverService
           reason:
             'The source returned no usable rows for the last few minutes.',
         };
+      }
+      const newestAt = wallClockToUtc(newest.timestamp);
+      // MODEL-SERVE-045. A tick whose newest row is the one it last scored
+      // has nothing new to say (an hourly model, between hours).
+      if (
+        opts.skipIfNotNew &&
+        newestAt &&
+        schedule.livePredictLastRowAt?.getTime() === newestAt.getTime()
+      ) {
+        return { ok: false, reason: 'No new row since the last live score.' };
       }
 
       // A Bad cell is NOT a measurement, and its numeric value is not a
@@ -270,7 +311,40 @@ export class LivePredictDriverService
       // engineering units by `inference_window_service`'s own contract, and
       // the serving process applies the fitted transform. Scaling here would
       // be a fourth opinion about what scaling means.
-      const result = await predictRows({ modelId, rows: [row] });
+      // MODEL-SERVE-045. A sequence model gets the newest sequenceLength
+      // rows (the lead-in from context.parquet, then this window's), oldest
+      // first, with their times so serving can refuse to score across a gap.
+      // Python already dropped every Bad row; a dropped row is such a gap.
+      const history = sequenceLength
+        ? await this.historyRows(
+            materialized.context_object_key,
+            materialized.context_rows,
+            page.rows,
+            sequenceLength,
+          )
+        : null;
+      if (sequenceLength && (!history || history.length < sequenceLength)) {
+        return {
+          ok: false,
+          reason: `This model scores from ${sequenceLength} consecutive rows; the source returned ${history?.length ?? 0}.`,
+        };
+      }
+      const result = await predictRows(
+        history
+          ? {
+              modelId,
+              rows: history.map((r) => {
+                const values: Record<string, number> = {};
+                for (const column of featureColumns) {
+                  values[column] = r.cells[column].value;
+                }
+                return values;
+              }),
+              timestamps: history.map((r) => r.timestamp),
+              interval: fetchConfig.intervalTime,
+            }
+          : { modelId, rows: [row] },
+      );
       // Logged rather than discarded: a tag-mapping drift surfaces here
       // FIRST, as columns quietly going unused while predictions keep
       // returning plausible numbers.
@@ -289,16 +363,48 @@ export class LivePredictDriverService
       // happens after that response, in the serving process's own
       // BackgroundTasks, and may be sampled out entirely. The number below
       // is what the model actually produced, which is true either way.
-      const predicted = result.predictions[0];
+      const predicted = result.predictions.at(-1);
       if (predicted === undefined) {
         return { ok: false, reason: 'The model returned no prediction.' };
       }
+      if (predicted === null) {
+        return {
+          ok: false,
+          reason:
+            'The newest row has a gap in its history (a missing or Bad reading), so the sequence model cannot score it.',
+        };
+      }
+      scoredRowAt = newestAt;
       return { ok: true, predicted, at: newest.timestamp };
     } finally {
       await this.prisma.inferenceSchedule.update({
         where: { modelId },
-        data: { livePredictLastRunAt: new Date() },
+        data: {
+          livePredictLastRunAt: new Date(),
+          ...(scoredRowAt && { livePredictLastRowAt: scoredRowAt }),
+        },
       });
     }
+  }
+
+  /** MODEL-SERVE-045. The newest `length` rows across the lead-in file and
+   *  this window, oldest first. */
+  private async historyRows(
+    contextKey: string | null,
+    contextRows: number,
+    windowRows: ArtifactRow[],
+    length: number,
+  ): Promise<ArtifactRow[]> {
+    const lead =
+      contextKey && contextRows > 0
+        ? (
+            await readArtifactRows({
+              source_key: contextKey,
+              offset: 0,
+              limit: contextRows,
+            })
+          ).rows
+        : [];
+    return [...lead, ...windowRows].slice(-length);
   }
 }

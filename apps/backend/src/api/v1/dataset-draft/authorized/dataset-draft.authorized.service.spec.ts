@@ -3076,7 +3076,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
         update: jest.fn(),
         updateMany: jest.fn(),
       },
-      datasetArtifact: { findFirst: rootFindFirst },
+      datasetArtifact: {
+        findFirst: rootFindFirst,
+        // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
     });
     prisma.dataset.findFirst.mockResolvedValue({
       id: 'dataset-1',
@@ -3109,7 +3113,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
         update: jest.fn(),
         updateMany: jest.fn(),
       },
-      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE) },
+      datasetArtifact: {
+        findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE),
+        // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
     });
     prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
@@ -3187,7 +3195,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
         update: jest.fn(),
         updateMany: jest.fn(),
       },
-      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(splitRoot) },
+      datasetArtifact: {
+        findFirst: jest.fn().mockResolvedValue(splitRoot),
+        // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
     });
     prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
@@ -3263,7 +3275,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
     const tx = buildEditDraftTx();
     const prisma = buildPrisma({
       datasetDraft: { findFirst: jest.fn().mockResolvedValue(null) },
-      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(null) },
+      datasetArtifact: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
     });
     prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
@@ -3312,7 +3328,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
       // (`currentArtifactId`/`currentVersionId` both null, the legacy
       // metadata-only save path). Must NOT claim a reclaim that never
       // happened, and must NOT mint a root here: the rows path owns that.
-      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(null) },
+      datasetArtifact: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
     });
     prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
@@ -3334,7 +3354,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
       .mockResolvedValueOnce(EXISTING_EDIT_DRAFT); // post-P2002 fallback read
     const prisma = buildPrisma({
       datasetDraft: { findFirst },
-      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE) },
+      datasetArtifact: {
+        findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE),
+        // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
     });
     prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
@@ -3355,7 +3379,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
     tx.datasetDraft.create.mockRejectedValue(new Error('connection reset'));
     const prisma = buildPrisma({
       datasetDraft: { findFirst: jest.fn().mockResolvedValue(null) },
-      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE) },
+      datasetArtifact: {
+        findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE),
+        // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
     });
     prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
@@ -3415,7 +3443,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
           update,
           updateMany: jest.fn(),
         },
-        datasetArtifact: { findFirst },
+        datasetArtifact: {
+          findFirst,
+          // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
       });
       prisma.dataset.findFirst.mockResolvedValue({
         id: 'dataset-1',
@@ -3452,6 +3484,12 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
         },
         datasetArtifact: {
           findFirst: artifactFindFirstBy({ 'shared-bronze-1': LIVE_ROOT }),
+          // DS-LAKE-042: a BRONZE carries no features, so the pointer stays.
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'shared-bronze-1',
+            type: 'BRONZE',
+            parentArtifactId: null,
+          }),
         },
       });
       prisma.dataset.findFirst.mockResolvedValue({
@@ -3491,7 +3529,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
           update,
           updateMany: jest.fn(),
         },
-        datasetArtifact: { findFirst },
+        datasetArtifact: {
+          findFirst,
+          // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
       });
       prisma.dataset.findFirst.mockResolvedValue({
         id: 'dataset-1',
@@ -3514,7 +3556,11 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
     const tx = buildEditDraftTx();
     const prisma = buildPrisma({
       datasetDraft: { findFirst: jest.fn().mockResolvedValue(null) },
-      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE) },
+      datasetArtifact: {
+        findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE),
+        // DS-LAKE-042: the lineage walk (none here -> pointer kept).
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
     });
     prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
@@ -3528,5 +3574,147 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
     expect(result.statusCode).toBe(201);
     expect(result.data.currentArtifactId).toBe('shared-bronze-1');
     expect(result.data.recoveredFromReclaimedArtifact).toBe(false);
+  });
+});
+
+/**
+ * DS-LAKE-042. A feature job must start from data WITHOUT features. Run on an
+ * artifact that already carries them and every recipe column collides,
+ * python skips each one, and feature_spec.json lists no features while the
+ * frame keeps the old columns (live: DatasetTest v2 — spec features = [],
+ * 108 lag columns in the data; trains, then refuses to deploy).
+ */
+describe('DatasetDraftAuthorizedService — feature jobs start from pre-feature data (DS-LAKE-042)', () => {
+  type Row = { id: string; type: string; parentArtifactId: string | null };
+
+  function lineage(rows: Row[], featureProduced: string[] = []) {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({
+      id: rows[0].id,
+      objectKey: `drafts/draft-1/artifacts/${rows[0].id}/data.parquet`,
+    });
+    prisma.datasetArtifact.findUnique.mockImplementation(
+      ({ where }: { where: { id: string } }) =>
+        Promise.resolve(rows.find((r) => r.id === where.id) ?? null),
+    );
+    prisma.preprocessingJob.findFirst.mockImplementation(
+      ({ where }: { where: { resultArtifactId?: string; stage?: string } }) =>
+        Promise.resolve(
+          where.stage === 'FEATURE' &&
+            where.resultArtifactId &&
+            featureProduced.includes(where.resultArtifactId)
+            ? { id: 'job-x' }
+            : null,
+        ),
+    );
+    return prisma;
+  }
+
+  const RECIPE = {
+    features: [],
+    selectedColumns: null,
+    scalers: {},
+    targetY: null,
+  };
+
+  it('refuses a GOLD source and creates no job', async () => {
+    const prisma = lineage([
+      { id: 'gold-1', type: 'GOLD', parentArtifactId: 'bronze-1' },
+      { id: 'bronze-1', type: 'BRONZE', parentArtifactId: null },
+    ]);
+    const { service } = makeService(prisma);
+    await expect(
+      service.startDraftFeaturesJobService(USER, 'draft-1', 'gold-1', RECIPE),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(prisma.preprocessingJob.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a features-only SILVER (typed SILVER, made by a FEATURE job)', async () => {
+    const prisma = lineage(
+      [
+        { id: 'silver-f', type: 'SILVER', parentArtifactId: 'bronze-1' },
+        { id: 'bronze-1', type: 'BRONZE', parentArtifactId: null },
+      ],
+      ['silver-f'],
+    );
+    const { service } = makeService(prisma);
+    await expect(
+      service.startDraftFeaturesJobService(USER, 'draft-1', 'silver-f', RECIPE),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('refuses anything derived from a GOLD ancestor', async () => {
+    const prisma = lineage([
+      { id: 'silver-c', type: 'SILVER', parentArtifactId: 'gold-1' },
+      { id: 'gold-1', type: 'GOLD', parentArtifactId: 'bronze-1' },
+      { id: 'bronze-1', type: 'BRONZE', parentArtifactId: null },
+    ]);
+    const { service } = makeService(prisma);
+    await expect(
+      service.startDraftFeaturesJobService(USER, 'draft-1', 'silver-c', RECIPE),
+    ).rejects.toThrow(/built from a GOLD artifact/);
+  });
+
+  it('accepts a BRONZE and a cleaned SILVER built from it', async () => {
+    for (const id of ['bronze-1', 'silver-c']) {
+      const prisma = lineage([
+        ...(id === 'silver-c'
+          ? [{ id: 'silver-c', type: 'SILVER', parentArtifactId: 'bronze-1' }]
+          : []),
+        { id: 'bronze-1', type: 'BRONZE', parentArtifactId: null },
+      ]);
+      const { service } = makeService(prisma);
+      await service.startDraftFeaturesJobService(USER, 'draft-1', id, RECIPE);
+      expect(prisma.preprocessingJob.create).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('reopening an edit draft hands back the pre-feature artifact, not its GOLD', async () => {
+    const prisma = lineage([
+      { id: 'gold-1', type: 'GOLD', parentArtifactId: 'silver-c' },
+      { id: 'silver-c', type: 'SILVER', parentArtifactId: 'bronze-1' },
+      { id: 'bronze-1', type: 'BRONZE', parentArtifactId: null },
+    ]);
+    prisma.datasetDraft.findFirst.mockResolvedValue({
+      id: 'edit-draft-1',
+      name: 'My Dataset',
+      workspaceId: 'ws-1',
+      sourceIds: ['src-allowed'],
+      status: 'ACTIVE',
+      currentArtifactId: 'gold-1',
+      savedDatasetId: null,
+      editingDatasetId: 'dataset-1',
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    prisma.dataset.findFirst.mockResolvedValue({
+      id: 'dataset-1',
+      ...MANAGE_FACTS,
+    });
+    const { service } = makeService(prisma);
+
+    const result = await service.resolveOrCreateEditDraftService(
+      USER,
+      'dataset-1',
+    );
+    // The cleaned SILVER is the nearest artifact without features; the
+    // stored pointer is not rewritten.
+    expect(result.data.currentArtifactId).toBe('silver-c');
+    expect(prisma.datasetDraft.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a GOLD source on the inline features route too', async () => {
+    const prisma = lineage([
+      { id: 'gold-1', type: 'GOLD', parentArtifactId: null },
+    ]);
+    const { service } = makeService(prisma);
+    await expect(
+      service.createDraftFeaturesArtifactService(
+        USER,
+        'draft-1',
+        'gold-1',
+        RECIPE,
+      ),
+    ).rejects.toMatchObject({ statusCode: 409 });
   });
 });

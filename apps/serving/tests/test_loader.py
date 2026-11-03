@@ -88,21 +88,31 @@ def test_framework_version_mismatch_refuses_load(
         loader.get("model-1", descriptor)
 
 
-def test_unservable_algorithm_refused_before_download(
-    model_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_sequence_model_now_loads_through_the_shared_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    called = {"count": 0}
+    """MODEL-SERVE-045 reversed the v1 refusal: an lstm pickle unpickles via
+    the `sequence_model` shim into softsensor_scaling.sequence's class."""
+    import joblib
+    import numpy as np
 
-    def _tracking_download(url: str, dest: Path) -> Path:
-        called["count"] += 1
-        return _fake_download(model_path)(url, dest)
+    from sequence_model import SequenceRegressor
 
-    monkeypatch.setattr(loader_mod, "_download", _tracking_download)
+    rng = np.random.default_rng(0)
+    model = SequenceRegressor(
+        algorithm="lstm", hidden_size=4, epochs=1, batch_size=4, seed=0
+    ).fit(
+        rng.normal(size=(8, 3, 2)).astype("float32"),
+        rng.normal(size=8).astype("float32"),
+    )
+    path = tmp_path / "lstm.joblib"
+    joblib.dump(model, path)
+
+    monkeypatch.setattr(loader_mod, "_download", _fake_download(path))
     loader = ModelLoader(max_bytes=10_000_000)
-    descriptor = _descriptor(model_path, algorithm="lstm")
-    with pytest.raises(LoadError, match="lstm"):
-        loader.get("model-1", descriptor)
-    assert called["count"] == 0, "must refuse before ever downloading"
+    loaded = loader.get("model-1", _descriptor(path, algorithm="lstm"))
+    X = rng.normal(size=(2, 3, 2)).astype("float32")
+    np.testing.assert_allclose(loaded.predict(X), model.predict(X), rtol=1e-6)
 
 
 def test_lru_eviction_by_bytes(

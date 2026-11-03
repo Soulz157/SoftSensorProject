@@ -106,10 +106,32 @@ export function chunk<T>(items: readonly T[], size: number): T[][] {
  * full row grid. A length mismatch is a hard error: pairing predictions to
  * the wrong timestamps would be silent and plausible.
  */
+/**
+ * MODEL-SERVE-045. `chunk` for a sequence model: each part carries the
+ * `overlap` rows before it as history (`skip` = how many leading predictions
+ * to discard), so a window never breaks at a chunk boundary. overlap 0 is
+ * exactly `chunk`.
+ */
+export function overlappingChunks<T>(
+  items: readonly T[],
+  size: number,
+  overlap: number,
+): { rows: T[]; skip: number }[] {
+  const parts: { rows: T[]; skip: number }[] = [];
+  for (let start = 0; start < items.length; start += size) {
+    const from = Math.max(0, start - overlap);
+    parts.push({
+      rows: items.slice(from, start + size),
+      skip: start - from,
+    });
+  }
+  return parts;
+}
+
 export function assemblePoints(
   rows: readonly FrameRow[],
   featureColumns: readonly string[],
-  predictions: readonly number[],
+  predictions: readonly (number | null)[],
 ): ComparePoint[] {
   const usableCount = rows.filter((r) => r.usable).length;
   if (predictions.length !== usableCount) {
@@ -127,6 +149,16 @@ export function assemblePoints(
       };
     }
     const predicted = predictions[next++];
+    if (predicted === null) {
+      // MODEL-SERVE-045. An lstm/gru row whose sequence_length-row history
+      // is not complete (the range's first rows, or rows just after a gap).
+      return {
+        t: row.timestamp,
+        predicted: null,
+        skippedReason:
+          'Not enough consecutive history for this sequence model to score it.',
+      };
+    }
     if (!Number.isFinite(predicted)) {
       return {
         t: row.timestamp,

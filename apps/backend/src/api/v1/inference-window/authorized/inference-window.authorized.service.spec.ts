@@ -3,6 +3,7 @@ import { InferenceWindowAuthorizedService } from './inference-window.authorized.
 import {
   inferenceWindowTruthSeries,
   presignInferenceWindowObject,
+  readLastInferencePrediction,
 } from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';
 
@@ -1236,6 +1237,83 @@ describe('InferenceWindowAuthorizedService.claimService', () => {
       statusCode: 409,
     });
     expect(presignInferenceWindowObject).not.toHaveBeenCalled();
+  });
+
+  // MODEL-SERVE-043. A sequence model's container needs its history length,
+  // the schedule's step (to see gaps) and the lead-in file.
+  function claimFixture(
+    sequenceLength: number | null,
+    algorithm: string,
+    contextKey: string | null,
+  ) {
+    (presignInferenceWindowObject as jest.Mock).mockImplementation(
+      ({ source_key }: { source_key: string }) =>
+        Promise.resolve({ data_url: `https://signed/${source_key}` }),
+    );
+    const prisma = buildPrisma({
+      inferenceWindow: {
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          id: 'w1',
+          modelId: 'model-1',
+          modelVersionId: 'version-1',
+          inputKey: 'in.parquet',
+          inputChecksum: 'in-sha',
+          contextKey,
+          contextChecksum: contextKey ? 'ctx-sha' : null,
+          windowStart: new Date('2026-09-10T08:00:00.000Z'),
+          windowEnd: new Date('2026-09-10T09:00:00.000Z'),
+        }),
+      },
+      inferenceSchedule: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ fetchConfig: { intervalTime: '1m' } }),
+      },
+    });
+    const descriptor = buildDescriptor({
+      getDescriptorByVersionIdService: jest.fn().mockResolvedValue({
+        data: {
+          featureColumns: ['a', 'b'],
+          modelId: 'model-1',
+          versionId: 'version-1',
+          modelUrl: 'https://example/model.joblib',
+          modelChecksum: 'checksum',
+          scalers: {},
+          scalingParams: {},
+          algorithm,
+          sequenceLength,
+        },
+      }),
+    });
+    return { service: makeService(prisma, descriptor), prisma };
+  }
+
+  it('MODEL-SERVE-043: hands a sequence model its length, step and lead-in', async () => {
+    const { service } = claimFixture(24, 'lstm', 'context.parquet');
+    const claim = await service.claimService('w1');
+    expect(claim).toMatchObject({
+      algorithm: 'lstm',
+      sequenceLength: 24,
+      intervalTime: '1m',
+      contextUrl: 'https://signed/context.parquet',
+      contextChecksum: 'ctx-sha',
+    });
+  });
+
+  it('MODEL-SERVE-043: a sequence window with no lead-in file still claims', async () => {
+    const { service } = claimFixture(24, 'gru', null);
+    const claim = await service.claimService('w1');
+    expect(claim.contextUrl).toBeNull();
+    expect(claim.contextChecksum).toBeNull();
+    expect(presignInferenceWindowObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('MODEL-SERVE-043: a tabular model reads no schedule and gets no lead-in', async () => {
+    const { service, prisma } = claimFixture(null, 'random_forest', null);
+    const claim = await service.claimService('w1');
+    expect(claim.sequenceLength).toBeNull();
+    expect(claim.intervalTime).toBeNull();
+    expect(prisma.inferenceSchedule.findUnique).not.toHaveBeenCalled();
   });
 });
 
@@ -3343,5 +3421,178 @@ describe('InferenceWindowAuthorizedService.getScheduleService — live source ov
 
     expect(res.data.liveSource.required).toBe(false);
     expect(inputStatus.resolveOverrideColumnsService).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Run Predict for lstm/gru. apps/serving cannot score a sequence model, so the
+ * one button reports the window it dispatched instead: runNow says so
+ * (`liveVia: 'window'`) without calling Serving, and the client polls
+ * windowPredictionService, which reads the window's newest prediction itself
+ * and records the same ManualPrediction a served press does.
+ */
+describe('InferenceWindowAuthorizedService — Run Predict through the window for sequence models (MODEL-SERVE-044/045)', () => {
+  const schedule = {
+    modelId: 'model-1',
+    enabled: true,
+    cadenceMinutes: 60,
+    lagMinutes: 0,
+  };
+
+  function runNowPrisma(algorithm: string) {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue(schedule);
+    prisma.modelVersion.findFirst.mockResolvedValue({ id: 'ver-1', algorithm });
+    prisma.inferenceWindow.findUniqueOrThrow.mockResolvedValue({
+      id: 'win-1',
+      status: 'PENDING',
+      windowStart: new Date('2026-11-02T05:00:00.000Z'),
+      windowEnd: new Date('2026-11-02T06:00:00.000Z'),
+    });
+    return prisma;
+  }
+
+  function serviceFor(
+    prisma: ReturnType<typeof buildPrisma>,
+    livePredict = buildLivePredict(),
+  ) {
+    return makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      buildInputStatus(),
+      buildScheduler(),
+      livePredict,
+    );
+  }
+
+  it('MODEL-SERVE-045: an lstm press tries Serving first and keeps its value', async () => {
+    const live = buildLivePredict();
+    const res = await serviceFor(runNowPrisma('lstm'), live).runNowService(
+      'model-1',
+      user,
+    );
+    expect(live.scoreOne).toHaveBeenCalledWith('model-1');
+    expect(res.data.liveVia).toBe('serving');
+    expect(res.data.live.ok).toBe(true);
+  });
+
+  it('an lstm press whose live score comes back empty falls back to the window', async () => {
+    const live = buildLivePredict({
+      scoreOne: jest.fn().mockResolvedValue({
+        ok: false,
+        reason: "Algorithm 'lstm' is not servable by this process",
+      }),
+    });
+    const res = await serviceFor(runNowPrisma('lstm'), live).runNowService(
+      'model-1',
+      user,
+    );
+    expect(res.data.liveVia).toBe('window');
+    expect(res.data.windowId).toBe('win-1');
+  });
+
+  it('a tabular press with no live reading does not fall back', async () => {
+    const live = buildLivePredict({
+      scoreOne: jest.fn().mockResolvedValue({ ok: false, reason: 'quiet' }),
+    });
+    const res = await serviceFor(
+      runNowPrisma('random_forest'),
+      live,
+    ).runNowService('model-1', user);
+    expect(res.data.liveVia).toBe('serving');
+  });
+
+  it('a tabular press still scores through Serving', async () => {
+    const live = buildLivePredict();
+    const res = await serviceFor(
+      runNowPrisma('random_forest'),
+      live,
+    ).runNowService('model-1', user);
+    expect(live.scoreOne).toHaveBeenCalledWith('model-1');
+    expect(res.data.liveVia).toBe('serving');
+  });
+
+  function windowPrisma(window: Record<string, unknown>, existing = null) {
+    const prisma = buildPrisma({
+      manualPrediction: {
+        create: jest.fn().mockResolvedValue({}),
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(existing),
+      },
+    });
+    prisma.inferenceWindow.findFirst.mockResolvedValue({
+      id: 'win-1',
+      modelVersionId: 'ver-1',
+      predictionsKey: 'inference/m/v/dt=2026-11-02/hour=05/predictions.parquet',
+      failureReason: null,
+      ...window,
+    });
+    return prisma;
+  }
+
+  it('reports pending while the window is still running', async () => {
+    const res = await serviceFor(
+      windowPrisma({ status: 'RUNNING' }),
+    ).windowPredictionService('model-1', 'win-1', user);
+    expect(res.data.pending).toBe(true);
+    expect(readLastInferencePrediction).not.toHaveBeenCalled();
+  });
+
+  it('on success reads the newest prediction and records it at plant time', async () => {
+    (readLastInferencePrediction as jest.Mock).mockResolvedValue({
+      timestamp: '2026-11-02T12:00:00',
+      prediction: 20.33,
+      row_count: 1,
+    });
+    const prisma = windowPrisma({ status: 'SUCCEEDED' });
+    const res = await serviceFor(prisma).windowPredictionService(
+      'model-1',
+      'win-1',
+      user,
+    );
+    expect(res.data).toMatchObject({
+      pending: false,
+      live: { ok: true, predicted: 20.33, at: '2026-11-02T12:00:00' },
+    });
+    // 12:00 Bangkok wall clock is 05:00 UTC.
+    expect(prisma.manualPrediction.create).toHaveBeenCalledWith({
+      data: {
+        modelId: 'model-1',
+        modelVersionId: 'ver-1',
+        predicted: 20.33,
+        predictedAt: new Date('2026-11-02T05:00:00.000Z'),
+        requestedById: 'user-1',
+      },
+    });
+  });
+
+  it('a second poll after success records nothing new', async () => {
+    (readLastInferencePrediction as jest.Mock).mockResolvedValue({
+      timestamp: '2026-11-02T12:00:00',
+      prediction: 20.33,
+      row_count: 1,
+    });
+    const prisma = windowPrisma({ status: 'SUCCEEDED' }, {
+      id: 'mp-1',
+    } as never);
+    await serviceFor(prisma).windowPredictionService('model-1', 'win-1', user);
+    expect(prisma.manualPrediction.create).not.toHaveBeenCalled();
+  });
+
+  it('a failed window returns its own failure reason', async () => {
+    const res = await serviceFor(
+      windowPrisma({ status: 'FAILED', failureReason: 'source unreachable' }),
+    ).windowPredictionService('model-1', 'win-1', user);
+    expect(res.data.live).toEqual({ ok: false, reason: 'source unreachable' });
+  });
+
+  it('refuses a window that does not belong to the model', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceWindow.findFirst.mockResolvedValue(null);
+    await expect(
+      serviceFor(prisma).windowPredictionService('model-1', 'other', user),
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 });

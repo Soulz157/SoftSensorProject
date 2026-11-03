@@ -21,6 +21,7 @@ import { env } from '@/config/env.config';
 import { buildPiCredentials } from '@/lib/source-block';
 import { nextTagObservation, type FetchOutcome } from '@/lib/tag-observation';
 import { readLiveSourceOverride } from '@/lib/live-source-override';
+import { contextRowsFor } from '@/lib/sequence-model';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
 
@@ -343,6 +344,9 @@ export class InferenceWindowSchedulerService
         window_start: window.windowStart.toISOString(),
         window_end: window.windowEnd.toISOString(),
         interval: fetchConfig.intervalTime,
+        // MODEL-SERVE-043. A sequence model needs `sequence_length - 1` rows
+        // of history before windowStart; 0 for every other algorithm.
+        context_rows: contextRowsFor(d.sequenceLength),
         ...source,
       });
     } catch (err) {
@@ -367,6 +371,10 @@ export class InferenceWindowSchedulerService
       data: {
         inputKey: materialized.object_key,
         inputChecksum: materialized.checksum,
+        // MODEL-SERVE-043. Written every time, null included: a retry that
+        // found no Good lead-in must not leave a previous attempt's pointer.
+        contextKey: materialized.context_object_key,
+        contextChecksum: materialized.context_checksum,
         inputRows: materialized.scored_rows,
         missingPct: materialized.missing_pct,
         // MODEL-SERVE-001-T17. Written in this SAME statement, BEFORE the

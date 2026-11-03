@@ -301,6 +301,38 @@ such file, permanently; the client states that absence.
 
 ---
 
+## 13. `SEQUENCE_ALGORITHMS = ("lstm", "gru")` and `DEFAULT_SEQUENCE_LENGTH = 24`
+
+| Copy         | Location                                              |
+| ------------ | ----------------------------------------------------- |
+| this image   | `models.py` (`SEQUENCE_ALGORITHMS`), `windows.py` (`DEFAULT_SEQUENCE_LENGTH`) |
+| apps/backend | `src/lib/sequence-model.ts`                           |
+| apps/serving | `services/predict.py` (`SEQUENCE_ALGORITHMS`, `DEFAULT_SEQUENCE_LENGTH`) |
+
+MODEL-SERVE-043. The pickled `SequenceRegressor` does not store
+`sequence_length`, so the backend resolves it from
+`ModelVersion.hyperparameters.sequence_length` and sends it to python (the
+`sequence_length - 1` lead-in rows of `context.parquet`) and to this image (the
+infer/batch claim). When a run never set it, training used the default here;
+the backend must fall back to the SAME number, or a model is scored on a history
+length it was never trained on, with no error anywhere.
+
+`pipelines/infer.py` and `pipelines/batch.py` read `algorithm` and
+`sequenceLength` from the claim; `windows.build_inference_windows` is the
+scoring-time twin of `build_windows`, pinned to it by
+`test/test_sequence_inference.py::test_parity_with_training_windows`.
+
+MODEL-SERVE-045 moved the CODE (not these constants) out of this image:
+`SequenceRegressor` now lives in `softsensor_scaling.sequence` and
+`build_inference_windows` in `softsensor_scaling.windows`. `sequence_model.py`
+here and in `apps/serving/` are re-export shims and must keep that name —
+every lstm/gru `model.joblib` pickled before the move references
+`sequence_model.SequenceRegressor`.
+
+**Image rebuild required.**
+
+---
+
 ## Long-term
 
 The right fix is a shared wheel containing `labelled_mask`, the fold plan, and

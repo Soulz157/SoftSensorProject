@@ -332,6 +332,10 @@ export class PredictionJobAuthorizedService {
       featureColumns: d.featureColumns,
       scalers: d.scalers,
       scalingParams: d.scalingParams,
+      // MODEL-SERVE-043. lstm/gru score (rows, sequenceLength, features)
+      // windows in file order; null for every other algorithm.
+      algorithm: d.algorithm,
+      sequenceLength: d.sequenceLength,
     };
   }
 

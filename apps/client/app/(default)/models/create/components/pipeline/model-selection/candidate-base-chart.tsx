@@ -143,6 +143,7 @@ export function CandidateBaseChart({
         // read: holdout 27-31 Jan against test 21-27 Feb for the same run).
         syncId={`candidate-base-${runId}-${population}`}
         foldCuts={foldCuts}
+        axis="sequence"
       />
       {/* MODEL-FLOW-019 AC65. Unconditional, not gated on `downsampled` —
           a small holdout frame (as few as 40 rows) is never decimated and

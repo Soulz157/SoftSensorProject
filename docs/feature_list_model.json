@@ -4952,6 +4952,185 @@
         "A promote inserts no window for the new version before the clock hour containing the promote.",
         "A settings update on a running schedule does not move the anchor; Stop -> Start does."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-043",
+      "title": "LSTM/GRU score in hourly inference and batch: (n, sequence_length, features) windows with a context.parquet lead-in",
+      "priority": "high",
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-SERVE-006",
+        "MODEL-SERVE-003"
+      ],
+      "description": "User asked 2026-11-01 whether LSTM/GRU can run as the hourly scheduled job. Reproduced in scgc/soft-sensor-trainer:1.0.23: pipelines/infer.py and pipelines/batch.py hand a sequence model the 2-D scaled frame, so SequenceRegressor.predict raises `ValueError: could not determine the shape of object type 'DataFrame'` (ndarray: `IndexError: too many indices for tensor of dimension 2`). Every hourly window and every batch job of a deployed lstm/gru FAILED; nothing refused the deploy. Fixed: the backend resolves sequence_length from ModelVersion.hyperparameters (default 24, MIRRORS.md entry 13), python writes the sequence_length-1 Good rows before windowStart to context.parquet, and the trainer builds end-aligned windows identical to training's build_windows, scoring only rows whose whole history is present.",
+      "userDecisions": [
+        "2026-11-01: a row whose sequence_length-row history contains a Bad or missing row is NOT predicted (training never pads).",
+        "2026-11-01: batch rows without a full history come out null; output keeps one row per input row.",
+        "2026-11-01: Serving / live predict / Run Predict for lstm/gru is a separate later feature, out of scope here.",
+        "2026-11-01: the lead-in goes in its own context.parquet (not extra rows in input.parquet), recorded as InferenceWindow.contextKey/contextChecksum — input.parquet's other readers (input drift series, window stats) read every row as the window's own."
+      ],
+      "findings": [
+        "Plan deviation (asked, user chose): the plan put lead-in rows in input.parquet with an __in_window flag; put_frame's assert_frame_shape refuses a column that is not a tag with a __status sidecar, and input_series_service reads all rows with no time filter, so drift would double-count the previous hour.",
+        "Gaps are detected by timestamp spacing against the schedule's fetchConfig.intervalTime (fallback: the data's modal step), so a dropped Bad row or a minute PI never returned breaks the window; batch has no timestamp, so only NaN breaks it.",
+        "Window stats (row_count, scored_rows, missing_pct, histograms, feature/target stats, tag observations) are computed on in-window rows only.",
+        "TRAINING_IMAGE default left at 1.0.23 on purpose: bumping before 1.0.24 exists makes the backend try to pull a missing image and breaks all training. Until the new image runs, the backend/python changes are inert (old infer.py ignores the new claim fields and fails exactly as before).",
+        "Live predict is unchanged: it never sends context_rows, and apps/serving still refuses lstm/gru (UNSERVABLE_ALGORITHMS).",
+        "LIVE FINDING 2026-11-02 (LSTM 3): materialize wrote context.parquet, but python presign_inference_window_object allowlisted only input/predictions, so every lstm/gru infer-claim 400'd. Fixed (INFERENCE_CONTEXT_FILENAME added + regression test tests/test_inference_window_context.py 6/6). Missed by the unit tests because the claim path mocked presign."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-043-T01",
+          "title": "Backend: lib/sequence-model.ts, descriptor sequenceLength, dispatchOne context_rows + contextKey/contextChecksum, infer/batch claim fields; migration 20261101100000_inference_window_context",
+          "status": "completed",
+          "result": "DONE 2026-11-01. Migration hand-applied to the local docker DB (never migrate dev); packages/prisma rebuilt. jest lib + inference-window + prediction-job + model-serving 797/797 (new: sequence-model 4, scheduler lead-in 4, claimService 3, descriptor 1); tsc clean; eslint 0 errors (1 pre-existing warning); prettier clean."
+        },
+        {
+          "id": "MODEL-SERVE-043-T02",
+          "title": "Python: InferenceWindowMaterializeRequest.context_rows, lead-in fetch + split, context.parquet write, response context_* fields",
+          "status": "completed",
+          "result": "DONE 2026-11-01. tests/test_inference_window_context.py 5/5 (no-op at 0, own file, stats exclude lead-in, Bad lead-in row dropped, no file when no data); inference/window/materialize/schema suites 116 passed, 4 skipped."
+        },
+        {
+          "id": "MODEL-SERVE-043-T03",
+          "title": "Trainer: windows.build_inference_windows; infer.py and batch.py sequence paths",
+          "status": "completed",
+          "result": "DONE 2026-11-01. test/test_sequence_inference.py 14/14 in-image (parity with build_windows, lead-in history-only, gap skips exactly the spanning rows, NaN skip, batch chunk boundary == unchunked, leading nulls written as parquet nulls, a real LSTM that raised the old error now scores 60/60); full trainer suite 103/103."
+        },
+        {
+          "id": "MODEL-SERVE-043-T04",
+          "title": "Build scgc/soft-sensor-trainer:1.0.24 and set TRAINING_IMAGE (or bump the default in trainning-container.authorized.service.ts:41)",
+          "status": "completed",
+          "result": "DONE 2026-11-01. User built scgc/soft-sensor-trainer:1.0.24 (image 2cfd1b6f1c38); its baked-in code carries build_inference_windows/_score_sequence/_score_sequence_chunk and the trainer suite passes 103/103 inside it. TRAINING_IMAGE default bumped 1.0.23 -> 1.0.24 in trainning-container.authorized.service.ts. Backend restart required to pick it up."
+        },
+        {
+          "id": "MODEL-SERVE-043-T05",
+          "title": "Live check: train a short GRU on the fake PI, deploy, read the next due window and run one batch",
+          "status": "completed",
+          "result": "HOURLY VERIFIED LIVE 2026-11-02 on LSTM 3 (fake PI, interval 1h, sequence_length 24): window 05:00-06:00Z SUCCEEDED; context.parquet 23 contiguous hourly rows 2026-11-01 13:00 -> 2026-11-02 11:00 (Bangkok wall clock), input.parquet 1 row 12:00, predictions.parquet 1 row (12:00, 20.334); window log: 23 lead-in row(s), 1 of 1 window row(s) have a complete history. Image digest 2cfd1b6f (1.0.24). BATCH VERIFIED 2026-11-02 against the real image 1.0.24 + LSTM 3's real model.joblib, with a local stand-in for the four batch routes (no batch UI exists; the backend batch-claim route is unit-tested only): the same 24 rows (23 lead-in + 1) -> 24 output rows, first 23 null (parquet nulls), last 20.334125518798828 == the hourly window's 20.334126. Run Predict (Serving) refuses lstm/gru by design (out of scope)."
+        }
+      ],
+      "acceptance": [
+        "A deployed lstm/gru hourly window scores every in-window row whose sequence_length-row history is complete, with no time shift against training's windows.",
+        "A batch job of an lstm/gru returns one prediction per input row, null where the history is incomplete.",
+        "Every non-sequence algorithm's materialize, claim and scoring are unchanged (context_rows 0, no context file)."
+      ]
+    },
+    {
+      "id": "MODEL-SERVE-044",
+      "title": "Run Predict works the same for every algorithm: lstm/gru report the window the press dispatched",
+      "priority": "medium",
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-SERVE-043",
+        "MODEL-SERVE-011"
+      ],
+      "description": "User 2026-11-02: Run Predict showed no value for LSTM 3. Run Predict and Run now are ONE button (runNowService): it dispatches the latest full window (trainer container — works for lstm/gru since MODEL-SERVE-043) AND live-scores through apps/serving (refuses lstm/gru: UNSERVABLE_ALGORITHMS) — so a sequence model got 'No live reading'. Quick path (user's choice): for lstm/gru the server answers liveVia:'window' without calling Serving; the client polls the dispatched window; once SUCCEEDED the server reads the newest row of its own predictions.parquet (never the client's value) and records the same ManualPrediction a served press writes, so the same 'Predicted X at …' toast and chart point follow. Serving support for lstm/gru (instant, current-minute, and the 10-min live line) stays a separate later feature.",
+      "decisions": [
+        "2026-11-02 (user): quick path first — one button, same toast for every algorithm; Serving support later.",
+        "The value is the newest row of the LAST FULL HOUR (the dispatched window), not the current minute; the toast says 'From the latest hourly window'.",
+        "ManualPrediction recording is idempotent per (modelVersionId, predictedAt), so repeated polls after success add nothing."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-044-T01",
+          "title": "Python: POST /v1/preprocess/inference-window/last-prediction",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. artifact_service.last_inference_prediction (predictions.parquet only, inference key guard). Live on LSTM 3 hour=05: {timestamp 2026-11-02T12:00:00, prediction 20.334125518798828, row_count 1}. tests/test_inference_window_context.py 8/8."
+        },
+        {
+          "id": "MODEL-SERVE-044-T02",
+          "title": "Backend: runNowService liveVia; windowPredictionService + POST /inference/windows/:windowId/prediction",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. 7 new specs (lstm press never calls Serving; tabular still does; pending; success records at plant time 12:00 BKK -> 05:00Z; idempotent second poll; failed window reason; 404 for another model's window); file 126/126. tsc, eslint, prettier clean."
+        },
+        {
+          "id": "MODEL-SERVE-044-T03",
+          "title": "Client: useRunPredict polls the window for liveVia 'window' and shows the same Predicted toast",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. hooks/model/use-run-predict.ts (module-level poller, 3 s / 5 min cap, unmount-safe), services/inference-window.ts (liveVia, windowPrediction). New use-run-predict.test.tsx 3/3; hooks/model + models/[id] 335/335."
+        },
+        {
+          "id": "MODEL-SERVE-044-T04",
+          "title": "Live check: press Run Predict on LSTM 3 after a backend restart",
+          "status": "completed",
+          "progress": 100,
+          "result": "VERIFIED LIVE 2026-11-02 after backend+client restart: pressing Run Predict on LSTM 3 at 14:07 Bangkok created ManualPrediction 20.334125518798828 at 2026-11-02 05:00Z (12:00 Bangkok) from window 05:00-06:00Z — the same value as the hourly window and batch. The first press predated the refresh (no request reached the new route). Timing note for users: interval 1h + lag 15 min means the point is the last FULL hour (start-stamped), 1h15-2h15 behind the press."
+        }
+      ],
+      "acceptance": [
+        "Pressing Run Predict on an lstm/gru model shows a predicted value and draws its point, without calling apps/serving.",
+        "Tabular models behave exactly as before."
+      ]
+    },
+    {
+      "id": "MODEL-SERVE-045",
+      "title": "apps/serving scores lstm/gru: instant Run Predict and the live line for sequence models",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 95,
+      "dependencies": [
+        "MODEL-SERVE-043",
+        "MODEL-SERVE-044"
+      ],
+      "description": "Serving refused lstm/gru (UNSERVABLE_ALGORITHMS, no torch, row-list /predict). Now: the sequence class and the scoring-time windowing live in packages/py-scaling (softsensor_scaling.sequence / .windows) — one implementation for the trainer image and serving; sequence_model.py in both is a re-export shim so every pickled model (class path sequence_model.SequenceRegressor) still loads. Serving installs torch 2.5.1 CPU, /predict windows lstm/gru rows with build_inference_windows (optional timestamps + interval refuse a gap; rows without full history return null). The backend live driver sends the newest sequenceLength rows (context.parquet lead-in + window) and the evaluation page sends overlapping chunks. Run Predict tries Serving first for every algorithm and falls back to the MODEL-SERVE-044 window path when a sequence model's live score is empty.",
+      "decisions": [
+        "2026-11-02 (user): torch in the ONE serving image (not a second serving service).",
+        "2026-11-02 (user): Run Predict for lstm/gru uses Serving; the window path (044) is the fallback.",
+        "2026-11-02 (user): the live line scores only when there is a new row (InferenceSchedule.livePredictLastRowAt); a Run Predict press always answers.",
+        "Found while building: the live window started at Date.now(), so PI averaged each interval from that offset (13:25-14:25) — off the training grid, and a new newest row every tick (the skip could never fire). When the interval is longer than the live cadence, the window now ENDS on an interval boundary."
+      ],
+      "findings": [
+        "Live 2026-11-02: LSTM 3's real model.joblib (pickled by 1.0.24 under sequence_model) loads in the serving venv via the shim; local serving /predict on the verified 24 rows -> 24 predictions, 23 null, last 20.334123611450195 vs the trainer image's 20.334125518798828 — same float32 math on a different CPU/thread count, ~1e-7 relative; tests compare with rtol 1e-6.",
+        "Torch reports 2.5.1+cpu in the Linux CPU wheel and 2.5.1 on macOS; the framework check compares the numerals only.",
+        "Trainer 1.0.24 keeps working unchanged (its code is baked in); a 1.0.25 build picks up the shim. Bump TRAINING_IMAGE only after it exists."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-045-T01",
+          "title": "Shared code: softsensor_scaling.sequence + .windows (+ parse_interval); trainer sequence_model.py / windows.py become re-exports",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. Trainer suite 103/103 in-image with the new py-scaling mounted; MIRRORS.md entry 13 updated."
+        },
+        {
+          "id": "MODEL-SERVE-045-T02",
+          "title": "Serving: torch, loader (UNSERVABLE empty, torch version check), /predict sequence path, scored-rows-only log",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. apps/serving/sequence_model.py shim (1 torch thread), services/loader.py, services/predict.py, routers/serve.py, requirements.txt. torch 2.5.1 installed in apps/serving/.venv. pytest 53/53 (new test_sequence_serving.py 6; the v1 refusal test replaced by 'an lstm pickle now loads')."
+        },
+        {
+          "id": "MODEL-SERVE-045-T03",
+          "title": "Backend: predictRows timestamps/interval + nullable predictions; live driver sequence path, interval-aligned window, unchanged-row skip (livePredictLastRowAt, migration 20261102100000 hand-applied); evaluation overlapping chunks; runNow serving-first with window fallback",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. jest inference-window + model-evaluation + model-serving + lib 908/908; tsc, eslint, prettier clean; python suite 1153 passed / 100 skipped."
+        },
+        {
+          "id": "MODEL-SERVE-045-T04",
+          "title": "Build images: serving (with torch) and trainer 1.0.25",
+          "status": "completed",
+          "progress": 100,
+          "result": "TRAINER DONE 2026-11-02: scgc/soft-sensor-trainer:1.0.25 (e9d2e2862018) built by the user; baked code: sequence_model.SequenceRegressor is softsensor_scaling.sequence.SequenceRegressor, windows.build_inference_windows is the shared one; suite 103/103 inside it; a 1.0.24-pickled LSTM 3 predicts 20.334125518798828 (bit-identical to 1.0.24). TRAINING_IMAGE default bumped to 1.0.25. SERVING DONE 2026-11-02: scgc/soft-sensor-serving:1.0.0 (c30c153ca1ea, 1.64GB) built by the user; torch 2.5.1 (linux/arm64 PyPI wheel, no +cpu tag); sequence_model resolves to softsensor_scaling.sequence.SequenceRegressor; serving suite 53/53 run against the baked code (tests mounted, a test-only SERVING_API_TOKEN); LSTM 3 real model + the verified 24 rows through rows_to_predictions -> 23 null, last 20.334125518798828 — bit-identical to the trainer images (the earlier 20.3341236 was the macOS venv)."
+        },
+        {
+          "id": "MODEL-SERVE-045-T05",
+          "title": "Live check: restart backend; Run Predict on LSTM 3 answers instantly (no 'Scoring the latest hour…'); live line on LSTM 3 adds one point per hour",
+          "status": "pending",
+          "progress": 0,
+          "detail": "RUN PREDICT VERIFIED LIVE 2026-11-02 07:39:57Z (14:39 Bangkok) after the backend restart: answered from SERVING (PredictionLog row written by serving at the same instant, 1 scored row logged), ManualPrediction 20.333324432373047 at 06:00Z (13:00 Bangkok, the newest hour-aligned row) — the scheduled hourly window for the same hour gave 20.33332633972168 (float32 agreement). livePredictLastRowAt = 06:00Z recorded. LIVE LINE NOT YET VERIFIED: livePredictEnabled is still false for LSTM 3."
+        }
+      ],
+      "acceptance": [
+        "Serving loads and scores lstm/gru with values matching the trainer's windows (float32 tolerance).",
+        "Run Predict on lstm/gru answers from Serving; a failed live score falls back to the window.",
+        "The live line never scores the same newest row twice, and hourly rows sit on the training grid."
+      ]
     }
   ],
   "global_definition_of_done": [

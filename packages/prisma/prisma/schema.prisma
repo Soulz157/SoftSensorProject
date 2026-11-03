@@ -1823,6 +1823,13 @@ model InferenceWindow {
   /// `to_model_ready` and the three paths cannot disagree.
   inputKey      String?
   inputChecksum String?
+  /// MODEL-SERVE-043. A sequence model's (lstm/gru) lead-in: the
+  /// `sequence_length - 1` Good rows BEFORE windowStart, in their own
+  /// context.parquet beside input.parquet. Null for every other algorithm,
+  /// and when no Good lead-in row existed. Kept out of input.parquet because
+  /// every reader of that file treats all its rows as this window's data.
+  contextKey      String?
+  contextChecksum String?
 
   /// Written server-side on /infer-complete from this row's own ids, never
   /// trusted from the container's request body — the discipline
@@ -2279,6 +2286,13 @@ model InferenceSchedule {
   /// missed tick is a gap in a live chart rather than a backfill debt.
   /// Null until the first pass.
   livePredictLastRunAt DateTime?
+  /// MODEL-SERVE-045. Timestamp of the newest row the live driver last
+  /// SCORED (not when it ran). A tick whose newest row is still this one
+  /// scores nothing: an hourly-interval model refreshes once an hour, and
+  /// re-scoring the same row every 10 minutes only drew duplicate points and
+  /// re-fetched a sequence model's whole history window from PI. Run Predict
+  /// presses ignore it — a press always answers.
+  livePredictLastRowAt DateTime?
 
   createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String

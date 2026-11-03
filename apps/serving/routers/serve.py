@@ -24,6 +24,11 @@ router = APIRouter(prefix="/v1/models", tags=["predict"])
 class PredictRequest(BaseModel):
     model_config = {"extra": "forbid"}
     rows: list[dict[str, Any]] = Field(..., min_length=1)
+    #: MODEL-SERVE-045. lstm/gru only, both optional: each row's time (oldest
+    #: first) and the sampling step, so a gap inside a history window leaves
+    #: that row unscored instead of scored across the hole.
+    timestamps: list[str] | None = None
+    interval: str | None = None
 
 
 class InputTagCheck(BaseModel):
@@ -40,7 +45,8 @@ class InputTagCheck(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    predictions: list[float]
+    #: None only for an lstm/gru row with no complete history window.
+    predictions: list[float | None]
     modelId: str
     version: int
     inputTagCheck: InputTagCheck
@@ -77,7 +83,9 @@ async def predict(
 
     try:
         assert_history_satisfies_target_derivation(descriptor, body.rows)
-        predictions, scaled = rows_to_predictions(model, descriptor, body.rows)
+        predictions, scaled = rows_to_predictions(
+            model, descriptor, body.rows, body.timestamps, body.interval
+        )
     except PredictError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -88,16 +96,19 @@ async def predict(
     # sampling decision happens here, not inside log_prediction, so a
     # sampled-out request costs nothing beyond one `random()` call — no
     # aggregate computation, no background task scheduled at all.
-    if prediction_log.should_log():
+    # MODEL-SERVE-045. Log only scored rows: an lstm/gru history row has no
+    # prediction, and the log aligns rows, predictions and scaled by index.
+    scored = [i for i, p in enumerate(predictions) if p is not None]
+    if prediction_log.should_log() and scored:
         background_tasks.add_task(
             prediction_log.log_prediction,
             descriptor_client.session,
             model_id=model_id,
             model_version_id=descriptor["versionId"],
             feature_columns=descriptor["featureColumns"],
-            rows=body.rows,
-            predictions=predictions,
-            scaled=scaled,
+            rows=[body.rows[i] for i in scored],
+            predictions=[predictions[i] for i in scored],
+            scaled=scaled.iloc[scored],
             # MODEL-SERVE-001-T13. `.get(...)` — a descriptor for a model
             # whose spec predates T13 carries none of these; `.get` (not
             # `[...]`) is what lets that legacy case flow through as "no PSI

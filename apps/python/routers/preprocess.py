@@ -88,6 +88,8 @@ from schemas.preprocess import (
     InferenceWindowTruthSeriesResponse,
     InferenceWindowUploadPresignRequest,
     InferenceWindowUploadPresignResponse,
+    InferenceWindowLastPredictionRequest,
+    InferenceWindowLastPredictionResponse,
     InferenceWindowObjectPresignRequest,
     InferenceWindowObjectPresignResponse,
     PredictionLogAppendRequest,
@@ -1283,6 +1285,22 @@ async def presign_inference_window_object(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.presign_inference_window_object, store, body)
+
+
+@router.post(
+    "/inference-window/last-prediction",
+    response_model=InferenceWindowLastPredictionResponse,
+    summary="Newest prediction of one inference window",
+    description=(
+        "Run Predict for lstm/gru, which apps/serving cannot score: the "
+        "button reports the newest row of the window it dispatched."
+    ),
+)
+async def last_inference_prediction(
+    body: InferenceWindowLastPredictionRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.last_inference_prediction, store, body)
 
 
 @router.post(
