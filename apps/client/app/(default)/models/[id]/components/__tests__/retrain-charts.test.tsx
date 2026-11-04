@@ -24,9 +24,14 @@ vi.mock(
     PREDICT_COLOR: 'var(--chart-1)',
     SD_BAND_COLOR: 'var(--chart-2)',
     SD_BAND_OPACITY: 0.42,
-    ActualVsPredictedChart: (p: { rows: unknown[]; compareName?: string }) => (
+    ActualVsPredictedChart: (p: {
+      rows: unknown[]
+      compareName?: string
+      axis?: string
+    }) => (
       <div
         data-testid="avp-chart"
+        data-axis={p.axis ?? 'time'}
         data-rows={p.rows.length}
         data-compare={p.compareName ?? ''}
       />
@@ -41,9 +46,14 @@ vi.mock(
       { shape: 'square', color: 'var(--chart-1)', label: 'Residual' },
       { shape: 'dashed', color: 'var(--chart-2)', label: '±1 SD' },
     ],
-    ResidualChart: (p: { rows: unknown[]; compareName?: string }) => (
+    ResidualChart: (p: {
+      rows: unknown[]
+      compareName?: string
+      axis?: string
+    }) => (
       <div
         data-testid="residual-chart"
+        data-axis={p.axis ?? 'time'}
         data-rows={p.rows.length}
         data-compare={p.compareName ?? ''}
       />
@@ -207,6 +217,29 @@ describe('RetrainCharts', () => {
     // The legend names both versions, not just "Predicted".
     expect(screen.getAllByText('New v4').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Current v3').length).toBeGreaterThan(0)
+  })
+
+  it('plots rows in sequence so a range cut out of the middle leaves no empty stretch', () => {
+    ready({ rows: 3, overlay: false })
+    render(
+      <RetrainCharts
+        modelId="model-1"
+        comparison={comparison()}
+        currentVersion={3}
+      />,
+    )
+
+    expect(screen.getByTestId('avp-chart')).toHaveAttribute(
+      'data-axis',
+      'sequence',
+    )
+    expect(screen.getByTestId('residual-chart')).toHaveAttribute(
+      'data-axis',
+      'sequence',
+    )
+    expect(
+      screen.getByText(/does not leave an empty stretch/),
+    ).toBeInTheDocument()
   })
 
   it('names the range and row count of the data being shown', () => {

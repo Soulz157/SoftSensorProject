@@ -238,6 +238,7 @@ export function RetrainCharts({
             <ActualVsPredictedChart
               rows={series.rows}
               tickFormatter={tickFormatter}
+              axis="sequence"
               compareName={overlayDrawn ? currentLabel : undefined}
             />
           </section>
@@ -253,9 +254,18 @@ export function RetrainCharts({
               rows={series.rows}
               sd={series.sd}
               tickFormatter={tickFormatter}
+              axis="sequence"
               compareName={overlayDrawn ? currentLabel : undefined}
             />
           </section>
+
+          <p className="text-[10px] text-muted-foreground">
+            Rows are plotted one after another, so a range cut out of the middle
+            of the data (for example a held-out month) does not leave an empty
+            stretch. A dashed grey line marks each place the rows are not
+            adjacent in time; ticks and tooltips still show each row&apos;s real
+            time.
+          </p>
 
           {series.overlayNote && (
             <p className="text-[10px] text-muted-foreground">

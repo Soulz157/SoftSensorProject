@@ -4672,7 +4672,7 @@
       "dependencies": [
         "MODEL-FLOW-030"
       ],
-      "description": "User 2026-11-03: in Step 5, when a validation range was cut out of the middle of the dataset, the Actual vs Predicted chart left an empty stretch where the data was removed (time x-axis; connectNulls drew one long segment across it). Now Step 5's Actual vs Predicted and Residuals over time charts, and the Model Selection test-split card, use a SEQUENCE axis (row order): the stretch closes, a dashed grey line marks each place the rows are not adjacent (step > 3x the median step), ticks and tooltip still show each row's real time, and Step 5 captions the cut ranges. Retrain charts and Monitoring keep the time axis.",
+      "description": "User 2026-11-03: in Step 5, when a validation range was cut out of the middle of the dataset, the Actual vs Predicted chart left an empty stretch where the data was removed (time x-axis; connectNulls drew one long segment across it). Now Step 5's Actual vs Predicted and Residuals over time charts, and the Model Selection test-split card, use a SEQUENCE axis (row order): the stretch closes, a dashed grey line marks each place the rows are not adjacent (step > 3x the median step), ticks and tooltip still show each row's real time, and Step 5 captions the cut ranges. 2026-11-04 (user): the Retrain tab's Actual vs Predicted and Residuals charts use the SEQUENCE axis too (retrain-charts.tsx passes axis=\"sequence\" and captions it), so a held-out month in the middle of the new-data window no longer leaves an empty stretch. Monitoring keeps the time axis.",
       "userDecisions": [
         "2026-11-03: dashed line at each cut.",
         "2026-11-03: Step 5 (both charts) + Model Selection test-split chart."
