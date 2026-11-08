@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   modelDraftRunService,
@@ -53,6 +53,13 @@ export interface UseModelTrainingResult extends TrainState {
   fineTune: (input: FineTuneInput) => void
   retry: () => void
   reset: () => void
+  /** Stop the run or job in flight and kill its container. Idle when nothing
+   *  is training. */
+  cancel: () => Promise<void>
+  /** A cancel request is in flight. */
+  canceling: boolean
+  /** Why the last cancel failed, while the run is still going; else null. */
+  cancelError: string | null
 }
 
 interface Deps {
@@ -149,6 +156,19 @@ export function useModelTraining({
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const runningRef = useRef(false)
   /**
+   * The run or job being polled right now — what Cancel acts on, and what a
+   * poll tick checks before it writes state: a tick already in flight when the
+   * user cancels must not paint an error over the idle state that follows.
+   * Cleared when a cancel lands and on reset.
+   */
+  const activeRef = useRef<{
+    kind: 'run' | 'job'
+    draftId: string
+    id: string
+  } | null>(null)
+  const [canceling, setCanceling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  /**
    * Consecutive poll failures. A single dropped request must not surface as
    * "Lost connection" while the container is still fitting fine — worse,
    * the user's only affordance from an error state is Retrain, which spawns
@@ -169,10 +189,12 @@ export function useModelTraining({
     (draftId: string, runId: string) => {
       stopPolling()
       failCountRef.current = 0
+      activeRef.current = { kind: 'run', draftId, id: runId }
 
       const tick = async () => {
         try {
           const res = await modelDraftRunService.get(draftId, runId)
+          if (activeRef.current?.id !== runId) return // canceled or reset
           failCountRef.current = 0
           const run = res.data
           const lastLog = run.logs[run.logs.length - 1]?.message
@@ -255,23 +277,35 @@ export function useModelTraining({
     (draftId: string, jobId: string) => {
       stopPolling()
       failCountRef.current = 0
+      activeRef.current = { kind: 'job', draftId, id: jobId }
 
       const tick = async () => {
         try {
           const res = await modelDraftCandidateJobService.get(draftId, jobId)
+          if (activeRef.current?.id !== jobId) return // canceled or reset
           failCountRef.current = 0
           const job: ModelCandidateJob = res.data
 
           if (job.status === 'QUEUED' || job.status === 'RUNNING') {
             const inFlight = job.candidates[job.completedRuns]
             const position = `${Math.min(job.completedRuns + 1, job.totalRuns)} of ${job.totalRuns}`
+            // MODEL-FLOW-038. A grid job is one run that crosses every
+            // combination, so "Candidate 1 of 1" would say nothing true.
+            const gridCombinations = inFlight?.paramGrid
+              ? Object.values(inFlight.paramGrid).reduce(
+                  (n, values) => n * values.length,
+                  1,
+                )
+              : null
             setTrainState({
               status: 'training',
               progress: 0,
               lastLog:
-                inFlight?.phase === 2
-                  ? `Tuning ${ALGORITHM_LABELS[inFlight.algorithm as Algorithm] ?? inFlight.algorithm} — ${position}…`
-                  : `Candidate ${position}…`,
+                gridCombinations !== null
+                  ? `Grid search running — ${gridCombinations} combination${gridCombinations === 1 ? '' : 's'}…`
+                  : inFlight?.phase === 2
+                    ? `Tuning ${ALGORITHM_LABELS[inFlight.algorithm as Algorithm] ?? inFlight.algorithm} — ${position}…`
+                    : `Candidate ${position}…`,
             })
             return
           }
@@ -506,6 +540,9 @@ export function useModelTraining({
             ...(plan.extraVariants
               ? { extraVariants: plan.extraVariants }
               : {}),
+            // MODEL-FLOW-038. A grid search is one candidate, one run: the
+            // trainer crosses these lists itself.
+            ...(plan.paramGrid ? { paramGrid: plan.paramGrid } : {}),
             ...sizedFigures,
           })
 
@@ -605,8 +642,50 @@ export function useModelTraining({
   const reset = useCallback(() => {
     stopPolling()
     runningRef.current = false
+    activeRef.current = null
     setTrainState({ status: 'idle', progress: 0 })
   }, [setTrainState, stopPolling])
 
-  return { ...trainState, start: run, fineTune, retry: run, reset }
+  /**
+   * Stop what is training and kill its container. Polling keeps running until
+   * the server has confirmed: a failed request leaves the run live and
+   * visible, with the reason shown, rather than a Step 3 that says "idle"
+   * over a container still burning CPU. Nothing here touches a Model.
+   */
+  const cancel = useCallback(async () => {
+    const active = activeRef.current
+    if (!active || canceling) return
+    setCanceling(true)
+    setCancelError(null)
+    try {
+      if (active.kind === 'job') {
+        await modelDraftCandidateJobService.cancel(active.draftId, active.id)
+      } else {
+        await modelDraftRunService.cancel(active.draftId, active.id)
+      }
+      stopPolling()
+      runningRef.current = false
+      activeRef.current = null
+      setTrainState({ status: 'idle', progress: 0 })
+    } catch (err) {
+      setCancelError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not cancel the training.',
+      )
+    } finally {
+      setCanceling(false)
+    }
+  }, [canceling, setTrainState, stopPolling])
+
+  return {
+    ...trainState,
+    start: run,
+    fineTune,
+    retry: run,
+    reset,
+    cancel,
+    canceling,
+    cancelError,
+  }
 }

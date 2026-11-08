@@ -316,6 +316,15 @@ export const modelRetrainService = {
       { method: 'GET' },
     ),
 
+  /** Stop an in-flight retrain and kill its container. Returns the job as a
+   *  poll would, now CANCELED; a retrain that already finished comes back
+   *  unchanged. Editor access, like `trigger`. */
+  cancel: (modelId: string, jobId: string): Promise<ApiResponse<RetrainJob>> =>
+    fetchClient(
+      `/api/v1/authorized/model/${modelId}/retrain/${encodeURIComponent(jobId)}/cancel`,
+      { method: 'POST' },
+    ),
+
   /** MODEL-SERVE-014. The one discovery route the trigger/get pair does not
    *  provide on its own — what lets the retrain dialog and progress view
    *  survive a refresh or a second tab instead of only living in the

@@ -1,6 +1,8 @@
 import { AppException } from '@softsensor/common';
 import { TuningGridAuthorizedService } from './tuning-grid.authorized.service';
 import {
+  PARAM_GRID,
+  PARAM_GRID_OVERRIDES,
   SIZE_TIER_LOWER_BOUNDS,
   TUNE_VARIANTS_PER_JOB,
   TUNING_GRID,
@@ -74,5 +76,65 @@ describe('TuningGridAuthorizedService', () => {
     // itself (not `variants`, which IS the same array reference on purpose
     // — "served, not copied") must be a distinct wrapper per call.
     expect(service.get('ols')).not.toBe(service.get('ols'));
+  });
+});
+
+/** MODEL-FLOW-038. The default GridSearchCV search space, served not copied. */
+describe('TuningGridAuthorizedService.getParamGrid', () => {
+  const service = new TuningGridAuthorizedService();
+
+  it('returns the default grid with the caps the job endpoint enforces', () => {
+    const result = service.getParamGrid('ridge');
+
+    expect(result.paramGrid).toEqual(PARAM_GRID.ridge);
+    expect(result.tier).toBe('medium');
+    expect(result.maxCombinations).toBe(64);
+    expect(result.maxValuesPerKey).toBe(10);
+  });
+
+  it('sizes the grid off rows, like the variant list', () => {
+    const result = service.getParamGrid('xgboost', { rows: TINY_ROWS });
+
+    expect(result.tier).toBe('tiny');
+    expect(result.paramGrid).toEqual(PARAM_GRID_OVERRIDES.tiny?.xgboost);
+  });
+
+  it('404s for lstm/gru, which keep the curated variant search', () => {
+    expect(() => service.getParamGrid('lstm')).toThrow(AppException);
+  });
+
+  describe('what the client needs to price a parallel search', () => {
+    const saved = process.env.TRAINING_NANO_CPUS;
+    afterEach(() => {
+      if (saved === undefined) delete process.env.TRAINING_NANO_CPUS;
+      else process.env.TRAINING_NANO_CPUS = saved;
+    });
+
+    it('reports the production CPU budget (2) and the forests as parallel', () => {
+      delete process.env.TRAINING_NANO_CPUS;
+      expect(service.getParamGrid('extra_trees')).toMatchObject({
+        cpuBudget: 2,
+        parallel: true,
+      });
+      expect(service.getParamGrid('random_forest').parallel).toBe(true);
+    });
+
+    it('reports every other algorithm as serial', () => {
+      for (const algorithm of [
+        'ridge',
+        'ols',
+        'pls',
+        'svm',
+        'mlp',
+        'lightgbm',
+      ]) {
+        expect(service.getParamGrid(algorithm).parallel).toBe(false);
+      }
+    });
+
+    it('follows the quota the container is really given', () => {
+      process.env.TRAINING_NANO_CPUS = String(4 * 1e9);
+      expect(service.getParamGrid('extra_trees').cpuBudget).toBe(4);
+    });
   });
 });

@@ -194,6 +194,17 @@ export const mpFineTuneBaseEditsAtom = atom<
   Record<string, Record<string, HyperparamValue>>
 >({})
 /**
+ * MODEL-FLOW-038. Fine-tune's grid-search editor: the RAW TEXT the user typed
+ * into each hyperparameter's value box (`0.1, 1, 10`), per algorithm and key.
+ * Text, not parsed values, so a half-typed list survives a re-render and an
+ * error can name the token. A key with no entry shows the server's default
+ * list. Parsed by `lib/param-grid.ts`; not run-config draft state, so it asks
+ * for no Apply.
+ */
+export const mpFineTuneParamGridEditsAtom = atom<
+  Partial<Record<Algorithm, Record<string, string>>>
+>({})
+/**
  * Evaluation metric recorded on the saved model. See `LOSS_OPTIONS` in
  * `lib/training-config`.
  *
@@ -479,6 +490,7 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpFineTuneSourceRunIdAtom, null)
   set(mpFineTuneUseGridAtom, true)
   set(mpFineTuneBaseEditsAtom, {})
+  set(mpFineTuneParamGridEditsAtom, {})
   // MODEL-FLOW-019-T37. Was 'mse' — not a `LOSS_OPTIONS` member, so a reset
   // wizard rendered an empty Loss control. Same inlined literal as the atom's
   // own default above, held equal to `DEFAULT_LOSS_FUNCTION` by test.

@@ -25,6 +25,7 @@ import pyarrow as pa
 from fastapi import Response
 
 from intergrations.object_store import (
+    GRID_SEARCH_RESULTS_FILENAME,
     COLUMN_STATS_FILENAME,
     FEATURE_SPEC_FILENAME,
     MANIFEST_FILENAME,
@@ -139,6 +140,9 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         LOSS_HISTORY_FILENAME,
         # MODEL-FLOW-016-T04. Per-fold CV metrics — present only on a CV run.
         CV_FOLDS_FILENAME,
+        # MODEL-FLOW-038. Every GridSearchCV combination, ranked — present only
+        # on a grid-search run.
+        GRID_SEARCH_RESULTS_FILENAME,
         # MODEL-FLOW-019-T09. Per-feature importance — present only for the
         # algorithms images/trainer/app/importance.py can read a real
         # quantity from.
@@ -2467,6 +2471,31 @@ def get_run_cv_folds(store: ObjectStore, body) -> dict[str, Any]:
         "n_splits": data["n_splits"],
         "folds": data["folds"],
     }
+
+
+def get_run_grid_search(store: ObjectStore, body) -> dict[str, Any]:
+    """A grid-search run's `grid_search_results.json`, read and shape-checked —
+    MODEL-FLOW-038. Same discipline as `get_run_cv_folds`: the file is already
+    exactly the response shape, so this is a read-and-validate."""
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != GRID_SEARCH_RESULTS_FILENAME:
+        raise ValueError(f"'{key}' does not name {GRID_SEARCH_RESULTS_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("combinations"), list)
+        or not isinstance(data.get("best"), dict)
+    ):
+        raise ValueError(f"'{key}' is not a well-formed grid_search_results.json.")
+    return data
 
 
 def get_run_feature_importance(store: ObjectStore, body) -> dict[str, Any]:

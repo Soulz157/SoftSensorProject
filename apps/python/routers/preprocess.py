@@ -107,6 +107,8 @@ from schemas.preprocess import (
     ResplitHoldoutRequest,
     RunCvFoldsRequest,
     RunCvFoldsResponse,
+    RunGridSearchRequest,
+    RunGridSearchResponse,
     RunFeatureImportanceRequest,
     RunFeatureImportanceResponse,
     RunPermutationImportanceRequest,
@@ -986,6 +988,25 @@ async def run_cv_folds(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.get_run_cv_folds, store, body)
+
+
+@router.post(
+    "/models/runs/grid-search",
+    response_model=RunGridSearchResponse,
+    summary="A training run's grid_search_results.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-038. `grid_search_results.json` is already exactly the "
+        "response shape (images/trainer/app/pipelines/grid_search.py writes "
+        "it that way on purpose) — a read-and-validate, same discipline as "
+        "/models/runs/cv-folds. `source_key` is guarded the same structural "
+        "way."
+    ),
+)
+async def run_grid_search(
+    body: RunGridSearchRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_grid_search, store, body)
 
 
 @router.post(

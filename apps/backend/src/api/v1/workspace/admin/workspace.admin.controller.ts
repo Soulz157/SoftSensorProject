@@ -32,6 +32,8 @@ import {
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { RolesGuard } from '@/guards/roles.guard';
 import { Roles } from '@/common/decorators/roles.decorator';
+import { WorkspaceDataIntakeAuthorizedService } from '../authorized/workspace-data-intake.authorized.service';
+import { DataIntakeQueryDto } from '../authorized/dto/workspace-data-intake.dto';
 
 @Controller('admin/workspace')
 // ADMIN is enforced per route, not on the class: `POST /create` is the
@@ -40,7 +42,10 @@ import { Roles } from '@/common/decorators/roles.decorator';
 // out of creating their first workspace.
 @UseGuards(JwtAccessGuard, RolesGuard)
 export class WorkspaceAdminController {
-  constructor(private readonly workspaceAdminService: WorkspaceAdminService) {}
+  constructor(
+    private readonly workspaceAdminService: WorkspaceAdminService,
+    private readonly dataIntakeService: WorkspaceDataIntakeAuthorizedService,
+  ) {}
 
   @Roles('ADMIN')
   @Get('/')
@@ -57,6 +62,14 @@ export class WorkspaceAdminController {
   @ApiOkResponse({ type: AdminWorkspaceSummaryResponseDto })
   async getSummary() {
     return this.workspaceAdminService.getSummary();
+  }
+
+  // Declared BEFORE `/:id` — otherwise "data-intake" is read as a workspace id.
+  @Roles('ADMIN')
+  @Get('/data-intake')
+  @HttpCode(200)
+  async getDataIntake(@Query() query: DataIntakeQueryDto) {
+    return this.dataIntakeService.getAllIntake(query.range);
   }
 
   @Roles('ADMIN')

@@ -1271,6 +1271,11 @@ LOSS_HISTORY_FILENAME = "loss_history.json"
 # non-CV run never writes this). Mirrored in images/trainer/train.py
 # (CV_FOLDS_FILENAME) and artifact-keys.ts — change all three.
 CV_FOLDS_FILENAME = "cv_folds.json"
+# MODEL-FLOW-038. Every combination a GridSearchCV run tried, ranked — present
+# only for a grid-search run. Mirrored in images/trainer/app/artifacts.py
+# (GRID_SEARCH_RESULTS_FILENAME) and artifact-keys.ts — change all three, and
+# add to _ALLOWED_RUN_UPLOADS. See images/trainer/app/MIRRORS.md entry 14.
+GRID_SEARCH_RESULTS_FILENAME = "grid_search_results.json"
 # MODEL-FLOW-019-T09. Per-feature importance — present only for the
 # algorithms images/trainer/app/importance.py can read a real quantity from;
 # absent, not empty, for one that cannot. Mirrored in that same file

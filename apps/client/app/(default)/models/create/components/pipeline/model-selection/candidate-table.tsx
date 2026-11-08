@@ -64,6 +64,7 @@ import type {
 } from '@/services/model-draft'
 import { CandidateBaseChart } from './candidate-base-chart'
 import { useRunCvFolds } from '@/hooks/model/use-run-cv-folds'
+import { GridSearchResultsTable } from './grid-search-results-table'
 import { foldCutXs } from '@/lib/cv-oof'
 import { CandidateChart } from './candidate-chart'
 
@@ -914,6 +915,14 @@ export function CandidateTable({
                               figures={comparisonFigures}
                             />
                           </div>
+                        )}
+                        {/* MODEL-FLOW-038. A grid-search candidate is ONE run whose
+                            hyperparameters are the winning combination; the
+                            search that picked it is this table. */}
+                        {candidate.gridSearch && (
+                          <GridSearchResultsTable
+                            gridSearch={candidate.gridSearch}
+                          />
                         )}
                         <div className="grid gap-4 p-2 sm:grid-cols-1">
                           {/* MODEL-FLOW-019-T28. The same Test/Validate pair

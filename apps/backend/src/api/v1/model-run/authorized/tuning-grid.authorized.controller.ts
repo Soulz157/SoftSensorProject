@@ -3,7 +3,10 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { TuningGridAuthorizedService } from './tuning-grid.authorized.service';
-import type { TuningGridResponse } from './tuning-grid.authorized.service';
+import type {
+  ParamGridResponse,
+  TuningGridResponse,
+} from './tuning-grid.authorized.service';
 import { ModelRetrainAuthorizedService } from './model-retrain.authorized.service';
 import { TuningGridQueryDto } from './dto/tuning-grid.authorized.dto';
 
@@ -43,6 +46,30 @@ export class TuningGridAuthorizedController {
         )
       : undefined;
     return this.tuningGrid.get(algorithm, {
+      distinctLabelled: query.distinctLabelled ?? fromModel?.distinctLabelled,
+      rows: query.rows ?? fromModel?.rows,
+      features: query.features ?? fromModel?.features,
+    });
+  }
+
+  @Get('/param-grid/:algorithm')
+  @ApiOperation({
+    summary:
+      'The default GridSearchCV search space Find Best Parameters crosses for one algorithm',
+  })
+  async getParamGrid(
+    @Param('algorithm') algorithm: string,
+    @Query() query: TuningGridQueryDto,
+    @Users() user: Auth.UserPayload,
+  ): Promise<ParamGridResponse> {
+    const fromModel = query.modelId
+      ? await this.retrain.resolveTuningSizeService(
+          query.modelId,
+          algorithm,
+          user,
+        )
+      : undefined;
+    return this.tuningGrid.getParamGrid(algorithm, {
       distinctLabelled: query.distinctLabelled ?? fromModel?.distinctLabelled,
       rows: query.rows ?? fromModel?.rows,
       features: query.features ?? fromModel?.features,

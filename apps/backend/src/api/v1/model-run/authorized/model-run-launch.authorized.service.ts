@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { mintRunToken } from '@/lib/mint-run-token';
+import { readGridSearch } from '@/lib/grid-search-results';
+import { gridOfJob } from '@/lib/tuning-grid';
 import { findHoldoutArtifact } from '@/lib/holdout-artifact';
 import {
   predictionKeyFor,
@@ -636,13 +638,36 @@ export class ModelRunLaunchAuthorizedService {
       omit: { tokenHash: true },
       orderBy: { createdAt: 'desc' },
     });
+    // MODEL-FLOW-038. Whether each run belongs to a grid-search job, so the
+    // Run parameters card knows to fetch its ranked combinations and does not
+    // spend a request on every other run. One query for all jobs involved.
+    const jobIds = [
+      ...new Set(
+        runs.flatMap((r) => (r.candidateJobId ? [r.candidateJobId] : [])),
+      ),
+    ];
+    const jobs =
+      jobIds.length > 0
+        ? await this.prisma.modelCandidateJob.findMany({
+            where: { id: { in: jobIds } },
+            select: { id: true, candidates: true },
+          })
+        : [];
+    const gridJobIds = new Set(
+      jobs.filter((j) => gridOfJob(j.candidates)).map((j) => j.id),
+    );
     // Same envelope as the rest of this draft-run resource — see
     // createDraftRunService's comment for why.
     return {
       statusCode: 200,
       message: 'Training runs fetched',
       type: 'SUCCESS' as const,
-      data: runs,
+      data: runs.map((r) => ({
+        ...r,
+        isGridSearch: r.candidateJobId
+          ? gridJobIds.has(r.candidateJobId)
+          : false,
+      })),
     };
   }
 
@@ -742,6 +767,17 @@ export class ModelRunLaunchAuthorizedService {
       }
     }
 
+    // MODEL-FLOW-038. A grid-search run's ranked combinations, same soft-read
+    // shape as the artifacts above. The job lookup is skipped for a run that
+    // belongs to no job.
+    const gridJob = run.candidateJobId
+      ? await this.prisma.modelCandidateJob.findUnique({
+          where: { id: run.candidateJobId },
+          select: { candidates: true },
+        })
+      : null;
+    const gridSearch = await readGridSearch(run, gridJob?.candidates, this.log);
+
     // Same envelope fix as createDraftRunService, and arguably the more
     // load-bearing half of it: this is what the 2.5s poll loop
     // (use-model-training.ts pollRun) calls on every tick, so an unwrapped
@@ -751,7 +787,13 @@ export class ModelRunLaunchAuthorizedService {
       statusCode: 200,
       message: 'Training run fetched',
       type: 'SUCCESS' as const,
-      data: { ...run, cvFolds, featureImportance, permutationImportance },
+      data: {
+        ...run,
+        cvFolds,
+        featureImportance,
+        permutationImportance,
+        gridSearch,
+      },
     };
   }
 

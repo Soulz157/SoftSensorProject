@@ -1,7 +1,15 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
+  MAX_GRID_COMBINATIONS,
+  PARALLEL_SEARCH_ALGORITHMS,
+  PARAM_GRID,
+  PARAM_GRID_OVERRIDES,
   SIZE_TIER_LOWER_BOUNDS,
+  gridCombinationCount,
+  gridOfJob,
+  paramGridFor,
+  validateParamGrid,
   TUNING_GRID,
   TUNING_GRID_OVERRIDES,
   TUNE_VARIANTS_PER_JOB,
@@ -557,5 +565,182 @@ describe('distinctExtraVariants', () => {
 
   it('returns [] for no extras', () => {
     expect(distinctExtraVariants('ridge', [], { alpha: 1 }, [])).toEqual([]);
+  });
+});
+
+describe('PARAM_GRID (MODEL-FLOW-038)', () => {
+  const actual = extractConsumedKeys(extractBuildModelBody(readTrainer()));
+
+  const tables: [string, string, Record<string, unknown[]>][] = [
+    ...Object.entries(PARAM_GRID).map(
+      ([algorithm, grid]): [string, string, Record<string, unknown[]>] => [
+        'medium',
+        algorithm,
+        grid,
+      ],
+    ),
+    ...(['tiny', 'large'] as const).flatMap((tier) =>
+      Object.entries(PARAM_GRID_OVERRIDES[tier] ?? {}).map(
+        ([algorithm, grid]): [string, string, Record<string, unknown[]>] => [
+          tier,
+          algorithm,
+          grid,
+        ],
+      ),
+    ),
+  ];
+
+  it.each(tables)(
+    '%s/%s: every key is one build_model reads, and the grid fits the cap',
+    (_tier, algorithm, grid) => {
+      const consumed = new Set(actual[algorithm] ?? []);
+      for (const key of Object.keys(grid)) {
+        expect(consumed.has(key)).toBe(true);
+      }
+      expect(gridCombinationCount(grid as never)).toBeLessThanOrEqual(24);
+    },
+  );
+
+  it('a tier override only replaces keys the medium grid searches', () => {
+    for (const tier of ['tiny', 'large'] as const) {
+      for (const [algorithm, grid] of Object.entries(
+        PARAM_GRID_OVERRIDES[tier] ?? {},
+      )) {
+        expect(Object.keys(grid).sort()).toEqual(
+          Object.keys(PARAM_GRID[algorithm]).sort(),
+        );
+      }
+    }
+  });
+
+  it('lstm and gru have no grid: they keep the curated variant path', () => {
+    expect(PARAM_GRID.lstm).toBeUndefined();
+    expect(paramGridFor('gru')).toBeNull();
+  });
+});
+
+describe('paramGridFor', () => {
+  it('merges the base value into its key so the current setting is a grid point', () => {
+    const grid = paramGridFor('ridge', undefined, { alpha: 3 });
+    expect(grid?.alpha).toEqual([0.01, 0.1, 1, 3, 10, 100]);
+  });
+
+  it('leaves a base value the grid already holds alone, and ignores keys it does not search', () => {
+    const grid = paramGridFor('ridge', undefined, {
+      alpha: 1,
+      solver: 'auto',
+    });
+    expect(grid?.alpha).toEqual([0.01, 0.1, 1, 10, 100]);
+    expect(grid).not.toHaveProperty('solver');
+  });
+
+  it('serves the tier override, and the medium grid where a tier has none', () => {
+    const large = sizeTierFor(SIZE_TIER_LOWER_BOUNDS.large * 2);
+    expect(
+      paramGridFor('xgboost', { rows: SIZE_TIER_LOWER_BOUNDS.large * 2 }),
+    ).toEqual(PARAM_GRID_OVERRIDES[large]?.xgboost);
+    expect(paramGridFor('ridge', { rows: 100 })).toEqual(PARAM_GRID.ridge);
+    expect(
+      paramGridFor('xgboost', { rows: SIZE_TIER_LOWER_BOUNDS.small }),
+    ).toEqual(PARAM_GRID.xgboost);
+  });
+
+  it('caps PLS components at the feature count, keeping at least one', () => {
+    expect(paramGridFor('pls', { features: 3 })?.n_components).toEqual([
+      1, 2, 3,
+    ]);
+    expect(paramGridFor('pls', { features: 1 })?.n_components).toEqual([1]);
+  });
+
+  it('keeps every default grid, base merged, inside the combination cap', () => {
+    for (const algorithm of Object.keys(PARAM_GRID)) {
+      const base = Object.fromEntries(
+        Object.keys(PARAM_GRID[algorithm]).map((key) => [key, 'x']),
+      );
+      const grid = paramGridFor(algorithm, undefined, base);
+      expect(gridCombinationCount(grid ?? {})).toBeLessThanOrEqual(
+        MAX_GRID_COMBINATIONS,
+      );
+    }
+  });
+});
+
+describe('validateParamGrid', () => {
+  it('accepts a grid over the algorithm’s own keys', () => {
+    expect(validateParamGrid('ridge', { alpha: [0.1, 1, 10] })).toBeNull();
+  });
+
+  it.each([
+    ['an unknown algorithm', 'lstm', { epochs: [10] }, /does not support/],
+    [
+      'a key the algorithm does not search',
+      'ridge',
+      { C: [1] },
+      /not a searchable/,
+    ],
+    ['an empty value list', 'ridge', { alpha: [] }, /at least one value/],
+    ['duplicate values', 'ridge', { alpha: [1, 1] }, /duplicate/],
+    [
+      'more than 10 values',
+      'ridge',
+      { alpha: Array.from({ length: 11 }, (_, i) => i + 1) },
+      /more than 10/,
+    ],
+    [
+      'more than the combination cap',
+      'svm',
+      {
+        C: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        kernel: ['rbf', 'linear', 'poly'],
+        epsilon: [0.01, 0.1, 0.2],
+      },
+      /exceeds the limit/,
+    ],
+  ])('refuses %s', (_label, algorithm, grid, message) => {
+    expect(validateParamGrid(algorithm, grid)).toMatch(message);
+  });
+});
+
+describe('gridOfJob', () => {
+  it('reads the grid off a one-candidate job, and nothing else', () => {
+    const grid = { alpha: [1, 2] };
+    expect(gridOfJob([{ algorithm: 'ridge', paramGrid: grid }])).toEqual(grid);
+    expect(gridOfJob([{ algorithm: 'ridge', hyperparameters: {} }])).toBeNull();
+    expect(
+      gridOfJob([
+        { algorithm: 'ridge', paramGrid: grid },
+        { algorithm: 'ridge' },
+      ]),
+    ).toBeNull();
+    expect(gridOfJob(null)).toBeNull();
+    expect(gridOfJob('nope')).toBeNull();
+  });
+});
+
+describe('PARALLEL_SEARCH_ALGORITHMS (MODEL-FLOW-038)', () => {
+  const GRID_SEARCH_FILE = path.resolve(
+    __dirname,
+    '../../../../images/trainer/app/pipelines/grid_search.py',
+  );
+
+  it('is exactly the trainer’s PARALLEL_ALGORITHMS, read live', () => {
+    const source = readFileSync(GRID_SEARCH_FILE, 'utf-8');
+    const match = /PARALLEL_ALGORITHMS = frozenset\(\{([^}]*)\}\)/.exec(source);
+    if (!match) {
+      throw new Error(
+        'PARALLEL_ALGORITHMS not found in grid_search.py — has it moved or been renamed?',
+      );
+    }
+    const trainer = [...match[1].matchAll(/"([a-z_]+)"/g)]
+      .map((m) => m[1])
+      .sort();
+    expect([...PARALLEL_SEARCH_ALGORITHMS].sort()).toEqual(trainer);
+    expect(trainer.length).toBeGreaterThan(0);
+  });
+
+  it('only names algorithms that have a grid to search', () => {
+    for (const algorithm of PARALLEL_SEARCH_ALGORITHMS) {
+      expect(PARAM_GRID[algorithm]).toBeDefined();
+    }
   });
 });

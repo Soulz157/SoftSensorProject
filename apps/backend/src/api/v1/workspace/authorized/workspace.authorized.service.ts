@@ -97,11 +97,7 @@ export class WorkspaceAuthorizedService {
     });
   }
 
-  private async assertHasAccess(
-    workspaceId: string,
-    userId: string,
-    userRole: string,
-  ) {
+  async assertHasAccess(workspaceId: string, userId: string, userRole: string) {
     if (userRole === 'ADMIN') return;
 
     const workspace = await this.prisma.workspace.findUnique({

@@ -1061,6 +1061,9 @@ export default function ModelDetailPage({
                 logs={retrain.logs}
                 isRetraining={retrain.isRetraining}
                 onStartRetrain={() => setRetrainOpen(true)}
+                onCancelRetrain={() => void retrain.cancel()}
+                canceling={retrain.canceling}
+                cancelError={retrain.cancelError}
                 applying={promote.busy}
                 onApplyToProduction={version => {
                   // The SAME promote flow the header's own Promote button uses

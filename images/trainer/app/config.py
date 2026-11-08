@@ -17,6 +17,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SCRATCH = Path("/scratch")
+
+
+def cpu_budget() -> int:
+    """How many CPUs this container may actually use.
+
+    NOT `os.cpu_count()`: that reports every core of the HOST, because a
+    container's CPU quota throttles CPU time and does not change what the
+    kernel says (the trap models.py records for torch). The backend sets this
+    from the quota it gives the container (`NanoCpus`); 2 is the production
+    default and what sequence_model.py has always assumed. Never below 1, and
+    an unparseable value falls back to 2 rather than failing a run over a
+    tuning knob.
+    """
+    try:
+        return max(1, int(os.environ.get("TRAINER_CPU_BUDGET", "2")))
+    except ValueError:
+        return 2
+
 STATUS_SUFFIX = "__status"
 STATUS_GOOD = 0
 TIMESTAMP_COLUMN = "timestamp"

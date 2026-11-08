@@ -5,6 +5,7 @@ import { useAtom, useAtomValue } from 'jotai'
 import {
   mpFineTuneBaseEditsAtom,
   mpFineTuneEnabledAtom,
+  mpFineTuneParamGridEditsAtom,
   mpFineTuneSourceRunIdAtom,
   mpFineTuneUseGridAtom,
   mpLossFunctionAtom,
@@ -15,6 +16,7 @@ import {
 } from '@/store/model-pipeline'
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import { useExtraVariants } from '@/hooks/model/use-extra-variants'
+import { useParamGrid } from '@/hooks/model/use-param-grid'
 import { useTuningVariantCounts } from '@/hooks/model/use-tuning-variant-counts'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import type { DatasetSize } from '@/lib/hyperparam-ranges'
@@ -25,6 +27,17 @@ import {
   type FineTuneChoice,
 } from '@/lib/fine-tune'
 import { isAlgorithm } from '@/lib/model-draft-hydration'
+import { isSequenceAlgorithm } from '@/lib/metric-source'
+import {
+  combinationCount,
+  effectiveGrid,
+  fitCount,
+  gridRefusal,
+  type EffectiveGrid,
+} from '@/lib/param-grid'
+import { HYPERPARAMS } from '@/lib/training-config'
+import { searchWorkersFor } from '@/lib/model/estimate-runtime'
+import type { ParamGridResponse } from '@/services/tuning-grid'
 import { scoreMetricOf, type ScoreMetric } from '@/lib/run-params'
 import {
   candidatesFor,
@@ -32,6 +45,35 @@ import {
   type FineTuneInput,
 } from '@/lib/training-launch'
 import type { ModelTrainingRunListItem } from '@/services/model-draft'
+
+/**
+ * MODEL-FLOW-038. The grid-search editor's state: the server's default lists,
+ * what the user typed over them, and the grid that would launch. `null` on
+ * `UseFineTuneResult.paramGrid` unless Find Best Parameters is on for a tabular
+ * algorithm (lstm/gru keep the curated variants).
+ */
+export interface FineTuneParamGrid {
+  /** The server's default search space and caps; `null` until loaded. */
+  defaults: ParamGridResponse | null
+  loading: boolean
+  error: string | null
+  /** Raw text per key, as typed. A key without an entry shows the default. */
+  edits: Record<string, string>
+  setEdit: (key: string, text: string) => void
+  /** Drops every edit, back to the server's defaults. */
+  resetEdits: () => void
+  /** Defaults + edits + the base run's own values; `null` until loaded. */
+  effective: EffectiveGrid | null
+  /** CV folds each combination is scored on; 1 for a Train/Test split. */
+  folds: number
+  combinations: number | null
+  /** Fits the search runs: combinations x folds. */
+  fits: number | null
+  /** Why this grid cannot launch; `null` when it can. */
+  refusal: string | null
+}
+
+const NO_EDITS: Record<string, string> = {}
 
 export interface UseFineTuneResult {
   /** At least one run has succeeded, so there is something to tune. */
@@ -68,6 +110,14 @@ export interface UseFineTuneResult {
   tuningVariants: Partial<Record<Algorithm, number>>
   /** Candidates when Find Best Parameters is off, for the runtime estimate. */
   candidatesPerAlgorithm: Partial<Record<Algorithm, number>> | undefined
+  /** MODEL-FLOW-038. The grid-search editor, or `null` when the curated
+   *  variants apply instead. */
+  paramGrid: FineTuneParamGrid | null
+  /** Fits a valid grid search runs, for the runtime estimate. */
+  gridFits: number | undefined
+  /** MODEL-FLOW-038. Processes a valid grid search fits on, for the runtime
+   *  estimate; `undefined` without one. */
+  searchWorkers: number | undefined
 }
 
 /**
@@ -137,8 +187,77 @@ export function useFineTune({
   const available = choices.length > 0
   const active = enabled && source !== null
 
+  // MODEL-FLOW-038. A tabular algorithm with Find Best Parameters on is a real
+  // GridSearchCV; lstm/gru and Find Best Parameters off keep the old paths.
+  const gridMode =
+    active && useGrid && tunable && !isSequenceAlgorithm(algorithm)
+  const folds = nav.nSplits ?? 1
+  const defaultsRequest = useParamGrid(gridMode ? algorithm : null, datasetSize)
+  const [allGridEdits, setAllGridEdits] = useAtom(mpFineTuneParamGridEditsAtom)
+  const gridEdits = allGridEdits[algorithm] ?? NO_EDITS
+  const setGridEdit = useCallback(
+    (key: string, text: string) =>
+      setAllGridEdits(prev => ({
+        ...prev,
+        [algorithm]: { ...prev[algorithm], [key]: text },
+      })),
+    [algorithm, setAllGridEdits],
+  )
+  const resetGridEdits = useCallback(
+    () => setAllGridEdits(prev => ({ ...prev, [algorithm]: {} })),
+    [algorithm, setAllGridEdits],
+  )
+  const defaults = defaultsRequest.grid
+  const effective = useMemo<EffectiveGrid | null>(
+    () =>
+      gridMode && defaults
+        ? effectiveGrid(defaults.paramGrid, gridEdits, base, key =>
+            HYPERPARAMS[algorithm].find(f => f.key === key),
+          )
+        : null,
+    [gridMode, defaults, gridEdits, base, algorithm],
+  )
+  const gridBlock = !gridMode
+    ? null
+    : defaultsRequest.error
+      ? 'Could not load the grid for this algorithm.'
+      : !defaults || !effective
+        ? 'Loading the grid…'
+        : gridRefusal(effective, defaults)
+  const paramGrid = useMemo<FineTuneParamGrid | null>(
+    () =>
+      gridMode
+        ? {
+            defaults,
+            loading: defaultsRequest.loading,
+            error: defaultsRequest.error,
+            edits: gridEdits,
+            setEdit: setGridEdit,
+            resetEdits: resetGridEdits,
+            effective,
+            folds,
+            combinations: effective ? combinationCount(effective.grid) : null,
+            fits: effective ? fitCount(effective.grid, folds) : null,
+            refusal: gridBlock,
+          }
+        : null,
+    [
+      gridMode,
+      defaults,
+      defaultsRequest.loading,
+      defaultsRequest.error,
+      gridEdits,
+      setGridEdit,
+      resetGridEdits,
+      effective,
+      folds,
+      gridBlock,
+    ],
+  )
+  const launchGrid = gridMode && effective && !gridBlock ? effective.grid : null
+
   const tuningVariants = useTuningVariantCounts({
-    enabled: active && useGrid && tunable,
+    enabled: active && useGrid && tunable && !gridMode,
     algorithms: [algorithm],
     hyperparameters: base,
     perAlgorithmHyperparameters: {},
@@ -147,8 +266,8 @@ export function useFineTune({
   })
 
   const input = useMemo<FineTuneInput>(
-    () => ({ algorithm, base, rows, useGrid }),
-    [algorithm, base, rows, useGrid],
+    () => ({ algorithm, base, rows, useGrid, paramGrid: launchGrid }),
+    [algorithm, base, rows, useGrid, launchGrid],
   )
 
   const planError = useMemo(() => {
@@ -171,7 +290,9 @@ export function useFineTune({
           nSplits: nav.nSplits,
           dirty: false,
           training,
-        }) ?? planError)
+        }) ??
+        gridBlock ??
+        planError)
 
   return {
     available,
@@ -195,5 +316,15 @@ export function useFineTune({
     candidatesPerAlgorithm: useGrid
       ? undefined
       : { [algorithm]: candidatesFor(algorithm, base, rows).length },
+    paramGrid,
+    gridFits: launchGrid ? fitCount(launchGrid, folds) : undefined,
+    searchWorkers:
+      launchGrid && defaults
+        ? searchWorkersFor(
+            defaults.parallel,
+            defaults.cpuBudget,
+            fitCount(launchGrid, folds),
+          )
+        : undefined,
   }
 }

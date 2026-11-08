@@ -676,6 +676,42 @@ class RunCvFoldsResponse(BaseModel):
     folds: list[CvFoldRecord]
 
 
+class RunGridSearchRequest(BaseModel):
+    """MODEL-FLOW-038. Reads a grid-search run's `grid_search_results.json`
+    verbatim — already exactly the response shape
+    (`images/trainer/app/pipelines/grid_search.py` writes it that way on
+    purpose). `source_key` is guarded the same structural way
+    `RunCvFoldsRequest` guards its own."""
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's grid_search_results.json key."
+    )
+
+
+class GridSearchCombination(BaseModel):
+    rank: int
+    # Only the keys the grid varied; `hyperparameters` is the full record the
+    # combination ran with.
+    params: dict[str, Any]
+    hyperparameters: dict[str, Any]
+    mean_score: float
+    std_score: float
+    mean_fit_time: float
+
+
+class RunGridSearchResponse(BaseModel):
+    algorithm: str
+    ranking_metric: str
+    cv: bool
+    n_folds: int
+    n_combinations: int
+    grid: dict[str, list[Any]]
+    best: GridSearchCombination
+    combinations: list[GridSearchCombination]
+
+
 class RunFeatureImportanceRequest(BaseModel):
     """MODEL-FLOW-019-T09. Reads a training run's `feature_importance.json`
     verbatim — already exactly the response shape

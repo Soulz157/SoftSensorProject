@@ -978,3 +978,229 @@ export function distinctExtraVariants(
   }
   return kept;
 }
+
+// ── MODEL-FLOW-038. GridSearchCV default grids ──────────────────────────────
+
+/** Every combination one grid-search run may fit. Mirrored client-side only as
+ *  the figure `GET /training/param-grid/:algorithm` serves; the server is the
+ *  authority (`validateParamGrid`). */
+export const MAX_GRID_COMBINATIONS = 64;
+/** Values per key. */
+export const MAX_GRID_VALUES_PER_KEY = 10;
+
+export type ParamGridValue = string | number | boolean | null;
+export type ParamGrid = Record<string, ParamGridValue[]>;
+
+/**
+ * The search space a Find Best Parameters run hands to `GridSearchCV` — the
+ * FULL cartesian product of these lists, not a curated shortlist. MEDIUM tier;
+ * `PARAM_GRID_OVERRIDES` replaces it per tier. 2-3 keys per algorithm, ≤ ~24
+ * combinations by default. Separate from `TUNING_GRID` on purpose: lstm/gru and
+ * the retrain page still read that one, and its reference-identity `sized` flag
+ * must stay untouched. lstm/gru have no entry — they keep the curated path.
+ *
+ * Every key MUST be one `build_model` reads (images/trainer/app/models.py).
+ * Values satisfy `HyperparametersSchema`: string, number, boolean or null.
+ */
+export const PARAM_GRID: Record<string, ParamGrid> = {
+  ols: { fit_intercept: [true, false] },
+  ridge: { alpha: [0.01, 0.1, 1, 10, 100], fit_intercept: [true, false] },
+  svm: {
+    C: [0.1, 1, 10, 100],
+    kernel: ['rbf', 'linear', 'poly'],
+    epsilon: [0.01, 0.1],
+  },
+  mlp: {
+    hidden_layer_sizes: [50, 100, 200],
+    alpha: [0.0001, 0.001, 0.01],
+  },
+  grp: {
+    alpha: [1e-10, 1e-8, 1e-5, 1e-3],
+    n_restarts_optimizer: [0, 2, 5],
+  },
+  pls: { n_components: [1, 2, 3, 4, 6] },
+  random_forest: {
+    n_estimators: [100, 300],
+    max_depth: [null, 10, 20],
+    min_samples_leaf: [1, 2, 4],
+  },
+  extra_trees: {
+    n_estimators: [100, 300],
+    max_depth: [null, 10, 20],
+    min_samples_leaf: [1, 2, 4],
+  },
+  lightgbm: {
+    learning_rate: [0.05, 0.1, 0.3],
+    num_leaves: [15, 31, 63],
+    n_estimators: [100, 300],
+  },
+  xgboost: {
+    learning_rate: [0.05, 0.1, 0.3],
+    max_depth: [3, 6, 10],
+    n_estimators: [100, 300],
+  },
+};
+
+/** Declared priors, like `TUNING_GRID_OVERRIDES` — not measured optima. Only
+ *  the algorithms with a capacity dial are sized; `small` reads the medium
+ *  grid. Same keys as `PARAM_GRID` for the algorithm. */
+export const PARAM_GRID_OVERRIDES: Partial<
+  Record<SizeTier, Record<string, ParamGrid>>
+> = {
+  tiny: {
+    mlp: { hidden_layer_sizes: [16, 32, 64], alpha: [0.001, 0.01, 0.1] },
+    random_forest: {
+      n_estimators: [50, 100],
+      max_depth: [3, 5, 10],
+      min_samples_leaf: [2, 4, 8],
+    },
+    extra_trees: {
+      n_estimators: [50, 100],
+      max_depth: [3, 5, 10],
+      min_samples_leaf: [2, 4, 8],
+    },
+    lightgbm: {
+      learning_rate: [0.05, 0.1, 0.3],
+      num_leaves: [7, 15, 31],
+      n_estimators: [50, 100],
+    },
+    xgboost: {
+      learning_rate: [0.05, 0.1, 0.3],
+      max_depth: [2, 3, 5],
+      n_estimators: [50, 100],
+    },
+  },
+  large: {
+    mlp: {
+      hidden_layer_sizes: [100, 200, 400],
+      alpha: [0.00001, 0.0001, 0.001],
+    },
+    random_forest: {
+      n_estimators: [200, 500],
+      max_depth: [null, 20, 40],
+      min_samples_leaf: [1, 2, 4],
+    },
+    extra_trees: {
+      n_estimators: [200, 500],
+      max_depth: [null, 20, 40],
+      min_samples_leaf: [1, 2, 4],
+    },
+    lightgbm: {
+      learning_rate: [0.03, 0.05, 0.1],
+      num_leaves: [63, 127, 255],
+      n_estimators: [300, 600],
+    },
+    xgboost: {
+      learning_rate: [0.03, 0.05, 0.1],
+      max_depth: [6, 8, 12],
+      n_estimators: [300, 600],
+    },
+  },
+};
+
+/** Product of the list lengths — what `GridSearchCV` will fit per fold. */
+export function gridCombinationCount(grid: ParamGrid): number {
+  return Object.values(grid).reduce((n, values) => n * values.length, 1);
+}
+
+/**
+ * The default grid for one algorithm and dataset size, with the base run's own
+ * value merged into every key so the current setting is always one grid point
+ * (this replaces the old "already covered" exclusion). Returns `null` for an
+ * algorithm with no grid (lstm/gru, unknown).
+ */
+export function paramGridFor(
+  algorithm: string,
+  size?: DatasetSize,
+  base: Record<string, ParamGridValue> = {},
+): ParamGrid | null {
+  const tier = sizeTierFor(size?.rows);
+  const table =
+    (tier === 'medium' ? undefined : PARAM_GRID_OVERRIDES[tier]?.[algorithm]) ??
+    PARAM_GRID[algorithm];
+  if (!table) return null;
+
+  const grid: ParamGrid = {};
+  for (const [key, values] of Object.entries(table)) {
+    let list = [...values];
+    // sklearn raises rather than clamping a PLS component count above the
+    // feature count; keep at least one value.
+    if (algorithm === 'pls' && key === 'n_components' && size?.features) {
+      const features = size.features;
+      const capped = list.filter((v) => typeof v === 'number' && v <= features);
+      list = capped.length > 0 ? capped : [1];
+    }
+    const baseValue = base[key];
+    if (baseValue !== undefined && !list.includes(baseValue)) {
+      list.push(baseValue);
+      if (list.every((v) => typeof v === 'number')) {
+        list.sort((a, b) => Number(a) - Number(b));
+      }
+    }
+    grid[key] = list;
+  }
+  return grid;
+}
+
+/**
+ * Server-side authority over a client-sent grid. Returns the first problem as
+ * a message, or `null` when the grid is acceptable. Keys are limited to the
+ * ones the algorithm's default grid searches: the user edits VALUES per key,
+ * never which knobs exist.
+ */
+export function validateParamGrid(
+  algorithm: string,
+  grid: ParamGrid,
+): string | null {
+  const allowed = PARAM_GRID[algorithm];
+  if (!allowed) {
+    return `${algorithm} does not support grid search.`;
+  }
+  const entries = Object.entries(grid);
+  if (entries.length === 0) return 'paramGrid needs at least one key.';
+  for (const [key, values] of entries) {
+    if (!(key in allowed)) {
+      return `"${key}" is not a searchable hyperparameter for ${algorithm}.`;
+    }
+    if (values.length === 0) return `"${key}" needs at least one value.`;
+    if (values.length > MAX_GRID_VALUES_PER_KEY) {
+      return `"${key}" has more than ${MAX_GRID_VALUES_PER_KEY} values.`;
+    }
+    if (new Set(values).size !== values.length) {
+      return `"${key}" has duplicate values.`;
+    }
+  }
+  const count = gridCombinationCount(grid);
+  if (count > MAX_GRID_COMBINATIONS) {
+    return `${count} combinations exceeds the limit of ${MAX_GRID_COMBINATIONS}.`;
+  }
+  return null;
+}
+
+/**
+ * MODEL-FLOW-038. The grid a candidate job carries, or `null` when it is not a
+ * grid-search job. A grid job holds exactly one candidate, so only the first is
+ * read; `candidates` is the job row's untyped JSON column.
+ */
+export function gridOfJob(candidates: unknown): ParamGrid | null {
+  if (!Array.isArray(candidates) || candidates.length !== 1) return null;
+  const first: unknown = candidates[0];
+  if (typeof first !== 'object' || first === null) return null;
+  const grid = (first as { paramGrid?: unknown }).paramGrid;
+  if (typeof grid !== 'object' || grid === null || Array.isArray(grid)) {
+    return null;
+  }
+  return grid as ParamGrid;
+}
+
+/**
+ * MODEL-FLOW-038. Algorithms whose grid search the trainer fits in PARALLEL
+ * worker processes. Mirrors `PARALLEL_ALGORITHMS` in
+ * images/trainer/app/pipelines/grid_search.py — `tuning-grid.spec.ts` reads
+ * that file and fails if they differ. Served so the client's time estimate
+ * divides by the workers the trainer will really use.
+ */
+export const PARALLEL_SEARCH_ALGORITHMS: ReadonlySet<string> = new Set([
+  'random_forest',
+  'extra_trees',
+]);

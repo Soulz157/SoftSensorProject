@@ -361,6 +361,10 @@ export const RunCompleteSchema = z
 
     splitSpec: SplitSpecSchema.optional(),
 
+    // MODEL-FLOW-038. Grid-search runs only: the winning combination, which
+    // `complete()` writes over the run's own hyperparameters.
+    bestHyperparameters: HyperparametersSchema.optional(),
+
     uploaded: z.array(RunUploadFilenameEnum).optional(),
   })
   .refine(

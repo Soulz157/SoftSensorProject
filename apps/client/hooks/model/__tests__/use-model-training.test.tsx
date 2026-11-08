@@ -28,10 +28,12 @@ vi.mock('@/services/model-draft', () => ({
   modelDraftRunService: {
     create: vi.fn(),
     get: vi.fn(),
+    cancel: vi.fn(),
   },
   modelDraftCandidateJobService: {
     create: vi.fn(),
     get: vi.fn(),
+    cancel: vi.fn(),
   },
   modelDraftService: {
     get: vi.fn(),
@@ -1024,5 +1026,177 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
         }),
       )
     })
+  })
+})
+
+describe('useModelTraining — cancel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const ok = (data: unknown) => ({
+    statusCode: 200,
+    message: 'ok',
+    type: 'SUCCESS' as const,
+    data: data as never,
+  })
+
+  /** A job that is running, started through the real fine-tune path. */
+  async function startJob() {
+    vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue(
+      ok({ id: 'job-1' }),
+    )
+    vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue(
+      ok({
+        id: 'job-1',
+        status: 'RUNNING',
+        completedRuns: 0,
+        totalRuns: 1,
+        candidates: [],
+      }),
+    )
+    const rendered = renderTraining(s => s.set(mpAlgorithmsAtom, ['ridge']))
+    await act(async () => {
+      rendered.result.current.fineTune({
+        algorithm: 'ridge',
+        base: RIDGE_BASE,
+        rows: [],
+        useGrid: true,
+      })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(rendered.store.get(mpTrainStateAtom).status).toBe('training')
+    return rendered
+  }
+
+  it('cancels the JOB in flight, stops polling, and goes idle', async () => {
+    vi.mocked(modelDraftCandidateJobService.cancel).mockResolvedValue(
+      ok({ id: 'job-1', status: 'CANCELED' }),
+    )
+    const { result, store } = await startJob()
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+
+    expect(modelDraftCandidateJobService.cancel).toHaveBeenCalledWith(
+      'draft-1',
+      'job-1',
+    )
+    expect(modelDraftRunService.cancel).not.toHaveBeenCalled()
+    expect(store.get(mpTrainStateAtom).status).toBe('idle')
+
+    // Polling is over: another interval does not ask the server again.
+    const before = vi.mocked(modelDraftCandidateJobService.get).mock.calls
+      .length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(vi.mocked(modelDraftCandidateJobService.get).mock.calls.length).toBe(
+      before,
+    )
+  })
+
+  it('cancels a single RUN through the run endpoint', async () => {
+    vi.mocked(modelDraftRunService.create).mockResolvedValue(
+      ok({ id: 'run-1' }),
+    )
+    vi.mocked(modelDraftRunService.get).mockResolvedValue(
+      ok({ id: 'run-1', status: 'RUNNING', logs: [] }),
+    )
+    vi.mocked(modelDraftRunService.cancel).mockResolvedValue(
+      ok({ id: 'run-1', status: 'CANCELED' }),
+    )
+    const { result, store } = renderTraining(s =>
+      s.set(mpAlgorithmsAtom, ['ols']),
+    )
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+
+    expect(modelDraftRunService.cancel).toHaveBeenCalledWith('draft-1', 'run-1')
+    expect(modelDraftCandidateJobService.cancel).not.toHaveBeenCalled()
+    expect(store.get(mpTrainStateAtom).status).toBe('idle')
+  })
+
+  it('a failed cancel leaves the run training, keeps polling, and says why', async () => {
+    vi.mocked(modelDraftCandidateJobService.cancel).mockImplementation(() =>
+      Promise.reject(new Error('Network down')),
+    )
+    const { result, store } = await startJob()
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+
+    expect(result.current.cancelError).toBe('Network down')
+    expect(result.current.canceling).toBe(false)
+    expect(store.get(mpTrainStateAtom).status).toBe('training')
+    const before = vi.mocked(modelDraftCandidateJobService.get).mock.calls
+      .length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(
+      vi.mocked(modelDraftCandidateJobService.get).mock.calls.length,
+    ).toBeGreaterThan(before)
+  })
+
+  it('a poll already in flight when the cancel lands does not paint an error over idle', async () => {
+    let finishPoll: (
+      v: Awaited<ReturnType<typeof modelDraftCandidateJobService.get>>,
+    ) => void = () => {}
+    vi.mocked(modelDraftCandidateJobService.cancel).mockResolvedValue(
+      ok({ id: 'job-1', status: 'CANCELED' }),
+    )
+    const { result, store } = await startJob()
+    // The next poll hangs until we release it, and reports the canceled job.
+    vi.mocked(modelDraftCandidateJobService.get).mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finishPoll = resolve
+        }),
+    )
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+    expect(store.get(mpTrainStateAtom).status).toBe('idle')
+
+    await act(async () => {
+      finishPoll(
+        ok({
+          id: 'job-1',
+          status: 'CANCELED',
+          failureReason: 'Canceled by user.',
+          completedRuns: 0,
+          totalRuns: 1,
+          candidates: [],
+        }),
+      )
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(store.get(mpTrainStateAtom).status).toBe('idle')
+  })
+
+  it('does nothing, and calls nothing, when nothing is training', async () => {
+    const { result } = renderTraining()
+    await act(async () => {
+      await result.current.cancel()
+    })
+    expect(modelDraftCandidateJobService.cancel).not.toHaveBeenCalled()
+    expect(modelDraftRunService.cancel).not.toHaveBeenCalled()
   })
 })

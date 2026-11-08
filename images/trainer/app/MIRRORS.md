@@ -333,6 +333,56 @@ every lstm/gru `model.joblib` pickled before the move references
 
 ---
 
+## 14. `GRID_SEARCH_RESULTS_FILENAME = "grid_search_results.json"`
+
+| Copy        | Location                                                              |
+| ----------- | --------------------------------------------------------------------- |
+| this image  | `artifacts.py`                                                        |
+| apps/python | `object_store.py` (`GRID_SEARCH_RESULTS_FILENAME`), gating `_ALLOWED_RUN_UPLOADS` in `services/artifact_service.py` |
+| API (TS)    | `artifact-keys.ts` (`GRID_SEARCH_RESULTS_FILENAME`, `RUN_UPLOAD_FILENAMES`) |
+
+MODEL-FLOW-038. Every combination a `GridSearchCV` run tried, ranked, written by
+`pipelines/grid_search.py` through `TrainingResult.extra_json`. Present only for
+a grid-search run; no run column records its key (sibling lookup by name).
+
+**Image rebuild required**, same as entries 9-12. The backend refuses to accept
+a grid run that completes without this artifact (trainer-image drift guard).
+
+---
+
+## 15. `TRAINER_CPU_BUDGET` = whole CPUs of the container's quota
+
+| Copy        | Location                                                                 |
+| ----------- | ------------------------------------------------------------------------ |
+| this image  | `config.py::cpu_budget` (default 2); also read by `sequence_model.py` (torch threads) |
+| API (TS)    | `trainning-container.authorized.service.ts::trainerCpuBudget(nanoCpus)`, passed in the container `Env` |
+
+MODEL-FLOW-038. The container cannot read its own CPU quota (`os.cpu_count()`
+reports the HOST's cores), so the backend states it: `floor(NanoCpus / 1e9)`,
+never below 1. The grid search sizes its worker pool from it
+(`pipelines/grid_search.py::search_parallelism`), so raising
+`TRAINING_NANO_CPUS` on the backend is the one knob that makes a search faster
+— both sides follow it. An image older than this entry ignores the variable and
+keeps its fixed 2; a backend older than this entry does not send it and the
+trainer falls back to 2, so a mismatch is slower, never wrong.
+
+**Image rebuild required** for the parallel search (the env alone changes nothing).
+
+Two more copies ride on the same contract, both for the client's time estimate:
+
+| Copy        | Location                                                                 |
+| ----------- | ------------------------------------------------------------------------ |
+| this image  | `pipelines/grid_search.py::PARALLEL_ALGORITHMS` and `search_parallelism` |
+| API (TS)    | `tuning-grid.ts::PARALLEL_SEARCH_ALGORITHMS` (pinned to the Python list by `tuning-grid.spec.ts`, which reads this file), served as `parallel` + `cpuBudget` by `GET /training/param-grid/:algorithm` |
+| client      | `lib/model/estimate-runtime.ts::searchWorkersFor` — the same rule, same cases as `test_grid_search.py::test_workers_never_exceed_the_budget_or_the_work` |
+
+The estimate divides only the SEARCH by `workers x 0.75` (`PARALLEL_EFFICIENCY`,
+measured 1.5x on 2 workers); the winner's own fit is one process. Change the
+set of parallel algorithms or the worker rule on one side and the other two must
+follow, or the screen quotes a time the trainer will not take.
+
+---
+
 ## Long-term
 
 The right fix is a shared wheel containing `labelled_mask`, the fold plan, and

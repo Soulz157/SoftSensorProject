@@ -10,7 +10,10 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart'
 import type { ColumnBins } from '@/services/model-monitoring'
-import { resolveDistributionBins, resolveOverflow } from '@/lib/distribution-bins'
+import {
+  resolveDistributionBins,
+  resolveOverflow,
+} from '@/lib/distribution-bins'
 
 interface Props {
   bins: ColumnBins
@@ -36,7 +39,7 @@ const config = {
  * MODEL-SERVE-001-T16 for PSI; it grades nothing now). The
  * repo's first GROUPED (multi-series) bar chart — every existing `<Bar>`
  * here renders a single series, so this is built on `ChartContainer`'s
- * token-driven pattern (`ingestion-trend-chart.tsx`), never on
+ * token-driven pattern (`analytics/components/ingestion-chart.tsx`), never on
  * `residual-histogram-chart.tsx`, which hardcodes a hex fill and would
  * spend DESIGN.md's reserved Warning Amber on a non-status mark.
  *

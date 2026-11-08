@@ -1,6 +1,7 @@
 import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
 import { ALGORITHM_LABELS } from '@/store/model-pipeline'
 import { isSequenceAlgorithm } from '@/lib/metric-source'
+import { combinationCount, type ParamGrid } from '@/lib/param-grid'
 
 /**
  * What each training button sends, decided from Step 3's settings alone — no
@@ -40,6 +41,10 @@ export type LaunchPlan =
        *  them after its curated shortlist). Everywhere else the user's rows
        *  are already in `candidates`. */
       extraVariants?: HyperparamRecord[]
+      /** MODEL-FLOW-038. Sent only for a grid search on one tabular
+       *  algorithm: the value lists the trainer crosses with GridSearchCV
+       *  inside ONE run. Never beside `extraVariants`. */
+      paramGrid?: ParamGrid
     }
 
 /** `CreateCandidateJobSchema.candidates` is capped at 20: each is a container. */
@@ -140,20 +145,51 @@ export interface FineTuneInput {
   rows: HyperparamRecord[]
   /** Find Best Parameters: also try the curated hyperparameter variants. */
   useGrid: boolean
+  /**
+   * MODEL-FLOW-038. The grid the user edited, for a tabular algorithm with
+   * Find Best Parameters on. Present, it replaces the curated variants AND the
+   * added rows: GridSearchCV tries every combination of it. Absent (lstm/gru,
+   * or the grid not loaded), the curated path below runs unchanged.
+   */
+  paramGrid?: ParamGrid | null
 }
 
 /** A fine-tune is always a one-algorithm HYPERPARAMETER_SEARCH job. */
 export type FineTunePlan = Extract<LaunchPlan, { type: 'job' }>
 
 /**
- * Round 2. With the curated variants on, the server expands the base into its
- * grid and appends the user's rows after it. With them off, the base and the
+ * Round 2. With a `paramGrid` (MODEL-FLOW-038) the base is ONE candidate and
+ * the trainer crosses the grid itself. Otherwise, with the curated variants on,
+ * the server expands the base into its shortlist and appends the user's rows
+ * after it. With them off, the base and the
  * rows ARE the candidates (the server does not expand a job that already
  * carries more than one) — so there must be at least one row, else it would
  * only repeat the run being tuned.
  */
 export function planFineTuneLaunch(input: FineTuneInput): FineTunePlan {
-  const { algorithm, base, rows, useGrid } = input
+  const { algorithm, base, rows, useGrid, paramGrid } = input
+
+  if (useGrid && paramGrid && !isSequenceAlgorithm(algorithm)) {
+    const empty = Object.entries(paramGrid).find(
+      ([, values]) => values.length === 0,
+    )
+    if (empty || Object.keys(paramGrid).length === 0) {
+      throw new Error(
+        `Give ${empty?.[0] ?? 'the grid'} at least one value to search.`,
+      )
+    }
+    if (combinationCount(paramGrid) < 2) {
+      throw new Error(
+        'The grid has one combination — add a value to search, or turn off Find Best Parameters.',
+      )
+    }
+    return {
+      type: 'job',
+      kind: 'HYPERPARAMETER_SEARCH',
+      candidates: [{ algorithm, hyperparameters: base }],
+      paramGrid,
+    }
+  }
 
   if (useGrid) {
     return {

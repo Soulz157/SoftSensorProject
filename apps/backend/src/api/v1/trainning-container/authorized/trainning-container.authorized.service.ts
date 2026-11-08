@@ -1,3 +1,5 @@
+import { dockerLogText } from '@/lib/docker-log-text';
+import { configuredNanoCpus, trainerCpuBudget } from '@/lib/trainer-cpu';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import Docker from 'dockerode';
 import { PrismaService } from '@softsensor/prisma';
@@ -53,14 +55,26 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // predicts 20.334125518798828 in both images, bit-identical. Built by the
   // user (2026-11-02, image e9d2e2862018); trainer suite 103/103 inside it.
   // Not pushed.
+  //
+  // 1.0.26 — MODEL-FLOW-038. Find Best Parameters is a real GridSearchCV:
+  // pipelines/grid_search.py, grid_search_results.json, `bestHyperparameters`
+  // on /complete. A backend that sends `paramGrid` to an older image gets its
+  // run FAILED by design (complete() checks for the artifact). Built by the
+  // user (2026-11-05, image 11d4ad38fdf9).
+  //
+  // 1.0.27 — MODEL-FLOW-038. The grid search fits random_forest/extra_trees
+  // combinations in parallel within TRAINER_CPU_BUDGET (sent below from
+  // NanoCpus); measured 1.5-1.8x under a 2-CPU cap with an identical result.
+  // Built by the user (2026-11-05, image 333eb812b570); trainer suite 124/124
+  // against the code baked into it. Not pushed.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.25';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.27';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(
     process.env.TRAINING_MEMORY_BYTES ?? 8 * 1024 ** 3,
   );
-  private readonly nanoCpus = Number(process.env.TRAINING_NANO_CPUS ?? 2 * 1e9);
+  private readonly nanoCpus = configuredNanoCpus();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -329,6 +343,10 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
         `RUN_TOKEN=${token}`,
         `API_BASE=${process.env.INTERNAL_API_BASE ?? 'http://backend:3000'}`,
         `MODE=${mode}`,
+        // The CPUs the container may really use. The trainer cannot read its
+        // own quota (`os.cpu_count()` reports the host's cores), so it is told:
+        // it sizes the grid search's worker pool and torch's threads from this.
+        `TRAINER_CPU_BUDGET=${trainerCpuBudget(this.nanoCpus)}`,
       ],
       Labels: {
         'dslake.role':
@@ -556,7 +574,10 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
         stderr: true,
         tail: 40,
       });
-      return buf.toString('utf8').slice(-2000);
+      // `dockerLogText`, not a bare toString: the multiplexed stream's frame
+      // headers carry 0x00, which Postgres refuses, and this text is written
+      // into failureReason — inside the very failure path that needs to land.
+      return dockerLogText(buf).slice(-2000);
     } catch {
       return '(logs unavailable)';
     }

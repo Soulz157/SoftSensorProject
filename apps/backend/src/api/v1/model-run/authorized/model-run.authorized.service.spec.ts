@@ -926,3 +926,114 @@ describe('ModelRunAuthorizedService', () => {
     });
   });
 });
+
+describe('ModelRunAuthorizedService — MODEL-FLOW-038 grid search', () => {
+  const GRID = { alpha: [0.1, 1, 10] };
+  const gridJob = {
+    candidates: [
+      { algorithm: 'ridge', hyperparameters: { alpha: 1 }, paramGrid: GRID },
+    ],
+    rankingMetric: 'mae',
+    retrainStrategy: null,
+    sourceVersionId: null,
+    cvFolds: null,
+  };
+  const plainJob = {
+    ...gridJob,
+    candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+  };
+
+  function build(job: unknown) {
+    const base = makePrisma({
+      run: { candidateJobId: 'job-1', hyperparameters: { alpha: 1 } },
+    });
+    const prisma = {
+      ...base,
+      modelCandidateJob: { findUnique: jest.fn().mockResolvedValue(job) },
+    };
+    const service = new ModelRunAuthorizedService(
+      prisma as never,
+      { advanceJobForRun: jest.fn() } as never,
+    );
+    return { prisma, service };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedPresignArtifact.mockResolvedValue({
+      data_url: 'https://minio.example/gold-signed',
+      sidecar_urls: { 'feature_spec.json': 'https://minio.example/spec' },
+      checksum: 'gold-checksum',
+      row_count: 100,
+      expires_at: '2026-01-01T00:00:00Z',
+    });
+  });
+
+  describe('claim()', () => {
+    it('hands the trainer the job’s grid and ranking metric', async () => {
+      const { service } = build(gridJob);
+      const spec = await service.claim('run-1');
+      expect(spec).toMatchObject({ paramGrid: GRID, rankingMetric: 'mae' });
+    });
+
+    it('sends neither for an ordinary candidate run', async () => {
+      const { service } = build(plainJob);
+      const spec = await service.claim('run-1');
+      expect(spec).not.toHaveProperty('paramGrid');
+      expect(spec).not.toHaveProperty('rankingMetric');
+    });
+  });
+
+  describe('complete()', () => {
+    const OK = {
+      status: 'SUCCEEDED',
+      metrics: { r2: 0.9 },
+      bestHyperparameters: { alpha: 10 },
+      uploaded: ['model.joblib', 'grid_search_results.json'],
+    } as never;
+
+    it('overwrites the run’s hyperparameters with the winning combination', async () => {
+      const { prisma, service } = build(gridJob);
+      await service.complete('run-1', OK);
+      const [call] = prisma.modelTrainingRun.update.mock.calls;
+      expect(call[0].data.hyperparameters).toEqual({ alpha: 10 });
+      expect(call[0].data.status).toBe('SUCCEEDED');
+    });
+
+    it('FAILS the run when the trainer image sent no grid results', async () => {
+      const { prisma, service } = build(gridJob);
+      await service.complete('run-1', {
+        status: 'SUCCEEDED',
+        metrics: { r2: 0.9 },
+        uploaded: ['model.joblib'],
+      } as never);
+      const [call] = prisma.modelTrainingRun.update.mock.calls;
+      expect(call[0].data.status).toBe('FAILED');
+      expect(call[0].data.failureReason).toMatch(/rebuild images\/trainer/);
+      expect(call[0].data).not.toHaveProperty('hyperparameters');
+    });
+
+    it('FAILS the run when the combination is missing but the file is there', async () => {
+      const { prisma, service } = build(gridJob);
+      await service.complete('run-1', {
+        status: 'SUCCEEDED',
+        metrics: { r2: 0.9 },
+        uploaded: ['model.joblib', 'grid_search_results.json'],
+      } as never);
+      const [call] = prisma.modelTrainingRun.update.mock.calls;
+      expect(call[0].data.status).toBe('FAILED');
+    });
+
+    it('leaves an ordinary candidate run untouched', async () => {
+      const { prisma, service } = build(plainJob);
+      await service.complete('run-1', {
+        status: 'SUCCEEDED',
+        metrics: { r2: 0.9 },
+        uploaded: ['model.joblib'],
+      } as never);
+      const [call] = prisma.modelTrainingRun.update.mock.calls;
+      expect(call[0].data.status).toBe('SUCCEEDED');
+      expect(call[0].data).not.toHaveProperty('hyperparameters');
+    });
+  });
+});

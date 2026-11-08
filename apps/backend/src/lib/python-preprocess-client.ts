@@ -954,6 +954,49 @@ export async function getRunCvFolds(sourceKey: string): Promise<RunCvFolds> {
   return RunCvFoldsSchema.parse(res);
 }
 
+/**
+ * MODEL-FLOW-038. One ranked combination of a grid-search run. `params` holds
+ * only the keys the grid varied; `hyperparameters` is the full record it ran.
+ * Scores are the ranking metric itself (RMSE or MAE), lower is better.
+ */
+const GridSearchCombinationSchema = z.object({
+  rank: z.number().int(),
+  params: z.record(z.string(), z.unknown()),
+  hyperparameters: z.record(z.string(), z.unknown()),
+  mean_score: z.number(),
+  std_score: z.number(),
+  mean_fit_time: z.number(),
+});
+
+const RunGridSearchSchema = z.object({
+  algorithm: z.string().min(1),
+  ranking_metric: z.string().min(1),
+  cv: z.boolean(),
+  n_folds: z.number().int(),
+  n_combinations: z.number().int(),
+  grid: z.record(z.string(), z.array(z.unknown())),
+  best: GridSearchCombinationSchema,
+  combinations: z.array(GridSearchCombinationSchema),
+});
+
+export type RunGridSearch = z.infer<typeof RunGridSearchSchema>;
+
+/**
+ * MODEL-FLOW-038. `source_key` is built by the caller from the run's owner and
+ * the fixed filename — never accepted from a browser request, same discipline
+ * `getRunCvFolds` applies to its own key.
+ */
+export async function getRunGridSearch(
+  sourceKey: string,
+): Promise<RunGridSearch> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/grid-search',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunGridSearchSchema.parse(res);
+}
+
 /** MODEL-FLOW-019-T09. `importance` is always non-negative — for a
  *  coefficient method it is `abs(coefficient)`, never the signed value, so
  *  ranking and "share of total" stay meaningful; `coefficient` (the signed

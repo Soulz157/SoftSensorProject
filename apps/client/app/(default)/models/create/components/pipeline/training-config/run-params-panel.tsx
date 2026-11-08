@@ -38,6 +38,7 @@ import { useCandidateJob } from '@/hooks/model/use-candidate-job'
 import { useApplyRunParams } from '@/hooks/model/use-apply-run-params'
 import { RunComparisonPanel } from './run-comparison-panel'
 import { CvRunSection, formatCvScore } from './cv-results-section'
+import { GridRunSection } from './grid-run-section'
 import { cvFoldCountOf } from '@/lib/run-comparison'
 import {
   classifyHyperparams,
@@ -782,6 +783,13 @@ function RunCard({
               fetches nothing for a collapsed card. */}
           {isCv && run.status === 'SUCCEEDED' && (
             <CvRunSection draftId={draftId} run={run} />
+          )}
+
+          {/* MODEL-FLOW-038. The search behind a grid-search run, in the same
+              card. Mounted only while the card is open; only a run the list
+              flagged as a grid run fetches anything. */}
+          {run.isGridSearch && run.status === 'SUCCEEDED' && (
+            <GridRunSection draftId={draftId} runId={run.id} />
           )}
 
           {run.failureReason && (

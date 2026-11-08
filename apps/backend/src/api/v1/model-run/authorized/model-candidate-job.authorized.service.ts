@@ -1,4 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { readGridSearch } from '@/lib/grid-search-results';
 import { PrismaService, PrismaTypes, PrismaModels } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import {
@@ -87,6 +88,12 @@ interface Candidate {
    * (`candidate.phase ?? 1`).
    */
   phase?: number;
+  /**
+   * MODEL-FLOW-038. Present only on a grid-search job's single candidate:
+   * the value lists `GridSearchCV` crosses inside ONE trainer run. `claim()`
+   * reads it back off the job row and puts it on the run spec.
+   */
+  paramGrid?: Record<string, Array<string | number | boolean | null>>;
 }
 
 /**
@@ -409,6 +416,37 @@ export class ModelCandidateJobAuthorizedService {
   }
 
   /**
+   * MODEL-FLOW-038. PLS only: sklearn raises, rather than clamping, a
+   * `n_components` above the feature count, and the trainer searches with
+   * `error_score="raise"` — so one over-cap value would fail the whole search
+   * after it had started. The curated path capped this through
+   * `withFeatureCount`; a grid skips that, so the cap is applied to the grid
+   * here, off the artifact's own feature count (never the request). A list left
+   * with nothing is refused by name instead of silently replaced.
+   */
+  async capGridToFeatures(
+    algorithm: string,
+    goldArtifactId: string,
+    grid: Record<string, Array<string | number | boolean | null>>,
+  ): Promise<Record<string, Array<string | number | boolean | null>>> {
+    const components = grid.n_components;
+    if (algorithm !== 'pls' || !components) return grid;
+    const { features } = await this.withFeatureCount(algorithm, goldArtifactId);
+    if (!features) return grid;
+    const kept = components.filter(
+      (value) => typeof value === 'number' && value <= features,
+    );
+    if (kept.length === 0) {
+      throw new AppException({
+        statusCode: 400,
+        message: `PLS cannot use more components than the ${features} feature column${features === 1 ? '' : 's'} this dataset has — lower n_components.`,
+        type: 'ERROR',
+      });
+    }
+    return { ...grid, n_components: kept };
+  }
+
+  /**
    * MODEL-FLOW-024. Adds the training artifact's feature count to a size, when
    * and only when the algorithm reads it — PLS, whose `n_components` cannot
    * exceed it. Read off the artifact ROW (`DatasetArtifact.featureCount`), one
@@ -549,23 +587,37 @@ export class ModelCandidateJobAuthorizedService {
     // arbitrary hyperparameters.
     const expandsOneCandidate =
       dto.kind === 'HYPERPARAMETER_SEARCH' && dto.candidates.length === 1;
-    const requestedCandidates = expandsOneCandidate
-      ? this.expandSearchCandidates(
-          dto.candidates[0],
-          await this.withFeatureCount(
-            dto.candidates[0].algorithm,
-            dto.goldArtifactId,
-            {
-              distinctLabelled: dto.sizedDistinctLabelled,
-              rows: dto.sizedRowCount,
-            },
-          ),
-          // MODEL-FLOW-026. Step 3's hand-added variant rows. The DTO already
-          // refused them for any other `kind`, so this is the only place they
-          // can enter a job.
-          dto.extraVariants ?? [],
-        )
-      : dto.candidates;
+    // MODEL-FLOW-038. A grid search is ONE candidate, ONE run: the trainer
+    // crosses `paramGrid` itself, so nothing is expanded here. The DTO already
+    // refused a grid for anything but a single tabular HYPERPARAMETER_SEARCH.
+    const requestedCandidates: Candidate[] = dto.paramGrid
+      ? [
+          {
+            ...dto.candidates[0],
+            paramGrid: await this.capGridToFeatures(
+              dto.candidates[0].algorithm,
+              dto.goldArtifactId,
+              dto.paramGrid,
+            ),
+          },
+        ]
+      : expandsOneCandidate
+        ? this.expandSearchCandidates(
+            dto.candidates[0],
+            await this.withFeatureCount(
+              dto.candidates[0].algorithm,
+              dto.goldArtifactId,
+              {
+                distinctLabelled: dto.sizedDistinctLabelled,
+                rows: dto.sizedRowCount,
+              },
+            ),
+            // MODEL-FLOW-026. Step 3's hand-added variant rows. The DTO already
+            // refused them for any other `kind`, so this is the only place they
+            // can enter a job.
+            dto.extraVariants ?? [],
+          )
+        : dto.candidates;
 
     // Every candidate a client sends is phase 1 — `CandidateSchema` has no
     // `phase` field, so this is the ONLY place phase 1 is stamped.
@@ -1247,10 +1299,27 @@ export class ModelCandidateJobAuthorizedService {
           }
         }
 
+        // MODEL-FLOW-038. A grid job's one candidate declares the BASE setting;
+        // the run it produced carries the winning combination (`complete()`
+        // overwrote it), which is what the card must show.
+        const isGridCandidate = Boolean(candidate.paramGrid);
+        const gridSearch = run
+          ? await readGridSearch(
+              run,
+              isGridCandidate ? [candidate] : null,
+              this.log,
+            )
+          : null;
+
         return {
           runId: run?.id ?? null,
           algorithm: candidate.algorithm,
-          hyperparameters: candidate.hyperparameters,
+          hyperparameters:
+            isGridCandidate && run?.status === 'SUCCEEDED'
+              ? run.hyperparameters
+              : candidate.hyperparameters,
+          paramGrid: candidate.paramGrid ?? null,
+          gridSearch,
           // MODEL-FLOW-013-T11. Absent on a row written before phase
           // existed — every reader treats that as phase 1.
           phase: candidate.phase ?? 1,
@@ -1307,6 +1376,105 @@ export class ModelCandidateJobAuthorizedService {
     );
 
     return { job, candidates };
+  }
+
+  /**
+   * Stop a draft's in-flight job and kill its running container.
+   *
+   * ORDER IS THE POINT. The job is marked CANCELED first, by compare-and-swap
+   * on QUEUED/RUNNING: `advanceJobForRun` returns early for a terminal job, so
+   * once this lands no further candidate can be launched when the killed run
+   * reports. Only then is the CURRENT run (re-read after the swap, in case a
+   * candidate was launched between the first read and it) canceled, which
+   * kills its container and closes its token — a killed container that
+   * survives long enough to POST /complete cannot overwrite the outcome.
+   *
+   * Candidates that already SUCCEEDED stay as runs; a later job is started
+   * fresh (the partial unique index on QUEUED/RUNNING frees with this swap).
+   * Nothing here creates, changes or deletes a Model: Save Model stays the
+   * only final commit. Draft-owned jobs only — a retrain job is model-scoped.
+   * Calling it on a terminal job is a no-op that says so.
+   */
+  async cancelJobService(
+    draftId: string,
+    jobId: string,
+    userId: string,
+    role: string,
+  ) {
+    await this.runLaunch.assertDraftWritable(draftId, userId, role);
+    const job = await this.prisma.modelCandidateJob.findFirst({
+      where: { id: jobId, modelDraftId: draftId },
+    });
+    if (!job) throw new NotFoundException('Candidate job not found');
+
+    const { canceled, job: current } = await this.cancelInFlightJob(
+      job,
+      (runId) =>
+        this.runLaunch.cancelDraftRunService(draftId, runId, userId, role),
+    );
+    return {
+      statusCode: 200,
+      message: canceled
+        ? 'Job canceled'
+        : `Job already ${current.status.toLowerCase()}`,
+      type: 'SUCCESS' as const,
+      data: current,
+    };
+  }
+
+  /**
+   * The same cancel for a MODEL-owned job — a retrain. The caller has already
+   * checked the user may edit the model (`ModelRetrainAuthorizedService`); the
+   * run is stopped through the model-scoped twin of the draft route, which
+   * applies its own workspace check as well. No version is staged by a
+   * canceled retrain (that happens only on success) and the current
+   * PRODUCTION version is untouched.
+   */
+  async cancelModelJobService(
+    modelId: string,
+    jobId: string,
+    userId: string,
+    role: string,
+  ) {
+    const job = await this.prisma.modelCandidateJob.findFirst({
+      where: { id: jobId, modelId },
+    });
+    if (!job) throw new NotFoundException('Retrain job not found');
+    return this.cancelInFlightJob(job, (runId) =>
+      this.runLaunch.cancelRunService(modelId, runId, userId, role),
+    );
+  }
+
+  /**
+   * The shared core. Marks the job CANCELED first by compare-and-swap on
+   * QUEUED/RUNNING, then kills the current run (re-read after the swap). A
+   * terminal job, or one that finished while we were deciding, is returned as
+   * it is with `canceled: false` and nothing killed.
+   */
+  private async cancelInFlightJob(
+    job: PrismaModels.ModelCandidateJobModel,
+    killRun: (runId: string) => Promise<unknown>,
+  ): Promise<{
+    canceled: boolean;
+    job: PrismaModels.ModelCandidateJobModel;
+  }> {
+    if (job.status !== 'QUEUED' && job.status !== 'RUNNING') {
+      return { canceled: false, job };
+    }
+    const { count } = await this.prisma.modelCandidateJob.updateMany({
+      where: { id: job.id, status: { in: ['QUEUED', 'RUNNING'] } },
+      data: {
+        status: 'CANCELED',
+        failureReason: 'Canceled by user.',
+        finishedAt: new Date(),
+      },
+    });
+    const current = await this.prisma.modelCandidateJob.findUniqueOrThrow({
+      where: { id: job.id },
+    });
+    if (count === 1 && current.currentRunId)
+      await killRun(current.currentRunId);
+    return { canceled: count === 1, job: current };
   }
 
   /**

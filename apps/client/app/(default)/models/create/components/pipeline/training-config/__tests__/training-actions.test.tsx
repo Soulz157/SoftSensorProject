@@ -99,4 +99,81 @@ describe('TrainingActions (MODEL-FLOW-036)', () => {
       screen.getByRole('button', { name: /Start Training/ }),
     ).toBeInTheDocument()
   })
+
+  describe('Cancel (stop a run that can last tens of minutes)', () => {
+    it('is drawn only while training, and only when a handler is passed', () => {
+      const { rerender } = render(<TrainingActions {...props()} />)
+      expect(screen.queryByRole('button', { name: /Cancel/ })).toBeNull()
+
+      rerender(
+        <TrainingActions {...props({ train: training, onCancel: vi.fn() })} />,
+      )
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+
+      rerender(<TrainingActions {...props({ train: training })} />)
+      expect(screen.queryByRole('button', { name: /Cancel/ })).toBeNull()
+    })
+
+    it('asks first: clicking Cancel opens a confirmation and stops nothing', () => {
+      const onCancel = vi.fn()
+      render(<TrainingActions {...props({ train: training, onCancel })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(
+        screen.getByRole('alertdialog', { name: 'Cancel training?' }),
+      ).toBeInTheDocument()
+      expect(onCancel).not.toHaveBeenCalled()
+    })
+
+    it('"Keep running" closes the dialog and cancels nothing', () => {
+      const onCancel = vi.fn()
+      render(<TrainingActions {...props({ train: training, onCancel })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Keep running' }))
+      expect(onCancel).not.toHaveBeenCalled()
+    })
+
+    it('calls onCancel exactly once, only after the user confirms', () => {
+      const onCancel = vi.fn()
+      render(<TrainingActions {...props({ train: training, onCancel })} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel training' }))
+      expect(onCancel).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows Canceling… and disables itself while the request is in flight', () => {
+      render(
+        <TrainingActions
+          {...props({ train: training, onCancel: vi.fn(), canceling: true })}
+        />,
+      )
+      expect(screen.getByRole('button', { name: 'Canceling…' })).toBeDisabled()
+    })
+
+    it('says why a cancel failed while the run is still going', () => {
+      render(
+        <TrainingActions
+          {...props({
+            train: training,
+            onCancel: vi.fn(),
+            cancelError: 'Network down',
+          })}
+        />,
+      )
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Could not cancel: Network down',
+      )
+    })
+
+    it('never shows the old cancel error once training is over', () => {
+      render(
+        <TrainingActions
+          {...props({
+            train: { status: 'idle', progress: 0 },
+            cancelError: 'Network down',
+          })}
+        />,
+      )
+      expect(screen.queryByText(/Could not cancel/)).toBeNull()
+    })
+  })
 })

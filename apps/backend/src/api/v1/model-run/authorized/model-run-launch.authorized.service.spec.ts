@@ -1243,3 +1243,62 @@ describe('ModelRunLaunchAuthorizedService.getRunPredictionsService', () => {
     expect(mockedRunPredictions).not.toHaveBeenCalled();
   });
 });
+
+describe('ModelRunLaunchAuthorizedService.listDraftRunsService — MODEL-FLOW-038', () => {
+  function build(
+    runs: Array<{ id: string; candidateJobId: string | null }>,
+    jobs: Array<{ id: string; candidates: unknown }>,
+  ) {
+    const prisma = {
+      modelTrainingRun: { findMany: jest.fn().mockResolvedValue(runs) },
+      modelCandidateJob: { findMany: jest.fn().mockResolvedValue(jobs) },
+    };
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    jest
+      .spyOn(service as never, 'assertDraftAccess')
+      .mockResolvedValue({ id: 'draft-1' } as never);
+    return { prisma, service };
+  }
+
+  const GRID_JOB = {
+    id: 'job-grid',
+    candidates: [{ algorithm: 'ridge', paramGrid: { alpha: [1, 2] } }],
+  };
+  const PLAIN_JOB = {
+    id: 'job-plain',
+    candidates: [{ algorithm: 'ridge', hyperparameters: {} }],
+  };
+
+  it('flags only the runs of a grid-search job, with one job query for all', async () => {
+    const { prisma, service } = build(
+      [
+        { id: 'r1', candidateJobId: 'job-grid' },
+        { id: 'r2', candidateJobId: 'job-plain' },
+        { id: 'r3', candidateJobId: null },
+        { id: 'r4', candidateJobId: 'job-grid' },
+      ],
+      [GRID_JOB, PLAIN_JOB],
+    );
+    const res = await service.listDraftRunsService('draft-1', 'u1', 'ADMIN');
+    expect(res.data.map((r) => [r.id, r.isGridSearch])).toEqual([
+      ['r1', true],
+      ['r2', false],
+      ['r3', false],
+      ['r4', true],
+    ]);
+    expect(prisma.modelCandidateJob.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.modelCandidateJob.findMany.mock.calls[0][0].where).toEqual({
+      id: { in: ['job-grid', 'job-plain'] },
+    });
+  });
+
+  it('asks for no jobs when no run belongs to one', async () => {
+    const { prisma, service } = build([{ id: 'r1', candidateJobId: null }], []);
+    const res = await service.listDraftRunsService('draft-1', 'u1', 'ADMIN');
+    expect(res.data[0]?.isGridSearch).toBe(false);
+    expect(prisma.modelCandidateJob.findMany).not.toHaveBeenCalled();
+  });
+});

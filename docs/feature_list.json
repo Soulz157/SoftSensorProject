@@ -4700,6 +4700,118 @@
           "detail": "Expect no empty stretch, one dashed line per cut, real times on ticks and tooltip, caption naming the cut range, zoom still working. Not run."
         }
       ]
+    },
+    {
+      "id": "MODEL-FLOW-038",
+      "title": "Find Best Parameters becomes a real sklearn GridSearchCV; the grid editor is plain text boxes, not number inputs",
+      "priority": "high",
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-FLOW-035",
+        "MODEL-FLOW-036"
+      ],
+      "description": "Fine-tune > Find Best Parameters used to run a hand-picked shortlist (TUNING_GRID, 4 variants) as one Docker container per variant. For a TABULAR algorithm it is now ONE trainer run that does GridSearchCV(refit=False) over the full cartesian paramGrid, then runs the winning combination through the normal strategy (cv_expanding / chronological) so metrics, OOF, holdout, importance and model.joblib are produced as for any run. Backend declares a default size-tiered PARAM_GRID per algorithm (GET /authorized/training/param-grid/:algorithm); the user edits VALUES per key in Step 3 with a live 'N combinations x k folds = M fits' count, capped at 64 combinations / 10 values per key (server is the authority: validateParamGrid). CV runs score on the same expanding folds cv_expanding reports; Train/Test runs score on one chronological fold cut where chronological.run cuts. Step 4 shows the one winner run plus a ranked table of every combination (grid_search_results.json). lstm/gru keep the curated per-variant job unchanged (SequenceRegressor is not sklearn-clonable). Retrain page (model-retrain) keeps TUNING_GRID / expandSearchCandidates. Persistence unchanged: draft-owned training, no Model commit; Save Model stays the only final commit.",
+      "userDecisions": [
+        "2026-11-03: one trainer run does GridSearchCV over the full grid; Step 4 = one winner + a table of every combination.",
+        "2026-11-03: backend owns the default param_grid (size-tiered); the user adds/removes values per key.",
+        "2026-11-03: lstm/gru keep the curated per-variant path. No-CV runs score on one chronological fold.",
+        "2026-11-05: the grid editor must NOT use <Input type=\"number\"> (nor VariantValueInput, which renders one): ONE plain type=\"text\" box per hyperparameter holding a comma list (0.1, 1, 10). Scope: the grid editor only — dynamic-hyperparameters, core-config and VariantValueInput are untouched."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-038-T01",
+          "title": "Trainer: pipelines/grid_search.py + run_training wiring + manifest 'search' key",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. BuildModelEstimator wraps build_model (the ONLY UI->estimator translation); folds reuse expanding_fold_plan / chronological_split. test_grid_search.py 9 cases + test_cv_oof 3 = 12 passed in scgc/soft-sensor-trainer:1.0.25 (mounted source, pytest via --target). Includes: best score == cv_rmse_mean of the follow-up cv_expanding.run; lstm refused; sklearn.clone survives."
+        },
+        {
+          "id": "MODEL-FLOW-038-T02",
+          "title": "Mirrors: GRID_SEARCH_RESULTS_FILENAME in artifacts.py, object_store.py (+ _ALLOWED_RUN_UPLOADS), artifact-keys.ts (+ RUN_UPLOAD_FILENAMES), MIRRORS.md entry 14",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. py_compile clean; backend tsc clean."
+        },
+        {
+          "id": "MODEL-FLOW-038-T03",
+          "title": "Backend: paramGrid DTO + refines, createJob (1 candidate, totalRuns 1), claim() carries paramGrid + rankingMetric, complete() overwrites hyperparameters / FAILS without the results artifact",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. jest src/api/v1/model-run + src/lib: 937 passed (incl. the 3 PLS cap specs); the 1 failure is model-run.authorized.controller.spec 'should be defined' (RunTokenGuard cannot resolve PrismaService) which does not touch this change. tsc + eslint clean. PLS: build_model does not clamp n_components and the search runs error_score=raise, so createJob caps a PLS grid at the artifact's feature count (capGridToFeatures; refuses by name when nothing is left; 3 specs). NOTE: createJob specs automock @/lib/tuning-grid, so gridOfJob returns undefined there — readers use truthiness, never === null."
+        },
+        {
+          "id": "MODEL-FLOW-038-T04",
+          "title": "Backend: PARAM_GRID + PARAM_GRID_OVERRIDES + paramGridFor + validateParamGrid + GET /training/param-grid/:algorithm",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. tuning-grid.spec 120 passed incl. every PARAM_GRID key read live from build_model; every default grid (base merged) <= 64. PARAM_GRID_OVERRIDES sizes tiny/large for mlp, random_forest, extra_trees, lightgbm, xgboost only; small reads medium. Values are declared priors like TUNING_GRID_OVERRIDES, NOT checked against the client hyperparam-ranges bands (the agreement test only covers TUNING_GRID_OVERRIDES)."
+        },
+        {
+          "id": "MODEL-FLOW-038-T05",
+          "title": "Client: lib/param-grid.ts + ParamGridEditor (text list) + useParamGrid + useFineTune grid state + planFineTuneLaunch paramGrid",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. param-grid.test 30, training-launch +5, fine-tune-section 22 (12 existing + 10 new: text boxes only / no type=number, live count, bad token, emptied box, cap, typed grid sent, Reset, off, lstm). tsc clean, eslint 0 errors on changed files. DEVIATION from the plan: the editor is mounted by fine-tune-section.tsx and variant-preview.tsx is untouched (it still serves lstm/gru and Find Best Parameters off)."
+        },
+        {
+          "id": "MODEL-FLOW-038-T06",
+          "title": "Step 4 + Run parameters card: GridSearchResultsTable; backend serves gridSearch on the candidate and getDraftRunService, and isGridSearch on the draft run list",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. Candidate-table expanded row (grid-search-results-table 7 cases). Run parameters card: listDraftRunsService flags isGridSearch (ONE extra job query for all runs; 2 specs), the card mounts GridRunSection only for a flagged SUCCEEDED run and only while open, fetching via useRunGridSearch (4 hook cases) -> run-params-panel 27 (4 new). Known gap: the hook's read-failure path has no test — any throwing mock failed the case under vitest 4.1.7 although the hook state was correct (null, not loading); cause not found."
+        },
+        {
+          "id": "MODEL-FLOW-038-T07",
+          "title": "Runtime estimate: grid cost = combinations x folds + the winner's run; pollJob says 'Grid search running — N combinations'",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. estimate-runtime.test +5 (52 total in the two files with training-launch)."
+        },
+        {
+          "id": "MODEL-FLOW-038-T08",
+          "title": "Rebuild images/trainer + bump the tag, then live check on the fake PI dataset",
+          "status": "completed",
+          "progress": 100,
+          "result": "CLOSED 2026-11-05 AT THE USER'S REQUEST (\"Check+restart backend แล้วปิดเลย\"). Image rebuilt (scgc/soft-sensor-trainer:1.0.26 then 1.0.27; 1.0.27 holds the new code and passes the trainer suite 124/124 against its own baked copy); backend default tag set to 1.0.27; the running backend (nest --watch, started 15:34:45, after the last source edit 15:15:40) serves the new routes (cancel job / cancel retrain / param-grid answer 401, an unknown route 404). SEEN LIVE: the user ran Fine-tune with Find Best Parameters and used the Step 4 grid-search table (asked for the metric column highlight + no Std, both then built); on the 1.0.26 image the stuck run was exactly ONE container train-387f0583… whose log read 'Grid search: 27 combinations x 1 fold(s), ranked by rmse' (extra_trees, 34,030 rows, Train/Test split). NOT SEEN, closed without it: that the winning run's hyperparameters equal the Best row; that Save Model remained the only Model-creating step after a grid fine-tune; a Cross-Validation k=3 grid run; an lstm run taking the old variant path; the 'N parallel workers' log line and ~200% CPU on 1.0.27; the Cancel and Retrain-cancel buttons clicked in a browser. These are listed so a later reader does not mistake the closure for evidence."
+        },
+        {
+          "id": "MODEL-FLOW-038-T09",
+          "title": "Cancel with confirmation: Step 3 (training/job) and the model page's Retrain tab",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05 (user: an extra_trees grid ran 25+ min at 100% of one core with no way out but docker kill). Backend cancelJobService marks the job CANCELED by compare-and-swap on QUEUED/RUNNING FIRST (advanceJobForRun returns early for a terminal job, so no further candidate launches), then cancels the current run (re-read after the swap) through cancelDraftRunService, which kills the container and closes the run token; already-succeeded candidates are kept; a terminal job is a no-op; lost race kills nothing; draft-owned jobs only. 8 backend specs (model-candidate-job 86 passed). Client: modelDraftCandidateJobService.cancel / modelDraftRunService.cancel (the run route already existed), useModelTraining.cancel + canceling + cancelError, Cancel button beside Start while training. A single run uses the run endpoint, a job uses the job endpoint. A failed cancel keeps the run visibly training with the reason; a poll already in flight when the cancel lands cannot paint an error over idle. hook 5 cases, training-actions 5 cases, tsc + eslint clean. 2026-11-05 (user follow-up): (a) CONFIRM STEP — shared components/cancel-run-button.tsx opens an AlertDialog (Keep running / Cancel training|retrain, destructive variant); nothing is stopped before the confirm; the wording says what each subject keeps (training: finished candidates; retrain: no version staged, current version untouched); used by TrainingActions and RetrainTab. (b) RETRAIN CANCEL — POST /authorized/model/:modelId/retrain/:jobId/cancel (editor access) -> ModelRetrainAuthorizedService.cancelRetrainJobService -> ModelCandidateJobAuthorizedService.cancelModelJobService; the swap-then-kill core is now ONE private cancelInFlightJob shared with the draft route, the model route kills through runLaunch.cancelRunService; response is the job as a poll returns it. Client: modelRetrainService.cancel, useModelRetrain.cancel/canceling/cancelError, RetrainTab button + error line, page wiring; RetrainProgress shows a CANCELED job as 'Retrain canceled — no new version was staged' instead of 'Retrain failed'. Tests: backend model-run 298 run (296 passed + the 1 pre-existing controller DI failure; the other was my own fixed spec); client cancel-run-button 7, training-actions, retrain-tab +9, use-model-retrain +4 (59 passed across the four); tsc + eslint clean; wider models/hooks/components run fails only the same 5 baseline files. NOT DONE: not clicked in a browser; a backend restart is needed for both routes to exist; no integration test through a real container."
+        },
+        {
+          "id": "MODEL-FLOW-038-T10",
+          "title": "Faster grid search: fit combinations in parallel for the forest algorithms, within the container's CPU budget",
+          "status": "completed",
+          "progress": 100,
+          "result": "CODE + TESTS DONE 2026-11-05; image 1.0.27 built by the user and verified to contain it (124/124 baked); CLOSED at the user's request WITHOUT a live run on 1.0.27 (the live run that was observed used 1.0.26, which is serial). Finding first: the container is capped at 2 CPUs (TRAINING_NANO_CPUS, default 2) and a serial search used 1 of them (the 100% CPU seen on the stuck extra_trees run). os.cpu_count() reports the HOST (10), so the budget is passed explicitly: backend trainerCpuBudget(nanoCpus) -> env TRAINER_CPU_BUDGET (MIRRORS.md entry 15) -> config.cpu_budget(). grid_search.search_parallelism: workers = min(budget, fits), threads each = budget // workers, applied through joblib parallel_config(inner_max_num_threads, temp_folder=/scratch/joblib — the container's /dev/shm is Docker's 64 MB). ONLY random_forest/extra_trees are parallelised: MEASURED under --cpus=2 -m 8g, read-only rootfs, tmpfs /scratch: extra_trees 18 combos 83s -> 46s (1.8x, script) and 109.8s -> 72.9s (1.5x, real run_grid_search, 30k rows); IDENTICAL ranking and best in every pair. lightgbm 8 small fits got SLOWER in parallel (1.7s -> 2.7s) and ridge/ols/pls take milliseconds, so they stay serial; svm/grp/mlp unmeasured, serial. Tests: trainer suite 124 passed in scgc/soft-sensor-trainer:1.0.26 (incl. parallel == serial ranking, workers x threads <= budget, env parsing); backend trainning-container 17 passed, tsc + eslint clean. KNOWN: loky prints a benign 'ChildProcessError: No child processes' (Exception ignored in ResourceTracker.__del__) at interpreter exit, exit code 0; the client runtime estimate does NOT yet divide by the worker count; more speed needs a higher TRAINING_NANO_CPUS (docker VM has 8 GB RAM, the container's cap is already 8 GB, and workers share X by memory-map). NEXT: rebuild images/trainer as 1.0.27, set TRAINING_IMAGE, then time a real extra_trees fine-tune."
+        },
+        {
+          "id": "MODEL-FLOW-038-T11",
+          "title": "Time estimate: measured forest costs, search divided by workers, and a long-run notice before Start",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05 (user: item 3 + the estimate did not divide by workers). FOUND: ALGO_COST had no entry for random_forest / extra_trees (the table is keyed on ids this catalogue does not have), so both were priced like lightgbm = 1 — MEASURED in scgc/soft-sensor-trainer:1.0.27 (one fit, 100 trees, default depth, 10k-60k rows x 10-20 features): random_forest 104-151, extra_trees 29-37, lightgbm 0.6-1.7 in the table's unit; i.e. 120x and 33x too cheap, which is why the bar's >15-minute amber line and any warning could never fire on the case that actually ran for 25+ minutes. Now random_forest 120, extra_trees 32 (middle of the measured ranges; a grid's shallower combinations finish sooner than the default-depth fit, so a grid reads high: one measured grid 93s real vs ~188s estimated). The search is divided by searchSpeedup(workers) = workers x 0.75 (PARALLEL_EFFICIENCY, from 1.5x measured through the real run_grid_search on 2 workers; 1.8x on a script); the winner's own fit is not divided. Workers come from the server: GET /training/param-grid/:algorithm now returns cpuBudget (trainerCpuBudget(configuredNanoCpus()), lib/trainer-cpu.ts) and parallel (PARALLEL_SEARCH_ALGORITHMS, pinned to grid_search.py's PARALLEL_ALGORITHMS by a spec that reads that file live); the client's searchWorkersFor is the same rule as the trainer's search_parallelism, with the same cases. NOTICE: RuntimeEstimate says, before Start and once est > 15 min, 'This may take about X (low – high)[, with the search on N parallel workers]. To shorten it, remove values from the grid, lower the number of trees, or use fewer rows. You can cancel while it runs.' — role=status, muted text with a clock, no red/amber (design rule); hidden once the run is live. Tests: backend tuning-grid + trainning-container 157 passed (incl. the live mirror and 3 service cases); client estimate-runtime 72 (new: measured ranges, reproduces a measured fit within the panel range, workers division, searchWorkersFor table), runtime-estimate 7, fine-tune-section +5 (workers follow the server's budget, cap at fits, serial for non-forests, undefined while the grid is invalid); tsc clean both apps; wider client run fails the same 7 baseline files / 23 cases as HEAD. KNOWN: the divisor is one measured efficiency (0.75) from one dataset shape; svm/grp/mlp/pls/lstm/gru still fall back to cost 1 (unmeasured); the real feature count of the 25-minute run is unknown, so only the shape (a wide table reads long, a 20-feature one reads ~5 min, matching a measured 11s per fit) is pinned. No image rebuild needed for this task. Not seen in a browser."
+        }
+      ],
+      "verification": [
+        "Trainer: test_grid_search.py 9 + test_cv_oof 3 passed in-image (2026-11-05).",
+        "Backend: jest src/api/v1/model-run + src/lib 937 passed, 1 failed (pre-existing controller DI spec); tsc + eslint clean (2026-11-05).",
+        "Client: param-grid 30, training-launch + estimate-runtime 47, fine-tune-section 22, grid-search-results-table 7 passed; tsc clean; eslint 0 errors on changed files (2026-11-05).",
+        "Client baseline compared at a detached HEAD worktree (2026-11-05): the Step 4 and related suites (phase-4-model-selection, candidate-table-cv-job, chart-time-axis, feature-count-sweep x2, model-selection-contract, core-config, lib/monitoring) fail the IDENTICAL 23 cases at HEAD and in this tree, so none are caused by this feature. The 3 fine-tune-section cases this feature did break were fixed (22/22).",
+        "Python reader get_run_grid_search / POST /models/runs/grid-search: py_compile plus an AST check that every new name it imports resolves; never executed (no local python env, no existing test for the sibling cv-folds reader to mirror).",
+        "Live: PENDING (T08).",
+        "Run parameters card (2026-11-05): backend model-run-launch spec 40 passed; client run-params-panel 27 + use-run-grid-search 4 + fine-tune-section 22 passed; tsc + eslint clean (the one eslint warning, unused RunComparisonPanel import, predates this change).",
+        "Cancel (2026-11-05): backend model-candidate-job 86 passed; client use-model-training 31 + training-actions passed; tsc + eslint clean on changed files; wider models/create + hooks/model failures are the same 5 baseline files (chart-time-axis, feature-count-sweep, model-selection-contract, phase-4-model-selection, core-config). Not exercised live.",
+        "Cancel confirm + Retrain cancel (2026-11-05): backend model-run specs pass except the pre-existing controller DI case; client 59 passed in the four touched suites; wider run fails only the 5 baseline files; tsc + eslint clean. Not exercised live.",
+        "Parallel grid search (2026-11-05): trainer suite 124 passed; real run_grid_search extra_trees 18 combos x 30k rows 109.8s (budget 1) vs 72.9s (budget 2) in a --cpus=2 read-only container, identical best; backend trainning-container 17 passed. Not yet run on a rebuilt image.",
+        "Estimate (2026-11-05): backend tuning-grid + trainning-container 157 passed; client estimate-runtime 72, runtime-estimate 7, fine-tune-section 27 passed; tsc clean both apps; wider client run = same 7 baseline files, 23 failing cases as HEAD. Not seen in a browser.",
+        "Backend restart check (2026-11-05): nest --watch process started 15:34:45 after the newest source edit (15:15:40); POST cancel-job, cancel-retrain, cancel-run and GET param-grid answer 401 (route exists, guarded), an unknown route answers 404. No manual restart was needed or done."
+      ],
+      "closedNote": "Closed 2026-11-05 at the user's request. Everything is built and unit/integration-tested (trainer 124, backend model-run/lib/trainning-container, client create+hooks+components with only the 7 pre-existing baseline files failing, identical to HEAD). Not observed live: grid winner == run hyperparameters; Save Model as the only Model commit after a grid fine-tune; CV k=3 grid; lstm old path; parallel workers on 1.0.27; the Cancel buttons. Known gaps: the retrain page's cancel and Step 3's cancel were never clicked in a browser; the PLS/paramGrid tier defaults are declared priors; svm/grp/mlp/pls/lstm/gru runtime costs are unmeasured (cost 1); pre-existing failures outside this feature: model-run controller DI spec, core-config Seed, feature-count-sweep, monitoring formatAxisValue, chart-time-axis, model-selection-contract, phase-4-model-selection."
     }
   ],
   "global_definition_of_done": [

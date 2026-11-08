@@ -38,6 +38,7 @@ from artifacts import (
     ArtifactSet,
     CV_GAP_PREDICTIONS_FILENAME,
     FEATURE_IMPORTANCE_FILENAME,
+    GRID_SEARCH_RESULTS_FILENAME,
     HOLDOUT_PREDICTIONS_FILENAME,
     INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
     NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
@@ -57,6 +58,7 @@ from manifest import build_run_manifest
 from models import SEQUENCE_ALGORITHMS
 from pipelines import chronological, cv_expanding, windowed
 from pipelines.cv_gap import cv_gap_if_requested
+from pipelines.grid_search import run_grid_search
 from pipelines.context import (
     PreparedRun,
     TrainingResult,
@@ -71,7 +73,19 @@ def run_training(context: RunContext, api: RunApi) -> int:
 
     prepared = _prepare(api)
     strategy = _select_strategy(prepared, api)
+    # MODEL-FLOW-038. The search only PICKS the combination; the strategy then
+    # runs it exactly as it would any single run, so every artifact below is
+    # produced the usual way.
+    search_payload: dict[str, Any] | None = None
+    best_hyperparameters: dict[str, Any] | None = None
+    if prepared.spec.get("paramGrid"):
+        outcome = run_grid_search(prepared, api)
+        best_hyperparameters = outcome.best_hyperparameters
+        search_payload = outcome.payload
+        prepared.spec = {**prepared.spec, "hyperparameters": best_hyperparameters}
     result = strategy(prepared, api)
+    if search_payload is not None:
+        result.extra_json[GRID_SEARCH_RESULTS_FILENAME] = search_payload
     holdout_metrics, holdout_predictions = _score_holdout_if_present(
         prepared, result, api
     )
@@ -98,6 +112,7 @@ def run_training(context: RunContext, api: RunApi) -> int:
         incumbent_new_data_holdout_metrics,
         incumbent_new_data_holdout_predictions,
         cv_gap_series,
+        best_hyperparameters,
     )
     return 0
 
@@ -396,6 +411,7 @@ def _publish(
     incumbent_new_data_holdout_metrics: dict[str, Any] | None = None,
     incumbent_new_data_holdout_predictions: pd.DataFrame | None = None,
     cv_gap_series: pd.DataFrame | None = None,
+    best_hyperparameters: dict[str, Any] | None = None,
 ) -> None:
     import joblib
 
@@ -570,6 +586,13 @@ def _publish(
                 else {}
             ),
             "splitSpec": result.split_spec,
+            # MODEL-FLOW-038. Grid-search runs only: the backend overwrites the
+            # run's hyperparameters with the winning combination.
+            **(
+                {"bestHyperparameters": best_hyperparameters}
+                if best_hyperparameters is not None
+                else {}
+            ),
             "uploaded": uploaded,
         }
     )

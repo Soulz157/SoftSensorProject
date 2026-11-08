@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { TrainningContainerAuthorizedService } from './trainning-container.authorized.service';
+import { trainerCpuBudget } from '@/lib/trainer-cpu';
 
 /**
  * MODEL-FLOW-011-T04. Previously a 20-line CLI stub with no PrismaService and
@@ -233,6 +234,45 @@ describe('TrainningContainerAuthorizedService — boot reconcile (MODEL-FLOW-011
     watchSpy.mockRestore();
   });
 
+  it('records the failure, with the real error text, when the log tail is a multiplexed Docker stream (NUL header bytes)', async () => {
+    // Docker frames every line with an 8-byte header holding 0x00; written
+    // into failureReason as-is, Postgres refused it and the run was never
+    // marked FAILED. The real error must reach the row, header-free.
+    const payload = Buffer.from('RuntimeError: boom\n');
+    const header = Buffer.alloc(8);
+    header[0] = 2;
+    header.writeUInt32BE(payload.length, 4);
+    const watchSpy = jest.spyOn(
+      TrainningContainerAuthorizedService.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => Promise<void>
+      >,
+      'watch',
+    );
+    const container = {
+      id: 'c1',
+      inspect: jest
+        .fn()
+        .mockResolvedValue({ Id: 'c1', State: { Running: false } }),
+      wait: jest.fn().mockResolvedValue({ StatusCode: 1 }),
+      logs: jest.fn().mockResolvedValue(Buffer.concat([header, payload])),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+    mockGetContainer.mockReturnValue(container);
+    const prisma = buildPrisma({ runs: [{ id: 'run-1', containerId: 'c1' }] });
+    const service = makeService(prisma);
+
+    await service.onModuleInit();
+    await watchSpy.mock.results[0].value;
+
+    const [call] = prisma.modelTrainingRun.update.mock.calls;
+    const reason = call[0].data.failureReason as string;
+    expect(reason).toContain('RuntimeError: boom');
+    expect(reason).not.toContain('\u0000');
+
+    watchSpy.mockRestore();
+  });
+
   it('reconciles every orphaned run independently — one failure does not block the others', async () => {
     mockGetContainer.mockImplementation((id: string) => {
       if (id === 'gone') {
@@ -403,5 +443,21 @@ describe('TrainningContainerAuthorizedService — boot reconcile (MODEL-FLOW-011
     expect(prisma.predictionJob.update).not.toHaveBeenCalled();
 
     watchSpy.mockRestore();
+  });
+});
+
+describe('trainerCpuBudget', () => {
+  it('is the whole CPUs of the quota — 2 for the production default', () => {
+    expect(trainerCpuBudget(2 * 1e9)).toBe(2);
+    expect(trainerCpuBudget(4 * 1e9)).toBe(4);
+  });
+
+  it('rounds a fractional quota down, never up past what is allowed', () => {
+    expect(trainerCpuBudget(2.5 * 1e9)).toBe(2);
+  });
+
+  it('never drops below one CPU, whatever the quota says', () => {
+    expect(trainerCpuBudget(0.5 * 1e9)).toBe(1);
+    expect(trainerCpuBudget(0)).toBe(1);
   });
 });

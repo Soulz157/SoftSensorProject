@@ -980,6 +980,30 @@ export class ModelRetrainAuthorizedService {
    * SAME method the wizard's own job GET uses) plus the candidate-versus-
    * incumbent comparison.
    */
+  /**
+   * Cancel an in-flight retrain: stop its job and kill the container it is
+   * running. Editor access, like starting one. A retrain already finished is
+   * returned as it is. Nothing is staged or promoted by a canceled retrain.
+   */
+  async cancelRetrainJobService(
+    modelId: string,
+    jobId: string,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user);
+    const { canceled } = await this.candidateJobs.cancelModelJobService(
+      modelId,
+      jobId,
+      user.id,
+      user.role,
+    );
+    const fetched = await this.getRetrainJobService(modelId, jobId, user);
+    return {
+      ...fetched,
+      message: canceled ? 'Retrain canceled' : 'Retrain was not running',
+    };
+  }
+
   async getRetrainJobService(
     modelId: string,
     jobId: string,

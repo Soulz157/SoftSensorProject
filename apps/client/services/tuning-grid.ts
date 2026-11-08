@@ -14,6 +14,23 @@ export interface TuningGridResponse {
   sized: boolean
 }
 
+/** MODEL-FLOW-038. The default GridSearchCV search space for one algorithm. */
+export interface ParamGridResponse {
+  algorithm: string
+  /** Value list per searched hyperparameter. The base run's own value is NOT
+   *  merged in — the client merges its card's values (`effectiveGrid`). */
+  paramGrid: Record<string, Array<string | number | boolean | null>>
+  tier: SizeTier
+  /** The caps the job endpoint enforces; the editor shows them live. */
+  maxCombinations: number
+  maxValuesPerKey: number
+  /** CPUs the trainer may use (the container's quota). */
+  cpuBudget: number
+  /** True when the trainer fits this algorithm's combinations on several
+   *  worker processes, so the time estimate divides the search by them. */
+  parallel: boolean
+}
+
 /**
  * MODEL-FLOW-024. Query string for the optional size figures and `modelId`.
  * Empty (not `?`) when none is known, so an unsized call is byte-for-byte the
@@ -65,6 +82,17 @@ export const tuningGridService = {
   ): Promise<TuningGridResponse> =>
     fetchClient(
       `/api/v1/authorized/training/tuning-grid/${encodeURIComponent(algorithm)}${sizeQuery(size, modelId)}`,
+      { method: 'GET' },
+    ),
+}
+
+export const paramGridService = {
+  /** MODEL-FLOW-038. Same unwrapped shape as `tuningGridService.get`: the
+   *  controller returns the DTO directly, with no `{ data }` envelope. 404 for
+   *  lstm/gru, which keep the curated variant search. */
+  get: (algorithm: string, size?: DatasetSize): Promise<ParamGridResponse> =>
+    fetchClient(
+      `/api/v1/authorized/training/param-grid/${encodeURIComponent(algorithm)}${sizeQuery(size, undefined)}`,
       { method: 'GET' },
     ),
 }

@@ -297,6 +297,8 @@ export function Phase3TrainingConfig({ nav }: Props) {
                   findBestParams: fineTune.useGrid,
                   tuningVariants: fineTune.tuningVariants,
                   candidatesPerAlgorithm: fineTune.candidatesPerAlgorithm,
+                  gridFits: fineTune.gridFits,
+                  searchWorkers: fineTune.searchWorkers,
                   nEstimators:
                     typeof fineTune.base.n_estimators === 'number'
                       ? fineTune.base.n_estimators
@@ -317,6 +319,9 @@ export function Phase3TrainingConfig({ nav }: Props) {
           // is another training run, not a different operation.
           label={fineTuning ? 'Start Fine-tune' : 'Start Training'}
           onStart={startTraining}
+          onCancel={() => void training.cancel()}
+          canceling={training.canceling}
+          cancelError={training.cancelError}
           disabled={!canTrain}
           refusal={refusal}
           dirty={dirty}

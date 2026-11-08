@@ -95,6 +95,28 @@ export class ModelCandidateJobAuthorizedController {
     );
   }
 
+  @Post('/:draftId/candidate-jobs/:jobId/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Cancel an in-flight job and kill its running container',
+    description:
+      'Marks the job CANCELED first so no further candidate launches, then ' +
+      'cancels the current run. Candidates that already succeeded are kept. ' +
+      'A job that is already terminal is returned unchanged.',
+  })
+  cancelJobController(
+    @Param('draftId') draftId: string,
+    @Param('jobId') jobId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.candidateJobs.cancelJobService(
+      draftId,
+      jobId,
+      user.id,
+      user.role,
+    );
+  }
+
   @Post('/:draftId/candidate-jobs/:jobId/select')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

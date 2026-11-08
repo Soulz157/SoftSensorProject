@@ -3,6 +3,9 @@ import {
   breakdownRuntime,
   cvFitCount,
   estimateRuntimeSeconds,
+  PARALLEL_EFFICIENCY,
+  searchSpeedup,
+  searchWorkersFor,
   type RuntimeInput,
 } from '@/lib/model/estimate-runtime'
 
@@ -57,7 +60,8 @@ describe('estimateRuntimeSeconds (MODEL-FLOW-024-T05)', () => {
   })
 
   it('costs an algorithm the table does not know as 1, and never prices an empty selection as 0', () => {
-    expect(est({ algorithms: ['random_forest'] })).toBeCloseTo(10, 6)
+    // `grp` is in the catalogue but has no measured cost yet.
+    expect(est({ algorithms: ['grp'] })).toBeCloseTo(10, 6)
     expect(est({ algorithms: [] })).toBeCloseTo(10, 6)
   })
 
@@ -200,4 +204,145 @@ describe('cvFitCount (MODEL-FLOW-029)', () => {
       }),
     ).toEqual({ candidates: 8, fitsEach: 6, total: 48 })
   })
+})
+
+describe('grid search pricing (MODEL-FLOW-038)', () => {
+  const grid = { findBestParams: true, gridFits: 12 }
+
+  it('prices the search fits plus the winner’s single run', () => {
+    // 12 search fits + the winner's one fit, each lightgbm's 10s.
+    expect(est(grid)).toBeCloseTo(est() * 13, 6)
+  })
+
+  it('prices the winner as k folds plus a refit under CV', () => {
+    // gridFits already counts combos x folds; the winner adds k+1.
+    expect(est({ ...grid, nSplits: 3 })).toBeCloseTo(est() * (12 + 4), 6)
+  })
+
+  it('replaces the curated-variant pricing rather than adding to it', () => {
+    expect(est({ ...grid, tuningVariants: { lightgbm: 99 } })).toBeCloseTo(
+      est(grid),
+      6,
+    )
+  })
+
+  it('is ignored when Find Best Parameters is off', () => {
+    expect(est({ findBestParams: false, gridFits: 12 })).toBeCloseTo(est(), 6)
+  })
+
+  it('states the search and the winner’s fits separately under CV', () => {
+    expect(cvFitCount({ ...BASE, ...grid, nSplits: 3 })).toEqual({
+      candidates: 1,
+      fitsEach: 4,
+      total: 16,
+      searchFits: 12,
+    })
+  })
+})
+
+describe('measured forest costs (MODEL-FLOW-038)', () => {
+  // One fit, 100 trees, default depth, measured in the trainer image:
+  // random_forest 104-151 and extra_trees 29-37 where lightgbm is 0.6-1.7.
+  it('prices random_forest and extra_trees in the measured ranges, not like lightgbm', () => {
+    const lightgbm = est({ algorithms: ['lightgbm'] })
+    const forest = est({ algorithms: ['random_forest'] }) / lightgbm
+    const extra = est({ algorithms: ['extra_trees'] }) / lightgbm
+    expect(forest).toBeGreaterThanOrEqual(104)
+    expect(forest).toBeLessThanOrEqual(151)
+    expect(extra).toBeGreaterThanOrEqual(29)
+    expect(extra).toBeLessThanOrEqual(37)
+  })
+
+  it('reproduces a measured single fit to within the panel’s own range', () => {
+    // 30,000 rows x 20 features, 100 trees: extra_trees took 9.56s here, and
+    // random_forest 36.76s. The panel shows est*0.6 .. est*2.
+    const at = (algorithm: string) =>
+      estimateRuntimeSeconds({
+        ...BASE,
+        rows: 30_000,
+        features: 20,
+        algorithms: [algorithm],
+      })
+    expect(at('extra_trees') * 0.6).toBeLessThan(9.56)
+    expect(at('extra_trees') * 2).toBeGreaterThan(9.56)
+    expect(at('random_forest') * 0.6).toBeLessThan(36.76)
+    expect(at('random_forest') * 2).toBeGreaterThan(36.76)
+  })
+
+  it('reads a wide forest search as long, not as seconds', () => {
+    // The shape of the run that sat at 100% of one core for 25+ minutes: 34,030
+    // rows and a 27-combination extra_trees search. Its feature count is not
+    // known here, so this takes a wide 100-feature table — one default-depth
+    // extra_trees fit there is ~55s, ~28 fits is ~25 min — and asserts the
+    // estimate is past the panel's 15-minute long-run line. The same search
+    // on 20 features reads ~5 minutes, which matches a measured 11s per fit.
+    const search = {
+      ...BASE,
+      rows: 34_030,
+      algorithms: ['extra_trees'],
+      findBestParams: true,
+      gridFits: 27,
+    }
+    expect(
+      estimateRuntimeSeconds({ ...search, features: 100 }),
+    ).toBeGreaterThan(900)
+    const narrow = estimateRuntimeSeconds({ ...search, features: 20 })
+    expect(narrow).toBeGreaterThan(200)
+    expect(narrow).toBeLessThan(900)
+  })
+})
+
+describe('search workers (MODEL-FLOW-038)', () => {
+  const grid = {
+    rows: 30_000,
+    features: 20,
+    algorithms: ['extra_trees'],
+    findBestParams: true,
+    gridFits: 18,
+  }
+
+  it('divides the search — not the winner’s run — by the measured speed-up', () => {
+    const serial = est({ ...grid })
+    const two = est({ ...grid, searchWorkers: 2 })
+    const oneFit = est({ ...grid, gridFits: 0 })
+    // Search part: 18 fits at 1/1.5 the time, plus the winner's one fit.
+    expect(two - oneFit).toBeCloseTo((serial - oneFit) / searchSpeedup(2), 6)
+    expect(two).toBeLessThan(serial)
+  })
+
+  it('treats a missing or single worker as serial, so an unknown count never under-estimates', () => {
+    expect(est({ ...grid, searchWorkers: undefined })).toBe(est({ ...grid }))
+    expect(est({ ...grid, searchWorkers: 1 })).toBe(est({ ...grid }))
+  })
+
+  it('has the speed-up the measurements gave: 1.5x on 2 workers', () => {
+    expect(PARALLEL_EFFICIENCY).toBe(0.75)
+    expect(searchSpeedup(2)).toBe(1.5)
+    expect(searchSpeedup(1)).toBe(1)
+    expect(searchSpeedup(undefined)).toBe(1)
+  })
+
+  it('does not divide when Find Best Parameters is off', () => {
+    expect(
+      est({ ...grid, findBestParams: false, searchWorkers: 2 }),
+    ).toBeCloseTo(est({ ...grid, findBestParams: false }), 6)
+  })
+})
+
+describe('searchWorkersFor (same rule as the trainer’s search_parallelism)', () => {
+  // The cases images/trainer/test/test_grid_search.py pins for
+  // `search_parallelism`; a change on either side must change both.
+  it.each([
+    [true, 2, 18, 2], // the production case
+    [true, 4, 18, 4], // more CPUs -> more workers
+    [true, 8, 3, 3], // never more workers than fits
+    [true, 4, 1, 1], // one fit has nothing to run beside
+    [true, 1, 18, 1], // a one-CPU budget stays serial
+    [false, 2, 18, 1], // lightgbm, ridge… are not parallelised
+  ])(
+    'parallel=%s budget=%s tasks=%s -> %s workers',
+    (parallel, budget, tasks, expected) => {
+      expect(searchWorkersFor(parallel, budget, tasks)).toBe(expected)
+    },
+  )
 })

@@ -14,6 +14,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useDatasets } from '@/hooks/dataset/use-datasets'
 import { sourceTagsOf } from '@/lib/dataset-source-tags'
+import { visibleTagChips } from '@/lib/tag-chips'
 import type { SavedDataset } from '@/store/datasets'
 import { DatasetCard } from '../dataset-card'
 
@@ -52,6 +53,7 @@ export function DatasetPicker({
   const { datasets, loading } = useDatasets(workspaceId || undefined)
   const [query, setQuery] = useState('')
   const [activeTags, setActiveTags] = useState<string[]>([])
+  const [tagsExpanded, setTagsExpanded] = useState(false)
   const [sort, setSort] = useState<SortKey>('name')
   const gridRef = useRef<HTMLDivElement>(null)
 
@@ -68,6 +70,14 @@ export function DatasetPicker({
     for (const tags of tagsById.values()) for (const t of tags) set.add(t)
     return Array.from(set).sort((a, b) => a.localeCompare(b))
   }, [tagsById])
+
+  // A workspace can hold hundreds of distinct source tags; the row shows the
+  // first dozen and folds the rest behind "Show more". A tag switched on is
+  // never folded away (lib/tag-chips.ts).
+  const tagChips = useMemo(
+    () => visibleTagChips(distinctTags, activeTags, tagsExpanded),
+    [distinctTags, activeTags, tagsExpanded],
+  )
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -224,7 +234,7 @@ export function DatasetPicker({
 
       {distinctTags.length >= 2 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          {distinctTags.map(tag => {
+          {tagChips.visible.map(tag => {
             const on = activeTags.includes(tag)
             return (
               <button
@@ -243,6 +253,20 @@ export function DatasetPicker({
               </button>
             )
           })}
+          {tagChips.collapsible && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setTagsExpanded(prev => !prev)}
+              aria-expanded={tagsExpanded}
+              className="h-6 rounded-full px-2.5 text-[11px] text-primary hover:text-primary"
+            >
+              {tagsExpanded
+                ? 'Show less'
+                : `Show more (${tagChips.hiddenCount})`}
+            </Button>
+          )}
         </div>
       )}
 

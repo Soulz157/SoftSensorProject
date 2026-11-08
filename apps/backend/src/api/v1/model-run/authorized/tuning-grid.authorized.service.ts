@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import {
+  MAX_GRID_COMBINATIONS,
+  MAX_GRID_VALUES_PER_KEY,
+  PARALLEL_SEARCH_ALGORITHMS,
+  paramGridFor,
+  type ParamGrid,
   TUNE_VARIANTS_PER_JOB,
   TUNING_GRID,
   sizeTierFor,
@@ -8,6 +13,7 @@ import {
   type DatasetSize,
   type SizeTier,
 } from '@/lib/tuning-grid';
+import { configuredNanoCpus, trainerCpuBudget } from '@/lib/trainer-cpu';
 
 export interface TuningGridResponse {
   algorithm: string;
@@ -23,6 +29,24 @@ export interface TuningGridResponse {
    *  a list that is not. `tier` alone cannot: an lstm at a `tiny` tier is not
    *  sized by it. */
   sized: boolean;
+}
+
+/** MODEL-FLOW-038. The default GridSearchCV search space for one algorithm. */
+export interface ParamGridResponse {
+  algorithm: string;
+  paramGrid: ParamGrid;
+  tier: SizeTier;
+  /** Combination cap the job endpoint enforces; the client mirrors it live. */
+  maxCombinations: number;
+  /** Values-per-key cap, same contract. */
+  maxValuesPerKey: number;
+  /** MODEL-FLOW-038. CPUs the trainer may use (the container's quota). With
+   *  `parallel`, the time estimate divides the search by the workers this
+   *  allows instead of assuming one. */
+  cpuBudget: number;
+  /** MODEL-FLOW-038. True when the trainer fits this algorithm's combinations
+   *  in parallel worker processes. */
+  parallel: boolean;
 }
 
 /**
@@ -55,6 +79,31 @@ export class TuningGridAuthorizedService {
       maxVariantsPerJob: TUNE_VARIANTS_PER_JOB,
       tier: sizeTierFor(size?.rows),
       sized: variants !== TUNING_GRID[algorithm],
+    };
+  }
+
+  /**
+   * MODEL-FLOW-038. Same size query as `get`. The base run's own value is NOT
+   * merged here — the client knows its card's values and merges them into the
+   * edited grid; the server only checks the final grid (`validateParamGrid`).
+   */
+  getParamGrid(algorithm: string, size?: DatasetSize): ParamGridResponse {
+    const paramGrid = paramGridFor(algorithm, size);
+    if (!paramGrid) {
+      throw new AppException({
+        statusCode: 404,
+        message: `No grid search for "${algorithm}" — it may keep the curated variant search.`,
+        type: 'ERROR',
+      });
+    }
+    return {
+      algorithm,
+      paramGrid,
+      tier: sizeTierFor(size?.rows),
+      maxCombinations: MAX_GRID_COMBINATIONS,
+      maxValuesPerKey: MAX_GRID_VALUES_PER_KEY,
+      cpuBudget: trainerCpuBudget(configuredNanoCpus()),
+      parallel: PARALLEL_SEARCH_ALGORITHMS.has(algorithm),
     };
   }
 }

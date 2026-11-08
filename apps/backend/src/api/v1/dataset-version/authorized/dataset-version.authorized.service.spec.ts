@@ -1101,7 +1101,7 @@ describe('DatasetVersionAuthorizedService — exclude window (Raw vs Validation 
       USER,
       'ds-1',
       'bronze-1',
-      CHART_DTO as never,
+      CHART_DTO,
     );
     expect(lastBody()).toMatchObject({
       exclude_start: EXCLUDE.excludeStart,
@@ -1119,7 +1119,7 @@ describe('DatasetVersionAuthorizedService — exclude window (Raw vs Validation 
       USER,
       'ds-1',
       'bronze-1',
-      CHART_DTO as never,
+      CHART_DTO,
     );
     expect(lastBody()).toMatchObject({
       exclude_start: EXCLUDE.excludeStart,
@@ -1141,7 +1141,7 @@ describe('DatasetVersionAuthorizedService — exclude window (Raw vs Validation 
       USER,
       'ds-1',
       'bronze-1',
-      CHART_DTO as never,
+      CHART_DTO,
     );
     expect(lastBody()).toMatchObject({
       exclude_start: EXCLUDE.excludeStart,

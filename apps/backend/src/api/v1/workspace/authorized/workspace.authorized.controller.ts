@@ -22,6 +22,8 @@ import {
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
+import { WorkspaceDataIntakeAuthorizedService } from './workspace-data-intake.authorized.service';
+import { DataIntakeQueryDto } from './dto/workspace-data-intake.dto';
 
 @ApiBearerAuth()
 @ApiTags('Authorized Workspace')
@@ -30,6 +32,7 @@ import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
 export class WorkspaceAuthorizedController {
   constructor(
     private readonly workspaceAuthorizedService: WorkspaceAuthorizedService,
+    private readonly dataIntakeService: WorkspaceDataIntakeAuthorizedService,
   ) {}
 
   @Get('/')
@@ -71,6 +74,20 @@ export class WorkspaceAuthorizedController {
       user.id,
       user.role,
     );
+  }
+
+  @Get('/:id/data-intake')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Live tag quality, ingested volume and dataset storage for one workspace',
+  })
+  async getWorkspaceDataIntake(
+    @Param('id') id: string,
+    @Query() query: DataIntakeQueryDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.dataIntakeService.getWorkspaceIntake(id, user, query.range);
   }
 
   @Get('/:id/logs')

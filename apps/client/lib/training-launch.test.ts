@@ -165,6 +165,77 @@ describe('planFineTuneLaunch — Round 2 (MODEL-FLOW-035)', () => {
   })
 })
 
+describe('planFineTuneLaunch — grid search (MODEL-FLOW-038)', () => {
+  const base = BASES.random_forest!
+  const paramGrid = { n_estimators: [100, 300], max_depth: [null, 10] }
+
+  it('sends ONE candidate carrying the grid, and no extraVariants', () => {
+    expect(
+      planFineTuneLaunch({
+        algorithm: 'random_forest',
+        base,
+        rows: [{ n_estimators: 999 }],
+        useGrid: true,
+        paramGrid,
+      }),
+    ).toEqual({
+      type: 'job',
+      kind: 'HYPERPARAMETER_SEARCH',
+      candidates: [{ algorithm: 'random_forest', hyperparameters: base }],
+      paramGrid,
+    })
+  })
+
+  it('falls back to the curated path when the grid is absent', () => {
+    const plan = planFineTuneLaunch({
+      algorithm: 'random_forest',
+      base,
+      rows: [],
+      useGrid: true,
+      paramGrid: null,
+    })
+    expect(plan.paramGrid).toBeUndefined()
+  })
+
+  it('ignores the grid with Find Best Parameters off', () => {
+    const plan = planFineTuneLaunch({
+      algorithm: 'random_forest',
+      base,
+      rows: [{ n_estimators: 300 }],
+      useGrid: false,
+      paramGrid,
+    })
+    expect(plan.paramGrid).toBeUndefined()
+    expect(plan.candidates).toHaveLength(2)
+  })
+
+  it('never sends a grid for lstm/gru, which keep the curated variants', () => {
+    const plan = planFineTuneLaunch({
+      algorithm: 'lstm',
+      base: BASES.lstm!,
+      rows: [],
+      useGrid: true,
+      paramGrid: { epochs: [10, 20] },
+    })
+    expect(plan.paramGrid).toBeUndefined()
+  })
+
+  it('refuses a key with no values, and a grid of one combination', () => {
+    const input = {
+      algorithm: 'random_forest' as const,
+      base,
+      rows: [],
+      useGrid: true,
+    }
+    expect(() =>
+      planFineTuneLaunch({ ...input, paramGrid: { n_estimators: [] } }),
+    ).toThrow(/at least one value/)
+    expect(() =>
+      planFineTuneLaunch({ ...input, paramGrid: { n_estimators: [100] } }),
+    ).toThrow(/one combination/)
+  })
+})
+
 describe('candidatesFor', () => {
   it('drops a row equal to the card, or to an earlier row', () => {
     const got = candidatesFor('random_forest', BASES.random_forest!, [

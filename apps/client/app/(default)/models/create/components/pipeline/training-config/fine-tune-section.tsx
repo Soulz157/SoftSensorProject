@@ -23,6 +23,7 @@ import {
 } from '@/lib/run-params'
 import { formatCvScore } from './cv-results-section'
 import { DynamicHyperparameters } from './dynamic-hyperparameters'
+import { ParamGridEditor } from './param-grid-editor'
 import { VariantPreview } from './variant-preview'
 
 interface Props {
@@ -62,6 +63,7 @@ export function FineTuneSection({ fineTune, nSplits, datasetSize }: Props) {
     base,
     useGrid,
     setUseGrid,
+    paramGrid,
   } = fineTune
   const open = enabled && source !== null
   // MODEL-FLOW-036-T08. The picked card opens on its fields, like a newly
@@ -142,12 +144,13 @@ export function FineTuneSection({ fineTune, nSplits, datasetSize }: Props) {
                 Find Best Parameters
               </Label>
               <p className="text-xs text-muted-foreground">
-                Also try a curated set of hyperparameter variants for{' '}
-                {ALGORITHM_LABELS[algorithm]}
-                {nSplits !== undefined
-                  ? ' — every variant is cross-validated (k+1 fits each) and the lowest mean CV score wins'
-                  : ''}
-                . Off: only the values above and the rows you add below.
+                {paramGrid || !useGrid
+                  ? `Grid search (GridSearchCV) over every combination of the values below for ${ALGORITHM_LABELS[algorithm]}${
+                      nSplits !== undefined
+                        ? ` — each combination is cross-validated on ${nSplits} folds and the lowest mean CV score wins`
+                        : ' — each combination is scored on the test split and the best one wins'
+                    }. Off: only the values above and the rows you add below.`
+                  : `Also try a curated set of hyperparameter variants for ${ALGORITHM_LABELS[algorithm]}. Off: only the values above and the rows you add below.`}
               </p>
             </div>
             <Switch
@@ -157,7 +160,16 @@ export function FineTuneSection({ fineTune, nSplits, datasetSize }: Props) {
             />
           </div>
 
-          {tunable && (
+          {tunable && paramGrid && (
+            <ParamGridEditor
+              key={source.id}
+              algorithm={algorithm}
+              base={base}
+              paramGrid={paramGrid}
+            />
+          )}
+
+          {tunable && !paramGrid && (
             <VariantPreview
               key={source.id}
               algorithm={algorithm}

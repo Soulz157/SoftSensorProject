@@ -80,6 +80,13 @@ export interface UseModelRetrain {
       acceptanceCriteria?: RetrainCriterion[]
     },
   ) => Promise<void>
+  /** Stop the live retrain and kill its container. A no-op without one. The
+   *  caller asks the user first (`CancelRunButton`). */
+  cancel: () => Promise<void>
+  /** A cancel request is in flight. */
+  canceling: boolean
+  /** Why the last cancel failed — the retrain is still running. */
+  cancelError: string | null
   /** Clears the last error only — the job itself is server state and is
    *  never reset from the client. */
   clearError: () => void
@@ -110,6 +117,8 @@ export function useModelRetrain({
   const [loading, setLoading] = useState(() => modelId !== null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [canceling, setCanceling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
   // Read lazily (never during render) — `localStorage` is unavailable on the
   // server and can throw in a private window.
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null)
@@ -310,6 +319,29 @@ export function useModelRetrain({
     [modelId, jobLive, fetchLogs],
   )
 
+  const cancel = useCallback(async () => {
+    if (!modelId || !jobId || !jobLive || canceling) return
+    setCanceling(true)
+    setCancelError(null)
+    try {
+      const res = await modelRetrainService.cancel(modelId, jobId)
+      // The server's own answer, CANCELED: the poll stops with `jobLive`.
+      // Marked notified so a terminal toast is never raised for a user action.
+      notifiedTerminalRef.current = res.data.id
+      setJob(res.data)
+      toast.success('Retrain canceled')
+      onUpdatedRef.current?.()
+    } catch (err) {
+      setCancelError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not cancel the retrain.',
+      )
+    } finally {
+      setCanceling(false)
+    }
+  }, [modelId, jobId, jobLive, canceling])
+
   const clearError = useCallback(() => setError(null), [])
   const refresh = useCallback(() => {
     if (modelId) setLoading(true)
@@ -331,6 +363,9 @@ export function useModelRetrain({
     loading,
     error,
     start,
+    cancel,
+    canceling,
+    cancelError,
     clearError,
     refresh,
     // Scoped to the CURRENT job — a later retrain is a different id and

@@ -1,6 +1,7 @@
 'use client'
 
 import { RefreshCw } from 'lucide-react'
+import { CancelRunButton } from '@/components/cancel-run-button'
 import { Button } from '@/components/ui/button'
 import type { RetrainPhase } from '@/lib/retrain'
 import type { RetrainJob } from '@/services/model-retrain'
@@ -30,6 +31,9 @@ export function RetrainTab({
   logs,
   isRetraining,
   onStartRetrain,
+  onCancelRetrain,
+  canceling = false,
+  cancelError = null,
   applying,
   onApplyToProduction,
   currentSettings = null,
@@ -50,6 +54,13 @@ export function RetrainTab({
   isRetraining: boolean
   /** Opens the existing retrain dialog. */
   onStartRetrain: () => void
+  /** Stops the live retrain. Called only after the user confirms. Without it
+   *  no Cancel button is drawn. */
+  onCancelRetrain?: () => void
+  /** A cancel request is in flight. */
+  canceling?: boolean
+  /** Why the last cancel failed — the retrain is still running. */
+  cancelError?: string | null
   applying: boolean
   onApplyToProduction: (version: ModelVersionNumber) => void
 }) {
@@ -65,17 +76,32 @@ export function RetrainTab({
             A retrain never replaces the current version on its own.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1.5"
-          disabled={isRetraining}
-          onClick={onStartRetrain}
-        >
-          <RefreshCw className="h-4 w-4" />
-          {isRetraining ? 'Retraining…' : 'Retrain'}
-        </Button>
+        <div className="flex items-center gap-2">
+          {isRetraining && onCancelRetrain && (
+            <CancelRunButton
+              subject="retrain"
+              onConfirm={onCancelRetrain}
+              canceling={canceling}
+              className="h-8 px-3 text-xs"
+            />
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={isRetraining}
+            onClick={onStartRetrain}
+          >
+            <RefreshCw className="h-4 w-4" />
+            {isRetraining ? 'Retraining…' : 'Retrain'}
+          </Button>
+        </div>
       </div>
+      {isRetraining && cancelError && (
+        <p role="alert" className="text-xs text-destructive">
+          Could not cancel: {cancelError}
+        </p>
+      )}
 
       {idle ? (
         <div className="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
