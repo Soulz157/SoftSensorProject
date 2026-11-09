@@ -118,7 +118,6 @@ export class ContainerDispatchService
         connection: { url },
         concurrency: 1,
         autorun: false,
-        // Required for the manual rate limit; high enough to never apply.
         limiter: { max: 1000, duration: 1000 },
       },
     );

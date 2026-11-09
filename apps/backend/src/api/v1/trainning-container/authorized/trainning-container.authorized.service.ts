@@ -28,46 +28,6 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
 
   /** Digest, resolved once at boot. See resolveDigest. */
   imageDigest = '';
-
-  // 1.0.21 — MODEL-FLOW-028. pipelines/cv_expanding.py keeps each fold's
-  // out-of-fold predictions and publishes them as `cv_oof_predictions.parquet`
-  // (new TrainingResult.extra_parquet; MIRRORS.md entry 12) instead of
-  // discarding them. ADDITIVE: every non-CV run is byte-for-byte 1.0.20. A CV
-  // run trained on an older image has no such file and never will. Built by
-  // the user (2026-10-08, image 51d727619caa); trainer suite 83/83 run against
-  // the mounted source, and the built image confirmed to contain the new code.
-  // Not pushed.
-  //
-  // 1.0.23 — MODEL-FLOW-033. build_model gains `extra_trees`
-  // (sklearn ExtraTreesRegressor, random_forest's five knobs) and it reports
-  // impurity importance. ADDITIVE: every other algorithm is unchanged. Built by
-  // the user (2026-10-15, image 6a078a741f27); the image's own code confirmed
-  // to contain the branch and to fit an ExtraTreesRegressor, and the trainer
-  // suite passes 89/89 inside it. Not pushed.
-  //
-  // 1.0.24 — MODEL-SERVE-043. pipelines/infer.py and batch.py score lstm/gru
-  // through (n, sequence_length, features) windows (windows.build_inference_
-  // windows, pinned to training's build_windows by a parity test) instead of
-  // the 2-D frame that raised "could not determine the shape of object type
-  // 'DataFrame'" on every window. ADDITIVE: every tabular algorithm is
-  // byte-for-byte 1.0.23. Built by the user (2026-11-01, image 2cfd1b6f1c38);
-  // the image's own code confirmed to carry the new functions, and the trainer
-  // suite passes 103/103 inside it. Not pushed.
-  //
-  // 1.0.25 — MODEL-SERVE-045. SequenceRegressor and build_inference_windows
-  // moved into packages/py-scaling (softsensor_scaling.sequence / .windows),
-  // shared with apps/serving; sequence_model.py and windows.py here are
-  // re-exports. NO behaviour change: a 1.0.24-pickled LSTM (LSTM 3) loads and
-  // predicts 20.334125518798828 in both images, bit-identical. Built by the
-  // user (2026-11-02, image e9d2e2862018); trainer suite 103/103 inside it.
-  // Not pushed.
-  //
-  // 1.0.26 — MODEL-FLOW-038. Find Best Parameters is a real GridSearchCV:
-  // pipelines/grid_search.py, grid_search_results.json, `bestHyperparameters`
-  // on /complete. A backend that sends `paramGrid` to an older image gets its
-  // run FAILED by design (complete() checks for the artifact). Built by the
-  // user (2026-11-05, image 11d4ad38fdf9).
-  //
   // 1.0.27 — MODEL-FLOW-038. The grid search fits random_forest/extra_trees
   // combinations in parallel within TRAINER_CPU_BUDGET (sent below from
   // NanoCpus); measured 1.5-1.8x under a 2-CPU cap with an identical result.
