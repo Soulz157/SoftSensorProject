@@ -13,7 +13,7 @@ const mockedFindHoldout = findHoldoutArtifact as jest.MockedFunction<
  * MODEL-FLOW-019-T39. `autoScoreRunsService` only — the system-triggered
  * path that fires when a candidate job finishes. Its whole contract is
  * WHICH runs it spawns a container for and which it silently skips, so
- * every case here asserts against `runner.spawn`.
+ * every case here asserts against `runner.enqueue`.
  */
 function makeService(run: Record<string, unknown> | null) {
   const prisma = {
@@ -22,7 +22,7 @@ function makeService(run: Record<string, unknown> | null) {
       update: jest.fn().mockResolvedValue({}),
     },
   };
-  const runner = { spawn: jest.fn().mockResolvedValue(undefined) };
+  const runner = { enqueue: jest.fn().mockResolvedValue(undefined) };
   const service = new ModelRunAutoScoreAuthorizedService(
     prisma as never,
     runner as never,
@@ -54,7 +54,7 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
     } as never);
   });
 
-  it('spawns a scoring container for a SUCCEEDED, unscored run with a holdout', async () => {
+  it('queues scoring for a SUCCEEDED, unscored run with a holdout', async () => {
     // The case the whole feature exists for: a holdout the user cut, and a
     // run that would otherwise sit unscored until someone found the button.
     const { service, runner, prisma } = makeService(okRun());
@@ -62,11 +62,7 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
     await service.autoScoreRunsService(['run-1']);
 
     expect(prisma.modelTrainingRun.update).toHaveBeenCalled();
-    expect(runner.spawn).toHaveBeenCalledWith(
-      'run-1',
-      expect.any(String),
-      'score',
-    );
+    expect(runner.enqueue).toHaveBeenCalledWith('score', 'run-1');
   });
 
   it('skips a run that is already scored — re-entering completion must not double-spawn', async () => {
@@ -76,7 +72,7 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
 
     await service.autoScoreRunsService(['run-1']);
 
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
   it('skips a run already being scored', async () => {
@@ -86,7 +82,7 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
 
     await service.autoScoreRunsService(['run-1']);
 
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
   it('skips a dataset with no holdout — nothing to score against, and not an error', async () => {
@@ -95,7 +91,7 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
 
     await service.autoScoreRunsService(['run-1']);
 
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
   it.each(['lstm', 'gru'])(
@@ -105,7 +101,7 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
 
       await service.autoScoreRunsService(['run-1']);
 
-      expect(runner.spawn).not.toHaveBeenCalled();
+      expect(runner.enqueue).not.toHaveBeenCalled();
     },
   );
 
@@ -114,12 +110,12 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
 
     await service.autoScoreRunsService(['run-1']);
 
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
-  it('never throws when a spawn fails — job completion must not fail with it', async () => {
+  it('never throws when queueing fails — job completion must not fail with it', async () => {
     const { service, runner } = makeService(okRun());
-    runner.spawn.mockRejectedValue(new Error('no docker daemon'));
+    runner.enqueue.mockRejectedValue(new Error('no docker daemon'));
 
     await expect(
       service.autoScoreRunsService(['run-1']),
@@ -136,7 +132,7 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
         update: jest.fn().mockResolvedValue({}),
       },
     };
-    const runner = { spawn: jest.fn().mockResolvedValue(undefined) };
+    const runner = { enqueue: jest.fn().mockResolvedValue(undefined) };
     const service = new ModelRunAutoScoreAuthorizedService(
       prisma as never,
       runner as never,
@@ -144,11 +140,7 @@ describe('autoScoreRunsService (MODEL-FLOW-019-T39)', () => {
 
     await service.autoScoreRunsService(['run-1', 'run-2']);
 
-    expect(runner.spawn).toHaveBeenCalledTimes(1);
-    expect(runner.spawn).toHaveBeenCalledWith(
-      'run-2',
-      expect.any(String),
-      'score',
-    );
+    expect(runner.enqueue).toHaveBeenCalledTimes(1);
+    expect(runner.enqueue).toHaveBeenCalledWith('score', 'run-2');
   });
 });

@@ -72,6 +72,7 @@ export function candidateFromRun(
     cvFoldsKey: run.cvFoldsKey,
     holdoutPredictionsKey: run.holdoutPredictionsKey,
     scoringContainerId: run.scoringContainerId,
+    scoringQueuedAt: run.scoringQueuedAt,
     sourcedMetrics: sourcedMetricsOf(run),
     holdoutAbsence: holdoutAbsenceOf(run, datasetHasHoldout),
   }

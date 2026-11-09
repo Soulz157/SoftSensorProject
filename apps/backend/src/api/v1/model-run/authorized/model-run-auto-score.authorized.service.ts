@@ -1,13 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
 import { findHoldoutArtifact } from '@/lib/holdout-artifact';
-import { mintRunToken } from '@/lib/mint-run-token';
-import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
-
-/** Same window `ModelRunScoreAuthorizedService` mints for a user-triggered
- *  score — declared here rather than imported from it, because the whole
- *  point of this file is to depend on nothing that depends back. */
-const SCORE_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
+import { ContainerDispatchService } from '../../trainning-container/authorized/container-dispatch.service';
 
 /**
  * MODEL-FLOW-019-T39. Score finished candidates against their dataset's
@@ -43,7 +37,7 @@ export class ModelRunAutoScoreAuthorizedService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly runner: TrainningContainerAuthorizedService,
+    private readonly dispatch: ContainerDispatchService,
   ) {}
 
   /**
@@ -60,7 +54,13 @@ export class ModelRunAutoScoreAuthorizedService {
         if (!run || run.status !== 'SUCCEEDED') continue;
         // Already scored, or a container is already doing it. Both are
         // ordinary on a re-entered completion path, so neither is logged.
-        if (run.holdoutMetrics !== null || run.scoringContainerId) continue;
+        if (
+          run.holdoutMetrics !== null ||
+          run.scoringContainerId ||
+          run.scoringQueuedAt
+        ) {
+          continue;
+        }
         // Same refusal the user-facing trigger makes, for the same reason —
         // score.py has no windowing path, so it would score a sequence
         // model as if every row were independent.
@@ -75,15 +75,11 @@ export class ModelRunAutoScoreAuthorizedService {
         // Not an error: there is simply nothing to score against.
         if (!holdoutArtifact) continue;
 
-        const { token, tokenHash } = mintRunToken();
         await this.prisma.modelTrainingRun.update({
           where: { id: runId },
-          data: {
-            tokenHash,
-            tokenExpiresAt: new Date(Date.now() + SCORE_TOKEN_TTL_MS),
-          },
+          data: { scoringQueuedAt: new Date() },
         });
-        await this.runner.spawn(runId, token, 'score');
+        await this.dispatch.enqueue('score', runId);
         this.log.log(`auto-scoring run ${runId} against its holdout`);
       } catch (err) {
         this.log.warn(

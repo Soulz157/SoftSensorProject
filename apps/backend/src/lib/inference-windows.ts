@@ -167,3 +167,17 @@ export function formatDtHour(windowStart: Date): { dt: string; hour: string } {
   const iso = windowStart.toISOString(); // e.g. "2026-09-10T08:00:00.000Z"
   return { dt: iso.slice(0, 10), hour: iso.slice(11, 13) };
 }
+
+/**
+ * CONTAINER-QUEUE-001. True for the newest window a schedule can be working on.
+ * The tick stops inserting at `now - (lag + cadence)`, so one more cadence of
+ * slack covers a window inserted a tick ago. Anything older is backfill.
+ */
+export function isLiveWindow(
+  windowStart: Date,
+  schedule: { cadenceMinutes: number; lagMinutes: number },
+  now: Date,
+): boolean {
+  const slackMinutes = schedule.lagMinutes + 2 * schedule.cadenceMinutes;
+  return windowStart.getTime() >= now.getTime() - slackMinutes * MS_PER_MINUTE;
+}

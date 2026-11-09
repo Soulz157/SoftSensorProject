@@ -1231,6 +1231,11 @@ export class ModelCandidateJobAuthorizedService {
       orderBy: { createdAt: 'asc' },
     });
     const declared = job.candidates as unknown as Candidate[];
+    // One run of a job is in flight at a time, so one count covers it.
+    const queuedRun = runs.find((r) => r.status === 'QUEUED');
+    const queuedAhead = queuedRun
+      ? await this.runLaunch.queuedRunsAhead(queuedRun.createdAt)
+      : null;
 
     // MODEL-FLOW-019-T02. The dataset-level half of "why is there no holdout
     // figure" — a run row cannot tell "this dataset never had a holdout"
@@ -1364,6 +1369,8 @@ export class ModelCandidateJobAuthorizedService {
           // column, this one included, is already on the row.
           holdoutPredictionsKey: run?.holdoutPredictionsKey ?? null,
           scoringContainerId: run?.scoringContainerId ?? null,
+          scoringQueuedAt: run?.scoringQueuedAt ?? null,
+          queuedAhead: run?.status === 'QUEUED' ? queuedAhead : null,
           // MODEL-FLOW-019-T02. The same numbers as `metrics`/`trainMetrics`
           // above can never be, because each entry here carries the SOURCE
           // it is a figure of — and the holdout entry carries the counts

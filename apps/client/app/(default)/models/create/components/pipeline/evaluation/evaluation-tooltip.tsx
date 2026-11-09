@@ -2,6 +2,7 @@
 
 import type { FitRow } from '@/lib/model-metrics'
 import { formatWallClockFull } from '@/lib/monitoring'
+import { CURRENT_VERSION_COLOR } from '@/lib/retrain-series'
 
 interface PayloadItem {
   /** Full source row recharts attaches to every payload item. */
@@ -104,7 +105,7 @@ export function EvaluationTooltip({
             )} */}
             {compareName && comparePredict !== undefined && (
               <Row
-                color="var(--chart-4)"
+                color={CURRENT_VERSION_COLOR}
                 label={compareName}
                 value={fmt(comparePredict)}
               />
@@ -124,7 +125,7 @@ export function EvaluationTooltip({
             />
             {compareName && compareResidual !== undefined && (
               <Row
-                color="var(--chart-4)"
+                color={CURRENT_VERSION_COLOR}
                 label={compareName}
                 value={fmt(compareResidual)}
               />

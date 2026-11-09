@@ -9,6 +9,10 @@ function isJwtExpiry(value: string): value is JwtExpiry {
   return JWT_EXPIRY_RE.test(value);
 }
 
+function optionalNumber(raw: string | undefined): number | undefined {
+  return raw === undefined || raw === '' ? undefined : Number(raw);
+}
+
 /** Access-token lifetime from JWT_ACCESS_EXPIRES (e.g. "30m", "1h"),
  * defaulting to 30 minutes. A malformed value fails at boot rather than at
  * the first login, where jsonwebtoken would throw on every sign. */
@@ -216,9 +220,42 @@ export const env = {
   INFERENCE_BACKFILL_HORIZON_HOURS: Number(
     process.env.INFERENCE_BACKFILL_HORIZON_HOURS ?? 48,
   ),
-  // Containers spawned per tick, across all schedules — bounds a first
-  // boot with a long backfill horizon from spawning dozens at once.
-  INFERENCE_MAX_CONCURRENCY: Number(process.env.INFERENCE_MAX_CONCURRENCY ?? 1),
+  // CONTAINER-QUEUE-001. Windows fetched from PI at once, before they queue
+  // for a container. Not a container limit; ContainerDispatchService owns that.
+  INFERENCE_PREP_CONCURRENCY: Number(
+    process.env.INFERENCE_PREP_CONCURRENCY ?? 2,
+  ),
+  // CONTAINER-QUEUE-001. Server-only: the URL carries the Redis password.
+  REDIS_URL: process.env.REDIS_URL ?? 'redis://localhost:6379',
+  // Set either to override what Docker reports for the host.
+  CONTAINER_BUDGET_CPUS: optionalNumber(process.env.CONTAINER_BUDGET_CPUS),
+  CONTAINER_BUDGET_MEMORY_BYTES: optionalNumber(
+    process.env.CONTAINER_BUDGET_MEMORY_BYTES,
+  ),
+  // Left for Postgres, MinIO and Redis when the budget comes from Docker.
+  CONTAINER_HOST_RESERVE_CPUS: Number(
+    process.env.CONTAINER_HOST_RESERVE_CPUS ?? 1,
+  ),
+  CONTAINER_HOST_RESERVE_MEMORY_BYTES: Number(
+    process.env.CONTAINER_HOST_RESERVE_MEMORY_BYTES ?? 1.5 * 1024 ** 3,
+  ),
+  // Train and batch may not use this slice: room for one inference container.
+  CONTAINER_HELD_CPUS: Number(process.env.CONTAINER_HELD_CPUS ?? 1),
+  CONTAINER_HELD_MEMORY_BYTES: Number(
+    process.env.CONTAINER_HELD_MEMORY_BYTES ?? 1024 ** 3,
+  ),
+  CONTAINER_MAX_ACTIVE_PER_WORKSPACE: Number(
+    process.env.CONTAINER_MAX_ACTIVE_PER_WORKSPACE ?? 2,
+  ),
+  CONTAINER_QUEUE_RECHECK_MS: Number(
+    process.env.CONTAINER_QUEUE_RECHECK_MS ?? 3_000,
+  ),
+  CONTAINER_QUEUE_SWEEP_MS: Number(
+    process.env.CONTAINER_QUEUE_SWEEP_MS ?? 60_000,
+  ),
+  CONTAINER_QUEUE_MAX_WAIT_MS: Number(
+    process.env.CONTAINER_QUEUE_MAX_WAIT_MS ?? 24 * 60 * 60 * 1000,
+  ),
   // Below this row count (post drop_bad_feature_rows), a window is SKIPPED
   // rather than scored — a real terminal status, not a synonym for FAILED
   // (T01's own finding). Default is half an hourly window at the observed

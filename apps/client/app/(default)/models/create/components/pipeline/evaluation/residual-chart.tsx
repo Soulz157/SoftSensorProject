@@ -14,6 +14,7 @@ import {
 } from 'recharts'
 import type { FitRow } from '@/lib/model-metrics'
 import { sequenceAxis } from '@/lib/chart-gaps'
+import { CURRENT_VERSION_COLOR } from '@/lib/retrain-series'
 import { EvaluationTooltip } from './evaluation-tooltip'
 import { AXIS_TICK, EVAL_SYNC_ID } from './actual-vs-predicted-chart'
 import type { LegendEntry } from '@/components/charts/chart-legend'
@@ -257,8 +258,8 @@ export function ResidualChart({
             connectNulls
             type="monotone"
             dataKey="compareResidual"
-            stroke="var(--chart-4)"
-            strokeWidth={1.5}
+            stroke={CURRENT_VERSION_COLOR}
+            strokeWidth={2}
             strokeDasharray="2 4"
             dot={false}
             isAnimationActive={false}

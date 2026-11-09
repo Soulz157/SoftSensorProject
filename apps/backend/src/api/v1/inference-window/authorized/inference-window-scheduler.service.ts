@@ -4,7 +4,6 @@ import {
   OnApplicationShutdown,
   OnModuleInit,
 } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { decryptSecret } from '@/lib/crypto';
 import { mintRunToken } from '@/lib/mint-run-token';
@@ -16,14 +15,19 @@ import {
   formatDtHour,
   windowFloor,
   windowStartsBetween,
+  isLiveWindow,
 } from '@/lib/inference-windows';
 import { env } from '@/config/env.config';
 import { buildPiCredentials } from '@/lib/source-block';
 import { nextTagObservation, type FetchOutcome } from '@/lib/tag-observation';
 import { readLiveSourceOverride } from '@/lib/live-source-override';
 import { contextRowsFor } from '@/lib/sequence-model';
+import { ContainerDispatchService } from '../../trainning-container/authorized/container-dispatch.service';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
+
+/** Bounds one tick's requests. Newest first, so only the oldest backfill waits. */
+const DUE_WINDOWS_PER_TICK = 500;
 
 function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -45,9 +49,9 @@ function msg(err: unknown): string {
  * inserts what was missed, per the unique constraint), but if the tick
  * itself scored, a slow window would delay the NEXT tick's own inserts —
  * the interval would become load-bearing, and a missed insert IS a
- * permanent gap in the monitoring record (T01's own finding). Dispatch is
- * bounded by INFERENCE_MAX_CONCURRENCY so a first boot with a long backfill
- * horizon cannot spawn dozens of containers from one tick.
+ * permanent gap in the monitoring record (T01's own finding). Dispatch goes
+ * through ContainerDispatchService, so a first boot with a long backfill
+ * horizon queues on host capacity instead of spawning dozens at once.
  */
 @Injectable()
 export class InferenceWindowSchedulerService
@@ -60,10 +64,12 @@ export class InferenceWindowSchedulerService
   constructor(
     private readonly prisma: PrismaService,
     private readonly runner: TrainningContainerAuthorizedService,
+    private readonly dispatch: ContainerDispatchService,
     private readonly descriptor: ModelServingAuthorizedService,
   ) {}
 
   onModuleInit(): void {
+    this.dispatch.registerInferencePrep((id) => this.dispatchOne(id));
     const intervalMs = env.INFERENCE_TICK_INTERVAL_MS;
     if (intervalMs <= 0) {
       this.logger.log(
@@ -191,36 +197,18 @@ export class InferenceWindowSchedulerService
   }
 
   /**
-   * Materializes and spawns up to INFERENCE_MAX_CONCURRENCY PENDING
-   * windows, NEWEST FIRST. Out of band from the tick's own error handling —
-   * a spawn failure marks its OWN row FAILED and must never abort sibling
-   * windows in the same batch.
+   * Requests preparation for every PENDING window of a running schedule.
+   * Out of band from the tick's own error handling, and repeatable: the queue
+   * dedupes a window already waiting.
    *
-   * NEWEST FIRST, NOT OLDEST. This claim is global across every model and
-   * takes INFERENCE_MAX_CONCURRENCY rows (1 by default), so the ordering
-   * decides what the whole system works on next. Oldest-first meant a
-   * freshly enabled schedule spent its entire backfill — up to
-   * INFERENCE_BACKFILL_HORIZON_HOURS of windows, 48 by default, one per
-   * tick — replaying history before it ever scored the CURRENT hour. Two
-   * things followed, both bad:
-   *
-   *   1. `deriveDeployStatuses` measures staleness from the most recent
-   *      SUCCEEDED window. Replaying the oldest windows first leaves that
-   *      maximum sitting in the past, so a perfectly healthy model reports
-   *      STALE for the entire drain — hours of looking broken while
-   *      working correctly.
-   *   2. The claim is not scoped per model, so ONE model's backfill
-   *      monopolised the single slot and every other model's live window
-   *      queued behind it — the same batch-head starvation this ledger
-   *      already had to fix once, in the ground-truth sweeper.
-   *
-   * Newest-first fixes both at once: current-hour windows are the newest
-   * rows in the table for EVERY model, so live inference always wins the
-   * slot and backfill fills in behind it. The trade is that a permanently
-   * saturated queue would leave the oldest backfill windows unclaimed —
-   * accepted deliberately, because in a monitoring system a fresh reading
-   * is worth more than an old one, and a stale-looking healthy model is a
-   * worse failure than a late backfill.
+   * NEWEST FIRST, AND LIVE AHEAD OF BACKFILL. A freshly enabled schedule has up
+   * to INFERENCE_BACKFILL_HORIZON_HOURS of windows to replay. Working oldest
+   * first left `deriveDeployStatuses`, which measures staleness from the most
+   * recent SUCCEEDED window, reporting a healthy model STALE for the whole
+   * drain, and let one model's backfill hold every other model's live window
+   * behind it. So the current window of EVERY model outranks all backfill. The
+   * trade is that a permanently saturated queue leaves the oldest backfill
+   * unclaimed, accepted because a fresh reading is worth more than an old one.
    */
   private async dispatchDue(): Promise<void> {
     if (this.dispatching) return; // one dispatch pass in flight at a time
@@ -250,9 +238,12 @@ export class InferenceWindowSchedulerService
       // documents.
       const enabledSchedules = await this.prisma.inferenceSchedule.findMany({
         where: { enabled: true },
-        select: { modelId: true },
+        select: { modelId: true, cadenceMinutes: true, lagMinutes: true },
       });
       if (enabledSchedules.length === 0) return;
+      const scheduleByModel = new Map(
+        enabledSchedules.map((s) => [s.modelId, s]),
+      );
 
       const due = await this.prisma.inferenceWindow.findMany({
         where: {
@@ -260,34 +251,37 @@ export class InferenceWindowSchedulerService
           modelId: { in: enabledSchedules.map((s) => s.modelId) },
         },
         orderBy: { windowStart: 'desc' },
-        take: env.INFERENCE_MAX_CONCURRENCY,
+        take: DUE_WINDOWS_PER_TICK,
+        select: { id: true, modelId: true, windowStart: true },
       });
+      const now = new Date();
       for (const window of due) {
-        await this.dispatchOne(window.id).catch((err) => {
-          this.logger.error(
-            `Dispatch failed for inference window ${window.id}`,
-            err,
-          );
-        });
+        const schedule = scheduleByModel.get(window.modelId);
+        if (!schedule) continue;
+        await this.dispatch.enqueueInferencePrep(
+          window.id,
+          isLiveWindow(window.windowStart, schedule, now),
+        );
       }
     } finally {
       this.dispatching = false;
     }
   }
 
+  /** MODEL-SERVE-011-T01. An operator's run-now: queued at live priority
+   *  instead of waiting for the next tick. Resolves once queued. */
+  requestDispatch(windowId: string): Promise<void> {
+    return this.dispatch.enqueueInferencePrep(windowId, true);
+  }
+
   /**
-   * MODEL-SERVE-011-T01. PUBLIC, body unchanged. `dispatchDue` above is no
-   * longer the only caller: `runNowService` dispatches one window the
-   * instant an operator asks for it instead of waiting up to a whole
-   * INFERENCE_TICK_INTERVAL_MS for the next sweep. The `status !== 'PENDING'`
-   * guard below is what makes a second caller safe — a window already
-   * claimed by a sweep (or by a double-click) is a no-op here, so no second
-   * container is ever spawned for one row.
+   * CONTAINER-QUEUE-001. Runs on the inference-prep queue: fetches and
+   * materializes one window, then queues it for a container. Kept out of the
+   * admission worker because a slow PI fetch there would hold up every job.
    *
-   * NOTE the `enabled: true` filter lives in `dispatchDue`, not here, and
-   * therefore does NOT cover this path: `runNowService` refuses a stopped
-   * schedule itself, with a 409 that says so, rather than silently
-   * dispatching one.
+   * The `status !== 'PENDING'` guard makes a repeat a no-op. The `enabled`
+   * filter lives in `dispatchDue`; `runNowService` refuses a stopped schedule
+   * itself, with a 409 that says so.
    */
   async dispatchOne(windowId: string): Promise<void> {
     const window = await this.prisma.inferenceWindow.findUnique({
@@ -429,22 +423,9 @@ export class InferenceWindowSchedulerService
       return;
     }
 
-    // Re-mint: the row's stored tokenHash was set at INSERT time; the
-    // container needs the PLAINTEXT, which was never persisted. Re-hashing
-    // onto the row here keeps the plaintext-never-touches-a-row discipline
-    // every other token in this codebase follows.
-    const { token } = mintRunToken();
-    const tokenHash = createHash('sha256').update(token).digest('hex');
-    await this.prisma.inferenceWindow.update({
-      where: { id: window.id },
-      data: { tokenHash },
+    await this.dispatch.enqueue('infer', window.id, {
+      live: isLiveWindow(window.windowStart, schedule, new Date()),
     });
-
-    try {
-      await this.runner.spawn(window.id, token, 'infer');
-    } catch (err) {
-      await this.fail(window.id, `Could not start container: ${msg(err)}`);
-    }
   }
 
   /**

@@ -951,6 +951,12 @@ model ModelTrainingRun {
   /// (already terminal by the time scoring starts) can represent.
   scoringContainerId String?
 
+  /// CONTAINER-QUEUE-001. Set while a scoring request waits for compute
+  /// capacity, cleared when its container starts. Score has no QUEUED status
+  /// of its own (`status` is already terminal), and the queue's repair sweep
+  /// needs a row to rebuild a lost job from.
+  scoringQueuedAt DateTime?
+
   /// sha256 of the run token, never the token. A leaked table dump must not
   /// yield working credentials.
   tokenHash      String

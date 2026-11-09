@@ -17,6 +17,7 @@ import {
   planTrainingLaunch,
   type FineTuneInput,
   type LaunchPlan,
+  waitingForComputeMessage,
 } from '@/lib/training-launch'
 import { scoreMetricOf } from '@/lib/run-params'
 import { isSequenceAlgorithm } from '@/lib/metric-source'
@@ -200,7 +201,14 @@ export function useModelTraining({
           const lastLog = run.logs[run.logs.length - 1]?.message
 
           if (run.status === 'QUEUED' || run.status === 'RUNNING') {
-            setTrainState({ status: 'training', progress: 0, lastLog })
+            setTrainState({
+              status: 'training',
+              progress: 0,
+              lastLog:
+                run.status === 'QUEUED' && run.queuedAhead != null
+                  ? waitingForComputeMessage(run.queuedAhead)
+                  : lastLog,
+            })
             return
           }
 
@@ -301,11 +309,13 @@ export function useModelTraining({
               status: 'training',
               progress: 0,
               lastLog:
-                gridCombinations !== null
-                  ? `Grid search running — ${gridCombinations} combination${gridCombinations === 1 ? '' : 's'}…`
-                  : inFlight?.phase === 2
-                    ? `Tuning ${ALGORITHM_LABELS[inFlight.algorithm as Algorithm] ?? inFlight.algorithm} — ${position}…`
-                    : `Candidate ${position}…`,
+                inFlight?.queuedAhead != null
+                  ? waitingForComputeMessage(inFlight.queuedAhead)
+                  : gridCombinations !== null
+                    ? `Grid search running — ${gridCombinations} combination${gridCombinations === 1 ? '' : 's'}…`
+                    : inFlight?.phase === 2
+                      ? `Tuning ${ALGORITHM_LABELS[inFlight.algorithm as Algorithm] ?? inFlight.algorithm} — ${position}…`
+                      : `Candidate ${position}…`,
             })
             return
           }

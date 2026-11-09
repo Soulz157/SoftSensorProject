@@ -140,7 +140,7 @@ function buildInputStatus(overrides = {}) {
  *  reaches it. */
 function buildScheduler(overrides = {}) {
   return {
-    dispatchOne: jest.fn().mockResolvedValue(undefined),
+    requestDispatch: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -2415,8 +2415,8 @@ describe('InferenceWindowAuthorizedService.runNowService (MODEL-SERVE-011)', () 
 
     expect(res.statusCode).toBe(202);
     expect(res.data).toMatchObject({ windowId: 'win-1', dispatched: true });
-    expect(scheduler.dispatchOne).toHaveBeenCalledTimes(1);
-    expect(scheduler.dispatchOne).toHaveBeenCalledWith('win-1');
+    expect(scheduler.requestDispatch).toHaveBeenCalledTimes(1);
+    expect(scheduler.requestDispatch).toHaveBeenCalledWith('win-1');
 
     // ONE row, PENDING, skipDuplicates — and its windowStart is a multiple
     // of the cadence since the epoch, which is what lets the unique
@@ -2459,7 +2459,7 @@ describe('InferenceWindowAuthorizedService.runNowService (MODEL-SERVE-011)', () 
     expect(res.statusCode).toBe(200);
     expect(res.data).toMatchObject({ status: 'SUCCEEDED', dispatched: false });
     expect(res.message).toContain('SUCCEEDED');
-    expect(scheduler.dispatchOne).not.toHaveBeenCalled();
+    expect(scheduler.requestDispatch).not.toHaveBeenCalled();
   });
 
   it('does not re-run a FAILED window — it points at the explicit retry path', async () => {
@@ -2481,7 +2481,7 @@ describe('InferenceWindowAuthorizedService.runNowService (MODEL-SERVE-011)', () 
     );
 
     expect(res.message).toContain('retry');
-    expect(scheduler.dispatchOne).not.toHaveBeenCalled();
+    expect(scheduler.requestDispatch).not.toHaveBeenCalled();
   });
 
   it('always picks a FULLY ELAPSED window — never one ending in the future', async () => {

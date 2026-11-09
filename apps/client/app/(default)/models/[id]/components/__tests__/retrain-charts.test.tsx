@@ -33,6 +33,7 @@ vi.mock(
         data-testid="avp-chart"
         data-axis={p.axis ?? 'time'}
         data-rows={p.rows.length}
+        data-first={(p.rows[0] as { t: number } | undefined)?.t}
         data-compare={p.compareName ?? ''}
       />
     ),
@@ -55,6 +56,7 @@ vi.mock(
         data-testid="residual-chart"
         data-axis={p.axis ?? 'time'}
         data-rows={p.rows.length}
+        data-first={(p.rows[0] as { t: number } | undefined)?.t}
         data-compare={p.compareName ?? ''}
       />
     ),
@@ -289,6 +291,68 @@ describe('RetrainCharts', () => {
     expect(hook).toHaveBeenLastCalledWith(
       expect.objectContaining({ dataSet: 'NEW_DATA' }),
     )
+  })
+
+  it('zooms and pans both charts together from either control bar', async () => {
+    const user = userEvent.setup()
+    ready({ rows: 20, overlay: true })
+    render(
+      <RetrainCharts
+        modelId="model-1"
+        comparison={comparison()}
+        currentVersion={3}
+      />,
+    )
+    const avp = () => screen.getByTestId('avp-chart')
+    const res = () => screen.getByTestId('residual-chart')
+    const button = (name: string, i: number) =>
+      screen.getAllByRole('button', { name })[i] as HTMLElement
+
+    expect(screen.getAllByRole('button', { name: 'Zoom in' })).toHaveLength(2)
+    expect(avp()).toHaveAttribute('data-rows', '20')
+
+    // Pressed on the first chart's bar: both charts follow.
+    await user.click(button('Zoom in', 0))
+    expect(avp()).toHaveAttribute('data-rows', '12')
+    expect(res()).toHaveAttribute('data-rows', '12')
+
+    // Pressed on the second chart's bar: same window, moved right.
+    const before = avp().getAttribute('data-first')
+    await user.click(button('Pan right', 1))
+    const moved = avp().getAttribute('data-first')
+    expect(Number(moved)).toBeGreaterThan(Number(before))
+    expect(res()).toHaveAttribute('data-first', moved)
+    expect(avp()).toHaveAttribute('data-rows', '12')
+
+    await user.click(button('Pan left', 0))
+    expect(avp()).toHaveAttribute('data-first', before)
+
+    await user.click(button('Zoom out', 1))
+    expect(Number(avp().getAttribute('data-rows'))).toBeGreaterThan(12)
+
+    await user.click(button('Reset zoom', 0))
+    expect(avp()).toHaveAttribute('data-rows', '20')
+    expect(res()).toHaveAttribute('data-rows', '20')
+  })
+
+  it('drops the zoom window when the data set changes', async () => {
+    const user = userEvent.setup()
+    ready({ rows: 20 })
+    render(
+      <RetrainCharts
+        modelId="model-1"
+        comparison={comparison()}
+        currentVersion={3}
+      />,
+    )
+
+    await user.click(
+      screen.getAllByRole('button', { name: 'Zoom in' })[0] as HTMLElement,
+    )
+    expect(screen.getByTestId('avp-chart')).toHaveAttribute('data-rows', '12')
+
+    await user.click(screen.getByRole('radio', { name: /New data set aside/i }))
+    expect(screen.getByTestId('avp-chart')).toHaveAttribute('data-rows', '20')
   })
 
   it('disables the new-data choice, and says why, when nothing was set aside', () => {

@@ -286,6 +286,44 @@ overwrite it.
 
 ---
 
+## Container Job Queue (CONTAINER-QUEUE-001)
+
+Train, score, batch and scheduled-inference containers start only when the host
+has room. `ContainerDispatchService` (`api/v1/trainning-container/authorized`)
+runs two BullMQ queues on Redis.
+
+- **The DB row is the source of truth.** Launch writes the row (`QUEUED`,
+  `PENDING`, or `scoringQueuedAt` for score) and adds a job. Job data holds ids
+  only, never a token. Losing Redis loses no work: a 60-second sweep re-adds
+  waiting rows, and the inference tick re-requests its windows.
+- **A job covers admission, not the container's lifetime.** It completes once
+  the container has started, so a long training is never seen as a stalled job.
+  `concurrency: 1` makes check-then-spawn safe, so nothing slow may run inside
+  it. `inference-prep` runs the PI fetch for that reason.
+- **Admission** (`lib/container-budget.ts`) compares each mode's reservation
+  with the running containers listed from Docker. Host full pauses the queue, so
+  the highest-priority job is never overtaken. A workspace at its cap delays
+  only its own job. A job bigger than the whole budget fails with the reason.
+- **Priority:** live inference, score, batch, train, backfill windows. Train and
+  batch cannot use the slice held for inference.
+- **Single backend replica and one Docker host**, like every sweep here.
+
+| Setting                                                                 | Default                              |
+| ----------------------------------------------------------------------- | ------------------------------------ |
+| `REDIS_URL`, `REDIS_PASSWORD`                                           | required; server-only                |
+| `TRAINING_MEMORY_BYTES`, `TRAINING_NANO_CPUS`                           | 4 GiB, 2 CPUs                        |
+| `CONTAINER_{SCORE,BATCH}_MEMORY_BYTES`, `CONTAINER_INFER_MEMORY_BYTES`  | 2 GiB, 1 GiB                         |
+| `CONTAINER_{SCORE,BATCH,INFER}_CPUS`                                    | 1                                    |
+| `CONTAINER_BUDGET_CPUS`, `CONTAINER_BUDGET_MEMORY_BYTES`                | Docker's totals minus the reserve    |
+| `CONTAINER_HOST_RESERVE_CPUS`, `CONTAINER_HOST_RESERVE_MEMORY_BYTES`    | 1, 1.5 GiB                           |
+| `CONTAINER_HELD_CPUS`, `CONTAINER_HELD_MEMORY_BYTES`                    | 1, 1 GiB                             |
+| `CONTAINER_MAX_ACTIVE_PER_WORKSPACE`                                    | 2 (train + batch)                    |
+| `CONTAINER_QUEUE_MAX_WAIT_MS`                                           | 24 hours                             |
+
+Redis has its own compose network and a password, because training containers
+run untrusted code on `monorepo_network`. With Redis down, launches still
+succeed and rows wait, but **no container starts** until it returns.
+
 ## Key Architectural Decisions
 
 | Decision       | Choice                                       | Reason                                                |

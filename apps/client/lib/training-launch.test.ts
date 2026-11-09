@@ -7,6 +7,7 @@ import {
   planTrainingLaunch,
   type HyperparamRecord,
   type LaunchInput,
+  waitingForComputeMessage,
 } from './training-launch'
 
 const BASES: Partial<Record<Algorithm, HyperparamRecord>> = {
@@ -251,5 +252,19 @@ describe('candidatesFor', () => {
       { sequence_length: 48, units: 64 },
     ])
     expect(got[1]?.hyperparameters).toEqual({ sequence_length: 24, units: 64 })
+  })
+})
+
+describe('waitingForComputeMessage (CONTAINER-QUEUE-001)', () => {
+  it('counts the runs ahead and handles one and none', () => {
+    expect(waitingForComputeMessage(0)).toBe(
+      'Waiting for compute — next in line…',
+    )
+    expect(waitingForComputeMessage(1)).toBe(
+      'Waiting for compute — 1 run ahead…',
+    )
+    expect(waitingForComputeMessage(3)).toBe(
+      'Waiting for compute — 3 runs ahead…',
+    )
   })
 })

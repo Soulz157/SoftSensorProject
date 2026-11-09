@@ -163,6 +163,16 @@ export interface CvScoringSignals {
   cvFoldsKey: string | null
   predictionsKey: string | null
   scoringContainerId: string | null
+  scoringQueuedAt?: string | null
+}
+
+/** Scoring is under way from the moment it is requested: it may wait for
+ *  compute capacity before a container exists. */
+export function isScoring(run: {
+  scoringContainerId: string | null
+  scoringQueuedAt?: string | null
+}): boolean {
+  return Boolean(run.scoringContainerId || run.scoringQueuedAt)
 }
 
 /**
@@ -174,7 +184,7 @@ export interface CvScoringSignals {
 export function cvScoringPhaseOf(run: CvScoringSignals | null): CvScoringPhase {
   if (!run?.cvFoldsKey) return 'not-cv'
   if (run.predictionsKey) return 'scored'
-  if (run.scoringContainerId) return 'scoring'
+  if (isScoring(run)) return 'scoring'
   return 'awaiting-scoring'
 }
 
@@ -476,6 +486,7 @@ export interface HoldoutSeriesCandidate {
   predictionsKey: string | null
   holdoutPredictionsKey: string | null
   scoringContainerId: string | null
+  scoringQueuedAt?: string | null
   holdoutAbsence: HoldoutAbsence | null
 }
 
@@ -507,7 +518,7 @@ export function holdoutSeriesAbsenceOf(
     ? candidate.predictionsKey
     : candidate.holdoutPredictionsKey
   if (seriesKey) return null
-  if (candidate.scoringContainerId) return 'scoring'
+  if (isScoring(candidate)) return 'scoring'
   // MODEL-FLOW-019-T29. Unconditional — no `!isCv` guard — matching
   // `triggerScoringService`'s own server-side refusal exactly, which
   // carries no CV exception either. A CV+sequence row cannot exist today

@@ -1,5 +1,11 @@
 import { dockerLogText } from '@/lib/docker-log-text';
-import { configuredNanoCpus, trainerCpuBudget } from '@/lib/trainer-cpu';
+import { trainerCpuBudget } from '@/lib/trainer-cpu';
+import {
+  containerProfiles,
+  MODE_BY_ROLE,
+  type ContainerMode,
+  type RunningContainer,
+} from '@/lib/container-budget';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import Docker from 'dockerode';
 import { PrismaService } from '@softsensor/prisma';
@@ -71,10 +77,6 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
     process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.27';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
-  private readonly memoryBytes = Number(
-    process.env.TRAINING_MEMORY_BYTES ?? 8 * 1024 ** 3,
-  );
-  private readonly nanoCpus = configuredNanoCpus();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -333,8 +335,11 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   async spawn(
     id: string,
     token: string,
-    mode: 'train' | 'score' | 'batch' | 'infer' = 'train',
+    mode: ContainerMode = 'train',
+    workspaceId: string | null = null,
   ) {
+    const profile = containerProfiles()[mode];
+    const nanoCpus = Math.round(profile.cpus * 1e9);
     const container = await this.docker.createContainer({
       Image: this.imageDigest || this.imageRef,
       name: `${mode}-${id}`,
@@ -346,7 +351,7 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
         // The CPUs the container may really use. The trainer cannot read its
         // own quota (`os.cpu_count()` reports the host's cores), so it is told:
         // it sizes the grid search's worker pool and torch's threads from this.
-        `TRAINER_CPU_BUDGET=${trainerCpuBudget(this.nanoCpus)}`,
+        `TRAINER_CPU_BUDGET=${trainerCpuBudget(nanoCpus)}`,
       ],
       Labels: {
         'dslake.role':
@@ -358,15 +363,17 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
                 ? 'scheduled-inference'
                 : 'training',
         'dslake.runId': id,
+        // Read back by the admission check for its per-workspace cap.
+        ...(workspaceId ? { 'dslake.workspaceId': workspaceId } : {}),
       },
       HostConfig: {
         NetworkMode: this.network,
         // No host filesystem, ever. Everything the run needs arrives over
         // HTTP; everything it produces leaves the same way.
         Binds: [],
-        Memory: this.memoryBytes,
-        MemorySwap: this.memoryBytes, // no swap — an OOM should fail, not thrash
-        NanoCpus: this.nanoCpus,
+        Memory: profile.memoryBytes,
+        MemorySwap: profile.memoryBytes, // no swap — an OOM should fail, not thrash
+        NanoCpus: nanoCpus,
         PidsLimit: 512,
         CapDrop: ['ALL'],
         SecurityOpt: ['no-new-privileges'],
@@ -401,45 +408,120 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
     if (mode === 'score') {
       await this.prisma.modelTrainingRun.update({
         where: { id },
-        data: { scoringContainerId: container.id },
+        data: { scoringContainerId: container.id, scoringQueuedAt: null },
       });
       await container.start();
-    } else if (mode === 'batch') {
-      await container.start();
-      await this.prisma.predictionJob.update({
-        where: { id },
-        data: {
-          status: 'RUNNING',
-          containerId: container.id,
-          startedAt: new Date(),
-        },
-      });
-    } else if (mode === 'infer') {
-      // MODEL-SERVE-006. Follows batch's ordering — InferenceWindowToken
-      // Guard accepts PENDING the same way PredictionJobTokenGuard accepts
-      // QUEUED, so there is no equivalent pre-start race to close.
-      await container.start();
-      await this.prisma.inferenceWindow.update({
-        where: { id },
-        data: {
-          status: 'RUNNING',
-          containerId: container.id,
-          startedAt: new Date(),
-        },
-      });
     } else {
       await container.start();
-      await this.prisma.modelTrainingRun.update({
-        where: { id },
-        data: {
-          status: 'RUNNING',
-          containerId: container.id,
-          startedAt: new Date(),
-        },
-      });
+      // CONTAINER-QUEUE-001. Canceled while this container was starting: the
+      // row keeps its CANCELED status and nothing is left running.
+      if (!(await this.recordStarted(id, container.id, mode))) {
+        await this.reap(container, false);
+        return;
+      }
     }
 
     void this.watch(id, container, mode);
+  }
+
+  /**
+   * Marks a row RUNNING unless it has left the live states. RUNNING is
+   * accepted as well as the waiting state because a fast container's own claim
+   * can land first. False means the row was canceled or already finished.
+   */
+  private async recordStarted(
+    id: string,
+    containerId: string,
+    mode: Exclude<ContainerMode, 'score'>,
+  ): Promise<boolean> {
+    const data = {
+      status: 'RUNNING' as const,
+      containerId,
+      startedAt: new Date(),
+    };
+    if (mode === 'batch') {
+      const { count } = await this.prisma.predictionJob.updateMany({
+        where: { id, status: { in: ['QUEUED', 'RUNNING'] } },
+        data,
+      });
+      return count > 0;
+    }
+    if (mode === 'infer') {
+      const { count } = await this.prisma.inferenceWindow.updateMany({
+        where: { id, status: { in: ['PENDING', 'RUNNING'] } },
+        data,
+      });
+      return count > 0;
+    }
+    const { count } = await this.prisma.modelTrainingRun.updateMany({
+      where: { id, status: { in: ['QUEUED', 'RUNNING'] } },
+      data,
+    });
+    return count > 0;
+  }
+
+  /**
+   * CONTAINER-QUEUE-001. True when a live container already exists for a row
+   * still marked waiting, left by a crash between start() and the status
+   * write. It is attached to rather than started again, so the token it was
+   * given stays valid. A stopped leftover is removed to free the name.
+   */
+  async adopt(id: string, mode: ContainerMode): Promise<boolean> {
+    const named = this.docker.getContainer(`${mode}-${id}`);
+    let state: Awaited<ReturnType<Docker.Container['inspect']>>;
+    try {
+      state = await named.inspect();
+    } catch {
+      return false;
+    }
+    if (!state.State.Running) {
+      await this.reap(named, false);
+      return false;
+    }
+    if (mode === 'score') {
+      await this.prisma.modelTrainingRun.update({
+        where: { id },
+        data: { scoringContainerId: state.Id, scoringQueuedAt: null },
+      });
+    } else if (!(await this.recordStarted(id, state.Id, mode))) {
+      await this.reap(named, false);
+      return true;
+    }
+    void this.watch(id, this.docker.getContainer(state.Id), mode);
+    this.log.warn(`Adopted running container for ${mode} ${id}.`);
+    return true;
+  }
+
+  /** Every container this service started that is running now, including ones
+   *  from before a backend restart. */
+  async listRunning(): Promise<
+    (RunningContainer & {
+      containerId: string;
+      runId: string;
+      startedAtMs: number;
+    })[]
+  > {
+    const containers = await this.docker.listContainers({
+      filters: { label: ['dslake.role'] },
+    });
+    return containers.flatMap((c) => {
+      const mode = MODE_BY_ROLE[c.Labels['dslake.role'] ?? ''];
+      const runId = c.Labels['dslake.runId'];
+      if (!mode || !runId) return [];
+      return [
+        {
+          mode,
+          workspaceId: c.Labels['dslake.workspaceId'] ?? null,
+          containerId: c.Id,
+          runId,
+          startedAtMs: c.Created * 1000,
+        },
+      ];
+    });
+  }
+
+  dockerInfo() {
+    return this.docker.info();
   }
 
   /**
@@ -455,7 +537,7 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   private async watch(
     id: string,
     container: Docker.Container,
-    mode: 'train' | 'score' | 'batch' | 'infer' = 'train',
+    mode: ContainerMode = 'train',
   ) {
     try {
       const { StatusCode } = await container.wait();

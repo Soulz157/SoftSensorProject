@@ -345,6 +345,10 @@ export interface ModelTrainingRun {
    *  in flight for this run — its ONLY purpose is letting the UI poll
    *  "scoring is currently running" (mirrors `containerId` for training). */
   scoringContainerId: string | null
+  /** CONTAINER-QUEUE-001. Set while scoring waits for compute capacity. */
+  scoringQueuedAt?: string | null
+  /** Training runs queued ahead of this one; null unless it is queued. */
+  queuedAhead?: number | null
   /** MODEL-FLOW-016-T11. Attached by `getDraftRunService` (never a second
    *  endpoint — mirrors the `lossHistory` precedent) when `cvFoldsKey` is
    *  set; `undefined` on a list-endpoint row (`ModelTrainingRunListItem`
@@ -799,6 +803,10 @@ export interface CandidateResult {
   holdoutPredictionsKey: string | null
   /** Non-null while a CV candidate's holdout-scoring phase is in flight. */
   scoringContainerId: string | null
+  /** CONTAINER-QUEUE-001. Set while scoring waits for compute capacity. */
+  scoringQueuedAt?: string | null
+  /** Training runs queued ahead of this one; null unless it is queued. */
+  queuedAhead?: number | null
   /** MODEL-FLOW-019-T02. Every figure this candidate can honestly show,
    *  each carrying the SOURCE it is a figure of — the run's own test split,
    *  the dataset's raw validation holdout (with the counts its missing rate

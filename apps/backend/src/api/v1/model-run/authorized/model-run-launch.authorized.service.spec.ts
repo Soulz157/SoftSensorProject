@@ -5,6 +5,11 @@ import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.s
 import * as pythonClient from '@/lib/python-preprocess-client';
 import * as pythonPostClient from '@/lib/python-client';
 
+const dispatch = {
+  enqueue: jest.fn().mockResolvedValue(undefined),
+  remove: jest.fn().mockResolvedValue(undefined),
+};
+
 jest.mock('@/lib/python-preprocess-client');
 // PYTHON_TIMEOUT re-declared as a literal, not spread via requireActual
 // (which returns `any` and trips no-unsafe-return) — launchDraftRun only
@@ -79,6 +84,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     await expect(
       service.getDraftRunPredictionsService('draft-1', 'run-1', 'u1', 'ADMIN'),
@@ -91,6 +97,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     await expect(
       service.getDraftRunPredictionsService('draft-1', 'run-1', 'u1', 'ADMIN'),
@@ -109,6 +116,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     await expect(
       service.getDraftRunPredictionsService('draft-1', 'run-1', 'u1', 'ADMIN'),
@@ -128,6 +136,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     await expect(
       service.getDraftRunPredictionsService('draft-1', 'run-1', 'u1', 'ADMIN'),
@@ -140,6 +149,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunPredictionsService(
       'draft-1',
@@ -189,6 +199,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunPredictionsService(
       'draft-1',
@@ -210,6 +221,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     await expect(
       service.getDraftRunPredictionsService(
@@ -242,6 +254,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     await service.getDraftRunPredictionsService(
       'draft-1',
@@ -339,6 +352,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsBatchService', (
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     await expect(
       service.getDraftRunPredictionsBatchService(
@@ -356,6 +370,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsBatchService', (
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     await service.getDraftRunPredictionsBatchService(
       'draft-1',
@@ -397,6 +412,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsBatchService', (
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     mockedRunPredictionsBatch.mockResolvedValue({
       results: [BATCH_RESULT.results[0]],
@@ -420,6 +436,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsBatchService', (
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunPredictionsBatchService(
       'draft-1',
@@ -436,6 +453,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsBatchService', (
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunPredictionsBatchService(
       'draft-1',
@@ -500,6 +518,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunService — cv_folds attach
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunService(
       'draft-1',
@@ -521,6 +540,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunService — cv_folds attach
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunService(
       'draft-1',
@@ -544,6 +564,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunService — cv_folds attach
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunService(
       'draft-1',
@@ -604,6 +625,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunService — permutation_imp
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunService(
       'draft-1',
@@ -628,6 +650,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunService — permutation_imp
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunService(
       'draft-1',
@@ -656,6 +679,7 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunService — permutation_imp
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     const result = await service.getDraftRunService(
       'draft-1',
@@ -778,6 +802,7 @@ describe('ModelRunLaunchAuthorizedService.launchDraftRun — freezeSplitStats', 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       makeRunner() as never,
+      dispatch as never,
     );
 
     const run = await service.launchDraftRun('draft-1', DTO);
@@ -805,6 +830,7 @@ describe('ModelRunLaunchAuthorizedService.launchDraftRun — freezeSplitStats', 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       makeRunner() as never,
+      dispatch as never,
     );
 
     await service.launchDraftRun('draft-1', DTO, 'job-1');
@@ -820,6 +846,7 @@ describe('ModelRunLaunchAuthorizedService.launchDraftRun — freezeSplitStats', 
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       makeRunner() as never,
+      dispatch as never,
     );
 
     // The run creation itself must not reject or even wait on the freeze.
@@ -906,6 +933,7 @@ describe('ModelRunLaunchAuthorizedService.launchDraftRun — cross-validation ru
         imageDigest: 'sha256:image',
         spawn: jest.fn().mockResolvedValue(undefined),
       } as never,
+      dispatch as never,
     );
   }
 
@@ -1085,7 +1113,11 @@ describe('ModelRunLaunchAuthorizedService.getRunPredictionsService', () => {
   }
 
   function makeService(prisma: ReturnType<typeof makePrisma>) {
-    return new ModelRunLaunchAuthorizedService(prisma as never, {} as never);
+    return new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+      dispatch as never,
+    );
   }
 
   beforeEach(() => {
@@ -1256,6 +1288,7 @@ describe('ModelRunLaunchAuthorizedService.listDraftRunsService — MODEL-FLOW-03
     const service = new ModelRunLaunchAuthorizedService(
       prisma as never,
       {} as never,
+      dispatch as never,
     );
     jest
       .spyOn(service as never, 'assertDraftAccess')

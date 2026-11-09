@@ -213,3 +213,10 @@ export function planFineTuneLaunch(input: FineTuneInput): FineTunePlan {
   }
   return { type: 'job', kind: 'HYPERPARAMETER_SEARCH', candidates }
 }
+
+/** CONTAINER-QUEUE-001. The training step's line while a run waits for compute
+ *  capacity, so a long wait does not read as a slow or stuck fit. */
+export function waitingForComputeMessage(ahead: number): string {
+  if (ahead <= 0) return 'Waiting for compute — next in line…'
+  return `Waiting for compute — ${ahead} run${ahead === 1 ? '' : 's'} ahead…`
+}

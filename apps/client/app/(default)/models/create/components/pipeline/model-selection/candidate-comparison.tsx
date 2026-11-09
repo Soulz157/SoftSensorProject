@@ -31,6 +31,7 @@ import { useDraftSelection } from '@/hooks/model/use-draft-selection'
 import { candidateFromRun } from '@/lib/candidate-from-run'
 import { rankingBasisText } from '@/lib/run-params'
 import { modelDraftService } from '@/services/model-draft'
+import { isScoring } from '@/lib/metric-source'
 
 function resolvedRunIdFor(job: ModelCandidateJob): string | null {
   return job.selectedRunId ?? job.bestRunId
@@ -170,8 +171,8 @@ export function CandidateComparison({
     }
   }
   const anyScoring =
-    (job?.candidates.some(c => c.scoringContainerId) ?? false) ||
-    earlierCandidates.some(c => c.scoringContainerId)
+    (job?.candidates.some(isScoring) ?? false) ||
+    earlierCandidates.some(isScoring)
   useEffect(() => {
     if (!anyScoring) return
     const id = setInterval(() => {

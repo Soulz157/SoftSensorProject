@@ -1744,7 +1744,7 @@ export class InferenceWindowAuthorizedService {
     // uses, with the same error sink -- a failure here writes the window's
     // own FAILED row via `fail()`, which the status/logs reads already
     // surface.
-    void this.scheduler.dispatchOne(window.id).catch((err: unknown) => {
+    void this.scheduler.requestDispatch(window.id).catch((err: unknown) => {
       this.log.error(
         `Manual dispatch failed for inference window ${window.id}`,
         err,

@@ -90,7 +90,7 @@ Our semantic system and status colors respect the fundamental relationships defi
 
 ### 2.4 Chart Tokens
 
-`--chart-1` through `--chart-5` — blue-to-purple spectrum. Used for data visualizations only.
+`--chart-1` through `--chart-6` — blue-to-purple spectrum, plus magenta `--chart-6` for the current model's line when compared with a retrained one. Used for data visualizations only.
 
 ### 2.5 Sidebar Tokens
 

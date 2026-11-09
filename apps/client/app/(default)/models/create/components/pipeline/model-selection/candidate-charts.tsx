@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 import {
+  isScoring,
   groupAbsenceText,
   holdoutGroupMissingRateText,
   holdoutSeriesAbsenceOf,
@@ -148,7 +149,7 @@ export function CandidateCharts({
         absenceNote={groupAbsenceText('holdout', absence)}
         onScore={toScoreIds.length > 0 ? () => onScore(toScoreIds) : undefined}
         scoreCount={toScoreIds.length}
-        scoring={scoreSubmitting || candidates.some(c => c.scoringContainerId)}
+        scoring={scoreSubmitting || candidates.some(isScoring)}
         seriesStyles={styles}
       />
     </div>

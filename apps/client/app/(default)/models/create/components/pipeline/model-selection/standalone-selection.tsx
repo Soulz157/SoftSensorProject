@@ -29,6 +29,7 @@ import { EmptyPanel } from './empty-panel'
 import { CandidateCharts } from './candidate-charts'
 import { CandidateTable } from './candidate-table'
 import { MetricsPicker } from './metrics-picker'
+import { isScoring } from '@/lib/metric-source'
 
 function formatRunTimestamp(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -142,7 +143,7 @@ function StandaloneComparison({
   // Polls while any run here is mid-scoring, so a container that finishes
   // without the user touching this screen still resolves into a chart —
   // same 2.5s cadence `useDraftRunEvaluation`'s own poll uses.
-  const anyScoring = runs.some(r => r.scoringContainerId)
+  const anyScoring = runs.some(isScoring)
   useEffect(() => {
     if (!anyScoring) return
     const id = setInterval(() => refetchRuns(), 2500)

@@ -28,6 +28,18 @@ declare module 'dockerode' {
     constructor(opts?: { socketPath?: string });
     getImage(name: string): Docker.Image;
     getContainer(id: string): Docker.Container;
+    /** Running containers only unless `all` is set. */
+    listContainers(opts?: {
+      all?: boolean;
+      filters?: Record<string, string[]>;
+    }): Promise<
+      {
+        Id: string;
+        Created: number;
+        Labels: Record<string, string>;
+      }[]
+    >;
+    info(): Promise<{ NCPU: number; MemTotal: number }>;
     createContainer(opts: Record<string, unknown>): Promise<Docker.Container>;
     pull(
       ref: string,

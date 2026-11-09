@@ -10,7 +10,7 @@ import {
   type RunPermutationImportance,
 } from '@/services/model-draft'
 import { fitFromRun, type ModelFit, type FitPoint } from '@/lib/model-metrics'
-import type { EvaluationPopulation } from '@/lib/metric-source'
+import { isScoring, type EvaluationPopulation } from '@/lib/metric-source'
 import { ApiError } from '@/lib/fetcher'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 
@@ -47,6 +47,7 @@ export interface DraftRunSummary {
    *  in flight — what Step 5 polls to show "scoring is running" rather
    *  than a dead "trigger scoring" button. */
   scoringContainerId: string | null
+  scoringQueuedAt?: string | null
   /** MODEL-FLOW-019-T35. The run's own training-side metrics blob —
    *  `cv_rmse_mean`/`cv_mae_mean`/etc for a CV run, plain `rmse`/`mae` for
    *  an ordinary one. Needed so `seedMetricMeans` (lib/feature-count-sweep)
@@ -299,6 +300,7 @@ async function fetchEvaluation(
     predictionsKey: run.predictionsKey,
     holdoutPredictionsKey: run.holdoutPredictionsKey,
     scoringContainerId: run.scoringContainerId,
+    scoringQueuedAt: run.scoringQueuedAt,
     metrics: run.metrics,
     holdoutMetrics: run.holdoutMetrics,
     cvFolds: run.cvFolds ?? null,
@@ -669,7 +671,7 @@ export function useDraftRunEvaluation(
   // `awaiting-scoring` polls nothing on its own; the user's own click
   // (`triggerScoring`) is what starts this effect, by setting
   // `scoringContainerId` on the very next fetch.
-  const scoring = run?.scoringContainerId != null
+  const scoring = run != null && isScoring(run)
   useEffect(() => {
     if (!scoring) return
     const id = setInterval(() => setPollTick(t => t + 1), SCORING_POLL_MS)

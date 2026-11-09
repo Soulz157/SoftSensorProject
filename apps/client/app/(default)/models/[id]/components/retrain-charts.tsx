@@ -4,8 +4,9 @@ import { useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ChartLegend, type LegendEntry } from '@/components/charts/chart-legend'
+import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
 import { useRetrainPredictions } from '@/hooks/model/use-retrain-predictions'
-import { pickTimeFormat } from '@/lib/monitoring'
+import { pickTimeFormat, type BrushWindow } from '@/lib/monitoring'
 import { describeEvalBasis } from '@/lib/retrain-basis'
 import {
   CURRENT_VERSION_COLOR,
@@ -33,6 +34,8 @@ const TOGGLE_ITEM =
  * MODEL-SERVE-020-T05. Sections 3 and 4 of the Retrain tab: Actual vs
  * Predicted, then Residuals, for the new version — with the current version
  * overlaid on the rows both were scored on.
+ *
+ * One zoom window drives both charts as well, so they stay on the same rows.
  *
  * One selector drives both charts, so they always show the same data:
  *  - the current version's test data (the new version is scored on the same
@@ -69,6 +72,7 @@ export function RetrainCharts({
   const [dataSet, setDataSet] = useState<RetrainChartDataSet>(
     basis.strategy === 'NEW_DATA_ONLY' ? 'NEW_DATA' : 'CURRENT_TEST',
   )
+  const [zoom, setZoom] = useState<BrushWindow>({})
 
   const newLabel =
     candidate.version !== null ? `New v${candidate.version}` : 'New version'
@@ -95,11 +99,18 @@ export function RetrainCharts({
     attemptNewDataOverlay: basis.strategy === 'NEW_DATA_ONLY',
   })
 
+  const visibleRows = useMemo(() => {
+    const rows = series?.rows ?? []
+    const start = zoom.startIndex ?? 0
+    const end = zoom.endIndex ?? Math.max(0, rows.length - 1)
+    return rows.slice(start, end + 1)
+  }, [series, zoom])
+
   const tickFormatter = useMemo(() => {
-    const first = series?.rows[0]
-    const last = series?.rows[series.rows.length - 1]
+    const first = visibleRows[0]
+    const last = visibleRows[visibleRows.length - 1]
     return pickTimeFormat(first && last ? last.t - first.t : 0)
-  }, [series])
+  }, [visibleRows])
 
   const overlayDrawn = (series?.sharedRowCount ?? 0) > 0
   // MODEL-SERVE-021. For NEW_DATA_ONLY the real basis for the new-data view
@@ -158,7 +169,11 @@ export function RetrainCharts({
           type="single"
           value={dataSet}
           onValueChange={v => {
-            if (v === 'CURRENT_TEST' || v === 'NEW_DATA') setDataSet(v)
+            if (v === 'CURRENT_TEST' || v === 'NEW_DATA') {
+              setDataSet(v)
+              // The window is row positions in the old data set.
+              setZoom({})
+            }
           }}
           className="flex flex-wrap justify-start gap-1.5"
         >
@@ -232,11 +247,18 @@ export function RetrainCharts({
             <p className="text-xs font-medium text-muted-foreground">
               Actual vs Predicted
             </p>
-            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
-              <ChartLegend items={avpLegend} />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
+                <ChartLegend items={avpLegend} />
+              </div>
+              <ChartZoomControls
+                brush={zoom}
+                total={series.rows.length}
+                onChange={setZoom}
+              />
             </div>
             <ActualVsPredictedChart
-              rows={series.rows}
+              rows={visibleRows}
               tickFormatter={tickFormatter}
               axis="sequence"
               compareName={overlayDrawn ? currentLabel : undefined}
@@ -247,11 +269,18 @@ export function RetrainCharts({
             <p className="text-xs font-medium text-muted-foreground">
               Residuals
             </p>
-            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
-              <ChartLegend items={residualLegend} />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
+                <ChartLegend items={residualLegend} />
+              </div>
+              <ChartZoomControls
+                brush={zoom}
+                total={series.rows.length}
+                onChange={setZoom}
+              />
             </div>
             <ResidualChart
-              rows={series.rows}
+              rows={visibleRows}
               sd={series.sd}
               tickFormatter={tickFormatter}
               axis="sequence"

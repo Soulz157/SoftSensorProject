@@ -45,12 +45,12 @@ export type LiveScoreOutcome =
  *
  * WHY THIS PLANE AND NOT THE SCHEDULED ONE
  * decisions.the_dense_series_comes_from_the_serving_plane. A scheduled point
- * spawns a container (3-5s cold start) against INFERENCE_MAX_CONCURRENCY = 1;
+ * spawns a container (3-5s cold start) through the container queue;
  * /predict is a warm process with a bytes-bounded model LRU and a 30s
  * descriptor cache, load-verified at 90/90 requests across a promote
  * (MODEL-SERVE-002-V02). This driver therefore NEVER writes an
- * InferenceWindow, never spawns a container and never touches the scheduler's
- * concurrency slot. The two planes stay separate (MODEL-SERVE-001-T10 item 6)
+ * InferenceWindow, never spawns a container and never touches the container
+ * queue. The two planes stay separate (MODEL-SERVE-001-T10 item 6)
  * — a window's predictions.parquet and a /predict row remain different
  * artifacts with different provenance, and nothing pools them into one feed.
  *

@@ -21,6 +21,7 @@ import {
   holdoutSeriesAbsenceOf,
   scoreableRunIds,
   wirePopulationOf,
+  isScoring,
 } from './metric-source'
 
 /**
@@ -853,5 +854,18 @@ describe('sourcedMetricsOf — carries y_true_distinct beside each figure', () =
       run({ metrics: { r2: 0.1, rmse: 0.2, mae: 0.1 } }),
     )
     expect(test).toMatchObject({ targetDistinct: null })
+  })
+})
+
+describe('isScoring (CONTAINER-QUEUE-001)', () => {
+  it('is true while waiting for capacity and while a container runs', () => {
+    const idle = { scoringContainerId: null, scoringQueuedAt: null }
+    expect(isScoring(idle)).toBe(false)
+    expect(isScoring({ ...idle, scoringQueuedAt: '2026-11-09' })).toBe(true)
+    expect(isScoring({ ...idle, scoringContainerId: 'c1' })).toBe(true)
+  })
+
+  it('reads a payload from before the field existed', () => {
+    expect(isScoring({ scoringContainerId: null })).toBe(false)
   })
 })

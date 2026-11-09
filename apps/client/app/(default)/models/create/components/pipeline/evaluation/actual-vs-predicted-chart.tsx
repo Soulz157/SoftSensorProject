@@ -14,6 +14,7 @@ import {
 } from 'recharts'
 import type { FitRow } from '@/lib/model-metrics'
 import { indexAtOrAfter, sequenceAxis } from '@/lib/chart-gaps'
+import { CURRENT_VERSION_COLOR } from '@/lib/retrain-series'
 import { EvaluationTooltip } from './evaluation-tooltip'
 import type { LegendEntry } from '@/components/charts/chart-legend'
 
@@ -176,8 +177,8 @@ export function ActualVsPredictedChart({
             connectNulls
             type="monotone"
             dataKey="comparePredict"
-            stroke="var(--chart-4)"
-            strokeWidth={1.5}
+            stroke={CURRENT_VERSION_COLOR}
+            strokeWidth={2}
             strokeDasharray="2 4"
             dot={false}
             isAnimationActive={false}

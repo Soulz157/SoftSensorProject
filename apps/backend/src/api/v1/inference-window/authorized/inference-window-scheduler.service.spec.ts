@@ -48,6 +48,10 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
 function buildRunner(overrides: Record<string, unknown> = {}) {
   return {
     spawn: jest.fn().mockResolvedValue(undefined),
+    // The same mock stands in for ContainerDispatchService in makeService.
+    enqueue: jest.fn().mockResolvedValue(undefined),
+    enqueueInferencePrep: jest.fn().mockResolvedValue(undefined),
+    registerInferencePrep: jest.fn(),
     containerExists: jest.fn().mockResolvedValue(false),
     ...overrides,
   };
@@ -74,9 +78,12 @@ function makeService(
     runner as unknown as ConstructorParameters<
       typeof InferenceWindowSchedulerService
     >[1],
-    descriptor as unknown as ConstructorParameters<
+    runner as unknown as ConstructorParameters<
       typeof InferenceWindowSchedulerService
     >[2],
+    descriptor as unknown as ConstructorParameters<
+      typeof InferenceWindowSchedulerService
+    >[3],
   );
 }
 
@@ -436,7 +443,7 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
       'dispatchOne'
     ]('w1');
 
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
     const updates = prisma.inferenceWindow.update.mock.calls;
     const finalUpdate = updates[updates.length - 1][0];
     expect(finalUpdate.data.status).toBe('SKIPPED');
@@ -559,12 +566,10 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
     // alone proves the window was NOT skipped, even though 10 is below the
     // global env.INFERENCE_MIN_ROWS (30) that the OLD behaviour compared
     // every schedule against regardless of its own real interval.
-    expect(runner.spawn).toHaveBeenCalledTimes(1);
-    expect(runner.spawn).toHaveBeenCalledWith(
-      'w1',
-      expect.any(String),
-      'infer',
-    );
+    expect(runner.enqueue).toHaveBeenCalledTimes(1);
+    expect(runner.enqueue).toHaveBeenCalledWith('infer', 'w1', {
+      live: expect.any(Boolean) as boolean,
+    });
   });
 
   it('marks a window FAILED when materialize throws, and never spawns a container', async () => {
@@ -610,14 +615,14 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
       'dispatchOne'
     ]('w1');
 
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
     const updates = prisma.inferenceWindow.update.mock.calls;
     const finalUpdate = updates[updates.length - 1][0];
     expect(finalUpdate.data.status).toBe('FAILED');
     expect(finalUpdate.data.failureReason).toMatch(/source unreachable/);
   });
 
-  it('spawns an infer-mode container when enough rows scored', async () => {
+  it('queues an infer-mode container when enough rows scored', async () => {
     (materializeInferenceWindow as jest.Mock).mockResolvedValue({
       object_key:
         'inference/model-1/version-1/dt=2026-09-10/hour=08/input.parquet',
@@ -665,12 +670,10 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
       'dispatchOne'
     ]('w1');
 
-    expect(runner.spawn).toHaveBeenCalledTimes(1);
-    expect(runner.spawn).toHaveBeenCalledWith(
-      'w1',
-      expect.any(String),
-      'infer',
-    );
+    expect(runner.enqueue).toHaveBeenCalledTimes(1);
+    expect(runner.enqueue).toHaveBeenCalledWith('infer', 'w1', {
+      live: expect.any(Boolean) as boolean,
+    });
   });
 
   it('does nothing when the window is no longer PENDING (picked up by a concurrent pass)', async () => {
@@ -687,7 +690,7 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
       'dispatchOne'
     ]('w1');
     expect(materializeInferenceWindow).not.toHaveBeenCalled();
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 });
 
@@ -707,11 +710,14 @@ describe('InferenceWindowSchedulerService.dispatchDue ordering', () => {
   ) {
     return buildPrisma({
       inferenceSchedule: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue(
-            enabledModelIds.map((modelId) => ({ modelId, enabled: true })),
-          ),
+        findMany: jest.fn().mockResolvedValue(
+          enabledModelIds.map((modelId) => ({
+            modelId,
+            enabled: true,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+          })),
+        ),
         findUnique: jest.fn().mockResolvedValue(null),
       },
       inferenceWindow: {
@@ -739,47 +745,22 @@ describe('InferenceWindowSchedulerService.dispatchDue ordering', () => {
     );
   });
 
-  it('still respects INFERENCE_MAX_CONCURRENCY as the batch bound', async () => {
-    const prisma = prismaWithPending([]);
-    const service = makeService(prisma);
+  it('asks for every due window, flagging only the current one as live', async () => {
+    const live = new Date(Date.now() - 90 * 60_000);
+    const backfill = new Date(Date.now() - 48 * 60 * 60_000);
+    const prisma = prismaWithPending([
+      { id: 'live-current', windowStart: live, modelId: 'model-1' },
+      { id: 'backfill-oldest', windowStart: backfill, modelId: 'model-1' },
+    ] as never);
+    const runner = buildRunner();
+    const service = makeService(prisma, runner);
 
     await service['dispatchDue']();
 
-    expect(prisma.inferenceWindow.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: env.INFERENCE_MAX_CONCURRENCY }),
-    );
-  });
-
-  it('dispatches the current hour ahead of a two-day backfill', async () => {
-    // What the ordering is FOR: the row the database would return first
-    // under `desc` is the live one, not the oldest backfill window.
-    const backfill = {
-      id: 'backfill-oldest',
-      windowStart: new Date('2026-09-12T04:00:00.000Z'),
-    };
-    const live = {
-      id: 'live-current',
-      windowStart: new Date('2026-09-14T03:00:00.000Z'),
-    };
-    const ordered = [backfill, live].sort(
-      (a, b) => b.windowStart.getTime() - a.windowStart.getTime(),
-    );
-    const prisma = prismaWithPending(ordered.slice(0, 1));
-    const service = makeService(prisma);
-    const dispatched: string[] = [];
-    jest
-      .spyOn(
-        service as unknown as { dispatchOne: (id: string) => Promise<void> },
-        'dispatchOne',
-      )
-      .mockImplementation((id: string) => {
-        dispatched.push(id);
-        return Promise.resolve();
-      });
-
-    await service['dispatchDue']();
-
-    expect(dispatched).toEqual(['live-current']);
+    expect(runner.enqueueInferencePrep.mock.calls).toEqual([
+      ['live-current', true],
+      ['backfill-oldest', false],
+    ]);
   });
 
   /**
