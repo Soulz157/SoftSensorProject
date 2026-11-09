@@ -8,7 +8,12 @@ import {
   PYTHON_TIMEOUT,
 } from '@/lib/python-client';
 import { artifactKey, PIPELINE_VERSION_REORDERED } from '@/lib/artifact-keys';
+import { env } from '@/config/env.config';
 import { buildSourceBlock } from '@/lib/source-block';
+import {
+  canManageDatasetRow,
+  datasetManageSelect,
+} from '@/lib/dataset-manage-access';
 import { PreprocessingJobService } from '../../dataset-version/authorized/preprocessing-job.service';
 import { LoaderJobService } from '../../loader/loader-job.service';
 import {
@@ -39,6 +44,8 @@ import {
 } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 import {
   type CreateDraftDto,
+  type ListDraftsQueryDto,
+  type PatchDraftDto,
   type ResplitDraftHoldoutDto,
   type SaveDraftAsDatasetDto,
 } from './dto/dataset-draft.authorized.dto';
@@ -127,6 +134,54 @@ export class DatasetDraftAuthorizedService {
       });
     }
     return draft;
+  }
+
+  /**
+   * Gate for editing an EXISTING dataset (opening its edit draft, committing
+   * an edit-save). Same rule as `DatasetAuthorizedService.update/delete`
+   * (`canManageDataset`): the creator, the workspace creator, or a workspace
+   * OWNER/STAFF. 404 for a caller who cannot read the dataset's workspace,
+   * 403 for a member who can read it but may not change it.
+   *
+   * Duplicated per service on purpose (see `workspace-permission.ts`); only
+   * the pure predicate and select fragment are shared.
+   */
+  private async assertCanManageDataset(
+    datasetId: string,
+    user: Auth.UserPayload,
+  ) {
+    const row = await this.prisma.dataset.findFirst({
+      where: {
+        id: datasetId,
+        workspace: {
+          deletedAt: null,
+          ...(user.role === 'ADMIN'
+            ? {}
+            : {
+                OR: [
+                  { ownerId: user.id },
+                  { members: { some: { userId: user.id } } },
+                ],
+              }),
+        },
+      },
+      select: { id: true, ...datasetManageSelect(user.id) },
+    });
+    if (!row) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset not found',
+        type: 'ERROR',
+      });
+    }
+    if (!canManageDatasetRow(row, user.id)) {
+      throw new AppException({
+        statusCode: 403,
+        message:
+          'Only the dataset creator or workspace owners and staff can edit this dataset',
+        type: 'ERROR',
+      });
+    }
   }
 
   // ── draft lifecycle ──────────────────────────────────────────────────────
@@ -230,6 +285,13 @@ export class DatasetDraftAuthorizedService {
     user: Auth.UserPayload,
     datasetId: string,
   ) {
+    // FIRST, before the reuse branch below: that branch used to hand back any
+    // ACTIVE edit draft with no access check at all. Creator or workspace
+    // OWNER/STAFF only. One ACTIVE edit draft exists per dataset (partial
+    // unique index), so a second editor RESUMES the first's draft rather
+    // than being locked out — a lock could strand a dataset until cleanup.
+    await this.assertCanManageDataset(datasetId, user);
+
     const existing = await this.prisma.datasetDraft.findFirst({
       where: { editingDatasetId: datasetId, status: 'ACTIVE' },
     });
@@ -251,12 +313,24 @@ export class DatasetDraftAuthorizedService {
       // still readable, and re-pointing at it costs the user only the
       // feature warm that Step 4 recomputes anyway.
       const recovered = await this.recoverReclaimedEditDraftRoot(existing);
+      // DS-LAKE-042. Hand the wizard the pre-feature end of the chain, not
+      // whatever the last job produced: after Step 4 the stored pointer is
+      // the draft's own GOLD, and a feature job sourced from it recomputes on
+      // top of its own output (every column collides; the spec then lists
+      // none). The stored pointer itself is left alone.
+      const pointer = recovered.draft.currentArtifactId;
+      const preFeature = pointer
+        ? ((await this.preFeatureArtifactId(pointer)) ?? pointer)
+        : pointer;
       return {
         statusCode: 200,
         message: 'Edit draft resolved',
         type: 'SUCCESS' as const,
         data: {
-          ...this.mapDraft(recovered.draft),
+          ...this.mapDraft({
+            ...recovered.draft,
+            currentArtifactId: preFeature,
+          }),
           recoveredFromReclaimedArtifact: recovered.recovered,
           rootValidationRowCount: await this.getEditDraftRootValidationRowCount(
             existing.id,
@@ -265,12 +339,9 @@ export class DatasetDraftAuthorizedService {
       };
     }
 
-    // Ownership-scoped the same way `getDatasetService` scopes a read —
-    // `createdById`, not workspace membership (drafts use workspace
-    // membership because no Dataset exists yet to check ownership through;
-    // here one already does).
+    // Access was already enforced by `assertCanManageDataset` above.
     const dataset = await this.prisma.dataset.findFirst({
-      where: { id: datasetId, createdById: user.id },
+      where: { id: datasetId },
       select: { id: true, name: true, workspaceId: true, sourceIds: true },
     });
     if (!dataset) {
@@ -514,11 +585,125 @@ export class DatasetDraftAuthorizedService {
 
   async getDraftService(user: Auth.UserPayload, draftId: string) {
     const draft = await this.assertDraftAccess(draftId, user);
+    // DS-LAKE-037. The snapshot is the creator's own work-in-progress: GET is
+    // open to any workspace member (they can read the draft's artifacts), but
+    // the configuration is handed only to the user who made it, so a shared
+    // browser cannot turn someone else's ?draftId= into a resume.
+    const isCreator = draft.createdById === user.id;
     return {
       statusCode: 200,
       message: 'Dataset draft fetched successfully',
       type: 'SUCCESS' as const,
-      data: this.mapDraft(draft),
+      data: {
+        ...this.mapDraft(draft),
+        isCreator,
+        wizardState: isCreator ? draft.wizardState : null,
+        wizardStateVersion: isCreator ? draft.wizardStateVersion : null,
+      },
+    };
+  }
+
+  /**
+   * DS-LAKE-037. The caller's resumable create-mode drafts: ACTIVE ones, plus
+   * ABANDONED ones inside `CLEANUP_DRAFT_RECOVERY_HOURS` (the sweep abandons
+   * an idle draft but keeps its row, so it is still revivable). Summaries
+   * only - the snapshot can be large and is read with GET /:id.
+   */
+  async listResumableDraftsService(
+    user: Auth.UserPayload,
+    query: ListDraftsQueryDto,
+  ) {
+    if (query.workspaceId) {
+      await this.assertWorkspaceAccess(query.workspaceId, user);
+    }
+    const recoveryCutoff = new Date(
+      Date.now() - env.CLEANUP_DRAFT_RECOVERY_HOURS * 3_600_000,
+    );
+    const drafts = await this.prisma.datasetDraft.findMany({
+      where: {
+        createdById: user.id,
+        editingDatasetId: null,
+        wizardStateVersion: { not: null },
+        ...(query.workspaceId ? { workspaceId: query.workspaceId } : {}),
+        workspace: { deletedAt: null },
+        OR: [
+          { status: 'ACTIVE' },
+          { status: 'ABANDONED', updatedAt: { gt: recoveryCutoff } },
+        ],
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        workspaceId: true,
+        status: true,
+        updatedAt: true,
+        wizardState: true,
+      },
+    });
+    return {
+      statusCode: 200,
+      message: 'Dataset drafts fetched successfully',
+      type: 'SUCCESS' as const,
+      data: drafts.map((d) => {
+        const step =
+          d.wizardState &&
+          typeof d.wizardState === 'object' &&
+          !Array.isArray(d.wizardState)
+            ? (d.wizardState as Record<string, unknown>).currentStep
+            : null;
+        return {
+          id: d.id,
+          name: d.name,
+          workspaceId: d.workspaceId,
+          status: d.status,
+          updatedAt: d.updatedAt.toISOString(),
+          currentStep: typeof step === 'number' ? step : null,
+        };
+      }),
+    };
+  }
+
+  /**
+   * DS-LAKE-037. Writes the wizard snapshot. Creator only; refused once SAVED.
+   * An ABANDONED draft is revived to ACTIVE in the same write - that is how a
+   * draft the idle sweep abandoned comes back when its owner resumes it. The
+   * `@updatedAt` bump makes every PATCH a heartbeat too.
+   */
+  async patchDraftService(
+    user: Auth.UserPayload,
+    draftId: string,
+    dto: PatchDraftDto,
+  ) {
+    const draft = await this.assertDraftAccess(draftId, user);
+    if (draft.createdById !== user.id) {
+      throw new AppException({
+        statusCode: 403,
+        message: 'Only the creator of a dataset draft can change it',
+        type: 'ERROR',
+      });
+    }
+    if (draft.status === 'SAVED') {
+      throw new AppException({
+        statusCode: 409,
+        message: 'This dataset draft has already been saved',
+        type: 'ERROR',
+      });
+    }
+    const updated = await this.prisma.datasetDraft.update({
+      where: { id: draftId },
+      data: {
+        ...(dto.name ? { name: dto.name } : {}),
+        wizardState: dto.wizardState as PrismaTypes.InputJsonValue,
+        wizardStateVersion: dto.wizardStateVersion,
+        status: 'ACTIVE',
+      },
+    });
+    return {
+      statusCode: 200,
+      message: 'Dataset draft updated successfully',
+      type: 'SUCCESS' as const,
+      data: this.mapDraft(updated),
     };
   }
 
@@ -532,7 +717,14 @@ export class DatasetDraftAuthorizedService {
     await this.assertDraftAccess(draftId, user);
     const draft = await this.prisma.datasetDraft.update({
       where: { id: draftId },
-      data: { status: 'ABANDONED' },
+      // DS-LAKE-037-D07: an explicit Discard drops the snapshot so it never
+      // reappears in the resume list. The idle sweep's auto-abandon does not
+      // go through here and keeps it, which is what keeps that draft revivable.
+      data: {
+        status: 'ABANDONED',
+        wizardState: PrismaTypes.DbNull,
+        wizardStateVersion: null,
+      },
     });
     return {
       statusCode: 200,
@@ -946,6 +1138,21 @@ export class DatasetDraftAuthorizedService {
       });
     }
 
+    // DS-LAKE-042. Same refusal as `startDraftFeaturesJobService`: this route
+    // writes feature_spec.json the same way, so it can lose the recipe the
+    // same way.
+    const featureBearing = await this.featureBearingReason(source.id);
+    if (featureBearing) {
+      throw new AppException({
+        statusCode: 409,
+        message:
+          `Feature engineering must start from data without features; ` +
+          `this artifact ${featureBearing}. Reopen the dataset to rebuild ` +
+          'from its raw data.',
+        type: 'ERROR',
+      });
+    }
+
     const newArtifactId = randomUUID();
     const startedAt = Date.now();
     const scope = `drafts/${draftId}`;
@@ -1355,6 +1562,9 @@ export class DatasetDraftAuthorizedService {
           type: 'ERROR',
         });
       }
+      // Draft access is workspace-wide (a VIEWER passes `assertDraftAccess`);
+      // committing over an existing dataset needs the manage rule.
+      await this.assertCanManageDataset(draft.editingDatasetId!, user);
     }
 
     const finalArtifact = await this.prisma.datasetArtifact.findFirst({
@@ -2393,6 +2603,24 @@ export class DatasetDraftAuthorizedService {
       });
     }
 
+    // DS-LAKE-042. Features are computed from a PRE-feature artifact only.
+    // Run on one that already carries them and every recipe column collides,
+    // python skips each as a name collision, and the feature_spec.json it
+    // writes lists none — while the frame still holds the old columns. The
+    // dataset trains, then cannot be deployed (live: DatasetTest v2, 108
+    // lag features, spec features = []).
+    const featureBearing = await this.featureBearingReason(source.id);
+    if (featureBearing) {
+      throw new AppException({
+        statusCode: 409,
+        message:
+          `Feature engineering must start from data without features; ` +
+          `this artifact ${featureBearing}. Reopen the dataset to rebuild ` +
+          'from its raw data.',
+        type: 'ERROR',
+      });
+    }
+
     const job = await this.prisma.preprocessingJob.create({
       data: {
         draftId,
@@ -2435,6 +2663,89 @@ export class DatasetDraftAuthorizedService {
       type: 'SUCCESS' as const,
       data: { jobId: job.id, status: job.status },
     };
+  }
+
+  /**
+   * DS-LAKE-042. Why `artifactId` (or anything it was derived from) already
+   * carries feature columns, or null when it is safe to compute features on.
+   *
+   * Walks the lineage up through `parentArtifactId`: GOLD/FINAL always carry
+   * features, and an artifact any FEATURE job produced does too — that
+   * covers the reordered wizard's features-only SILVER, which is typed
+   * SILVER but is not raw. Every successful FEATURE job in the local DB
+   * (119 of 119, 2026-11-02) sourced a BRONZE; the only GOLD-sourced ones
+   * are the defect this refuses.
+   */
+  private async featureBearingReason(
+    artifactId: string,
+  ): Promise<string | null> {
+    let cursor: string | null = artifactId;
+    const seen = new Set<string>();
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      const artifact = await this.lineageRow(cursor);
+      if (!artifact) return null;
+      const carries = await this.carriesFeatures(artifact);
+      if (carries) {
+        return artifact.id === artifactId ? carries.self : carries.ancestor;
+      }
+      cursor = artifact.parentArtifactId;
+    }
+    return null;
+  }
+
+  /**
+   * DS-LAKE-042. The nearest artifact at or above `artifactId` in its
+   * lineage that carries NO features — the BRONZE, or a SILVER cleaning
+   * built from it — or null when there is none. What an edit draft hands the
+   * wizard as its pipeline source: the server advances
+   * `draft.currentArtifactId` to every successful job's result, FEATURE jobs
+   * included, so a draft reopened after Step 4 ran pointed at its own GOLD
+   * and the next feature job recomputed on top of it.
+   */
+  private async preFeatureArtifactId(
+    artifactId: string,
+  ): Promise<string | null> {
+    let cursor: string | null = artifactId;
+    const seen = new Set<string>();
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      const artifact = await this.lineageRow(cursor);
+      if (!artifact) return null;
+      if (!(await this.carriesFeatures(artifact))) return artifact.id;
+      cursor = artifact.parentArtifactId;
+    }
+    return null;
+  }
+
+  private lineageRow(id: string) {
+    return this.prisma.datasetArtifact.findUnique({
+      where: { id },
+      select: { id: true, type: true, parentArtifactId: true },
+    });
+  }
+
+  /** Why THIS artifact (not its ancestors) carries features, or null. */
+  private async carriesFeatures(artifact: {
+    id: string;
+    type: string;
+  }): Promise<{ self: string; ancestor: string } | null> {
+    if (artifact.type === 'GOLD' || artifact.type === 'FINAL') {
+      return {
+        self: `is ${artifact.type}, which already has features`,
+        ancestor: `was built from a ${artifact.type} artifact, which already has features`,
+      };
+    }
+    const producedByFeatures = await this.prisma.preprocessingJob.findFirst({
+      where: { resultArtifactId: artifact.id, stage: 'FEATURE' },
+      select: { id: true },
+    });
+    return producedByFeatures
+      ? {
+          self: 'was produced by a feature engineering job',
+          ancestor: 'was built from the output of a feature engineering job',
+        }
+      : null;
   }
 
   async getDraftJobService(

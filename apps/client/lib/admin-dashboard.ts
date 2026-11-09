@@ -56,8 +56,8 @@ export function equipmentDetail(c: EquipmentCounts): string | null {
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
-/** A workspace needs attention when its equipment is in ALARM — the same
- *  binary rule as `toBinaryStatus` everywhere else. */
+/** A workspace needs attention when its equipment is in ALARM or WARNING —
+ *  the same binary rule as `toBinaryStatus` everywhere else. */
 export function needsAttention(ws: Pick<AdminWorkspace, 'status'>): boolean {
   return isAbnormal(ws.status)
 }

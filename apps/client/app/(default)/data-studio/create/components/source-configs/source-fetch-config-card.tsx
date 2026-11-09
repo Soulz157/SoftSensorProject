@@ -11,7 +11,6 @@ import {
   DEFAULT_CSV_CONFIG,
 } from '@/store/model-pipeline'
 import type { SavedDataSource, DataSourceKind } from '@/lib/mock-data-sources'
-import { PIConfigForm } from './pi-config-form'
 import { SQLConfigForm } from './sql-config-form'
 import { RestApiConfigForm } from './rest-api-config-form'
 import { CSVConfigForm } from './csv-config-form'
@@ -137,7 +136,7 @@ export function SourceFetchConfigCard({
             aria-label="Edit connection"
             disabled={disabled}
             onClick={() => setEditOpen(true)}
-            className="ml-auto flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="cursor-pointer ml-auto flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <Pencil className="h-3.5 w-3.5" />
           </button>
@@ -162,9 +161,13 @@ export function SourceFetchConfigCard({
         />
       )}
 
-      {config.type === 'pi' && (
-        <PIConfigForm config={config} onChange={onChange} disabled={disabled} />
-      )}
+      {/* PI: the saved connection, read-only (2026-10-19). The editable
+          PIConfigForm here (calc type/basis, interval, server, user, password)
+          reached no request - a fetch sends only the source id and the server
+          reads the stored connection - while the interval and summary
+          settings that DO apply live in Interval and Historical Fetch
+          Settings. Change the connection itself with Edit. */}
+      {config.type === 'pi' && <PiConnectionSummary source={source} />}
       {config.type === 'sql' && (
         <SQLConfigForm
           config={config}
@@ -186,6 +189,43 @@ export function SourceFetchConfigCard({
           disabled={disabled}
         />
       )}
+    </div>
+  )
+}
+
+/** The PI server the backend fetches from: `config.piServer`, else `dbName`
+ * - the rule `buildPiCredentials` (apps/backend/src/lib/source-block.ts) applies. */
+function piServerOf(source: SavedDataSource): string {
+  const cfg: unknown = source.config
+  if (typeof cfg === 'object' && cfg !== null && 'piServer' in cfg) {
+    const value: unknown = cfg.piServer
+    if (typeof value === 'string' && value.trim()) return value
+  }
+  return source.dbName
+}
+
+function PiConnectionSummary({ source }: { source: SavedDataSource }) {
+  const rows: [string, string][] = [
+    ['PI Web API', source.host],
+    ['PI server', piServerOf(source)],
+    ['User', source.username],
+  ]
+  return (
+    <div className="space-y-2">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs">
+        {rows.map(([label, value]) => (
+          <div key={label} className="contents">
+            <dt className="text-muted-foreground">{label}</dt>
+            <dd className="truncate font-mono text-foreground">
+              {value.trim() || '—'}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <p className="text-[11px] text-muted-foreground">
+        Fetched with this saved connection. Set the interval and summary
+        settings below.
+      </p>
     </div>
   )
 }

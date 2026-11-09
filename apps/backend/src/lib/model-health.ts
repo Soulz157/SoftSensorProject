@@ -1,4 +1,4 @@
-import type { PsiStatus } from './prediction-psi';
+import type { DriftStatus } from './input-range-drift';
 import type { ResidualSdStatus } from './residual-sd-health';
 
 /**
@@ -56,13 +56,12 @@ export type HealthReason =
   | 'BAD_DATA'
   | 'SENSOR_FROZEN'
   /**
-   * MODEL-SERVE-028. INPUT DRIFT, PSI ONLY — `lib/prediction-psi.ts`'s
-   * rolling-24 verdict over the frozen training bins. The z-score mean-shift
-   * axis these two codes used to name was removed at the user's request
-   * (2026-10-04) so a reader sees one drift signal, and the codes were kept
-   * rather than renamed so existing `ModelAlertState` rows do not fire a
-   * spurious transition. PSI_WARN raising a Warning overrides the
-   * 2026-09-22 ALERT-only decision, by the same request.
+   * MODEL-SERVE-036. INPUT DRIFT BY TRAINING RANGE — `lib/input-range-drift.ts`'s
+   * rolling-24 verdict: the share of live values outside each input's
+   * training range. These codes named the z-score axis, then PSI
+   * (MODEL-SERVE-028); they were kept rather than renamed each time so
+   * existing `ModelAlertState` rows do not fire a spurious transition. WARN
+   * raising a Warning overrides the 2026-09-22 ALERT-only decision.
    */
   | 'DRIFT_CRITICAL'
   | 'DRIFT_WARN'
@@ -96,11 +95,11 @@ export interface ModelHealth {
  * `driftMonitor` gates the axis entirely — OFF is not a severity, it is
  * "not configured to look," matching this field's own documented purpose
  * (schema.prisma, T09 Pass B) rather than silently defaulting to a
- * status the operator never asked to see. `psiStatus === null` covers
+ * status the operator never asked to see. `driftStatus === null` covers
  * every reason there is nothing to classify YET (no PRODUCTION version, no
  * windows with histograms) without the caller having to distinguish
  * those reasons here — UNKNOWN is the same "nothing to report" word
- * `computePsi` itself already uses for a column with no reference.
+ * `computeRangeDrift` itself already uses for a column with no reference.
  */
 /**
  * MODEL-SERVE-001-T26 widened this. THE HALF THAT MUST NOT BE SPLIT OFF:
@@ -137,29 +136,30 @@ export function classifyModelHealth(input: {
   enabled: boolean;
   driftMonitor: boolean;
   /**
-   * MODEL-SERVE-001-T32, sole drift input since MODEL-SERVE-028.
-   * `computePsi`'s verdict, passed in ALREADY DECIDED, same discipline as
-   * `residualSdStatus`. Null when the caller did not run PSI at all.
+   * MODEL-SERVE-001-T32, sole drift input (training range since
+   * MODEL-SERVE-036). `computeRangeDrift`'s verdict, passed in ALREADY
+   * DECIDED, same discipline as `residualSdStatus`. Null when the caller did
+   * not grade drift at all.
    *
    * `INSUFFICIENT_DATA` and `UNKNOWN` never raise anything here — they are
-   * PSI's own two "not enough to speak" values (a real reference but thin
-   * live volume, and no reference at all), and `prediction-psi.ts`'s
+   * the grader's own two "not enough to speak" values (a real reference but thin
+   * live volume, and no reference at all), and `input-range-drift.ts`'s
    * SEVERITY order already guarantees neither masks a real verdict on
    * another column.
    */
-  psiStatus: PsiStatus | null;
+  driftStatus: DriftStatus | null;
   /**
    * T27 RULE (2), THE DARK-SHIP GATE, AS A REQUIRED INPUT RATHER THAN AN
    * ASSUMPTION. False when there is no evidence to judge drift on: an EMPTY
    * `psiRefEdges` reference, or no window carrying featureHistograms. Both
-   * reach this module as an ordinary "no columns" PSI report whose status
-   * is UNKNOWN — and `resolvePsiReference` returns `{}` from its SUCCESS
+   * reach this module as an ordinary "no columns" drift report whose status
+   * is UNKNOWN — and `resolveDriftReference` returns `{}` from its SUCCESS
    * path as well as its catch path, so the two are indistinguishable
    * downstream. Without this flag a model whose feature_spec read failed
    * would report healthy. Live 2026-10-04: 2 of 3 scheduled models carry no
    * histograms at all, so this is the live case, not a hypothetical.
    */
-  psiEvidence: boolean;
+  driftEvidence: boolean;
   /**
    * How many of the most recent terminal windows, counted back from the
    * newest, are FAILED. Three is the bar, matching the sample
@@ -280,9 +280,9 @@ export function classifyModelHealth(input: {
   // defines it as governing whether the system watches the INPUT
   // distribution, which is precisely what PSI measures. It defaults FALSE,
   // so this alert is live only for schedules that opted in. Gated on
-  // `psiEvidence` — see that field's own doc.
-  if (input.driftMonitor && input.psiEvidence) {
-    if (input.psiStatus === 'CRITICAL') {
+  // `driftEvidence` — see that field's own doc.
+  if (input.driftMonitor && input.driftEvidence) {
+    if (input.driftStatus === 'CRITICAL') {
       return { status: 'ALERT', reason: 'DRIFT_CRITICAL', frozenColumns };
     }
   }
@@ -307,7 +307,11 @@ export function classifyModelHealth(input: {
   if (input.missingPct !== null && input.missingPct >= input.missingPctWarn) {
     return { status: 'WARN', reason: 'BAD_DATA', frozenColumns };
   }
-  if (input.driftMonitor && input.psiEvidence && input.psiStatus === 'WARN') {
+  if (
+    input.driftMonitor &&
+    input.driftEvidence &&
+    input.driftStatus === 'WARN'
+  ) {
     return { status: 'WARN', reason: 'DRIFT_WARN', frozenColumns };
   }
   // Same ordering argument as the ALERT tier above.
@@ -330,17 +334,17 @@ export function classifyModelHealth(input: {
   // T27 RULE (2). No evidence is NOT health. An empty reference or a window
   // set with no featureHistograms lands here as UNKNOWN, never OK — that is
   // the whole difference between this and a dashboard that ships dark.
-  if (!input.psiEvidence) {
+  if (!input.driftEvidence) {
     return { status: 'UNKNOWN', reason: null, frozenColumns };
   }
-  if (input.psiStatus === null) {
+  if (input.driftStatus === null) {
     return { status: 'UNKNOWN', reason: null, frozenColumns };
   }
-  // `computePsi`'s own two "not enough to speak" values — no reference, or a
+  // `computeRangeDrift`'s own two "not enough to speak" values — no reference, or a
   // real reference with too little live volume — must not become OK either.
   if (
-    input.psiStatus === 'UNKNOWN' ||
-    input.psiStatus === 'INSUFFICIENT_DATA'
+    input.driftStatus === 'UNKNOWN' ||
+    input.driftStatus === 'INSUFFICIENT_DATA'
   ) {
     return { status: 'UNKNOWN', reason: null, frozenColumns };
   }

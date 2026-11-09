@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { mintRunToken } from '@/lib/mint-run-token';
+import { readGridSearch } from '@/lib/grid-search-results';
+import { gridOfJob } from '@/lib/tuning-grid';
 import { findHoldoutArtifact } from '@/lib/holdout-artifact';
 import {
   predictionKeyFor,
@@ -30,6 +32,7 @@ import { buildRunKey } from '@/lib/model-run-owner';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import { PythonSplitStatsSchema } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 import { AppException } from '@softsensor/common';
+import { ContainerDispatchService } from '../../trainning-container/authorized/container-dispatch.service';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 
 /** MODEL-SERVE-020-T04. How the Model predictions route names a population in
@@ -57,6 +60,7 @@ export class ModelRunLaunchAuthorizedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly runner: TrainningContainerAuthorizedService,
+    private readonly dispatch: ContainerDispatchService,
   ) {}
 
   private async assertHasAccess(
@@ -233,28 +237,6 @@ export class ModelRunLaunchAuthorizedService {
   }
 
   /**
-   * Spawn out of band. A create request must not block for the length of an
-   * image pull, and the run row is already durable — a spawn failure marks
-   * it FAILED rather than losing it. Shared by both owner paths so a spawn
-   * failure is handled identically regardless of what owns the run.
-   */
-  private trackSpawn(runId: string, token: string): void {
-    void this.runner.spawn(runId, token).catch(async (err) => {
-      const reason = err instanceof Error ? err.message : String(err);
-      this.log.error(`spawn failed for run ${runId}`, err);
-      await this.prisma.modelTrainingRun.update({
-        where: { id: runId },
-        data: {
-          status: 'FAILED',
-          failureReason: `Could not start container: ${reason}`.slice(0, 2000),
-          finishedAt: new Date(),
-          tokenExpiresAt: new Date(0),
-        },
-      });
-    });
-  }
-
-  /**
    * MODEL-FLOW-014-T06. Freezes the Split Distribution panel's own record
    * of what the user was looking at when they pressed Start Training —
    * fire-and-forget, mirroring `trackSpawn`'s own shape, called AFTER the
@@ -381,7 +363,7 @@ export class ModelRunLaunchAuthorizedService {
     candidateJobId?: string,
   ) {
     const runData = await this.buildRunData(dto);
-    const { token, tokenHash } = this.mintToken();
+    const { tokenHash } = this.mintToken();
 
     const run = await this.prisma.modelTrainingRun.create({
       data: {
@@ -396,7 +378,7 @@ export class ModelRunLaunchAuthorizedService {
       omit: { tokenHash: true },
     });
 
-    this.trackSpawn(run.id, token);
+    void this.dispatch.enqueue('train', run.id);
     return run;
   }
 
@@ -497,7 +479,7 @@ export class ModelRunLaunchAuthorizedService {
     this.assertDraftWritableStatus(draftId, draft.status);
 
     const runData = await this.buildRunData(dto);
-    const { token, tokenHash } = this.mintToken();
+    const { tokenHash } = this.mintToken();
 
     // Interactive transaction, not the array form: the draft update needs
     // the run's generated id, so the two writes cannot be independent
@@ -527,7 +509,7 @@ export class ModelRunLaunchAuthorizedService {
       return created;
     });
 
-    this.trackSpawn(run.id, token);
+    void this.dispatch.enqueue('train', run.id);
 
     // MODEL-FLOW-014-T06. Single-run launches only — a candidate run shares
     // its split with every other candidate in the same job, so freezing per
@@ -560,6 +542,7 @@ export class ModelRunLaunchAuthorizedService {
     if (!run) throw new NotFoundException();
     if (run.status !== 'QUEUED' && run.status !== 'RUNNING') return run;
 
+    await this.dispatch.remove('train', runId);
     if (run.containerId) await this.runner.kill(run.containerId);
     const canceled = await this.prisma.modelTrainingRun.update({
       where: { id: runId },
@@ -600,6 +583,7 @@ export class ModelRunLaunchAuthorizedService {
       };
     }
 
+    await this.dispatch.remove('train', runId);
     if (run.containerId) await this.runner.kill(run.containerId);
     const canceled = await this.prisma.modelTrainingRun.update({
       where: { id: runId },
@@ -636,13 +620,36 @@ export class ModelRunLaunchAuthorizedService {
       omit: { tokenHash: true },
       orderBy: { createdAt: 'desc' },
     });
+    // MODEL-FLOW-038. Whether each run belongs to a grid-search job, so the
+    // Run parameters card knows to fetch its ranked combinations and does not
+    // spend a request on every other run. One query for all jobs involved.
+    const jobIds = [
+      ...new Set(
+        runs.flatMap((r) => (r.candidateJobId ? [r.candidateJobId] : [])),
+      ),
+    ];
+    const jobs =
+      jobIds.length > 0
+        ? await this.prisma.modelCandidateJob.findMany({
+            where: { id: { in: jobIds } },
+            select: { id: true, candidates: true },
+          })
+        : [];
+    const gridJobIds = new Set(
+      jobs.filter((j) => gridOfJob(j.candidates)).map((j) => j.id),
+    );
     // Same envelope as the rest of this draft-run resource — see
     // createDraftRunService's comment for why.
     return {
       statusCode: 200,
       message: 'Training runs fetched',
       type: 'SUCCESS' as const,
-      data: runs,
+      data: runs.map((r) => ({
+        ...r,
+        isGridSearch: r.candidateJobId
+          ? gridJobIds.has(r.candidateJobId)
+          : false,
+      })),
     };
   }
 
@@ -660,6 +667,14 @@ export class ModelRunLaunchAuthorizedService {
     });
     if (!run) throw new NotFoundException();
     return run;
+  }
+
+  /** CONTAINER-QUEUE-001. Training runs queued before this one. A guide for
+   *  the waiting message, not a promise: higher-priority work can still pass. */
+  queuedRunsAhead(createdAt: Date): Promise<number> {
+    return this.prisma.modelTrainingRun.count({
+      where: { status: 'QUEUED', createdAt: { lt: createdAt } },
+    });
   }
 
   /**
@@ -680,6 +695,11 @@ export class ModelRunLaunchAuthorizedService {
       include: { logs: { orderBy: { createdAt: 'asc' }, take: 500 } },
     });
     if (!run) throw new NotFoundException();
+
+    const queuedAhead =
+      run.status === 'QUEUED'
+        ? await this.queuedRunsAhead(run.createdAt)
+        : null;
 
     // MODEL-FLOW-016-T11. `cvFoldsKey` is only a pointer — Step 4/5's own
     // per-fold table needs the actual records. Read here, once, attached
@@ -742,6 +762,17 @@ export class ModelRunLaunchAuthorizedService {
       }
     }
 
+    // MODEL-FLOW-038. A grid-search run's ranked combinations, same soft-read
+    // shape as the artifacts above. The job lookup is skipped for a run that
+    // belongs to no job.
+    const gridJob = run.candidateJobId
+      ? await this.prisma.modelCandidateJob.findUnique({
+          where: { id: run.candidateJobId },
+          select: { candidates: true },
+        })
+      : null;
+    const gridSearch = await readGridSearch(run, gridJob?.candidates, this.log);
+
     // Same envelope fix as createDraftRunService, and arguably the more
     // load-bearing half of it: this is what the 2.5s poll loop
     // (use-model-training.ts pollRun) calls on every tick, so an unwrapped
@@ -751,7 +782,14 @@ export class ModelRunLaunchAuthorizedService {
       statusCode: 200,
       message: 'Training run fetched',
       type: 'SUCCESS' as const,
-      data: { ...run, cvFolds, featureImportance, permutationImportance },
+      data: {
+        ...run,
+        queuedAhead,
+        cvFolds,
+        featureImportance,
+        permutationImportance,
+        gridSearch,
+      },
     };
   }
 

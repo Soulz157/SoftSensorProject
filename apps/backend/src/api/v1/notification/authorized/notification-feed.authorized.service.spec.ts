@@ -93,6 +93,82 @@ describe('NotificationFeedAuthorizedService (MODEL-SERVE-022-T07/V08)', () => {
     });
   });
 
+  describe('alert fields for the bell (MODEL-SERVE-039)', () => {
+    const row = (over: Record<string, unknown> = {}) => ({
+      id: 'ev-1',
+      modelId: 'm1',
+      axis: 'DEPLOY',
+      kind: 'PREFLIGHT_FAILED',
+      severity: 'CRITICAL',
+      fromStatus: null,
+      toStatus: null,
+      reason: null,
+      createdAt: new Date('2026-10-22T01:29:00Z'),
+      model: { name: 'Lab Quality-1 Soft Sensor' },
+      workspace: { name: 'Plant A (current)' },
+      payload: {
+        title: 'Lab Quality-1 Soft Sensor: deploy failed',
+        bodyText: [
+          'Workspace: Plant A',
+          'Model: Lab Quality-1 Soft Sensor',
+          'Detail: running -> error (deploy failed)',
+          'Reason: PI returned no current reading for these mapped tags.',
+          'Timestamp: 22 Oct 2026 01:29 UTC',
+          'http://localhost:3000/models/m1',
+        ].join('\n'),
+        modelUrl: 'http://localhost:3000/models/m1',
+      },
+      ...over,
+    });
+
+    it("returns the alert's own title, detail, reason and UTC time beside the existing fields", async () => {
+      const prisma = buildPrisma({
+        notificationEvent: {
+          findMany: jest.fn().mockResolvedValue([row()]),
+          findFirst: jest.fn(),
+          count: jest.fn(),
+        },
+      });
+      const service = new NotificationFeedAuthorizedService(prisma as never);
+      const res = await service.listEventsService(user(), undefined, undefined);
+      expect(res.data.items[0]).toMatchObject({
+        id: 'ev-1',
+        modelName: 'Lab Quality-1 Soft Sensor',
+        kind: 'PREFLIGHT_FAILED',
+        title: 'Lab Quality-1 Soft Sensor: deploy failed',
+        workspaceName: 'Plant A',
+        detailText: 'running -> error (deploy failed)',
+        reasonText: 'PI returned no current reading for these mapped tags.',
+        frozenText: null,
+        alertTimestamp: '22 Oct 2026 01:29 UTC',
+      });
+      const calls = prisma.notificationEvent.findMany.mock.calls as unknown[][];
+      const select = (calls[0][0] as { select: Record<string, unknown> })
+        .select;
+      expect(select.payload).toBe(true);
+      expect(select.workspace).toEqual({ select: { name: true } });
+    });
+
+    it('degrades to nulls (and the workspace relation) for a payload without a body', async () => {
+      const prisma = buildPrisma({
+        notificationEvent: {
+          findMany: jest.fn().mockResolvedValue([row({ payload: {} })]),
+          findFirst: jest.fn(),
+          count: jest.fn(),
+        },
+      });
+      const service = new NotificationFeedAuthorizedService(prisma as never);
+      const res = await service.listEventsService(user(), undefined, undefined);
+      expect(res.data.items[0]).toMatchObject({
+        title: null,
+        workspaceName: 'Plant A (current)',
+        detailText: null,
+        reasonText: null,
+        alertTimestamp: null,
+      });
+    });
+  });
+
   describe('unread count', () => {
     it('counts events created after the watermark, and nothing before it', async () => {
       const prisma = buildPrisma({

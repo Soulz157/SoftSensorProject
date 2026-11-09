@@ -87,3 +87,21 @@ describe('sourceLabel', () => {
     expect(sourceLabel(src())).toBe('PI North')
   })
 })
+
+describe('describeRelink — live source override (MODEL-SERVE-037-T05)', () => {
+  it('a CSV-only dataset asks for an override even before deploy', () => {
+    const v = describeRelink({
+      currentSource: null,
+      sourceCandidates: [src({ type: 'csv' })],
+      overrideRequired: true,
+    })
+    expect(v.state).toBe('override-required')
+    expect(v.canRelink).toBe(false)
+    expect(v.note).toMatch(/uploaded CSV/)
+  })
+
+  it('without the flag the existing states are unchanged', () => {
+    const v = describeRelink({ currentSource: null, sourceCandidates: [] })
+    expect(v.state).toBe('no-schedule')
+  })
+})

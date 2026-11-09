@@ -177,7 +177,7 @@ export function WorkTreePanel({
   onSelectScope,
 }: WorkTreePanelProps) {
   const workspaces = useAtomValue(workspacesAtom)
-  const { plantsByWorkspaceId, nodesByWorkspaceId, loading, error } =
+  const { plantsByWorkspaceId, equipmentListByWorkspaceId, loading, error } =
     useModelHierarchy()
 
   const [openItems, setOpenItems] = useState<string[]>([])
@@ -192,7 +192,7 @@ export function WorkTreePanel({
         plants: (plantsByWorkspaceId[ws.id] ?? []).map(plant => ({
           id: plant.id,
           name: plant.name,
-          nodes: (nodesByWorkspaceId[ws.id] ?? [])
+          nodes: (equipmentListByWorkspaceId[ws.id] ?? [])
             .filter(n => n.planId === plant.id)
             .map(n => ({
               id: n.id,
@@ -202,7 +202,7 @@ export function WorkTreePanel({
             })),
         })),
       })),
-    [workspaces, plantsByWorkspaceId, nodesByWorkspaceId],
+    [workspaces, plantsByWorkspaceId, equipmentListByWorkspaceId],
   )
 
   const pathToOpen = findPathToOpen(selectedScope, tree)

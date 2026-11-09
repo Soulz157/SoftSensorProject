@@ -1,0 +1,70 @@
+{
+  "project": "Data Intake Analytics",
+  "version": "1.0.0",
+  "features": [
+    {
+      "id": "DATA-INTAKE-001",
+      "title": "Redesign /admin/analytics and /analytics/[id] on real data",
+      "description": "Replace the seeded-mock Analytics page with Data Intake: live tag arrival quality (Good/Questionable/Bad/No reading/Not live) per workspace, ingested row volume over 24h/7d/1m/1y, and dataset storage from recorded artifact sizes. Admin picks All workspaces or one; a user sees only their own workspace.",
+      "dependencies": [],
+      "status": "in_progress",
+      "progress": 90,
+      "tasks": [
+        {
+          "id": "DATA-INTAKE-001-T01",
+          "title": "Pure backend lib: range buckets, tag rollup, storage rollup",
+          "detail": "apps/backend/src/lib/data-intake.ts. Tags classified notLive when the schedule is off or lastSeenAt is older than 3 cadences, so a stale TagObservation is never counted Good. Storage dedupes by objectKey and splits saved / active drafts / awaiting cleanup.",
+          "status": "completed"
+        },
+        {
+          "id": "DATA-INTAKE-001-T02",
+          "title": "Aggregate service + routes",
+          "detail": "GET /authorized/workspace/:id/data-intake (member or admin) and GET /admin/workspace/data-intake (ADMIN, per-route guard). Volume is bucketed in SQL with $queryRaw; no schema change, no migration.",
+          "status": "completed"
+        },
+        {
+          "id": "DATA-INTAKE-001-T03",
+          "title": "Client data layer",
+          "detail": "types/data-intake.ts, services/data-intake.ts, hooks/analytics/use-data-intake.ts, lib/data-intake.ts, lib/format-bytes.ts.",
+          "status": "completed"
+        },
+        {
+          "id": "DATA-INTAKE-001-T04",
+          "title": "Components and page shells",
+          "detail": "Header with workspace picker (admin only) and TimeRangeToggle, summary grid, ingestion chart, tag proportion, tag table, dataset storage, workspace table, loading/error states.",
+          "status": "completed"
+        },
+        {
+          "id": "DATA-INTAKE-001-T05",
+          "title": "Remove the mock pipeline",
+          "detail": "Deleted lib/pipeline-metrics.ts (+test), hooks/use-pipeline-analytics.ts and the six pipeline-* analytics components. MOCK_PI_TAGS kept: other pages use it.",
+          "status": "completed"
+        },
+        {
+          "id": "DATA-INTAKE-001-T06",
+          "title": "Automated tests",
+          "detail": "Backend: lib 22 cases, service 4 cases, admin roles spec covers getDataIntake. Client: lib 17 cases, dashboard 8 cases, chart 2 cases. tsc and eslint clean on both apps.",
+          "status": "completed"
+        },
+        {
+          "id": "DATA-INTAKE-001-T07",
+          "title": "Live UI verification in a browser",
+          "detail": "NOT DONE. The Chrome extension was not connected, so the rendered page was never looked at. Verified only that both routes are registered on the running backend (401, not 404) and that the SQL runs against the local dev DB. Still to check by eye: admin All-workspaces table, picker drill-in, tag filter, a forced-Bad tag, a normal user at /analytics/{own id} (no picker), a foreign id (no-access card), light and dark themes.",
+          "status": "pending"
+        }
+      ],
+      "acceptance_criteria": [
+        "No figure on the page is seeded or mocked",
+        "A tag whose model schedule is off, or last fetched more than 3 cadences ago, is never shown as Good",
+        "Storage counts every unreclaimed artifact once (deduped by objectKey) and splits saved / active drafts / awaiting cleanup",
+        "A non-member gets no data for a workspace; the admin route refuses a USER",
+        "An error is shown as an error, never as an empty all-clear page"
+      ],
+      "known_gaps": [
+        "Storage excludes prediction logs, model binaries and sidecar files (no recorded size)",
+        "Tag quality is the arrival quality of the last fetch, not PI's own flag",
+        "apps/client has 23 failing tests in model-create, lib/monitoring and feature-count-sweep that predate this work and share no imports with it"
+      ]
+    }
+  ]
+}

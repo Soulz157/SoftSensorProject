@@ -101,6 +101,16 @@ export class InferenceWindowAuthorizedController {
     return this.service.runNowService(modelId, user);
   }
 
+  /** Run Predict for lstm/gru: poll the dispatched window's prediction. */
+  @Post('/inference/windows/:windowId/prediction')
+  windowPredictionController(
+    @Param('modelId') modelId: string,
+    @Param('windowId') windowId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.windowPredictionService(modelId, windowId, user);
+  }
+
   @Post('/inference/windows/:windowId/retry')
   retryController(
     @Param('modelId') modelId: string,

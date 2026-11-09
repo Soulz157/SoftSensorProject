@@ -24,10 +24,16 @@ vi.mock(
     PREDICT_COLOR: 'var(--chart-1)',
     SD_BAND_COLOR: 'var(--chart-2)',
     SD_BAND_OPACITY: 0.42,
-    ActualVsPredictedChart: (p: { rows: unknown[]; compareName?: string }) => (
+    ActualVsPredictedChart: (p: {
+      rows: unknown[]
+      compareName?: string
+      axis?: string
+    }) => (
       <div
         data-testid="avp-chart"
+        data-axis={p.axis ?? 'time'}
         data-rows={p.rows.length}
+        data-first={(p.rows[0] as { t: number } | undefined)?.t}
         data-compare={p.compareName ?? ''}
       />
     ),
@@ -41,10 +47,16 @@ vi.mock(
       { shape: 'square', color: 'var(--chart-1)', label: 'Residual' },
       { shape: 'dashed', color: 'var(--chart-2)', label: '±1 SD' },
     ],
-    ResidualChart: (p: { rows: unknown[]; compareName?: string }) => (
+    ResidualChart: (p: {
+      rows: unknown[]
+      compareName?: string
+      axis?: string
+    }) => (
       <div
         data-testid="residual-chart"
+        data-axis={p.axis ?? 'time'}
         data-rows={p.rows.length}
+        data-first={(p.rows[0] as { t: number } | undefined)?.t}
         data-compare={p.compareName ?? ''}
       />
     ),
@@ -209,6 +221,29 @@ describe('RetrainCharts', () => {
     expect(screen.getAllByText('Current v3').length).toBeGreaterThan(0)
   })
 
+  it('plots rows in sequence so a range cut out of the middle leaves no empty stretch', () => {
+    ready({ rows: 3, overlay: false })
+    render(
+      <RetrainCharts
+        modelId="model-1"
+        comparison={comparison()}
+        currentVersion={3}
+      />,
+    )
+
+    expect(screen.getByTestId('avp-chart')).toHaveAttribute(
+      'data-axis',
+      'sequence',
+    )
+    expect(screen.getByTestId('residual-chart')).toHaveAttribute(
+      'data-axis',
+      'sequence',
+    )
+    expect(
+      screen.getByText(/does not leave an empty stretch/),
+    ).toBeInTheDocument()
+  })
+
   it('names the range and row count of the data being shown', () => {
     ready({ rows: 3 })
     render(
@@ -256,6 +291,68 @@ describe('RetrainCharts', () => {
     expect(hook).toHaveBeenLastCalledWith(
       expect.objectContaining({ dataSet: 'NEW_DATA' }),
     )
+  })
+
+  it('zooms and pans both charts together from either control bar', async () => {
+    const user = userEvent.setup()
+    ready({ rows: 20, overlay: true })
+    render(
+      <RetrainCharts
+        modelId="model-1"
+        comparison={comparison()}
+        currentVersion={3}
+      />,
+    )
+    const avp = () => screen.getByTestId('avp-chart')
+    const res = () => screen.getByTestId('residual-chart')
+    const button = (name: string, i: number) =>
+      screen.getAllByRole('button', { name })[i] as HTMLElement
+
+    expect(screen.getAllByRole('button', { name: 'Zoom in' })).toHaveLength(2)
+    expect(avp()).toHaveAttribute('data-rows', '20')
+
+    // Pressed on the first chart's bar: both charts follow.
+    await user.click(button('Zoom in', 0))
+    expect(avp()).toHaveAttribute('data-rows', '12')
+    expect(res()).toHaveAttribute('data-rows', '12')
+
+    // Pressed on the second chart's bar: same window, moved right.
+    const before = avp().getAttribute('data-first')
+    await user.click(button('Pan right', 1))
+    const moved = avp().getAttribute('data-first')
+    expect(Number(moved)).toBeGreaterThan(Number(before))
+    expect(res()).toHaveAttribute('data-first', moved)
+    expect(avp()).toHaveAttribute('data-rows', '12')
+
+    await user.click(button('Pan left', 0))
+    expect(avp()).toHaveAttribute('data-first', before)
+
+    await user.click(button('Zoom out', 1))
+    expect(Number(avp().getAttribute('data-rows'))).toBeGreaterThan(12)
+
+    await user.click(button('Reset zoom', 0))
+    expect(avp()).toHaveAttribute('data-rows', '20')
+    expect(res()).toHaveAttribute('data-rows', '20')
+  })
+
+  it('drops the zoom window when the data set changes', async () => {
+    const user = userEvent.setup()
+    ready({ rows: 20 })
+    render(
+      <RetrainCharts
+        modelId="model-1"
+        comparison={comparison()}
+        currentVersion={3}
+      />,
+    )
+
+    await user.click(
+      screen.getAllByRole('button', { name: 'Zoom in' })[0] as HTMLElement,
+    )
+    expect(screen.getByTestId('avp-chart')).toHaveAttribute('data-rows', '12')
+
+    await user.click(screen.getByRole('radio', { name: /New data set aside/i }))
+    expect(screen.getByTestId('avp-chart')).toHaveAttribute('data-rows', '20')
   })
 
   it('disables the new-data choice, and says why, when nothing was set aside', () => {

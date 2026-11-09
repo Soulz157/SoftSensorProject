@@ -1,0 +1,88 @@
+{
+  "project": "Container Job Queue",
+  "version": "1.0.0",
+  "features": [
+    {
+      "id": "CONTAINER-QUEUE-001",
+      "title": "Queue train, score, batch and inference containers on Redis + BullMQ, admitted by CPU/RAM",
+      "description": "Every container mode goes through TrainningContainerAuthorizedService.spawn, and train, score and batch started immediately with no system-wide limit. Launch now records the row and adds a BullMQ job; one admission worker starts the container only when the host's CPU/RAM budget has room. The DB row stays the source of truth. User decision 2026-11-09: Redis + BullMQ over a Postgres dispatcher.",
+      "dependencies": [],
+      "status": "in_progress",
+      "progress": 85,
+      "tasks": [
+        {
+          "id": "CONTAINER-QUEUE- 001-T01",
+          "title": "Measure peak memory and CPU per mode",
+          "detail": "Sized on the largest real dataset (35,593 rows x 129 tags). Reservations default from these numbers. Measured 2026-11-09: GPR 2.40 GiB, LSTM 1.74, forest grid 0.70, Extra Trees 0.57, LightGBM 0.43, RF 0.39, XGBoost 0.25, load+predict 0.33.",
+          "status": "completed"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T02",
+          "title": "Redis in docker-compose",
+          "detail": "Own network, 127.0.0.1 only, requirepass, AOF, noeviction. Training containers run untrusted code on monorepo_network and must not reach it. Compose service written and validated. Blocked on the user setting REDIS_PASSWORD and REDIS_URL in .env and starting it.",
+          "status": "blocked"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T03",
+          "title": "Pure budget lib",
+          "detail": "apps/backend/src/lib/container-budget.ts: reservations per mode, admit() returning fit / no-room / workspace-cap / too-big.",
+          "status": "completed"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T04",
+          "title": "Dispatcher and spawn changes",
+          "detail": "container-dispatch.service.ts; per-mode resources, workspace label, conditional status update, adopt by name.",
+          "status": "completed"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T05",
+          "title": "Move call sites from spawn to enqueue",
+          "detail": "Train, score (auto and manual), batch; cancel removes the job.",
+          "status": "completed"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T06",
+          "title": "Split inference preparation",
+          "detail": "inference-prep queue runs materialize so a slow PI fetch never blocks admission; run-now enqueues at priority 1.",
+          "status": "completed"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T07",
+          "title": "scoringQueuedAt migration and score flow",
+          "detail": "Hand-written SQL, applied by hand, never migrate dev.",
+          "status": "completed"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T08",
+          "title": "Repair sweep and runtime limits",
+          "detail": "Re-adds waiting rows with no job, fails over-long waits, kills containers past max runtime.",
+          "status": "completed"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T09",
+          "title": "Client waiting state",
+          "detail": "Waiting for compute with runs ahead; isScoring covers queued scoring.",
+          "status": "completed"
+        },
+        {
+          "id": "CONTAINER-QUEUE-001-T10",
+          "title": "Docs and live verification",
+          "detail": "Budget set to one train slot: 3 trainings drain in order, live window passes training, cancel while queued, backend restart, Redis outage, Redis unreachable from a training container. Verified with the real dispatcher, Docker and Redis (fake DB, sleeping containers): one slot FIFO, inference passing training, freed slot admits next, cancel while queued, adoption, per-mode memory cap, Redis isolation. Not yet run: a real training through the UI, backend restart mid-train, Redis outage on the full stack.",
+          "status": "in_progress"
+        }
+      ],
+      "acceptance_criteria": [
+        "No container starts unless the CPU/RAM budget has room",
+        "Priority order is live inference, score, batch, train, backfill",
+        "A queued job survives a backend restart and a Redis outage",
+        "A job is never run twice for one row",
+        "A training container cannot reach Redis"
+      ],
+      "known_gaps": [
+        "Full-stack live run not done; needs Redis configured in .env.",
+        "Batch and score reservations are extrapolated from the load+predict and fit measurements, not measured on a real batch file.",
+        "On this 7.8 GiB Docker VM only one training runs at a time."
+      ]
+    }
+  ]
+}

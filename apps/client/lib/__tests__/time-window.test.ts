@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   describePreviewWindow,
+  excludeQuery,
+  holdoutExcludeWindow,
   monthOptions,
   monthWindow,
   timeQuery,
@@ -191,5 +193,45 @@ describe('window helpers', () => {
       startTime: w.startTime,
       endTime: w.endTime,
     })
+  })
+})
+
+describe('excludeQuery / holdoutExcludeWindow (Raw vs Validation compare)', () => {
+  it('encodes the pair, and nothing for a lone bound', () => {
+    expect(
+      excludeQuery({
+        excludeStart: '2025-11-06 19:00:00',
+        excludeEnd: '2025-11-17 13:00:00',
+      }),
+    ).toBe(
+      '&excludeStart=2025-11-06%2019%3A00%3A00&excludeEnd=2025-11-17%2013%3A00%3A00',
+    )
+    expect(excludeQuery({ excludeStart: '2025-11-06 19:00:00' })).toBe('')
+    expect(excludeQuery({})).toBe('')
+  })
+
+  it('states the holdout on the artifact wall clock', () => {
+    expect(
+      holdoutExcludeWindow(
+        {
+          holdoutFrom: '2025-11-06T12:00:00.000Z',
+          holdoutTo: '2025-11-17T06:00:00.000Z',
+        },
+        null,
+      ),
+    ).toEqual({
+      excludeStart: '2025-11-06 19:00:00',
+      excludeEnd: '2025-11-17 13:00:00',
+    })
+  })
+
+  it('closes an open-ended holdout with the fallback, or gives null', () => {
+    const open = { holdoutFrom: '2025-11-06T12:00:00.000Z', holdoutTo: null }
+    expect(holdoutExcludeWindow(open, '2026-01-31 23:00:00')).toEqual({
+      excludeStart: '2025-11-06 19:00:00',
+      excludeEnd: '2026-01-31 23:00:00',
+    })
+    expect(holdoutExcludeWindow(open, null)).toBeNull()
+    expect(holdoutExcludeWindow(null, '2026-01-31 23:00:00')).toBeNull()
   })
 })

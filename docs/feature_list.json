@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "Refactor the existing Model Creation Flow to keep the current four-step user experience while separating model training, evaluation, fine-tuning, and final model persistence. Training and fine-tuning must not commit the model to the database. The model is persisted only when the user explicitly clicks Save Model in Step 4.",
   "status": "in_progress",
-  "progress": 52,
-  "progress_note": "2026-09-01: MODEL-FLOW-014 added (train/test split distribution panel + honest seed control) — denominator moves 14 -> 15, so the completed-count percentage drops from 57 to 53 (8/15) with no work regressing, the same convention every prior pass in this note uses. … 2026-09-04: MODEL-FLOW-017 completed (Step 4 actual-vs-predicted base chart) — 11/18 (61%), no regressions. Its own audit corrected five of eight ledger findings that had gone stale since MODEL-FLOW-004; see that feature's T01 for the dated append. … 2026-09-06: MODEL-FLOW-020 opened and is IN PROGRESS, not complete — its T01 audit measured the feature's own premise and found it half-unbuildable, which is the honest outcome rather than a failure. Row count across this system's 55 GOLD artifacts spans 54 to 46,070 (850x), but distinct labelled observations — the variable finding 1 establishes every capacity decision must key on — has only ever taken four values here: 19, 32, 59, 97 (5x). A grid keyed on the correct variable would therefore be near-identical on every dataset this system has seen, and the whole observable range sits below where the current bounds bind (xgboost tries n_estimators 500 / max_depth 8 against 32 independent observations today). T03 is BLOCKED as a result: its 'measured, not chosen' floors and caps cannot be measured inside that range, and writing them anyway would be the guess-wearing-a-formula its own finding 3 forbids. T01/T02/T04 are complete and T06 half-complete: both size figures are now captured on ModelCandidateJob and shown beside a past run's parameters, and Gaussian Process is refused at algorithm selection above its measured row ceiling. T05 waits on T03. Denominator moves 19 -> 20 with MODEL-FLOW-020 counted, and the completed-count percentage reads 60 (12/20) — the same convention every prior pass in this note uses; the field had been left stale at 53 since the 8/15 pass and is corrected here alongside. … 2026-09-06 (same day, continued): MODEL-FLOW-020-T03 was UNBLOCKED AND THEN CLOSED AS A MEASURED NO-OP, which is the honest outcome and not a retreat. Two things made it measurable: holdoutMetrics now populates (101 of 164 SUCCEEDED runs, MODEL-FLOW-016-T08's presign fix), giving a dependent variable that test-split RMSE never was on data with 0.9992 lag-1 autocorrelation; and a parquet-level census of every live artifact fixed the target range at 32-97 distinct labelled values. The max_depth ladder was then run on all three sizes with the real trainer image against the real holdout, and produced THREE DIFFERENT ORDERINGS of the same five settings — depth 4 best at 32 / worst at 59 / mid at 97; depth 5 worst at 32 / best at 59 / worst at 97 — with a 5-7% spread each time against within-cell SDs of 0.0002-0.0030. Capacity does not separate on this system's data, while ALGORITHM choice spans 106% and is already swept. A derived grid would fit noise, so none was built and TUNING_GRID stays the fixed table. A REAL BUG WAS FOUND AND FIXED IN THE PROCESS, owned by DS-LAKE but fixed here on the user's explicit instruction: apps/python artifact_service compared a tz-naive datetime64[us] column against a tz-aware pd.Timestamp built from the JSON-serialised holdout_from, raising TypeError that tryReplayHoldout swallowed into the generic line 'Holdout scoring skipped: Preprocessing failed'. Artifact 1ae5cc53 had scored 0 holdouts in 5 runs because of it; after the fix (_wall_clock, with a regression test that fails with the exact TypeError when reverted) that same artifact scores normally, which is what made the 97-distinct measurement possible at all. MODEL-FLOW-020 now reads T01/T02/T03/T04 complete, T06 half-complete (the GPR size refusal shipped; sizing the sweep's own hyperparameters died with T03), T05 pending on its static half only. Feature progress 75; the completed-feature count is unchanged at 12/20 (60) since MODEL-FLOW-020 is not itself finished. … 2026-09-06 (final pass): MODEL-FLOW-020 COMPLETE at 6/6 tasks. T05 and T06 both closed, each half-built and half-closed-on-evidence rather than forced. T05 shipped suggested ranges on all 28 numeric fields across 12 algorithms as advisory text under each input — never a constraint, never a warning colour, each note stating what the parameter DOES so a reader can check it. Its AC7 test survives T03's closure intact by asserting against the FIXED grid: a new client-side guard reads apps/backend/src/lib/tuning-grid.ts as source and fails if any grid value sits outside the band the form advertises, proven to bite by narrowing ridge's alpha band and watching it name the offending value. T06's derivation half is closed as an explicit no-op (no derivation exists to share), but the defect T01(d) actually found is now GUARDED: the same test asserts every key TUNING_GRID varies is a field the form shows, so the client-HYPERPARAMS / backend-TUNING_GRID split that has been agreeing only by hand-checking since MODEL-FLOW-012 can no longer drift silently. AC5 is the one criterion left open by this completion and is recorded as such rather than glossed: a too-small dataset is still not refused, because the T03 ladder found no size in 32-97 that performed measurably worse, and refusing on an unmeasured threshold is the failure AC3 exists to prevent. Completed-feature count moves to 13/20 (65). 2026-09-09: MODEL-FLOW-023 opened as BLOCKED, not in_progress -- it inherits MODEL-FLOW-019's own openDecision 9 (which seed drives the permutation), whose own text records that either answer contradicts something already shipped. Denominator moves 22 -> 23; the completed-feature count is unchanged, so the percentage falls by the same convention every prior pass in this note uses rather than because any work regressed. Three of MODEL-FLOW-019's pending verification items (V22, V23, V24) are MOVED here rather than duplicated, since all three describe permutation importance and would otherwise sit in a feature whose own T14 is superseded. MODEL-FLOW-019-T14 becomes superseded rather than blocked and that feature's own arithmetic is re-derived under MODEL-FLOW-023-T09 -- its ninth and tenth amendments both record the field going stale for exactly this reason. 2026-09-21: MODEL-FLOW-024 opened and in_progress at the user's request. It reverses MODEL-FLOW-020-T03's no-op on a corrected variable (distinct labelled values, not row count). Denominator moves 23 -> 24; nothing regressed. 2026-09-21 (later): MODEL-FLOW-024 implemented, 6 of 7 tasks completed. It stays in_progress at 86 because T07 is blocked: the live lstm/gru search (V05) and a look at the form in a real browser (V04) were not run. Completed-feature count is unchanged. 2026-09-21 (later still): MODEL-FLOW-024 gained T08 (retrain path inherits the size tier) and T09 (PLS component cap), both completed; 8 of 9 tasks done. Still in_progress at 89: T07's live lstm/gru run and a real-browser look are outstanding. Completed-feature count is unchanged. 2026-09-21: MODEL-FLOW-025 added (per-algorithm Find Best Parameters variant preview in Step 3) — denominator 24 -> 25, completed 12, progress 48. 2026-09-21: MODEL-FLOW-025 built (T01-T03 completed; T04 blocked on the real-browser look only); still in_progress at 90, so the completed-feature count is unchanged. 2026-10-08: MODEL-FLOW-028 added (Step 3 CV out-of-fold chart + fold metric scores) — denominator 27 -> 28, completed 14, progress 50. The stored 48 was already stale (14/27 = 52, MODEL-FLOW-026/027 never re-derived it); nothing regressed. 2026-10-08 (later): MODEL-FLOW-028 T01-T05 completed, T06 BLOCKED on the user building the trainer image; it stays in_progress at 83 and the completed-feature count is unchanged at 14/28. 2026-10-08 (later still): the user built trainer 1.0.21 and the default was bumped; T06 is in_progress (live run + browser look outstanding), feature at 88, count unchanged. Its first draft assumed Step 3 rendered RunComparisonPanel — it does not (see that entry's CORRECTION finding). 2026-10-08: MODEL-FLOW-029 added (CV with Find Best Parameters; CV in the normal run card) — denominator 28 -> 29, completed 14, progress 48. 2026-10-08 (later): MODEL-FLOW-029 T01-T05 completed, T06 (live run) pending; feature at 83, count unchanged. 2026-10-08: MODEL-FLOW-030 added (CV in Step 4/5, same format as normal training) — denominator 29 -> 30, completed 14, progress 47. 2026-10-08 (later): MODEL-FLOW-030 T01-T05 completed; T06 (browser look) blocked on the Chrome extension; feature at 88, count unchanged. 2026-10-08 (later): MODEL-FLOW-030 COMPLETED — T06 closed on the user's approval without a live browser look (recorded in its result); completed 15/30, progress 50. 2026-10-08: MODEL-FLOW-031 added and completed (tooltip time of day; axis labels read the stored Bangkok time) — denominator 30 -> 31, completed 16, progress 52.",
+  "progress": 46,
+  "progress_note": "2026-09-01: MODEL-FLOW-014 added (train/test split distribution panel + honest seed control) — denominator moves 14 -> 15, so the completed-count percentage drops from 57 to 53 (8/15) with no work regressing, the same convention every prior pass in this note uses. … 2026-09-04: MODEL-FLOW-017 completed (Step 4 actual-vs-predicted base chart) — 11/18 (61%), no regressions. Its own audit corrected five of eight ledger findings that had gone stale since MODEL-FLOW-004; see that feature's T01 for the dated append. … 2026-09-06: MODEL-FLOW-020 opened and is IN PROGRESS, not complete — its T01 audit measured the feature's own premise and found it half-unbuildable, which is the honest outcome rather than a failure. Row count across this system's 55 GOLD artifacts spans 54 to 46,070 (850x), but distinct labelled observations — the variable finding 1 establishes every capacity decision must key on — has only ever taken four values here: 19, 32, 59, 97 (5x). A grid keyed on the correct variable would therefore be near-identical on every dataset this system has seen, and the whole observable range sits below where the current bounds bind (xgboost tries n_estimators 500 / max_depth 8 against 32 independent observations today). T03 is BLOCKED as a result: its 'measured, not chosen' floors and caps cannot be measured inside that range, and writing them anyway would be the guess-wearing-a-formula its own finding 3 forbids. T01/T02/T04 are complete and T06 half-complete: both size figures are now captured on ModelCandidateJob and shown beside a past run's parameters, and Gaussian Process is refused at algorithm selection above its measured row ceiling. T05 waits on T03. Denominator moves 19 -> 20 with MODEL-FLOW-020 counted, and the completed-count percentage reads 60 (12/20) — the same convention every prior pass in this note uses; the field had been left stale at 53 since the 8/15 pass and is corrected here alongside. … 2026-09-06 (same day, continued): MODEL-FLOW-020-T03 was UNBLOCKED AND THEN CLOSED AS A MEASURED NO-OP, which is the honest outcome and not a retreat. Two things made it measurable: holdoutMetrics now populates (101 of 164 SUCCEEDED runs, MODEL-FLOW-016-T08's presign fix), giving a dependent variable that test-split RMSE never was on data with 0.9992 lag-1 autocorrelation; and a parquet-level census of every live artifact fixed the target range at 32-97 distinct labelled values. The max_depth ladder was then run on all three sizes with the real trainer image against the real holdout, and produced THREE DIFFERENT ORDERINGS of the same five settings — depth 4 best at 32 / worst at 59 / mid at 97; depth 5 worst at 32 / best at 59 / worst at 97 — with a 5-7% spread each time against within-cell SDs of 0.0002-0.0030. Capacity does not separate on this system's data, while ALGORITHM choice spans 106% and is already swept. A derived grid would fit noise, so none was built and TUNING_GRID stays the fixed table. A REAL BUG WAS FOUND AND FIXED IN THE PROCESS, owned by DS-LAKE but fixed here on the user's explicit instruction: apps/python artifact_service compared a tz-naive datetime64[us] column against a tz-aware pd.Timestamp built from the JSON-serialised holdout_from, raising TypeError that tryReplayHoldout swallowed into the generic line 'Holdout scoring skipped: Preprocessing failed'. Artifact 1ae5cc53 had scored 0 holdouts in 5 runs because of it; after the fix (_wall_clock, with a regression test that fails with the exact TypeError when reverted) that same artifact scores normally, which is what made the 97-distinct measurement possible at all. MODEL-FLOW-020 now reads T01/T02/T03/T04 complete, T06 half-complete (the GPR size refusal shipped; sizing the sweep's own hyperparameters died with T03), T05 pending on its static half only. Feature progress 75; the completed-feature count is unchanged at 12/20 (60) since MODEL-FLOW-020 is not itself finished. … 2026-09-06 (final pass): MODEL-FLOW-020 COMPLETE at 6/6 tasks. T05 and T06 both closed, each half-built and half-closed-on-evidence rather than forced. T05 shipped suggested ranges on all 28 numeric fields across 12 algorithms as advisory text under each input — never a constraint, never a warning colour, each note stating what the parameter DOES so a reader can check it. Its AC7 test survives T03's closure intact by asserting against the FIXED grid: a new client-side guard reads apps/backend/src/lib/tuning-grid.ts as source and fails if any grid value sits outside the band the form advertises, proven to bite by narrowing ridge's alpha band and watching it name the offending value. T06's derivation half is closed as an explicit no-op (no derivation exists to share), but the defect T01(d) actually found is now GUARDED: the same test asserts every key TUNING_GRID varies is a field the form shows, so the client-HYPERPARAMS / backend-TUNING_GRID split that has been agreeing only by hand-checking since MODEL-FLOW-012 can no longer drift silently. AC5 is the one criterion left open by this completion and is recorded as such rather than glossed: a too-small dataset is still not refused, because the T03 ladder found no size in 32-97 that performed measurably worse, and refusing on an unmeasured threshold is the failure AC3 exists to prevent. Completed-feature count moves to 13/20 (65). 2026-09-09: MODEL-FLOW-023 opened as BLOCKED, not in_progress -- it inherits MODEL-FLOW-019's own openDecision 9 (which seed drives the permutation), whose own text records that either answer contradicts something already shipped. Denominator moves 22 -> 23; the completed-feature count is unchanged, so the percentage falls by the same convention every prior pass in this note uses rather than because any work regressed. Three of MODEL-FLOW-019's pending verification items (V22, V23, V24) are MOVED here rather than duplicated, since all three describe permutation importance and would otherwise sit in a feature whose own T14 is superseded. MODEL-FLOW-019-T14 becomes superseded rather than blocked and that feature's own arithmetic is re-derived under MODEL-FLOW-023-T09 -- its ninth and tenth amendments both record the field going stale for exactly this reason. 2026-09-21: MODEL-FLOW-024 opened and in_progress at the user's request. It reverses MODEL-FLOW-020-T03's no-op on a corrected variable (distinct labelled values, not row count). Denominator moves 23 -> 24; nothing regressed. 2026-09-21 (later): MODEL-FLOW-024 implemented, 6 of 7 tasks completed. It stays in_progress at 86 because T07 is blocked: the live lstm/gru search (V05) and a look at the form in a real browser (V04) were not run. Completed-feature count is unchanged. 2026-09-21 (later still): MODEL-FLOW-024 gained T08 (retrain path inherits the size tier) and T09 (PLS component cap), both completed; 8 of 9 tasks done. Still in_progress at 89: T07's live lstm/gru run and a real-browser look are outstanding. Completed-feature count is unchanged. 2026-09-21: MODEL-FLOW-025 added (per-algorithm Find Best Parameters variant preview in Step 3) — denominator 24 -> 25, completed 12, progress 48. 2026-09-21: MODEL-FLOW-025 built (T01-T03 completed; T04 blocked on the real-browser look only); still in_progress at 90, so the completed-feature count is unchanged. 2026-10-08: MODEL-FLOW-028 added (Step 3 CV out-of-fold chart + fold metric scores) — denominator 27 -> 28, completed 14, progress 50. The stored 48 was already stale (14/27 = 52, MODEL-FLOW-026/027 never re-derived it); nothing regressed. 2026-10-08 (later): MODEL-FLOW-028 T01-T05 completed, T06 BLOCKED on the user building the trainer image; it stays in_progress at 83 and the completed-feature count is unchanged at 14/28. 2026-10-08 (later still): the user built trainer 1.0.21 and the default was bumped; T06 is in_progress (live run + browser look outstanding), feature at 88, count unchanged. Its first draft assumed Step 3 rendered RunComparisonPanel — it does not (see that entry's CORRECTION finding). 2026-10-08: MODEL-FLOW-029 added (CV with Find Best Parameters; CV in the normal run card) — denominator 28 -> 29, completed 14, progress 48. 2026-10-08 (later): MODEL-FLOW-029 T01-T05 completed, T06 (live run) pending; feature at 83, count unchanged. 2026-10-08: MODEL-FLOW-030 added (CV in Step 4/5, same format as normal training) — denominator 29 -> 30, completed 14, progress 47. 2026-10-08 (later): MODEL-FLOW-030 T01-T05 completed; T06 (browser look) blocked on the Chrome extension; feature at 88, count unchanged. 2026-10-08 (later): MODEL-FLOW-030 COMPLETED — T06 closed on the user's approval without a live browser look (recorded in its result); completed 15/30, progress 50. 2026-10-08: MODEL-FLOW-031 added and completed (tooltip time of day; axis labels read the stored Bangkok time) — denominator 30 -> 31, completed 16, progress 52. 2026-10-19: MODEL-FLOW-035 added (two-round training) — denominator 34 -> 35, completed 16, progress 46.",
   "decisions": {
     "draft_persistence": {
       "chosen": "B — ModelDraft as a database entity",
@@ -4304,6 +4304,514 @@
         "V01: PASSED — formatter and tooltip tests under three timezones; full client regression under two, no new failures vs a clean HEAD.",
         "V02: NOT DONE — a look in a real browser (the Chrome extension was not connected)."
       ]
+    },
+    {
+      "id": "MODEL-FLOW-032",
+      "title": "Create dataset from Create Model Step 1, returning with it selected",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-FLOW-010"
+      ],
+      "description": "User request 2026-10-12: add Create Dataset to Create Model Step 1's Select a dataset section. The button opens Data Studio's existing Create Dataset dialog with the model's workspace pre-filled and locked, seeds the Data Studio wizard the same way Data Studio does, and after Save returns to /models/create?newDatasetId=... with Step 1 (name, description, workspace, plant, node) restored and the new dataset selected.",
+      "userDecisions": [
+        "BEHAVIOR (2026-10-12): full round trip chosen. Offered and declined: open Data Studio in a new tab plus a Refresh button; a plain link that drops Step 1 input."
+      ],
+      "findings": [
+        "Create mode resets the wizard on mount (useModelWizardMode) and no ModelDraft exists at Step 1, so the Step 1 form travels in sessionStorage (lib/model-create-handoff.ts, mirroring lib/retrain-handoff.ts); the dataset id rides back as a query param.",
+        "Save Model persistence boundary unchanged: nothing here writes a Model or ModelDraft row.",
+        "Stale-intent guards: Step 6 honors the intent only in create mode and only after a waiting retrain handoff; Data Studio's own Create Dataset entry and any plain /models/create visit clear it."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-032-T01",
+          "title": "lib/model-create-handoff.ts (remember/peek/consume/clear + return URL)",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T02",
+          "title": "hooks/dataset/use-model-create-dataset-handoff.ts seeds the dw* wizard and navigates",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T03",
+          "title": "DatasetPicker Create dataset button + empty-state CTA; Phase1Details wires the dialog (create mode only)",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T04",
+          "title": "CreateDatasetDialog: optional defaultWorkspaceId + lockWorkspace",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T05",
+          "title": "Step 6 Save returns to /models/create?newDatasetId=; useModelWizardMode restores Step 1 and selects the dataset",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-032-T06",
+          "title": "Live browser round trip",
+          "status": "pending",
+          "detail": "Not run: Chrome extension was not connected on 2026-10-12."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Create dataset is visible on Step 1 in create mode, disabled with no workspace, absent in edit mode",
+        "After Save in Data Studio the user lands on Step 1 with their inputs restored and the new dataset selected",
+        "A retrain handoff, an edit-save, or a dataset started from Data Studio is never redirected to Create Model"
+      ],
+      "verification": [
+        "vitest: lib/__tests__/model-create-handoff.test.ts (5), hooks/model/__tests__/use-model-wizard-mode-dataset-return.test.tsx (6), pipeline/__tests__/dataset-picker-create.test.tsx (4), step-6-review-save.test.tsx (+3) — all pass",
+        "tsc --noEmit clean; full client suite 25 failures identical on clean HEAD (pre-existing, 9 unrelated files)",
+        "PENDING: live round trip in the browser"
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-033",
+      "title": "Add Extra Trees (sklearn ExtraTreesRegressor) as a training algorithm",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 95,
+      "dependencies": [
+        "MODEL-FLOW-024"
+      ],
+      "description": "New algorithm id `extra_trees`, label 'Extra Trees'. Same five knobs as random_forest (n_estimators, max_depth, max_leaf_nodes, min_samples_leaf, min_samples_split) and random_state=seed; bootstrap left at sklearn's default (False), not exposed.",
+      "userDecisions": [
+        "2026-10-15: user asked for ExtraTreesRegressor and said go on the read-first report; bootstrap kept at sklearn default (not exposed), not asked back."
+      ],
+      "findings": [
+        "Serving needs no change: it joblib-loads model.joblib and pins the same scikit-learn 1.5.2 as the trainer; no algorithm allowlist there.",
+        "Algorithm is a plain String column in Prisma: no migration.",
+        "The trainer only knows the new id after an image rebuild; CI builds but does not push, and docker.io is unreachable from Claude's shell, so the user builds it."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-033-T01",
+          "title": "Trainer: build_model branch, impurity importance, tests",
+          "status": "completed",
+          "result": "images/trainer/app/models.py extra_trees branch; importance.py _IMPURITY_ALGORITHMS; test_train.py (2 build tests + closed-form loss-history loop), test_importance.py (1). Trainer suite 89/89 inside scgc/soft-sensor-trainer:1.0.22 with the source mounted."
+        },
+        {
+          "id": "MODEL-FLOW-033-T02",
+          "title": "Backend: TrainingAlgorithmEnum, tuning grid (medium + tiny/small/large), read-live spec header",
+          "status": "completed",
+          "result": "Grid rows copied from random_forest (declared priors, not tuned for extra trees). tuning-grid.spec 89/89; tsc clean. model-run controller spec 'should be defined' fails, as it did before this change."
+        },
+        {
+          "id": "MODEL-FLOW-033-T03",
+          "title": "Client: Algorithm union/list/label, hyperparam form, run-params, ranges, sweep list",
+          "status": "completed",
+          "result": "store/model-pipeline, services/model-draft, lib/training-config, lib/run-params (+SEED list), lib/hyperparam-ranges, feature-count-sweep-launcher; training-config and run-params read-live tests updated. tsc and eslint clean. Full client suite: the same 25 pre-existing failures, none new."
+        },
+        {
+          "id": "MODEL-FLOW-033-T04",
+          "title": "Image 1.0.23 built by the user, contents verified, imageRef bumped, one live Extra Trees training run",
+          "status": "in_progress",
+          "result": "2026-10-15: user built scgc/soft-sensor-trainer:1.0.23 (6a078a741f27). Verified: the image's own /workspace/images/trainer/app/models.py has the extra_trees branch and importance.py lists it; with the baked code (no mount) build_model('extra_trees') fit an ExtraTreesRegressor and extract_feature_importance returned method 'impurity'; trainer suite 89/89 inside 1.0.23. imageRef bumped to 1.0.23 (trainning-container spec 13/13). LIVE 2026-10-15 02:25-02:26 UTC: the user trained through the app; 5 extra_trees ModelTrainingRun rows SUCCEEDED (only image 1.0.23 knows the id, so they ran on it), each with featureImportanceKey set and no loss history (expected, same as random_forest). NOT DONE: no extra_trees ModelVersion exists yet, so Save Model and a predict through serving are unverified."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Extra Trees is selectable in Step 2 with the same five settings as Random Forest.",
+        "A run trains an ExtraTreesRegressor, reports impurity feature importance, and the saved model serves."
+      ],
+      "verification": [
+        "Trainer suite in-image incl. extra_trees tests (done).",
+        "Backend tuning-grid read-live spec (done).",
+        "Client run-params / training-config read-live tests (done).",
+        "Live: one Extra Trees run on image 1.0.23 to SUCCEEDED, then predict through serving (pending)."
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-034",
+      "title": "Remove Histogram Gradient Boosting (hist_gradient_boosting) as a training algorithm",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-FLOW-033"
+      ],
+      "description": "User asked (2026-10-15) to check and delete the Histogram Gradient Boosting model. Removed from the trainer, the API enum, the tuning grid and every client catalogue; stored history still reads by name.",
+      "userDecisions": [
+        "2026-10-15: 'check and delete Histogram gradient boosting model'."
+      ],
+      "findings": [
+        "Local DB 2026-10-15: 0 ModelVersion rows and 0 ModelDraft.algorithm use it, so no saved model, serving path or retrain depends on it. 8 SUCCEEDED ModelTrainingRun rows (draft history) do.",
+        "Every client display site already falls back to the raw id; a RETIRED label map in store/model-pipeline keeps those 8 runs reading 'Histogram Gradient Boosting (retired)'.",
+        "Draft resume filters unknown ids through isAlgorithm, so a stored selection cannot re-enter the wizard; a direct API call with it now gets a 400 from TrainingAlgorithmEnum.",
+        "Prisma and python schema doc comments still name it: they describe stored historical values, not offered ones. No migration (algorithm is a String column)."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-034-T01",
+          "title": "Trainer: remove build_model branch, loss-history branch, tests",
+          "status": "completed",
+          "result": "models.py (branch + import), metrics.py (hgb loss branch), importance.py comment; removed the 2 hgb loss-history tests, added a parametrized test that both 'hist_gradient_boosting' and 'hgb' raise Unsupported algorithm. Suite 89/89 with the source mounted in 1.0.23."
+        },
+        {
+          "id": "MODEL-FLOW-034-T02",
+          "title": "Backend: enum, tuning grid (4 tiers), spec header and capacity case",
+          "status": "completed",
+          "result": "tsc clean; tuning-grid + model-run specs 333/334 (the 1 is the model-run controller 'should be defined' spec, failing before this change)."
+        },
+        {
+          "id": "MODEL-FLOW-034-T03",
+          "title": "Client: Algorithm union/list, model-draft union, training-config, run-params (+seed list), hyperparam-ranges, sweep list, tests",
+          "status": "completed",
+          "result": "tsc and eslint clean; full client suite the same 25 failures in the same 9 files as before this change, none new."
+        },
+        {
+          "id": "MODEL-FLOW-034-T04",
+          "title": "Trainer image rebuild",
+          "status": "pending",
+          "result": "Optional, not urgent: the running image 1.0.23 still has the hgb branch, but nothing can reach it because the API refuses the id. The source and image differ until the next build (see the trainer-image-drift rule)."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Histogram Gradient Boosting is not offered in Step 2 and the API refuses it.",
+        "Existing runs trained with it still display by name."
+      ],
+      "verification": [
+        "Trainer, backend and client suites as above (done).",
+        "Live: Step 2 algorithm list has no Histogram Gradient Boosting (pending, needs the app running)."
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-035",
+      "title": "Two-round training: train every algorithm once, then fine-tune the one the user picks; Loss (RMSE|MAE) ranks and displays runs with R² beside it",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-FLOW-005",
+        "MODEL-FLOW-025",
+        "MODEL-FLOW-026",
+        "MODEL-FLOW-029"
+      ],
+      "description": "Step 3 becomes two explicit rounds. Round 1 trains every selected algorithm once with its card values. The user then picks which run to fine-tune (the best preselected) and runs a hyperparameter search for that algorithm from a variants table below Run parameters. Loss function offers RMSE and MAE only and decides how runs are ranked and displayed; Run parameters shows R² beside it. Steps 1-2 are unchanged.",
+      "userDecisions": [
+        "2026-10-19: 'We will train all model first to find best model by 1 hyperparameters set in 1 algorithm and then the best algorithm that user decision to fine tune like hyperparameters variants (table)'.",
+        "2026-10-19: Run params shows R² together with the RMSE/MAE chosen in Loss function; Loss function offers only RMSE and MAE.",
+        "2026-10-19: Loss drives ranking + display (Run params, best badge, sort, Step 4 Recommended, backend bestRunId), not the estimator objective.",
+        "2026-10-19: best run preselected, user may switch; fine-tune stage lives in Step 3 below Run params; Round 1 uses card values only (added rows + Find Best Parameters move to the fine-tune stage).",
+        "Reverses the 2026-10-14 behaviour where Find Best Parameters on 2+ algorithms auto-tuned the winner (SWEEP_THEN_TUNE).",
+        "2026-10-19 (later): keep the name 'Find Best Parameters' for the curated-variants switch, and place the fine-tune section directly under Algorithm & hyperparameters (not below Run parameters) — Run parameters grows with every run, so the old spot meant a long scroll.",
+        "2026-10-19 (later still): ONE Start button for both rounds; a Fine-tune switch decides what it does (off = train every algorithm once, on = fine-tune the picked run). Fine-tune lives INSIDE the Algorithm & hyperparameters section (layout A chosen over two sections); the algorithm cards fold to a summary while it is on.",
+        "2026-10-19: Phase 4 (Model Selection) shows ONE table with every model and its metric scores, whichever training or container produced it (no Sweep / Tuning / Earlier runs split), and the Test-split / out-of-fold / Validate charts get a filter to draw only chosen models."
+      ],
+      "findings": [
+        "Every run already records r2, rmse, mae and cv_{key}_mean/std (images/trainer/app/metrics.py) — R² display and MAE ranking need no trainer change.",
+        "Backend ranking is hard-wired to RMSE: extractRmse + isBetter in model-candidate-job.authorized.service.ts; ModelCandidateJob has only bestRunId/bestRmse. MAE ranking needs a rankingMetric column.",
+        "Saved configs can hold lossFunction 'r2'; normaliseLossFunction must alias it to 'rmse'.",
+        "MODEL-FLOW-005 defined fine-tuning as a one-algorithm HYPERPARAMETER_SEARCH; Round 2 reuses that job kind and VariantPreview (MODEL-FLOW-025/026) unchanged.",
+        "Step 4 Recommended is per job: after Round 2 it marks Round 2's best; Round 1 runs stay in the 'earlier' group. A tuned non-winner can leave the Round 1 winner unbadged — accepted."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-035-T01",
+          "title": "LOSS_OPTIONS = RMSE|MAE; alias legacy 'r2' -> 'rmse'; helper text says it ranks and displays; update training-config tests",
+          "status": "completed",
+          "result": "LOSS_OPTIONS = RMSE|MAE; legacy 'r2' aliased to 'rmse'; helper text rewritten; training-config.test 'r2' alias case + options pin updated."
+        },
+        {
+          "id": "MODEL-FLOW-035-T02",
+          "title": "Run params card headline shows the loss metric + R² (CV mean ± std); sort key 'score' labelled by loss; best badge title names the metric; pure helper in lib/run-params.ts with tests",
+          "status": "completed",
+          "result": "lib/run-params.ts: ScoreMetric, scoreMetricOf, runHeadlineOf (CV mean ± std), runSortLabel, sortRuns 'score' key; RunCard header shows the loss metric + R². run-params.test 32 cases (6 new)."
+        },
+        {
+          "id": "MODEL-FLOW-035-T03",
+          "title": "Backend: ModelCandidateJob.rankingMetric (default 'rmse') via hand-written SQL; DTO enum rmse|mae optional; extractScore + isBetter by the job metric; bestRmse still the winner's RMSE; prisma dist rebuild; service + DTO specs",
+          "status": "completed",
+          "result": "Column ModelCandidateJob.rankingMetric TEXT NOT NULL DEFAULT 'rmse': migration 20261019100000_model_flow_035_ranking_metric written by hand and applied to the local docker DB (column absent beforehand, NOT recorded in _prisma_migrations); packages/prisma rebuilt. DTO enum rmse|mae optional; extractScore + isBetter read the incumbent run's metrics for non-RMSE; bestRmse still the winner's RMSE. Job spec 74/74 (8 new: schema accept/refuse, createJob default, MAE win, MAE keep, first run, CV mae, rmse path unchanged)."
+        },
+        {
+          "id": "MODEL-FLOW-035-T04",
+          "title": "Client sends rankingMetric from the loss setting; Step 4 recommendedBasis and initial sort follow job.rankingMetric; Run params bestTitle likewise",
+          "status": "completed",
+          "result": "Client sends rankingMetric from the Loss function; Step 4 recommendedBasis (rankingBasisText) and initial sort follow job.rankingMetric; Run params best badge title names the job's metric (old wording kept)."
+        },
+        {
+          "id": "MODEL-FLOW-035-T05",
+          "title": "Round 1: planTrainingLaunch trains card values only (single or ALGORITHM_SWEEP); remove per-card VariantPreview and AutoMlToggles from the Round 1 section; runtime estimate prices one fit per algorithm; table tests updated",
+          "status": "completed",
+          "result": "planTrainingLaunch: card values only (single or ALGORITHM_SWEEP). Per-card VariantPreview and AutoMlToggles (file deleted with its test) removed; Phase 3 no longer prices variants. training-launch.test 14 cases. The persisted findBestParams / extraVariants atoms remain (hydration, commit, Apply still read them) but Start Training ignores both."
+        },
+        {
+          "id": "MODEL-FLOW-035-T06",
+          "title": "Fine-tune section below Run params: run picker (best preselected, mpFineTuneSourceRunIdAtom), sanitised base from the chosen run, VariantPreview direct/manual, curated-variants toggle (findBestParams), runtime estimate, comparability guard, Fine-tune button",
+          "status": "completed",
+          "result": "training-config/fine-tune-section.tsx below Run parameters: run picker (best preselected, mpFineTuneSourceRunIdAtom), sanitised base (lib/fine-tune.ts fineTuneBaseFor), curated-variants toggle (mpFineTuneUseGridAtom, not Apply-gated), VariantPreview direct/manual, runtime estimate, comparability guard (fineTuneBlockReason). fine-tune-section.test 8 cases; lib/fine-tune.test 10 cases. Revised same day: switch relabelled Find Best Parameters (refusal reads 'turn on Find Best Parameters'), section moved under Algorithm & hyperparameters, dirty refusal reworded to 'Apply or discard the unapplied changes first.' (the Apply bar is now below it); fine-tune-section.test 9 cases. Revised again: state lifted into hooks/model/use-fine-tune.ts (shared by the panel and Step 3's single Start button); mpFineTuneEnabledAtom (default off) picks the round; the panel is a sub-panel of Algorithm & hyperparameters with no button of its own; AlgorithmStackSummary replaces the cards while fine-tuning (Edit turns it off); the button reads 'Start Fine-tune' and the runtime estimate prices the search. fine-tune-section.test 8 cases (hook + panel), phase-3-training-config.test 7 (2 new). BUG FIXED (user report 'can't use fine tune when trained model'): useFineTune's own useDraftRuns copy was fetched once on mount and never refetched, so a run finishing after Step 3 mounted never reached it and the Fine-tune switch stayed disabled. Now refetches on every mpTrainStateAtom transition (RunParamsPanel's rule). Regression test hooks/model/__tests__/use-fine-tune.test.tsx fails without the fix, passes with it. Revised (user request 2026-10-19): the run dropdown became Round 1-style algorithm cards (radiogroup, one per trained algorithm = its best run via lib/fine-tune.ts fineTuneChoicesFor, best preselected, 'best of N runs' when an algorithm has several); the open card shows DynamicHyperparameters at the run's values, edits kept per run in mpFineTuneBaseEditsAtom and laid over the run's values as the fine-tune base."
+        },
+        {
+          "id": "MODEL-FLOW-035-T07",
+          "title": "planFineTuneLaunch (pure, table-tested) + use-model-training split into launch(plan) / start() / startFineTune(); HYPERPARAMETER_SEARCH with nSplits when CV is on",
+          "status": "completed",
+          "result": "planFineTuneLaunch (table-tested) + use-model-training split into launch(plan)/start()/fineTune(); HYPERPARAMETER_SEARCH with nSplits when CV is on. use-model-training.test 26 cases (rewritten for the new shapes; SWEEP_THEN_TUNE no longer sent)."
+        },
+        {
+          "id": "MODEL-FLOW-035-T08",
+          "title": "Step 4 across both rounds: Round 2 job's Recommended, Round 1 runs in the earlier group and selectable; regression tests",
+          "status": "completed",
+          "result": "By reading, not a new test: Step 4 already lists runs outside the current job as 'Earlier runs' (candidate-comparison.tsx) and badges the CURRENT job's bestRunId, so after Round 2 the Recommended mark is Round 2's best and Round 1 runs stay selectable. Existing phase-4-model-selection cases cover the earlier-runs group; 4 of that file's cases fail at HEAD too. REVISED by user request: CandidateComparison now merges the job's candidates and earlier runs into ONE CandidateTable (ranked together; rows from an earlier training carry 'Earlier training — may use another split or configuration.', old phase-2 rows 'Tuning'). New model-selection/candidate-charts.tsx (shared by job + standalone paths) renders the own-population and Validate overlays with a 'Show in charts' chip filter (succeeded models only, never hides the last one, table unaffected); labels/colours fixed via lib/chart-model-filter.ts so hiding a model never repaints another. Standalone path keeps its per-target grouping (different targets cannot share one actual line). Tests: lib/chart-model-filter.test 5; phase-4-model-selection.test 61 cases, 57 pass, the 4 failing are the HEAD-baseline ones (same messages)."
+        },
+        {
+          "id": "MODEL-FLOW-035-T09",
+          "title": "Verification: check-types, lint, client/backend suites with case counts; live run of Round 1 -> pick -> Round 2 -> Step 4 (browser check may be blocked)",
+          "status": "in_progress",
+          "result": "Done: client tsc clean; backend tsc + eslint clean; backend job spec 74/74. Client full run 25 failed / 3342 passed — the identical 25 fail at HEAD in a detached worktree (core-config Seed x7, feature-count-sweep x8, phase-4 x4, chart-time-axis, model-selection-contract, model-detail-dialog x2, monitoring x2, and the store/useAtom file). Also failing at HEAD: model-run controller 'should be defined' (RunTokenGuard DI). NOT done: live Round 1 -> pick -> Round 2 -> Step 4 (app not running, browser extension unused)."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Loss function offers exactly RMSE and MAE; a saved config with 'r2' opens as RMSE.",
+        "Each Run parameters card shows the selected loss metric and R² (CV runs: mean ± std).",
+        "Start Training trains each selected algorithm exactly once with its card values; no added rows or curated grid in Round 1.",
+        "After Round 1 the fine-tune section preselects the best run by the selected metric and lets the user pick any succeeded run.",
+        "Fine-tune runs a HYPERPARAMETER_SEARCH for the chosen algorithm only, from the chosen run's (sanitised) hyperparameters plus the variants table; it is refused while the form is dirty or the run's target/split differ from the applied config.",
+        "The backend picks bestRunId by the job's rankingMetric (rmse default; retrain unchanged).",
+        "Step 4 ★ Recommended and its basis text follow the job's ranking metric.",
+        "No Model row is written by either round; Save Model remains the only final commit."
+      ],
+      "verification": [
+        "Client: training-launch, run-params, run-params-panel, phase-3-training-config, training-config, candidate-comparison tests pass — record case counts.",
+        "Backend: model-candidate-job service + DTO specs pass with MAE and CV-MAE cases — record case counts.",
+        "pnpm check-types and pnpm lint clean.",
+        "Live: Round 1 with 2 algorithms -> pick non-winner -> fine-tune with grid + 1 row -> Step 4 shows Round 2 Recommended and Round 1 runs in earlier group (PENDING: app not running; not verified)."
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-036",
+      "title": "Step 3 order: Algorithm -> Core configuration -> Fine-tune -> ONE Start button (Start Training / Start Fine-tune) -> Run parameters",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-FLOW-035"
+      ],
+      "description": "Recompose Step 3 so the sections follow the user's decisions: pick algorithm(s) + card values first (they gate CV, seed and split stats), then core configuration, then train the base models (Run parameters right below), then fine-tune the picked run from its own section with its own Start Fine-tune button. Pure client recomposition of existing components; no backend, trainer, store schema or planner change. Save Model stays the only final commit.",
+      "userDecisions": [
+        "2026-10-22: layout B — Fine-tune is the LAST section with its own Start Fine-tune button. Supersedes MODEL-FLOW-035's 'layout A, inside Algorithm & hyperparameters, ONE Start button'.",
+        "2026-10-22: hyperparameter fields stay on the algorithm cards (AlgorithmStack unchanged).",
+        "2026-10-22 (later the same day): Train and Fine-tune are ONE button again (label = mode: 'Start Training' / 'Start Fine-tune'), and a second training press stays 'Start Training', never 'Retrain'. Supersedes the two-Start layout B above; Fine-tune stays its own section, now directly above the button.",
+        "2026-10-22: the Fine-tune section's algorithm cards fold/unfold like the algorithm selector's cards, to save space."
+      ],
+      "findings": [
+        "Split stats need an applied target (use-artifact-split-stats enabled requires targetY); target is set only in Step 3, so with Algorithm first, GPR's size check (ineligibleReason, grp only) is unknown until the target is applied.",
+        "Existing gap kept out of scope: CV is disabled with 2+ algorithms, so a fine-tune after a multi-algorithm Round 1 can never cross-validate."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-036-T01",
+          "title": "Extract the Runtime estimate + Start button + status lines block into training-config/training-actions.tsx (TrainingActions); no new UI",
+          "status": "completed",
+          "result": "DONE 2026-10-22. training-config/training-actions.tsx: the old phase-3 L289-374 block (Timer heading, RuntimeEstimate, Start button, refusal/dirty/log/error/done lines) moved as-is, plus `owner` (only the owner shows progress/log/error/done; a non-owner says 'Training in progress…'). training-actions.test.tsx 5 cases."
+        },
+        {
+          "id": "MODEL-FLOW-036-T02",
+          "title": "phase-3: reorder to Algorithm -> Core config (+ split panel, Apply bar) -> Train base models (+ Run parameters) -> Fine-tune; drop AlgorithmStackSummary branch; two buttons with own refusals; progress shown only in the launching section",
+          "status": "completed",
+          "result": "DONE 2026-10-22. phase-3-training-config.tsx order: Algorithm & hyperparameters (AlgorithmStack, always — the AlgorithmStackSummary branch is gone) -> Core configuration (CoreConfig + SplitDistributionPanel, props unchanged) -> Apply bar -> TrainingActions 'Train base models' (training.start, launchRefusal) -> RunParamsPanel -> FineTuneSection -> TrainingActions 'Fine-tune' (rendered while fineTune.active; training.fineTune(fineTune.input), fineTune.refusal). canStart shared; canTrainBase / canFineTune split. launchedBy useState('base'|'fineTune') picks the owner, defaults to 'base' after reload/resume. [SUPERSEDED IN PART by T07: back to one Start button; launchedBy removed.]"
+        },
+        {
+          "id": "MODEL-FLOW-036-T03",
+          "title": "Copy: fine-tune-section strings name Start Fine-tune; phase-3 done line says 'below'; delete AlgorithmStackSummary",
+          "status": "completed",
+          "result": "DONE 2026-10-22. fine-tune-section.tsx: 'Start Fine-tune tunes the model picked below…' / 'Turn on to tune one of the trained models.'; header comment rewritten. Base done text: 'Training complete — compare the runs below, then fine-tune one or continue to Model Selection.' AlgorithmStackSummary deleted (no consumer left; it had no test of its own). [SUPERSEDED IN PART by T07: AlgorithmStackSummary restored; switch-off text again says what Start Training does.]"
+        },
+        {
+          "id": "MODEL-FLOW-036-T04",
+          "title": "AlgorithmStack: grp item shows 'Size check runs once a target is applied.' while trainLabelledRows is null",
+          "status": "completed",
+          "result": "DONE 2026-10-22. Wording changed from the plan: 'Size not checked until a target and train/test split are applied.' — train_labelled_rows is null in CV mode even with a target, so 'once a target is applied' would have been false there. algorithm-stack.test +1 case, +1 assertion."
+        },
+        {
+          "id": "MODEL-FLOW-036-T05",
+          "title": "Tests: phase-3 order + launching-section progress + Start Fine-tune; fine-tune-section copy; algorithm-stack summary removed + grp hint; training-actions",
+          "status": "completed",
+          "result": "DONE 2026-10-22. phase-3-training-config.test: the 035 one-Start block replaced by 4 cases (section order via compareDocumentPosition; switch disabled + no Start Fine-tune before a run; Fine-tune on adds Start Fine-tune after Start Training while the cards stay; a run in flight shows progress in exactly one section). fine-tune-section.test copy updated. Four suites: 47/47."
+        },
+        {
+          "id": "MODEL-FLOW-036-T06",
+          "title": "Verification: case counts, full client suite vs the 25 HEAD failures, check-types, lint; live browser run if available",
+          "status": "in_progress",
+          "result": "PARTIAL 2026-10-22. Client tsc clean; eslint clean on all changed files. Four suites 47/47 (phase-3 9, fine-tune-section + algorithm-stack 33, training-actions 5). Full client run: 27 failed / 3398 passed, 11 files. 25 are the known HEAD failures listed in MODEL-FLOW-035-T09 (core-config Seed x7, feature-count-sweep x8, phase-4 x4, chart-time-axis, model-selection-contract, model-detail-dialog x2, monitoring x2, store/useAtom file). The other 2 (retrain-validation-window timeout, use-dataset-edit-hydration) import none of the changed files and pass in isolation (21/21) — load-flaky. NOT done: live browser check (dev server up on :3000, Claude browser extension not connected)."
+        },
+        {
+          "id": "MODEL-FLOW-036-T07",
+          "title": "One Start button for both rounds; no 'Retrain' label; order Algorithm -> Core -> Fine-tune -> Start -> Run params",
+          "status": "completed",
+          "result": "DONE 2026-10-22. Design by Laws of UX (DESIGN_SYSTEM.md §12) + 'buttons name the action': Hick — one primary action in Step 3 (footer owns Next); Proximity/Common Region — Fine-tune (the last input) sits directly above the Start it arms, Run parameters (the output) below it; Fitts — the button never moves between rounds; Tesler — the switch text states what Start does in each mode; Run-1 scores already sit on the fine-tune choice cards, so picking needs no scroll to Run parameters. TrainingActions lost owner/title (one caller); launchedBy removed; AlgorithmStackSummary restored from HEAD (cards fold while fine-tuning — Start reads none of them). phase-3 test: 036 block = order + exactly one /^Start / button, switch disabled before a run, switch toggles Start Training <-> Start Fine-tune with summary/Edit, done state still 'Start Training' (no Retrain). training-actions test 5 cases. Run: training-config/__tests__ + phase-3 + hooks/model 312 passed, 7 failed = core-config Seed x7 (known HEAD failure). tsc clean; eslint 0 errors (warnings only in untouched core-config/run-params-panel/runtime-estimate)."
+        },
+        {
+          "id": "MODEL-FLOW-036-T08",
+          "title": "Fine-tune choice cards collapse/expand on a chevron like AlgorithmStack's cards",
+          "status": "completed",
+          "result": "DONE 2026-10-22. fine-tune-section.tsx: collapsedId state in FineTuneSection; ChoiceCard gains expanded/onToggle and a chevron button styled exactly like AlgorithmCard's (h-8 w-8, ChevronDown rotate-180, aria-expanded + aria-controls, label 'Hide/Show <algorithm> hyperparameters'). The radio and the chevron are separate controls (a radio cannot carry aria-expanded). Only the picked card has fields, so only it has a chevron; others keep an aria-hidden h-8 w-8 spacer so score columns align. Picking a card opens it (setCollapsedId(null)), even after a fold; folding never changes the picked run. fine-tune-section.test +2 cases (fine-tune-section 12, phase-3 9: 21/21). tsc clean, eslint clean."
+        }
+      ],
+      "acceptanceCriteria": [
+        "Step 3 order: Algorithm & hyperparameters, Core configuration, Fine-tune, the one Start button, Run parameters.",
+        "One Start button: 'Start Training' trains every selected algorithm once with card values; with Fine-tune on it reads 'Start Fine-tune' and tunes the picked run.",
+        "A second press after a finished run still reads 'Start Training' (no 'Retrain').",
+        "The button is disabled while a run is in flight or while edits are unapplied, and shows the current mode's refusal.",
+        "No component is duplicated."
+      ],
+      "verification": [
+        "Client: fine-tune-section 12 + phase-3 9 — 21/21 after T08 (2026-10-22).",
+        "Client: phase-3 + training-config/__tests__ + hooks/model — 312 passed; only core-config Seed x7 fail (known at HEAD) (2026-10-22).",
+        "Client tsc clean; eslint 0 errors on changed files (2026-10-22).",
+        "Live: Round 1 -> Fine-tune via the same button on /models/create (PENDING: Claude browser extension not connected)."
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-037",
+      "title": "Evaluation charts close a cut-out gap: row-order x-axis with a dashed line where rows are not adjacent in time",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": [
+        "MODEL-FLOW-030"
+      ],
+      "description": "User 2026-11-03: in Step 5, when a validation range was cut out of the middle of the dataset, the Actual vs Predicted chart left an empty stretch where the data was removed (time x-axis; connectNulls drew one long segment across it). Now Step 5's Actual vs Predicted and Residuals over time charts, and the Model Selection test-split card, use a SEQUENCE axis (row order): the stretch closes, a dashed grey line marks each place the rows are not adjacent (step > 3x the median step), ticks and tooltip still show each row's real time, and Step 5 captions the cut ranges. 2026-11-04 (user): the Retrain tab's Actual vs Predicted and Residuals charts use the SEQUENCE axis too (retrain-charts.tsx passes axis=\"sequence\" and captions it), so a held-out month in the middle of the new-data window no longer leaves an empty stretch. Monitoring keeps the time axis.",
+      "userDecisions": [
+        "2026-11-03: dashed line at each cut.",
+        "2026-11-03: Step 5 (both charts) + Model Selection test-split chart."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-037-T01",
+          "title": "lib/chart-gaps.ts: sequenceAxis + indexAtOrAfter (+ tests)",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-03. 7/7: even rows no gap; one cut -> one gap with its from/to; downsampled-even no false gap; repeated timestamp; <3 rows; fold-cut mapping."
+        },
+        {
+          "id": "MODEL-FLOW-037-T02",
+          "title": "ActualVsPredictedChart + ResidualChart axis prop; tooltip reads the row's own time; panel caption; candidate card",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-03. tsc, eslint, prettier clean. models/create + models/[id] suites: the only failures are the 5 known baseline files (feature-count-sweep, core-config, phase-4-model-selection, chart-time-axis 'score 2 candidates' button, model-selection-contract)."
+        },
+        {
+          "id": "MODEL-FLOW-037-T03",
+          "title": "Live check in a browser: Step 5 of a draft with a mid-range holdout",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Expect no empty stretch, one dashed line per cut, real times on ticks and tooltip, caption naming the cut range, zoom still working. Not run."
+        }
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-038",
+      "title": "Find Best Parameters becomes a real sklearn GridSearchCV; the grid editor is plain text boxes, not number inputs",
+      "priority": "high",
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-FLOW-035",
+        "MODEL-FLOW-036"
+      ],
+      "description": "Fine-tune > Find Best Parameters used to run a hand-picked shortlist (TUNING_GRID, 4 variants) as one Docker container per variant. For a TABULAR algorithm it is now ONE trainer run that does GridSearchCV(refit=False) over the full cartesian paramGrid, then runs the winning combination through the normal strategy (cv_expanding / chronological) so metrics, OOF, holdout, importance and model.joblib are produced as for any run. Backend declares a default size-tiered PARAM_GRID per algorithm (GET /authorized/training/param-grid/:algorithm); the user edits VALUES per key in Step 3 with a live 'N combinations x k folds = M fits' count, capped at 64 combinations / 10 values per key (server is the authority: validateParamGrid). CV runs score on the same expanding folds cv_expanding reports; Train/Test runs score on one chronological fold cut where chronological.run cuts. Step 4 shows the one winner run plus a ranked table of every combination (grid_search_results.json). lstm/gru keep the curated per-variant job unchanged (SequenceRegressor is not sklearn-clonable). Retrain page (model-retrain) keeps TUNING_GRID / expandSearchCandidates. Persistence unchanged: draft-owned training, no Model commit; Save Model stays the only final commit.",
+      "userDecisions": [
+        "2026-11-03: one trainer run does GridSearchCV over the full grid; Step 4 = one winner + a table of every combination.",
+        "2026-11-03: backend owns the default param_grid (size-tiered); the user adds/removes values per key.",
+        "2026-11-03: lstm/gru keep the curated per-variant path. No-CV runs score on one chronological fold.",
+        "2026-11-05: the grid editor must NOT use <Input type=\"number\"> (nor VariantValueInput, which renders one): ONE plain type=\"text\" box per hyperparameter holding a comma list (0.1, 1, 10). Scope: the grid editor only — dynamic-hyperparameters, core-config and VariantValueInput are untouched."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-038-T01",
+          "title": "Trainer: pipelines/grid_search.py + run_training wiring + manifest 'search' key",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. BuildModelEstimator wraps build_model (the ONLY UI->estimator translation); folds reuse expanding_fold_plan / chronological_split. test_grid_search.py 9 cases + test_cv_oof 3 = 12 passed in scgc/soft-sensor-trainer:1.0.25 (mounted source, pytest via --target). Includes: best score == cv_rmse_mean of the follow-up cv_expanding.run; lstm refused; sklearn.clone survives."
+        },
+        {
+          "id": "MODEL-FLOW-038-T02",
+          "title": "Mirrors: GRID_SEARCH_RESULTS_FILENAME in artifacts.py, object_store.py (+ _ALLOWED_RUN_UPLOADS), artifact-keys.ts (+ RUN_UPLOAD_FILENAMES), MIRRORS.md entry 14",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. py_compile clean; backend tsc clean."
+        },
+        {
+          "id": "MODEL-FLOW-038-T03",
+          "title": "Backend: paramGrid DTO + refines, createJob (1 candidate, totalRuns 1), claim() carries paramGrid + rankingMetric, complete() overwrites hyperparameters / FAILS without the results artifact",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. jest src/api/v1/model-run + src/lib: 937 passed (incl. the 3 PLS cap specs); the 1 failure is model-run.authorized.controller.spec 'should be defined' (RunTokenGuard cannot resolve PrismaService) which does not touch this change. tsc + eslint clean. PLS: build_model does not clamp n_components and the search runs error_score=raise, so createJob caps a PLS grid at the artifact's feature count (capGridToFeatures; refuses by name when nothing is left; 3 specs). NOTE: createJob specs automock @/lib/tuning-grid, so gridOfJob returns undefined there — readers use truthiness, never === null."
+        },
+        {
+          "id": "MODEL-FLOW-038-T04",
+          "title": "Backend: PARAM_GRID + PARAM_GRID_OVERRIDES + paramGridFor + validateParamGrid + GET /training/param-grid/:algorithm",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. tuning-grid.spec 120 passed incl. every PARAM_GRID key read live from build_model; every default grid (base merged) <= 64. PARAM_GRID_OVERRIDES sizes tiny/large for mlp, random_forest, extra_trees, lightgbm, xgboost only; small reads medium. Values are declared priors like TUNING_GRID_OVERRIDES, NOT checked against the client hyperparam-ranges bands (the agreement test only covers TUNING_GRID_OVERRIDES)."
+        },
+        {
+          "id": "MODEL-FLOW-038-T05",
+          "title": "Client: lib/param-grid.ts + ParamGridEditor (text list) + useParamGrid + useFineTune grid state + planFineTuneLaunch paramGrid",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. param-grid.test 30, training-launch +5, fine-tune-section 22 (12 existing + 10 new: text boxes only / no type=number, live count, bad token, emptied box, cap, typed grid sent, Reset, off, lstm). tsc clean, eslint 0 errors on changed files. DEVIATION from the plan: the editor is mounted by fine-tune-section.tsx and variant-preview.tsx is untouched (it still serves lstm/gru and Find Best Parameters off)."
+        },
+        {
+          "id": "MODEL-FLOW-038-T06",
+          "title": "Step 4 + Run parameters card: GridSearchResultsTable; backend serves gridSearch on the candidate and getDraftRunService, and isGridSearch on the draft run list",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. Candidate-table expanded row (grid-search-results-table 7 cases). Run parameters card: listDraftRunsService flags isGridSearch (ONE extra job query for all runs; 2 specs), the card mounts GridRunSection only for a flagged SUCCEEDED run and only while open, fetching via useRunGridSearch (4 hook cases) -> run-params-panel 27 (4 new). Known gap: the hook's read-failure path has no test — any throwing mock failed the case under vitest 4.1.7 although the hook state was correct (null, not loading); cause not found."
+        },
+        {
+          "id": "MODEL-FLOW-038-T07",
+          "title": "Runtime estimate: grid cost = combinations x folds + the winner's run; pollJob says 'Grid search running — N combinations'",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05. estimate-runtime.test +5 (52 total in the two files with training-launch)."
+        },
+        {
+          "id": "MODEL-FLOW-038-T08",
+          "title": "Rebuild images/trainer + bump the tag, then live check on the fake PI dataset",
+          "status": "completed",
+          "progress": 100,
+          "result": "CLOSED 2026-11-05 AT THE USER'S REQUEST (\"Check+restart backend แล้วปิดเลย\"). Image rebuilt (scgc/soft-sensor-trainer:1.0.26 then 1.0.27; 1.0.27 holds the new code and passes the trainer suite 124/124 against its own baked copy); backend default tag set to 1.0.27; the running backend (nest --watch, started 15:34:45, after the last source edit 15:15:40) serves the new routes (cancel job / cancel retrain / param-grid answer 401, an unknown route 404). SEEN LIVE: the user ran Fine-tune with Find Best Parameters and used the Step 4 grid-search table (asked for the metric column highlight + no Std, both then built); on the 1.0.26 image the stuck run was exactly ONE container train-387f0583… whose log read 'Grid search: 27 combinations x 1 fold(s), ranked by rmse' (extra_trees, 34,030 rows, Train/Test split). NOT SEEN, closed without it: that the winning run's hyperparameters equal the Best row; that Save Model remained the only Model-creating step after a grid fine-tune; a Cross-Validation k=3 grid run; an lstm run taking the old variant path; the 'N parallel workers' log line and ~200% CPU on 1.0.27; the Cancel and Retrain-cancel buttons clicked in a browser. These are listed so a later reader does not mistake the closure for evidence."
+        },
+        {
+          "id": "MODEL-FLOW-038-T09",
+          "title": "Cancel with confirmation: Step 3 (training/job) and the model page's Retrain tab",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05 (user: an extra_trees grid ran 25+ min at 100% of one core with no way out but docker kill). Backend cancelJobService marks the job CANCELED by compare-and-swap on QUEUED/RUNNING FIRST (advanceJobForRun returns early for a terminal job, so no further candidate launches), then cancels the current run (re-read after the swap) through cancelDraftRunService, which kills the container and closes the run token; already-succeeded candidates are kept; a terminal job is a no-op; lost race kills nothing; draft-owned jobs only. 8 backend specs (model-candidate-job 86 passed). Client: modelDraftCandidateJobService.cancel / modelDraftRunService.cancel (the run route already existed), useModelTraining.cancel + canceling + cancelError, Cancel button beside Start while training. A single run uses the run endpoint, a job uses the job endpoint. A failed cancel keeps the run visibly training with the reason; a poll already in flight when the cancel lands cannot paint an error over idle. hook 5 cases, training-actions 5 cases, tsc + eslint clean. 2026-11-05 (user follow-up): (a) CONFIRM STEP — shared components/cancel-run-button.tsx opens an AlertDialog (Keep running / Cancel training|retrain, destructive variant); nothing is stopped before the confirm; the wording says what each subject keeps (training: finished candidates; retrain: no version staged, current version untouched); used by TrainingActions and RetrainTab. (b) RETRAIN CANCEL — POST /authorized/model/:modelId/retrain/:jobId/cancel (editor access) -> ModelRetrainAuthorizedService.cancelRetrainJobService -> ModelCandidateJobAuthorizedService.cancelModelJobService; the swap-then-kill core is now ONE private cancelInFlightJob shared with the draft route, the model route kills through runLaunch.cancelRunService; response is the job as a poll returns it. Client: modelRetrainService.cancel, useModelRetrain.cancel/canceling/cancelError, RetrainTab button + error line, page wiring; RetrainProgress shows a CANCELED job as 'Retrain canceled — no new version was staged' instead of 'Retrain failed'. Tests: backend model-run 298 run (296 passed + the 1 pre-existing controller DI failure; the other was my own fixed spec); client cancel-run-button 7, training-actions, retrain-tab +9, use-model-retrain +4 (59 passed across the four); tsc + eslint clean; wider models/hooks/components run fails only the same 5 baseline files. NOT DONE: not clicked in a browser; a backend restart is needed for both routes to exist; no integration test through a real container."
+        },
+        {
+          "id": "MODEL-FLOW-038-T10",
+          "title": "Faster grid search: fit combinations in parallel for the forest algorithms, within the container's CPU budget",
+          "status": "completed",
+          "progress": 100,
+          "result": "CODE + TESTS DONE 2026-11-05; image 1.0.27 built by the user and verified to contain it (124/124 baked); CLOSED at the user's request WITHOUT a live run on 1.0.27 (the live run that was observed used 1.0.26, which is serial). Finding first: the container is capped at 2 CPUs (TRAINING_NANO_CPUS, default 2) and a serial search used 1 of them (the 100% CPU seen on the stuck extra_trees run). os.cpu_count() reports the HOST (10), so the budget is passed explicitly: backend trainerCpuBudget(nanoCpus) -> env TRAINER_CPU_BUDGET (MIRRORS.md entry 15) -> config.cpu_budget(). grid_search.search_parallelism: workers = min(budget, fits), threads each = budget // workers, applied through joblib parallel_config(inner_max_num_threads, temp_folder=/scratch/joblib — the container's /dev/shm is Docker's 64 MB). ONLY random_forest/extra_trees are parallelised: MEASURED under --cpus=2 -m 8g, read-only rootfs, tmpfs /scratch: extra_trees 18 combos 83s -> 46s (1.8x, script) and 109.8s -> 72.9s (1.5x, real run_grid_search, 30k rows); IDENTICAL ranking and best in every pair. lightgbm 8 small fits got SLOWER in parallel (1.7s -> 2.7s) and ridge/ols/pls take milliseconds, so they stay serial; svm/grp/mlp unmeasured, serial. Tests: trainer suite 124 passed in scgc/soft-sensor-trainer:1.0.26 (incl. parallel == serial ranking, workers x threads <= budget, env parsing); backend trainning-container 17 passed, tsc + eslint clean. KNOWN: loky prints a benign 'ChildProcessError: No child processes' (Exception ignored in ResourceTracker.__del__) at interpreter exit, exit code 0; the client runtime estimate does NOT yet divide by the worker count; more speed needs a higher TRAINING_NANO_CPUS (docker VM has 8 GB RAM, the container's cap is already 8 GB, and workers share X by memory-map). NEXT: rebuild images/trainer as 1.0.27, set TRAINING_IMAGE, then time a real extra_trees fine-tune."
+        },
+        {
+          "id": "MODEL-FLOW-038-T11",
+          "title": "Time estimate: measured forest costs, search divided by workers, and a long-run notice before Start",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-05 (user: item 3 + the estimate did not divide by workers). FOUND: ALGO_COST had no entry for random_forest / extra_trees (the table is keyed on ids this catalogue does not have), so both were priced like lightgbm = 1 — MEASURED in scgc/soft-sensor-trainer:1.0.27 (one fit, 100 trees, default depth, 10k-60k rows x 10-20 features): random_forest 104-151, extra_trees 29-37, lightgbm 0.6-1.7 in the table's unit; i.e. 120x and 33x too cheap, which is why the bar's >15-minute amber line and any warning could never fire on the case that actually ran for 25+ minutes. Now random_forest 120, extra_trees 32 (middle of the measured ranges; a grid's shallower combinations finish sooner than the default-depth fit, so a grid reads high: one measured grid 93s real vs ~188s estimated). The search is divided by searchSpeedup(workers) = workers x 0.75 (PARALLEL_EFFICIENCY, from 1.5x measured through the real run_grid_search on 2 workers; 1.8x on a script); the winner's own fit is not divided. Workers come from the server: GET /training/param-grid/:algorithm now returns cpuBudget (trainerCpuBudget(configuredNanoCpus()), lib/trainer-cpu.ts) and parallel (PARALLEL_SEARCH_ALGORITHMS, pinned to grid_search.py's PARALLEL_ALGORITHMS by a spec that reads that file live); the client's searchWorkersFor is the same rule as the trainer's search_parallelism, with the same cases. NOTICE: RuntimeEstimate says, before Start and once est > 15 min, 'This may take about X (low – high)[, with the search on N parallel workers]. To shorten it, remove values from the grid, lower the number of trees, or use fewer rows. You can cancel while it runs.' — role=status, muted text with a clock, no red/amber (design rule); hidden once the run is live. Tests: backend tuning-grid + trainning-container 157 passed (incl. the live mirror and 3 service cases); client estimate-runtime 72 (new: measured ranges, reproduces a measured fit within the panel range, workers division, searchWorkersFor table), runtime-estimate 7, fine-tune-section +5 (workers follow the server's budget, cap at fits, serial for non-forests, undefined while the grid is invalid); tsc clean both apps; wider client run fails the same 7 baseline files / 23 cases as HEAD. KNOWN: the divisor is one measured efficiency (0.75) from one dataset shape; svm/grp/mlp/pls/lstm/gru still fall back to cost 1 (unmeasured); the real feature count of the 25-minute run is unknown, so only the shape (a wide table reads long, a 20-feature one reads ~5 min, matching a measured 11s per fit) is pinned. No image rebuild needed for this task. Not seen in a browser."
+        }
+      ],
+      "verification": [
+        "Trainer: test_grid_search.py 9 + test_cv_oof 3 passed in-image (2026-11-05).",
+        "Backend: jest src/api/v1/model-run + src/lib 937 passed, 1 failed (pre-existing controller DI spec); tsc + eslint clean (2026-11-05).",
+        "Client: param-grid 30, training-launch + estimate-runtime 47, fine-tune-section 22, grid-search-results-table 7 passed; tsc clean; eslint 0 errors on changed files (2026-11-05).",
+        "Client baseline compared at a detached HEAD worktree (2026-11-05): the Step 4 and related suites (phase-4-model-selection, candidate-table-cv-job, chart-time-axis, feature-count-sweep x2, model-selection-contract, core-config, lib/monitoring) fail the IDENTICAL 23 cases at HEAD and in this tree, so none are caused by this feature. The 3 fine-tune-section cases this feature did break were fixed (22/22).",
+        "Python reader get_run_grid_search / POST /models/runs/grid-search: py_compile plus an AST check that every new name it imports resolves; never executed (no local python env, no existing test for the sibling cv-folds reader to mirror).",
+        "Live: PENDING (T08).",
+        "Run parameters card (2026-11-05): backend model-run-launch spec 40 passed; client run-params-panel 27 + use-run-grid-search 4 + fine-tune-section 22 passed; tsc + eslint clean (the one eslint warning, unused RunComparisonPanel import, predates this change).",
+        "Cancel (2026-11-05): backend model-candidate-job 86 passed; client use-model-training 31 + training-actions passed; tsc + eslint clean on changed files; wider models/create + hooks/model failures are the same 5 baseline files (chart-time-axis, feature-count-sweep, model-selection-contract, phase-4-model-selection, core-config). Not exercised live.",
+        "Cancel confirm + Retrain cancel (2026-11-05): backend model-run specs pass except the pre-existing controller DI case; client 59 passed in the four touched suites; wider run fails only the 5 baseline files; tsc + eslint clean. Not exercised live.",
+        "Parallel grid search (2026-11-05): trainer suite 124 passed; real run_grid_search extra_trees 18 combos x 30k rows 109.8s (budget 1) vs 72.9s (budget 2) in a --cpus=2 read-only container, identical best; backend trainning-container 17 passed. Not yet run on a rebuilt image.",
+        "Estimate (2026-11-05): backend tuning-grid + trainning-container 157 passed; client estimate-runtime 72, runtime-estimate 7, fine-tune-section 27 passed; tsc clean both apps; wider client run = same 7 baseline files, 23 failing cases as HEAD. Not seen in a browser.",
+        "Backend restart check (2026-11-05): nest --watch process started 15:34:45 after the newest source edit (15:15:40); POST cancel-job, cancel-retrain, cancel-run and GET param-grid answer 401 (route exists, guarded), an unknown route answers 404. No manual restart was needed or done."
+      ],
+      "closedNote": "Closed 2026-11-05 at the user's request. Everything is built and unit/integration-tested (trainer 124, backend model-run/lib/trainning-container, client create+hooks+components with only the 7 pre-existing baseline files failing, identical to HEAD). Not observed live: grid winner == run hyperparameters; Save Model as the only Model commit after a grid fine-tune; CV k=3 grid; lstm old path; parallel workers on 1.0.27; the Cancel buttons. Known gaps: the retrain page's cancel and Step 3's cancel were never clicked in a browser; the PLS/paramGrid tier defaults are declared priors; svm/grp/mlp/pls/lstm/gru runtime costs are unmeasured (cost 1); pre-existing failures outside this feature: model-run controller DI spec, core-config Seed, feature-count-sweep, monitoring formatAxisValue, chart-time-axis, model-selection-contract, phase-4-model-selection."
     }
   ],
   "global_definition_of_done": [

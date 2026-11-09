@@ -243,6 +243,12 @@ const InferenceWindowMaterializeSchema = z.object({
       }),
     )
     .default({}),
+  // MODEL-SERVE-043. A sequence model's lead-in file (context.parquet).
+  // Defaulted so a python process that predates the field still parses —
+  // and then writes no lead-in, which is what it would have done anyway.
+  context_object_key: z.string().min(1).nullable().default(null),
+  context_checksum: z.string().min(1).nullable().default(null),
+  context_rows: z.number().int().nonnegative().default(0),
 });
 
 export type InferenceWindowMaterializeResult = z.infer<
@@ -273,6 +279,10 @@ export async function materializeInferenceWindow(input: {
   interval: string;
   pi?: Record<string, unknown>;
   sql?: Record<string, unknown>;
+  column_tag_map?: Record<string, string>;
+  /** MODEL-SERVE-043. Lead-in rows before window_start for a sequence model
+   *  (`sequence_length - 1`); omitted / 0 for every other algorithm. */
+  context_rows?: number;
 }): Promise<InferenceWindowMaterializeResult> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/inference-window',
@@ -299,6 +309,9 @@ const InferenceWindowTruthJoinSchema = z.object({
   sum_signed: z.number(),
   sum_actual: z.number(),
   sum_actual_sq: z.number(),
+  // MODEL-SERVE-046. Worst single |residual| in the window; python from before
+  // this field omits it, and 0 is its "nothing paired" value.
+  max_abs_residual: z.number().nonnegative().default(0),
 });
 
 export type InferenceWindowTruthJoinResult = z.infer<
@@ -329,6 +342,7 @@ export async function joinInferenceWindowTruth(input: {
   tolerance_seconds: number;
   pi?: Record<string, unknown>;
   sql?: Record<string, unknown>;
+  column_tag_map?: Record<string, string>;
 }): Promise<InferenceWindowTruthJoinResult> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/inference-window/truth-join',
@@ -394,6 +408,73 @@ const InferenceWindowMetricsSeriesSchema = z.object({
 export type InferenceWindowMetricsSeriesResult = z.infer<
   typeof InferenceWindowMetricsSeriesSchema
 >;
+
+const InputSeriesColumnSchema = z.object({
+  resolution: z.enum(['raw', 'bucketed']),
+  bucket_minutes: z.number().int().nullable(),
+  points: z.array(
+    z.object({
+      t: z.string(),
+      value: z.number(),
+      min: z.number(),
+      max: z.number(),
+      out_of_range: z.number().int(),
+    }),
+  ),
+  windows: z.array(
+    z.object({
+      window_start: z.string(),
+      window_end: z.string(),
+      n: z.number().int(),
+      min: z.number().nullable(),
+      max: z.number().nullable(),
+      mean: z.number().nullable(),
+      below: z.number().int(),
+      above: z.number().int(),
+    }),
+  ),
+  total: z.number().int(),
+  below: z.number().int(),
+  above: z.number().int(),
+  counts: z.array(z.number().int()).nullable(),
+  live_min: z.number().nullable(),
+  live_max: z.number().nullable(),
+  live_mean: z.number().nullable(),
+  last_out_of_range_at: z.string().nullable(),
+});
+
+const InferenceWindowInputSeriesSchema = z.object({
+  columns: z.record(z.string(), InputSeriesColumnSchema),
+  missing: z.number().int(),
+});
+
+export type InputSeriesColumn = z.infer<typeof InputSeriesColumnSchema>;
+export type InferenceWindowInputSeriesResult = z.infer<
+  typeof InferenceWindowInputSeriesSchema
+>;
+
+/**
+ * MODEL-SERVE-036. Raw input values per tag across scheduled windows, read
+ * from each window's input Parquet: the trend, per-window stats, and
+ * below/above counts against the training edges (same bucket primitive as
+ * the window histograms). `columns` empty = every feature column found.
+ */
+export async function inferenceWindowInputSeries(input: {
+  windows: Array<{ key: string; window_start: string; window_end: string }>;
+  columns: string[];
+  references: Record<
+    string,
+    { edges: number[]; bin_mode: 'continuous' | 'categorical' }
+  >;
+  max_points?: number;
+}): Promise<InferenceWindowInputSeriesResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/input-series',
+    input,
+    PYTHON_TIMEOUT.metadata,
+  );
+  return InferenceWindowInputSeriesSchema.parse(res);
+}
 
 /**
  * MODEL-SERVE-011-T12. One point per SCHEDULED window, read from the
@@ -873,6 +954,49 @@ export async function getRunCvFolds(sourceKey: string): Promise<RunCvFolds> {
   return RunCvFoldsSchema.parse(res);
 }
 
+/**
+ * MODEL-FLOW-038. One ranked combination of a grid-search run. `params` holds
+ * only the keys the grid varied; `hyperparameters` is the full record it ran.
+ * Scores are the ranking metric itself (RMSE or MAE), lower is better.
+ */
+const GridSearchCombinationSchema = z.object({
+  rank: z.number().int(),
+  params: z.record(z.string(), z.unknown()),
+  hyperparameters: z.record(z.string(), z.unknown()),
+  mean_score: z.number(),
+  std_score: z.number(),
+  mean_fit_time: z.number(),
+});
+
+const RunGridSearchSchema = z.object({
+  algorithm: z.string().min(1),
+  ranking_metric: z.string().min(1),
+  cv: z.boolean(),
+  n_folds: z.number().int(),
+  n_combinations: z.number().int(),
+  grid: z.record(z.string(), z.array(z.unknown())),
+  best: GridSearchCombinationSchema,
+  combinations: z.array(GridSearchCombinationSchema),
+});
+
+export type RunGridSearch = z.infer<typeof RunGridSearchSchema>;
+
+/**
+ * MODEL-FLOW-038. `source_key` is built by the caller from the run's owner and
+ * the fixed filename — never accepted from a browser request, same discipline
+ * `getRunCvFolds` applies to its own key.
+ */
+export async function getRunGridSearch(
+  sourceKey: string,
+): Promise<RunGridSearch> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/grid-search',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunGridSearchSchema.parse(res);
+}
+
 /** MODEL-FLOW-019-T09. `importance` is always non-negative — for a
  *  coefficient method it is `abs(coefficient)`, never the signed value, so
  *  ranking and "share of total" stay meaningful; `coefficient` (the signed
@@ -1070,7 +1194,7 @@ const FeatureSpecSchema = z
          * population per bin — never assumed uniform. A quantile
          * (continuous) split is equal-frequency by construction, but a
          * categorical split is NOT (a valve closed 90% of the time has a
-         * 90/10 reference split, not 50/50) — `computePsi`'s expected% term
+         * 90/10 reference split, not 50/50) — `computeRangeDrift`'s expected% term
          * reads this directly rather than deriving it from `psiBinCount`.
          * Same per-tag, per-bin-index keying/ordering as `psiRefEdges`.
          */
@@ -1233,6 +1357,25 @@ export type ArtifactRowsResult = z.infer<typeof ArtifactRowsSchema>;
  * hold. So these values are already pre-scale and go to /predict unaltered;
  * scaling them here would be a fourth opinion about what scaling means.
  */
+/** Run Predict for lstm/gru: the newest row of one window's
+ *  predictions.parquet. `timestamp` is Bangkok wall-clock, like the file. */
+const LastInferencePredictionSchema = z.object({
+  timestamp: z.string().nullable(),
+  prediction: z.number().nullable(),
+  row_count: z.number().int().nonnegative(),
+});
+
+export async function readLastInferencePrediction(input: {
+  source_key: string;
+}): Promise<z.infer<typeof LastInferencePredictionSchema>> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/last-prediction',
+    input,
+    PYTHON_TIMEOUT.serving,
+  );
+  return LastInferencePredictionSchema.parse(res);
+}
+
 export async function readArtifactRows(input: {
   source_key: string;
   offset?: number;

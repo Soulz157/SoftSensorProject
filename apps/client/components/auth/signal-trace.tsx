@@ -199,14 +199,14 @@ export function SignalTrace({
         LAB_EVERY,
         shape,
       )
-      const nodes = diamonds.children
+      const equipmentList = diamonds.children
       let hit: { x: number; y: number; actual: number; p: number } | null = null
-      for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i] as SVGRectElement
+      for (let i = 0; i < equipmentList.length; i++) {
+        const equipment = equipmentList[i] as SVGRectElement
         const s = samples[i]
         // No lab marks over the lead-in wire: the line isn't drawn there.
         if (!s || (lead && (s.p - offset) * PX_PER_SAMPLE < LEAD_SPAN)) {
-          node.setAttribute('visibility', 'hidden')
+          equipment.setAttribute('visibility', 'hidden')
           continue
         }
         const x = (s.p - offset) * PX_PER_SAMPLE
@@ -218,10 +218,10 @@ export function SignalTrace({
           Math.abs(pointer.x - x) < 16 &&
           Math.abs(pointer.y - y) < 28
         if (isHit) hit = { x, y, actual: s.actual, p: s.p }
-        node.setAttribute('visibility', 'visible')
-        node.setAttribute('stroke', isHit ? 'var(--primary)' : 'none')
-        node.setAttribute('stroke-width', '2')
-        node.setAttribute('transform', `translate(${x} ${y}) rotate(45)`)
+        equipment.setAttribute('visibility', 'visible')
+        equipment.setAttribute('stroke', isHit ? 'var(--primary)' : 'none')
+        equipment.setAttribute('stroke-width', '2')
+        equipment.setAttribute('transform', `translate(${x} ${y}) rotate(45)`)
       }
 
       const tip = tipRef.current

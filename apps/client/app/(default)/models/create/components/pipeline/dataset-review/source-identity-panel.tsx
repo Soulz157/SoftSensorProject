@@ -26,6 +26,8 @@ interface Props {
   metadata: DraftArtifactMetadata | null
   metadataLoading: boolean
   metadataError: string | null
+  /** False when the caller renders `SourceStatsTiles` elsewhere. */
+  showStats?: boolean
 }
 
 /**
@@ -42,10 +44,8 @@ export function SourceIdentityPanel({
   metadata,
   metadataLoading,
   metadataError,
+  showStats = true,
 }: Props) {
-  const rowCount = metadata?.rowCount ?? dataset.rowCount ?? 0
-  const timeSpan = artifactTimeSpanLabel(metadata?.startTime, metadata?.endTime)
-
   return (
     <div className="space-y-4">
       <div className="space-y-2">
@@ -94,33 +94,55 @@ export function SourceIdentityPanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        <StatTile
-          label="Rows"
-          value={
-            metadataLoading && !dataset.rowCount
-              ? '…'
-              : rowCount.toLocaleString()
-          }
-          surface="muted"
-          valueSize="md"
+      {showStats && (
+        <SourceStatsTiles
+          dataset={dataset}
+          metadata={metadata}
+          metadataLoading={metadataLoading}
+          metadataError={metadataError}
         />
-        <StatTile
-          label="Features"
-          value={String(dataset.tags.length)}
-          surface="muted"
-          valueSize="md"
-        />
-        <StatTile
-          label="Time span of data"
-          value={
-            metadataLoading ? '…' : metadataError ? 'Unavailable' : timeSpan
-          }
-          sub={metadataError ?? undefined}
-          surface="muted"
-          valueSize="md"
-        />
-      </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The Rows / Features / Time span tiles on their own, so Model Step 2 can
+ * place them under its Training data heading instead of beside the dataset's
+ * name. Numbers come from the training artifact's footer.
+ */
+export function SourceStatsTiles({
+  dataset,
+  metadata,
+  metadataLoading,
+  metadataError,
+}: Pick<Props, 'dataset' | 'metadata' | 'metadataLoading' | 'metadataError'>) {
+  const rowCount = metadata?.rowCount ?? dataset.rowCount ?? 0
+  const timeSpan = artifactTimeSpanLabel(metadata?.startTime, metadata?.endTime)
+
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <StatTile
+        label="Rows"
+        value={
+          metadataLoading && !dataset.rowCount ? '…' : rowCount.toLocaleString()
+        }
+        surface="muted"
+        valueSize="md"
+      />
+      <StatTile
+        label="Features"
+        value={String(dataset.tags.length)}
+        surface="muted"
+        valueSize="md"
+      />
+      <StatTile
+        label="Time span of data"
+        value={metadataLoading ? '…' : metadataError ? 'Unavailable' : timeSpan}
+        sub={metadataError ?? undefined}
+        surface="muted"
+        valueSize="md"
+      />
     </div>
   )
 }

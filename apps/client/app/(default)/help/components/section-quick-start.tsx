@@ -11,7 +11,7 @@ const STEPS: Step[] = [
   {
     title: 'Create a Workspace',
     description:
-      'Click + New Workspace on the dashboard. Give it a name, icon, and color tag. Workspaces group related nodes and models together.',
+      'Click + New Workspace on the dashboard. Give it a name, icon, and color tag. Workspaces group related equipment and models together.',
   },
   {
     title: 'Open the Canvas',
@@ -19,14 +19,14 @@ const STEPS: Step[] = [
       'Navigate to your workspace and click Canvas in the sidebar. Switch to Build Mode using the toggle in the top-right toolbar.',
   },
   {
-    title: 'Add Your First Node',
+    title: 'Add Your First Equipment',
     description:
-      'Click + Add Node, choose a type (Machine, Sensor, or Controller), then set its status. Nodes represent physical devices in your facility.',
+      'Click + Add Equipment, choose a type (Machine, Sensor, or Controller), then set its status. Equipment represents the physical devices in your facility.',
   },
   {
     title: 'Monitor Alerts',
     description:
-      'The Alerts page lists all nodes in Warning or Alarm state. The sidebar badge pulses when active alerts exist.',
+      'The Alerts page lists all equipment in Warning or Alarm state. The sidebar badge pulses when active alerts exist.',
     done: true,
   },
 ]

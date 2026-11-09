@@ -78,7 +78,12 @@ function resolveFromCache(
   return { resolved, notFound }
 }
 
-export function useTagResolution(tagNames: string[]): UseTagResolutionResult {
+export function useTagResolution(
+  tagNames: string[],
+  /** MODEL-SERVE-037-T05. Ask THESE PI sources instead of the Data Studio
+   *  selection — the model page has no Data Studio store. */
+  sourceIdsOverride?: string[],
+): UseTagResolutionResult {
   const sources = useAtomValue(dwSelectedSourcesAtom)
   // Last settled fetch, tagged with the request it answers. `loading`, the
   // cleared error on a new request and the empty result with nothing to
@@ -95,9 +100,15 @@ export function useTagResolution(tagNames: string[]): UseTagResolutionResult {
   // Held in state (never replaced) so render can read it.
   const [cache] = useState(() => new Map<string, TagResolution | null>())
 
+  const overrideKey = sourceIdsOverride
+    ? JSON.stringify(sourceIdsOverride)
+    : null
   const ids = useMemo(
-    () => sources.filter(s => s.type === 'aveva').map(s => s.id),
-    [sources],
+    () =>
+      overrideKey
+        ? (JSON.parse(overrideKey) as string[])
+        : sources.filter(s => s.type === 'aveva').map(s => s.id),
+    [overrideKey, sources],
   )
   const idsKey = JSON.stringify(ids)
   // Sorted + deduped so a reordered list doesn't retrigger the effect.

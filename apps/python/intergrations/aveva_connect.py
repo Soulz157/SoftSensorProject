@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 import os
 import time
 import logging
@@ -7,7 +8,7 @@ import urllib3
 import pandas as pd
 from typing import Optional, Generator
 from osisoft.pidevclub.piwebapi.pi_web_api_client import PIWebApiClient
-from osisoft.pidevclub.piwebapi.models import PIStreamValue, PITimedValue
+from osisoft.pidevclub.piwebapi.models import PITimedValue
 
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -139,30 +140,6 @@ class PIWebAPI:
         ) + pd.to_timedelta("07:00:00")
         return df
 
-    def write_data(self, data: dict):
-        streamValues = list()
-        i = 0
-        for tag in data.keys():
-            # Initialize variable
-            streamValue = PIStreamValue()
-            PITime_value = PITimedValue()
-
-            PITime_value.timestamp = data[tag]["timestamp"]
-            PITime_value.value = data[tag]["value"]
-
-            streamValue.value = PITime_value
-            streamValue.web_id = self.client.point.get_by_path(
-                "\\\\" + self.pi_server + "\\" + tag
-            ).web_id
-
-            streamValues.append(streamValue)
-
-            i = i + 1
-
-        response = self.client.streamSet.update_value_ad_hoc_with_http_info(
-            streamValues
-        )
-
     def resolve_tags(
         self,
         tag_names: list[str],
@@ -213,7 +190,13 @@ class PIWebAPI:
                 if name is None or name not in resolved:
                     continue
 
-                resolved[name] = {"web_id": web_id}
+                # MODEL-SERVE-032: the point type decides whether a tag can hold
+                # a prediction (Float/Int) or not (Digital/String). It rides on
+                # the same Point object, so no extra PI call.
+                resolved[name] = {
+                    "web_id": web_id,
+                    "point_type": getattr(item.object, "point_type", None),
+                }
                 by_web_id[web_id] = name
 
             if not by_web_id:
@@ -446,15 +429,125 @@ class PIWebAPI:
         data = self.convertAttributeValuestoDataFrame(data, path)
         return data
 
-    def getRecordedValues(self, tag_list: list, start_time: str, end_time: str):
-        webIds = self.convertPathtoWebIds(tag_list)
-        df = self.client.streamSet.get_recorded_ad_hoc(
-            web_id=webIds,
+    # ── Recorded events: read + write (MODEL-SERVE-032) ────────────────────
+    # Everything below speaks UTC ISO-8601 with a literal `Z` -- both ways.
+    # Unlike the frame readers above it does NOT shift to Bangkok wall-clock:
+    # a write lands on the exact instant PI is told, and a rollback must read
+    # the same instant back (services/frame_service.wall_clock_to_utc).
+
+    #: PI `updateOption` values this app may send. Replace overwrites or
+    #: inserts at the timestamp; Remove deletes the event there. Nothing
+    #: else (Insert / NoReplace / compression variants) has a use here.
+    WRITE_UPDATE_OPTIONS = ("Replace", "Remove")
+
+    #: Explicit, never the server default: a buffered write returns before PI
+    #: has stored anything, which would make the read-back "after" a guess.
+    WRITE_BUFFER_OPTION = "DoNotBuffer"
+
+    WRITE_CHUNK = 500
+
+    def _point_web_id(self, tag: str) -> str:
+        point = self.client.point.get_by_path(
+            "\\\\" + self.pi_server + "\\" + tag)
+        web_id = getattr(point, "web_id", None)
+        if not web_id:
+            raise RuntimeError(f"PI tag '{tag}' was not found on '{self.pi_server}'.")
+        return web_id
+
+    def get_recorded_events(
+        self,
+        tag: str,
+        start_time: str,
+        end_time: str,
+        max_count: int = 20000,
+    ) -> list[dict]:
+        """Raw recorded events of ONE tag in [start_time, end_time].
+
+        Returns `{timestamp: <UTC ISO Z>, value: float | None, good: bool}`
+        per event. A non-numeric payload (PI digital state such as
+        'I/O Timeout') or a Bad / Questionable flag is `good=False` and, when
+        not numeric, `value=None` -- never a fabricated number.
+        """
+        web_id = self._point_web_id(tag)
+        resp = self.client.stream.get_recorded(
+            web_id=web_id,
             start_time=start_time,
             end_time=end_time,
-            selected_fields="items.name;items.items.timestamp;items.items.value",
+            boundary_type="Inside",
+            max_count=max_count,
+            selected_fields="items.timestamp;items.value;items.good;items.questionable",
         )
-        pass
+        events: list[dict] = []
+        for item in (getattr(resp, "items", None) or []):
+            raw = getattr(item, "value", None)
+            numeric = (
+                isinstance(raw, (int, float))
+                and not isinstance(raw, bool)
+                and math.isfinite(raw)
+            )
+            good = bool(getattr(item, "good", True)) and not bool(
+                getattr(item, "questionable", False)
+            )
+            events.append({
+                "timestamp": item.timestamp,
+                "value": float(raw) if numeric else None,
+                "good": good and numeric,
+            })
+        return events
+
+    def write_recorded(
+        self,
+        tag: str,
+        points: list[tuple[str, float | None]],
+        update_option: str = "Replace",
+    ) -> list[dict]:
+        """Write (Replace) or delete (Remove) recorded events on ONE tag.
+
+        `points` is `(utc_iso_timestamp, value)`; value is ignored for Remove.
+        Returns `{timestamp, ok, error}` per point, aligned with the input.
+
+        The per-item result comes from PI's multi-status body when it sends
+        one. PI answers a fully accepted write with an empty body, in which
+        case every item is reported `ok=True` -- an ACCEPTANCE, not proof of
+        storage. The caller must read back what PI actually holds; this
+        method never claims more than PI said.
+
+        A transport / HTTP failure raises: part of the batch may already be
+        stored, and the caller must treat the whole batch as uncertain.
+        """
+        if update_option not in self.WRITE_UPDATE_OPTIONS:
+            raise ValueError(
+                f"update_option must be one of {self.WRITE_UPDATE_OPTIONS}, "
+                f"got {update_option!r}"
+            )
+        web_id = self._point_web_id(tag)
+        results: list[dict] = []
+        for chunk in chunked(points, self.WRITE_CHUNK):
+            values = []
+            for ts, value in chunk:
+                tv = PITimedValue()
+                tv.timestamp = ts
+                if update_option == "Replace":
+                    tv.value = value
+                values.append(tv)
+            resp = self.client.stream.update_values(
+                web_id=web_id,
+                values=values,
+                buffer_option=self.WRITE_BUFFER_OPTION,
+                update_option=update_option,
+            )
+            statuses = getattr(resp, "items", None) or []
+            aligned = len(statuses) == len(chunk)
+            for i, (ts, _value) in enumerate(chunk):
+                ok, error = True, None
+                if aligned:
+                    sub = getattr(statuses[i], "substatus", None)
+                    if isinstance(sub, int) and not 200 <= sub < 300:
+                        ok = False
+                        error = (getattr(statuses[i], "message", None)
+                                 or f"PI substatus {sub}")[:300]
+                results.append({"timestamp": ts, "ok": ok, "error": error})
+        return results
 
     def convertInterpolatedDicttoDataFrame(self, data, tag_list: list):
         tag_list.insert(0, "timestamp")
@@ -514,30 +607,6 @@ class PIWebAPI:
         )
         df = self.convertAverageDicttoDataFrame(df, tag_list)
         return df
-
-    def write_data(self, data: dict):
-        streamValues = list()
-        i = 0
-        for tag in data.keys():
-            # Initialize variable
-            streamValue = PIStreamValue()
-            PITime_value = PITimedValue()
-
-            PITime_value.timestamp = data[tag]["timestamp"]
-            PITime_value.value = data[tag]["value"]
-
-            streamValue.value = PITime_value
-            streamValue.web_id = self.client.point.get_by_path(
-                "\\\\" + self.pi_server + "\\" + tag
-            ).web_id
-
-            streamValues.append(streamValue)
-
-            i = i + 1
-
-        response = self.client.streamSet.update_value_ad_hoc_with_http_info(
-            streamValues
-        )
 
     def fetch_tags_in_batches(
         self,

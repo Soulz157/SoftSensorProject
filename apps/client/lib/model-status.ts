@@ -50,9 +50,13 @@ export function monitoringStatusFromHealth(
       return 'warning'
     case 'OK':
       return 'normal'
-    // OFF, UNKNOWN, and an absent payload all mean "no claim".
+    // OFF, UNKNOWN, and an absent payload all mean "no claim" — about a
+    // deploy that is UP, which is Normal: a running model with nothing
+    // outside its band (MODEL-SERVE-046, user: Running and Normal are one
+    // status). A model that is out of band is WARN/ALERT above; Offline is
+    // reserved for a deploy that is not running.
     default:
-      return 'offline'
+      return 'normal'
   }
 }
 
@@ -123,7 +127,9 @@ export function failedCountByWorkspace(
  * model failures into the node's visual status without re-filtering models.
  * Nodes with no failed models are absent from the result (treat as 0).
  */
-export function failedCountByNodeId(models: AIModel[]): Record<string, number> {
+export function failedCountByEquipmentId(
+  models: AIModel[],
+): Record<string, number> {
   const out: Record<string, number> = {}
   for (const m of failedDeploys(models)) {
     if (!m.nodesId) continue
@@ -160,7 +166,7 @@ export function hasMonitoringAlert(m: AIModel): boolean {
 
 /**
  * MODEL-SERVE-012. Count of MONITORING-axis alerts per `nodesId` — the twin
- * of `failedCountByNodeId` above, and the one that was missing.
+ * of `failedCountByEquipmentId` above, and the one that was missing.
  *
  * WHY IT IS A BUG THAT THIS DID NOT EXIST. The workspace level had both
  * rollups (`failedCountByWorkspace` + `monitoringCountByWorkspace`) and the
@@ -174,7 +180,7 @@ export function hasMonitoringAlert(m: AIModel): boolean {
  * Models with no `nodesId` are absent, same as the deploy twin: a model not
  * placed on a node has no dot to colour.
  */
-export function monitoringCountByNodeId(
+export function monitoringCountByEquipmentId(
   models: AIModel[],
 ): Record<string, number> {
   const out: Record<string, number> = {}
@@ -240,16 +246,21 @@ export function deployVerdict(models: AIModel[]): DeployVerdict {
 }
 
 /**
- * MODEL-SERVE-024-D02. THE model side of the one Normal/Abnormal rule: a model
- * makes its equipment, plant and workspace Abnormal only for a failed deploy
- * or a monitoring ALERT. A monitoring WARN or FROZEN (drift warn, residual
- * 1–2SD, tag not moving) still lists on the Alerts page as Warning, but turns
- * nothing red — the same line `toBinaryStatus` draws for equipment.
+ * MODEL-SERVE-024-D02, widened 2026-11-03 (user). THE model side of the one
+ * Normal/Abnormal rule: a model makes its equipment, plant and workspace
+ * Abnormal for a failed deploy, a monitoring ALERT, or now a monitoring WARN
+ * or FROZEN (drift warn, residual beyond 2SD, tag not moving) — the same line
+ * `toBinaryStatus` draws for equipment, where warning is Abnormal too.
  */
 export function isModelAbnormal(m: AIModel): boolean {
   if (isDeployFailed(m)) return true
   const status = m.data?.monitoring?.status
-  return status === 'ALERT' || status === 'CRITICAL'
+  return (
+    status === 'ALERT' ||
+    status === 'CRITICAL' ||
+    status === 'WARN' ||
+    status === 'FROZEN'
+  )
 }
 
 /** Abnormal models per `workspaceId` (see `isModelAbnormal`). */
@@ -265,7 +276,7 @@ export function abnormalModelCountByWorkspace(
 }
 
 /** Abnormal models per `nodesId`; models not placed on a node are absent. */
-export function abnormalModelCountByNodeId(
+export function abnormalModelCountByEquipmentId(
   models: AIModel[],
 ): Record<string, number> {
   const out: Record<string, number> = {}

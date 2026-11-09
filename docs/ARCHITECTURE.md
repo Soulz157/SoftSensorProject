@@ -286,6 +286,60 @@ overwrite it.
 
 ---
 
+## Object Storage Backends (AZURE-BLOB-001)
+
+`ObjectStore` (`apps/python/intergrations/object_store.py`) is the only way into storage. It owns Parquet, key layout and retention. The SDK calls sit behind `StorageBackend`, chosen by `STORAGE_BACKEND`:
+
+- `minio`: local development.
+- `azure`: production. Signs in with Microsoft Entra ID, so the app holds no account key. Containers receive user delegation SAS URLs limited to one blob.
+
+Rules on Azure:
+
+- The account must keep a flat namespace, or tags stop driving lifecycle.
+- The service identity needs `Storage Blob Data Owner`. Contributor cannot set blob index tags.
+- The `lifecycle=tmp` expiry rule is declared in `infra/modules/storage.bicep`, not set at runtime.
+- A presigned PUT must send `x-ms-blob-type: BlockBlob`. The trainer sends it from image 1.0.28.
+
+Deployment setup is in `infra/README.md`. Where containers run on Azure is undecided: see `AZURE-HOST-001` in `docs/feature_list_azure_storage.json`.
+
+## Container Job Queue (CONTAINER-QUEUE-001)
+
+Train, score, batch and scheduled-inference containers start only when the host
+has room. `ContainerDispatchService` (`api/v1/trainning-container/authorized`)
+runs two BullMQ queues on Redis.
+
+- **The DB row is the source of truth.** Launch writes the row (`QUEUED`,
+  `PENDING`, or `scoringQueuedAt` for score) and adds a job. Job data holds ids
+  only, never a token. Losing Redis loses no work: a 60-second sweep re-adds
+  waiting rows, and the inference tick re-requests its windows.
+- **A job covers admission, not the container's lifetime.** It completes once
+  the container has started, so a long training is never seen as a stalled job.
+  `concurrency: 1` makes check-then-spawn safe, so nothing slow may run inside
+  it. `inference-prep` runs the PI fetch for that reason.
+- **Admission** (`lib/container-budget.ts`) compares each mode's reservation
+  with the running containers listed from Docker. Host full pauses the queue, so
+  the highest-priority job is never overtaken. A workspace at its cap delays
+  only its own job. A job bigger than the whole budget fails with the reason.
+- **Priority:** live inference, score, batch, train, backfill windows. Train and
+  batch cannot use the slice held for inference.
+- **Single backend replica and one Docker host**, like every sweep here.
+
+| Setting                                                                 | Default                              |
+| ----------------------------------------------------------------------- | ------------------------------------ |
+| `REDIS_URL`, `REDIS_PASSWORD`                                           | required; server-only                |
+| `TRAINING_MEMORY_BYTES`, `TRAINING_NANO_CPUS`                           | 4 GiB, 2 CPUs                        |
+| `CONTAINER_{SCORE,BATCH}_MEMORY_BYTES`, `CONTAINER_INFER_MEMORY_BYTES`  | 2 GiB, 1 GiB                         |
+| `CONTAINER_{SCORE,BATCH,INFER}_CPUS`                                    | 1                                    |
+| `CONTAINER_BUDGET_CPUS`, `CONTAINER_BUDGET_MEMORY_BYTES`                | Docker's totals minus the reserve    |
+| `CONTAINER_HOST_RESERVE_CPUS`, `CONTAINER_HOST_RESERVE_MEMORY_BYTES`    | 1, 1.5 GiB                           |
+| `CONTAINER_HELD_CPUS`, `CONTAINER_HELD_MEMORY_BYTES`                    | 1, 1 GiB                             |
+| `CONTAINER_MAX_ACTIVE_PER_WORKSPACE`                                    | 2 (train + batch)                    |
+| `CONTAINER_QUEUE_MAX_WAIT_MS`                                           | 24 hours                             |
+
+Redis has its own compose network and a password, because training containers
+run untrusted code on `monorepo_network`. With Redis down, launches still
+succeed and rows wait, but **no container starts** until it returns.
+
 ## Key Architectural Decisions
 
 | Decision       | Choice                                       | Reason                                                |

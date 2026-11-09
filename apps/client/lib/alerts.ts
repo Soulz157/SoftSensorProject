@@ -2,7 +2,7 @@ import type { CanvasNode } from '@/services/canvas'
 import type { Workspace, WorkspacePlant } from '@/types'
 import type { ModelWithWorkspace } from '@/hooks/use-all-models'
 import { failedDeploys, monitoringAlerts } from '@/lib/model-status'
-import { NODE_BADGE, NODE_DOT } from '@/constants/status'
+import { EQUIPMENT_BADGE, EQUIPMENT_DOT } from '@/constants/status'
 import { formatHealthReason } from '@/lib/health-status-style'
 
 /**
@@ -20,7 +20,7 @@ import { formatHealthReason } from '@/lib/health-status-style'
  * `buildAlerts` maps it to `alert` at read time.
  */
 export type AlertStatus = 'alert' | 'failed' | 'warning' | 'offline'
-export type AlertNodeType =
+export type AlertEquipmentType =
   | 'sensor'
   | 'machine'
   | 'reactor'
@@ -112,8 +112,8 @@ export const ALERT_STATUS_META: Record<
   alert: {
     label: 'Alert',
     plural: 'Alerts',
-    badge: NODE_BADGE.alarm ?? 'text-destructive',
-    dot: NODE_DOT.alarm ?? 'bg-destructive',
+    badge: EQUIPMENT_BADGE.alarm ?? 'text-destructive',
+    dot: EQUIPMENT_DOT.alarm ?? 'bg-destructive',
     pulse: true,
     priority: 1,
     abnormal: true,
@@ -121,8 +121,8 @@ export const ALERT_STATUS_META: Record<
   offline: {
     label: 'Offline',
     plural: 'Offline',
-    badge: NODE_BADGE.offline ?? '',
-    dot: NODE_DOT.offline ?? '',
+    badge: EQUIPMENT_BADGE.offline ?? '',
+    dot: EQUIPMENT_DOT.offline ?? '',
     pulse: false,
     priority: 2,
     abnormal: false,
@@ -130,8 +130,8 @@ export const ALERT_STATUS_META: Record<
   warning: {
     label: 'Warning',
     plural: 'Warnings',
-    badge: NODE_BADGE.warning ?? '',
-    dot: NODE_DOT.warning ?? '',
+    badge: EQUIPMENT_BADGE.warning ?? '',
+    dot: EQUIPMENT_DOT.warning ?? '',
     pulse: false,
     priority: 3,
     abnormal: false,
@@ -161,7 +161,7 @@ export const ALERT_STATUS_ORDER: AlertStatus[] = (
 
 /** Node wire status → alert status. Only the three non-normal node states
  * become rows; `'alarm'` (stored canvas value) reads as `alert`. */
-const NODE_TO_ALERT: Record<string, AlertStatus> = {
+const EQUIPMENT_TO_ALERT: Record<string, AlertStatus> = {
   alarm: 'alert',
   warning: 'warning',
   offline: 'offline',
@@ -181,11 +181,11 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
-function deriveNodeTypeLabel(
-  nodeType: CanvasNode['data']['type'],
+function deriveEquipmentTypeLabel(
+  equipmentType: CanvasNode['data']['type'],
   status: AlertStatus,
 ): string {
-  return `${capitalize(nodeType)} ${ALERT_STATUS_LABEL[status]}`
+  return `${capitalize(equipmentType)} ${ALERT_STATUS_LABEL[status]}`
 }
 
 /** "Workspace > Plant" (or just workspace when the plant is unknown). */
@@ -215,7 +215,7 @@ export function locationBreadcrumb(row: AlertRow): string[] {
 
 interface BuildAlertsArgs {
   workspaces: Workspace[]
-  nodesByWorkspaceId: Record<string, CanvasNode[]>
+  equipmentListByWorkspaceId: Record<string, CanvasNode[]>
   plantsByWorkspaceId: Record<string, WorkspacePlant[]>
   models: ModelWithWorkspace[]
 }
@@ -226,7 +226,7 @@ interface BuildAlertsArgs {
  */
 export function buildAlerts({
   workspaces,
-  nodesByWorkspaceId,
+  equipmentListByWorkspaceId,
   plantsByWorkspaceId,
   models,
 }: BuildAlertsArgs): AlertRow[] {
@@ -242,30 +242,31 @@ export function buildAlerts({
 
   // 1) Equipment node alerts.
   for (const workspace of workspaces) {
-    const nodes = nodesByWorkspaceId[workspace.id] ?? []
-    for (const node of nodes) {
-      const status = NODE_TO_ALERT[node.data.status]
+    const equipmentList = equipmentListByWorkspaceId[workspace.id] ?? []
+    for (const equipment of equipmentList) {
+      const status = EQUIPMENT_TO_ALERT[equipment.data.status]
       if (!status) continue
       rows.push({
-        id: node.id,
+        id: equipment.id,
         kind: 'node',
-        equipmentName: node.data.name,
+        equipmentName: equipment.data.name,
         modelName: null,
         workspaceId: workspace.id,
         workspaceName: workspace.name,
         plantName:
-          plantNameByWorkspacePlan.get(workspace.id)?.get(node.planId) ?? null,
-        typeLabel: deriveNodeTypeLabel(node.data.type, status),
-        typeName: capitalize(node.data.type),
+          plantNameByWorkspacePlan.get(workspace.id)?.get(equipment.planId) ??
+          null,
+        typeLabel: deriveEquipmentTypeLabel(equipment.data.type, status),
+        typeName: capitalize(equipment.data.type),
         status,
-        detail: `${capitalize(node.data.type)}: ${ALERT_STATUS_LABEL[status]}`,
+        detail: `${capitalize(equipment.data.type)}: ${ALERT_STATUS_LABEL[status]}`,
         detailError: null,
         // Equipment rows have no deploy to fail — this field is the model
         // plane's, and a node alert is a different kind of event entirely.
         failureReason: null,
         monitoringReason: null,
-        href: `/plants/${workspace.id}?nodeId=${node.id}`,
-        timestamp: node.updatedAt,
+        href: `/plants/${workspace.id}?nodeId=${equipment.id}`,
+        timestamp: equipment.updatedAt,
       })
     }
   }
@@ -275,9 +276,9 @@ export function buildAlerts({
     // MODEL-SERVE-001-T23. The real source, off the list payload — see
     // AlertRow.failureReason for why `model.data.logs` was never it.
     const lastFailure = model.data?.lastFailure ?? null
-    const nodeData = model.nodes?.data as { name?: string } | undefined
+    const equipmentData = model.nodes?.data as { name?: string } | undefined
     const equipmentName = model.nodes
-      ? (nodeData?.name ?? 'Unknown Node')
+      ? (equipmentData?.name ?? 'Unknown Node')
       : null
     const plantName =
       model.nodes?.plan?.name ??
@@ -335,9 +336,9 @@ export function buildAlerts({
     // MODEL-SERVE-024-D01: ALERT reads Alert; WARN and FROZEN read Warning.
     const status = monitoringToAlertStatus(monitoring?.status)
     if (!status) continue
-    const nodeData = model.nodes?.data as { name?: string } | undefined
+    const equipmentData = model.nodes?.data as { name?: string } | undefined
     const equipmentName = model.nodes
-      ? (nodeData?.name ?? 'Unknown Node')
+      ? (equipmentData?.name ?? 'Unknown Node')
       : null
     const plantName =
       model.nodes?.plan?.name ??

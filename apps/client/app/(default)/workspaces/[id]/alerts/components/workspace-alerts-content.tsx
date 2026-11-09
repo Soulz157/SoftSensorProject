@@ -32,22 +32,22 @@ import {
   Thermometer,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { NODE_STATUS_PRIORITY } from '@/constants/status'
+import { EQUIPMENT_STATUS_PRIORITY } from '@/constants/status'
 import AlertsWorkspaceLoading from '../loading'
-import { useWorkspaceNodes } from '@/hooks/workspace/use-workspace-nodes'
+import { useWorkspaceEquipment } from '@/hooks/workspace/use-workspace-equipment'
 import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 
-type NodeType = 'reactor' | 'machine' | 'sensor'
+type EquipmentType = 'reactor' | 'machine' | 'sensor'
 type AlertStatus = 'warning' | 'alarm' | 'offline'
 
 interface AlertRow {
   nodeId: string
   nodeName: string
-  nodeType: NodeType
+  nodeType: EquipmentType
   status: AlertStatus
 }
 
-function getNodeTypeIcon(type: NodeType) {
+function getEquipmentTypeIcon(type: EquipmentType) {
   switch (type) {
     case 'machine':
       return Cpu
@@ -64,7 +64,7 @@ function getNodeTypeIcon(type: NodeType) {
 // node reads "Alert" (red, Abnormal); warning (amber) and offline (grey) are
 // listed but do NOT make the workspace Abnormal — the same labels and colours
 // as the global Alerts page.
-const NODE_TO_ALERT_STATUS: Record<AlertStatus, SharedAlertStatus> = {
+const EQUIPMENT_TO_ALERT_STATUS: Record<AlertStatus, SharedAlertStatus> = {
   alarm: 'alert',
   warning: 'warning',
   offline: 'offline',
@@ -83,29 +83,30 @@ export function WorkspaceAlertsContent({
   workspaceId,
 }: WorkspaceAlertsContentProps) {
   const { workspace, loading: workspaceLoading } = useWorkspace(workspaceId)
-  const { nodes, loading: nodeLoading } = useWorkspaceNodes(workspaceId)
+  const { equipmentList, loading: equipmentLoading } =
+    useWorkspaceEquipment(workspaceId)
 
-  if (nodeLoading || workspaceLoading) {
+  if (equipmentLoading || workspaceLoading) {
     return <AlertsWorkspaceLoading />
   }
 
-  const alerts: AlertRow[] = (nodes ?? [])
+  const alerts: AlertRow[] = (equipmentList ?? [])
     .filter(
-      node =>
-        node.data.status === 'alarm' ||
-        node.data.status === 'offline' ||
-        node.data.status === 'warning',
+      equipment =>
+        equipment.data.status === 'alarm' ||
+        equipment.data.status === 'offline' ||
+        equipment.data.status === 'warning',
     )
-    .map(node => ({
-      nodeId: node.id,
-      nodeName: node.data.name,
-      nodeType: node.data.type as NodeType,
-      status: node.data.status as AlertStatus,
+    .map(equipment => ({
+      nodeId: equipment.id,
+      nodeName: equipment.data.name,
+      nodeType: equipment.data.type as EquipmentType,
+      status: equipment.data.status as AlertStatus,
     }))
     .sort(
       (a, b) =>
-        (NODE_STATUS_PRIORITY[a.status] ?? 99) -
-        (NODE_STATUS_PRIORITY[b.status] ?? 99),
+        (EQUIPMENT_STATUS_PRIORITY[a.status] ?? 99) -
+        (EQUIPMENT_STATUS_PRIORITY[b.status] ?? 99),
     )
 
   const alarmCount = alerts.filter(a => a.status === 'alarm').length
@@ -185,14 +186,14 @@ export function WorkspaceAlertsContent({
                 <TableRow>
                   <TableHead className="w-10">#</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Node Name</TableHead>
+                  <TableHead>Equipment Name</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead className="w-12" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {alerts.map((alert, index) => {
-                  const Icon = getNodeTypeIcon(alert.nodeType)
+                  const Icon = getEquipmentTypeIcon(alert.nodeType)
                   return (
                     <TableRow key={alert.nodeId}>
                       <TableCell className="text-muted-foreground">
@@ -209,13 +210,13 @@ export function WorkspaceAlertsContent({
                         >
                           {
                             ALERT_STATUS_LABEL[
-                              NODE_TO_ALERT_STATUS[alert.status]
+                              EQUIPMENT_TO_ALERT_STATUS[alert.status]
                             ]
                           }
                         </span>
                       </TableCell>
 
-                      {/* Node Name */}
+                      {/* Equipment Name */}
                       <TableCell className="font-semibold text-foreground">
                         {alert.nodeName}
                       </TableCell>
@@ -228,7 +229,7 @@ export function WorkspaceAlertsContent({
                         </span>
                       </TableCell>
 
-                      {/* Navigate to node */}
+                      {/* Navigate to equipment */}
                       <TableCell>
                         <Link
                           href={`/plants/${workspaceId}?nodeId=${alert.nodeId}`}

@@ -83,7 +83,7 @@ export function useDatasetStudioPreview(): UseDatasetStudioPreviewResult {
           effective = override
         } else {
           setNotice(
-            `Unrecognized summary duration "${override}" — previewing with the Fetch Period bucket (${periodBucket}).`,
+            `Unrecognized summary duration "${override}" — previewing with the Interval bucket (${periodBucket}).`,
           )
         }
       }

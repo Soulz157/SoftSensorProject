@@ -115,20 +115,6 @@ export const TIER_BANDS: Partial<Record<Algorithm, Record<string, TierBands>>> =
     ridge: {
       alpha: { tiny: [1, 300], small: [0.1, 100], large: [0.001, 30] },
     },
-    hist_gradient_boosting: {
-      learning_rate: {
-        tiny: [0.03, 0.3],
-        small: [0.03, 0.3],
-        large: [0.01, 0.2],
-      },
-      n_estimators: { tiny: [30, 150], small: [50, 300], large: [200, 800] },
-      num_leaves: { tiny: [3, 15], small: [4, 31], large: [15, 127] },
-      max_depth: { tiny: [2, 5], small: [3, 8], large: [6, 16] },
-      // MODEL-FLOW-027. Opposite direction like MODEL-FLOW-026's
-      // min_samples_*: a bigger dataset needs a SMALLER row floor per leaf.
-      min_samples_leaf: { tiny: [10, 100], small: [5, 50], large: [5, 30] },
-      l2_regularization: { tiny: [0.1, 30], small: [0, 10], large: [0, 1] },
-    },
     svm: {
       C: { tiny: [0.01, 10], small: [0.03, 30], large: [0.3, 300] },
     },
@@ -145,6 +131,18 @@ export const TIER_BANDS: Partial<Record<Algorithm, Record<string, TierBands>>> =
       },
     },
     random_forest: {
+      n_estimators: { tiny: [50, 200], small: [100, 300], large: [200, 800] },
+      max_depth: { tiny: [3, 8], small: [4, 12], large: [8, 30] },
+      // MODEL-FLOW-026. The two `min_samples_*` floors run the opposite way to
+      // every other band here: they are a guard against leaves that memorise a
+      // few rows, so a bigger dataset needs a SMALLER floor, not a larger one.
+      max_leaf_nodes: { tiny: [8, 64], small: [16, 128], large: [64, 1024] },
+      min_samples_leaf: { tiny: [2, 40], small: [1, 20], large: [1, 10] },
+      min_samples_split: { tiny: [4, 60], small: [2, 40], large: [2, 20] },
+    },
+    // MODEL-FLOW-033. Same bands as random_forest: declared priors, not
+    // measured for extra trees.
+    extra_trees: {
       n_estimators: { tiny: [50, 200], small: [100, 300], large: [200, 800] },
       max_depth: { tiny: [3, 8], small: [4, 12], large: [8, 30] },
       // MODEL-FLOW-026. The two `min_samples_*` floors run the opposite way to

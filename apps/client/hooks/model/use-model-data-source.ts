@@ -10,6 +10,8 @@ import { describeRelink, type RelinkView } from '@/lib/model-data-source'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 
 interface UseModelDataSourceResult {
+  /** The schedule as read — the live source override section builds on it. */
+  schedule: InferenceSchedule | null
   currentSource: ScheduleSourceRef | null
   candidates: ScheduleSourceRef[]
   view: RelinkView
@@ -93,7 +95,11 @@ export function useModelDataSource(
 
   const currentSource = schedule?.currentSource ?? null
   const candidates = schedule?.sourceCandidates ?? []
-  const view = describeRelink({ currentSource, sourceCandidates: candidates })
+  const view = describeRelink({
+    currentSource,
+    sourceCandidates: candidates,
+    overrideRequired: schedule?.liveSource?.required ?? false,
+  })
   const isDirty = !!selectedId && selectedId !== currentSource?.id
 
   const save = useCallback(async () => {
@@ -107,6 +113,7 @@ export function useModelDataSource(
   }, [modelId, schedule, selectedId])
 
   return {
+    schedule,
     currentSource,
     candidates,
     view,

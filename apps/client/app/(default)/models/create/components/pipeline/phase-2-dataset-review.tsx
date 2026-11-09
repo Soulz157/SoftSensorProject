@@ -1,10 +1,18 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { Layers, PencilLine } from 'lucide-react'
+import {
+  Database,
+  FlaskConical,
+  GitCompare,
+  Layers,
+  PencilLine,
+} from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { brandBoundedSample } from '@/lib/preprocessing'
 import { DataAnalysisCard } from '@/app/(default)/data-studio/create/components/processing/data-analysis-card'
 import { Button } from '@/components/ui/button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,15 +31,23 @@ import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifa
 import { useArtifactColumnStats } from '@/hooks/dataset/artifact/use-dataset-artifact-column-stats'
 import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
 import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
+import { useArtifactValidationRows } from '@/hooks/dataset/artifact/use-artifact-validation-rows'
 import { useArtifactFeatureSpec } from '@/hooks/dataset/artifact/use-artifact-feature-spec'
 import { inverseScale } from '@/lib/inverse-scale'
 import { PREVIEW_MAX_ROWS } from '@/lib/downsample'
 import type { EdaWindowControl, TimeWindow } from '@/lib/time-window'
 import type { Dataset } from '@/lib/preprocessing'
 import { perTagStatsOrdered } from '@/lib/dataset-stats'
-import { SourceIdentityPanel } from './dataset-review/source-identity-panel'
+import {
+  SourceIdentityPanel,
+  SourceStatsTiles,
+} from './dataset-review/source-identity-panel'
+import { SplitOverview } from './dataset-review/split-overview'
+import { ReviewSectionHeading } from './dataset-review/review-section-heading'
 import { PerTagStatsPanel } from './dataset-review/per-tag-stats-panel'
 import { HoldoutPanel } from './dataset-review/holdout-panel'
+import { LabStaleNotice } from '@/app/(default)/data-studio/create/components/lab-stale-notice'
+import { DatasetCompareModal } from '@/app/(default)/data-studio/components/dataset-compare-modal'
 
 interface Props {
   nav: UsePipelineNavResult
@@ -74,6 +90,12 @@ export function Phase2DatasetReview({ nav }: Props) {
   // no control here touches the draft.
   const { leaving, handOff } = useDatasetEditHandoff()
   const [editDialogOpen, setEditDialogOpen] = useState(false)
+  // Training and Validation as switchable tabs (2026-10-18), both kept
+  // mounted so switching never resets the analysis card's tag or period.
+  const [reviewTab, setReviewTab] = useState<'training' | 'validation'>(
+    'training',
+  )
+  const [compareOpen, setCompareOpen] = useState(false)
 
   const datasetId = dataset?.id ?? null
   const artifactId = dataset?.currentArtifactId ?? null
@@ -168,8 +190,35 @@ export function Phase2DatasetReview({ nav }: Props) {
   const {
     holdout,
     loading: holdoutLoading,
+    missing: holdoutMissing,
     error: holdoutError,
   } = useArtifactHoldout(datasetId, artifactId)
+
+  // Same wording as the dataset detail sheet's own Compare button.
+  const compareBlockedReason = holdoutLoading
+    ? 'Loading validation data…'
+    : holdoutMissing
+      ? 'The validation data was split, but is no longer retained.'
+      : holdoutError
+        ? `Could not load the validation data — ${holdoutError}`
+        : holdout === null
+          ? 'No validation data was split from this dataset.'
+          : null
+
+  // The validation rows behind the Validation Data chart. Tags are passed only
+  // once a holdout is known to exist — the hook does nothing on an empty list,
+  // so a dataset with no holdout never issues the request. Unscaled, like the
+  // train preview above (already inverted), so no inversion here.
+  const validationRows = useArtifactValidationRows(
+    datasetId,
+    artifactId,
+    holdout ? tags : [],
+    { maxRows: PREVIEW_MAX_ROWS },
+  )
+
+  // The training artifact's own row count — holdout rows were cut out of it
+  // when the dataset was built, so this never includes validation rows.
+  const trainRows = metadata?.rowCount ?? dataset?.rowCount ?? 0
 
   const workspaceName = dataset
     ? (workspaces.find(w => w.id === dataset.workspaceId)?.name ??
@@ -238,11 +287,88 @@ export function Phase2DatasetReview({ nav }: Props) {
         metadata={metadata}
         metadataLoading={metadataLoading}
         metadataError={metadataError}
+        showStats={!hasArtifact}
       />
 
       {hasArtifact ? (
         <>
-          {/* <section className="space-y-2">
+          {/* Layout C (user pick, 2026-10-14): the split first, then one
+              section per side, so nothing about the validation rows sits in
+              the middle of the training data's own summary and analysis.
+              Since 2026-10-18 the two sections are tabs, unchanged inside. */}
+          <SplitOverview
+            dataStart={metadata?.startTime ?? null}
+            dataEnd={metadata?.endTime ?? null}
+            trainRows={trainRows}
+            holdout={holdout}
+            loading={metadataLoading || holdoutLoading}
+          />
+
+          <Tabs
+            value={reviewTab}
+            onValueChange={v =>
+              setReviewTab(v === 'validation' ? 'validation' : 'training')
+            }
+            className="grid grid-cols-1 w-full gap-4"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border space-y-2">
+              <TabsList className="inline-flex flex-wrap gap-4">
+                <TabsTrigger value="training" className="cursor-pointer gap-2">
+                  <Database className="h-3.5 w-3.5" /> Training data
+                </TabsTrigger>
+                <TabsTrigger
+                  value="validation"
+                  className="cursor-pointer gap-2"
+                >
+                  <FlaskConical className="h-3.5 w-3.5" /> Validation data
+                </TabsTrigger>
+              </TabsList>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mb-1.5 shrink-0 gap-1.5"
+                disabled={compareBlockedReason !== null}
+                title={
+                  compareBlockedReason ??
+                  'Compare the training or raw data against the validation data'
+                }
+                onClick={() => setCompareOpen(true)}
+              >
+                <GitCompare className="h-3.5 w-3.5" />
+                Compare Dataset
+              </Button>
+            </div>
+
+            <TabsContent
+              value="training"
+              forceMount
+              className="data-[state=inactive]:hidden"
+            >
+              <section
+                aria-labelledby="training-data-title"
+                className="space-y-3"
+              >
+                <ReviewSectionHeading
+                  id="training-data-title"
+                  icon={<Database className="h-4 w-4 text-primary" />}
+                  title="Training data"
+                  description="Rows the model learns from. Step 3 splits them into train and test."
+                  badge={
+                    <Badge
+                      variant="secondary"
+                      className="font-mono text-[11px] tabular-nums"
+                    >
+                      {trainRows.toLocaleString()} rows
+                    </Badge>
+                  }
+                />
+                <SourceStatsTiles
+                  dataset={dataset}
+                  metadata={metadata}
+                  metadataLoading={metadataLoading}
+                  metadataError={metadataError}
+                />
+                {/* <section className="space-y-2">
             <p className="text-sm font-semibold text-foreground">
               Per-tag statistics
             </p>
@@ -254,18 +380,20 @@ export function Phase2DatasetReview({ nav }: Props) {
             />
           </section> */}
 
-          <section className="space-y-2">
-            <p className="text-sm font-semibold text-foreground">
-              Validation Data
-            </p>
-            <HoldoutPanel
-              holdout={holdout}
-              loading={holdoutLoading}
-              error={holdoutError}
-            />
-          </section>
+                {/* Same rule as Data Studio Step 2, over this step's own bounded
+              read — the scope note says so rather than implying the whole
+              artifact was scanned. */}
+                <LabStaleNotice
+                  dataset={engineeringUnitSample ?? { tags: [], rows: [] }}
+                  scopeNote={
+                    totalRowCount !== null &&
+                    (engineeringUnitSample?.rows.length ?? 0) < totalRowCount
+                      ? `Checked the ${(engineeringUnitSample?.rows.length ?? 0).toLocaleString()} loaded rows of ${totalRowCount.toLocaleString()}.`
+                      : undefined
+                  }
+                />
 
-          {/* Replaces the old PreviewCorrelationPanel outright rather than
+                {/* Replaces the old PreviewCorrelationPanel outright rather than
               sitting beside it — the card's Raw Table tab IS that bounded
               preview and its Correlation tab IS those ranked pairs, so
               keeping both would render the same two things twice on one
@@ -276,14 +404,58 @@ export function Phase2DatasetReview({ nav }: Props) {
               step has no range concept of its own (the artifact's real span
               is shown by SourceIdentityPanel above), so it takes the neutral
               middle option rather than implying a window that was chosen. */}
-          <DataAnalysisCard
-            dataset={boundedSample}
-            range="7d"
+                <DataAnalysisCard
+                  dataset={boundedSample}
+                  range="7d"
+                  datasetId={datasetId}
+                  artifactId={artifactId}
+                  showTransforms={false}
+                  showTagSelector
+                  edaWindow={edaWindow}
+                />
+              </section>
+            </TabsContent>
+
+            <TabsContent
+              value="validation"
+              forceMount
+              className="data-[state=inactive]:hidden"
+            >
+              <section
+                aria-labelledby="validation-data-title"
+                className="space-y-3"
+              >
+                <ReviewSectionHeading
+                  id="validation-data-title"
+                  icon={<FlaskConical className="h-4 w-4 text-chart-5" />}
+                  title="Validation data"
+                  description="Held out when the dataset was built. The model never trains on these rows; Model Selection and Evaluation score it on them."
+                  badge={
+                    holdout ? (
+                      <Badge className="bg-chart-5/15 font-mono text-[11px] text-chart-5 tabular-nums">
+                        {holdout.rowCount.toLocaleString()} rows · held out
+                      </Badge>
+                    ) : null
+                  }
+                />
+                <HoldoutPanel
+                  holdout={holdout}
+                  loading={holdoutLoading}
+                  error={holdoutError}
+                  rows={validationRows}
+                />
+              </section>
+            </TabsContent>
+          </Tabs>
+
+          <DatasetCompareModal
+            open={compareOpen}
+            onOpenChange={setCompareOpen}
             datasetId={datasetId}
             artifactId={artifactId}
-            showTransforms={false}
-            showTagSelector
-            edaWindow={edaWindow}
+            availableTags={tags}
+            holdout={holdout}
+            rawArtifactId={dataset.adoptedBronzeArtifactId ?? null}
           />
         </>
       ) : (

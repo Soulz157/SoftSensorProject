@@ -93,7 +93,12 @@ def upload_artifacts(
             response = requests.put(
                 upload_urls[filename],
                 data=handle,
-                headers={"Content-Type": content_type},
+                headers={
+                    "Content-Type": content_type,
+                    # Required by Azure Blob, ignored by MinIO: it is not part
+                    # of the presigned signature, so one image serves both.
+                    "x-ms-blob-type": "BlockBlob",
+                },
                 timeout=600,
             )
         response.raise_for_status()

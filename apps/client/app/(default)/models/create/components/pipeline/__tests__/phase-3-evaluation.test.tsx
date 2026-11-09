@@ -760,15 +760,15 @@ describe('Phase5Evaluation — tabs for every run (MODEL-FLOW-030)', () => {
     ).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('shows fold mean ± std tiles and labels the SD tile as pooled', () => {
+  it('shows fold mean tiles (no ± std) and labels the SD tile as pooled', () => {
     renderStep({
       run: CV_RUN,
       own: pop('cv-oof', FIT, null, null, CV_METRICS),
     })
     const panel = within(screen.getByRole('tabpanel'))
-    expect(panel.getByText('0.812 ± 0.041')).toBeInTheDocument()
-    expect(panel.getByText('1.500 ± 0.250')).toBeInTheDocument()
-    expect(panel.getAllByText('mean ± std across 3 folds').length).toBe(3)
+    expect(panel.getByText('0.812')).toBeInTheDocument()
+    expect(panel.getByText('1.500')).toBeInTheDocument()
+    expect(panel.getAllByText('mean across 3 folds').length).toBe(3)
     expect(
       panel.getByText('pooled out-of-fold residual SD'),
     ).toBeInTheDocument()
@@ -832,7 +832,7 @@ describe('Phase5Evaluation — tabs for every run (MODEL-FLOW-030)', () => {
       own: pop('cv-oof', null, null, 'no-oof', CV_METRICS),
     })
     const panel = within(screen.getByRole('tabpanel'))
-    expect(panel.getByText('0.812 ± 0.041')).toBeInTheDocument()
+    expect(panel.getByText('0.812')).toBeInTheDocument()
     expect(panel.getByText(/Retrain to see this chart/)).toBeInTheDocument()
     expect(panel.queryByText('Actual vs predicted over time')).toBeNull()
   })

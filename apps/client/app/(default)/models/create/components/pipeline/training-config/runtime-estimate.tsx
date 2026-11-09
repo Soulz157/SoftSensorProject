@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Clock } from 'lucide-react'
 import {
   breakdownRuntime,
   cvFitCount,
@@ -95,8 +95,35 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
         <p className="text-[11px] text-muted-foreground">
           Cross-validation:{' '}
           <span className="font-medium tabular-nums text-foreground">
-            {cvFits.candidates} candidate{cvFits.candidates === 1 ? '' : 's'} ×{' '}
-            {cvFits.fitsEach} fits = {cvFits.total} model fits
+            {cvFits.searchFits !== undefined
+              ? `${cvFits.searchFits} search fits + ${cvFits.fitsEach} for the winner = ${cvFits.total} model fits`
+              : `${cvFits.candidates} candidate${cvFits.candidates === 1 ? '' : 's'} × ${cvFits.fitsEach} fits = ${cvFits.total} model fits`}
+          </span>
+        </p>
+      )}
+
+      {/* MODEL-FLOW-038. Said BEFORE Start, in words, not only as a bar that
+          turns amber: a run that long is a decision, and Cancel exists but is
+          the way out, not the plan. Plain muted text with a clock — the
+          reserved red/amber stay with status. The number is the same estimate
+          the range above is cut from, so the two cannot disagree. */}
+      {!live && heavy && (
+        <p
+          role="status"
+          className="flex items-start gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground"
+        >
+          <Clock aria-hidden="true" className="mt-px h-3 w-3 shrink-0" />
+          <span>
+            This may take about{' '}
+            <span className="font-medium tabular-nums text-foreground">
+              {formatDuration(est)}
+            </span>{' '}
+            ({formatDuration(low)} – {formatDuration(high)})
+            {input.searchWorkers !== undefined && input.searchWorkers > 1
+              ? `, with the search on ${input.searchWorkers} parallel workers`
+              : ''}
+            . To shorten it, remove values from the grid, lower the number of
+            trees, or use fewer rows. You can cancel while it runs.
           </span>
         </p>
       )}
@@ -156,12 +183,12 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
             <p className="flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2 py-1.5 text-[10px] leading-relaxed text-amber-700 ring-1 ring-amber-500/20 dark:text-amber-400">
               <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
               <span>
-                {input.findBestModel
-                  ? `Find Best Model trains all ${shares.length} algorithms — turning it off and keeping ${top.label} cuts the run to about ${formatDuration(top.seconds)}.`
-                  : dominates
-                    ? `${top.label} accounts for ${top.pct.toFixed(0)}% of the estimate — dropping it saves roughly ${formatDuration(top.seconds)}.`
-                    : stacked
-                      ? `${shares.length} algorithms run sequentially, so runtime is the sum, not the max. Trim the list to shorten the run.`
+                {dominates
+                  ? `${top.label} accounts for ${top.pct.toFixed(0)}% of the estimate — dropping it saves roughly ${formatDuration(top.seconds)}.`
+                  : stacked
+                    ? `${shares.length} algorithms run sequentially, so runtime is the sum, not the max. Trim the list to shorten the run.`
+                    : input.gridFits !== undefined
+                      ? `Grid search runs ${input.gridFits} fits on top of this run — remove values, or turn it off for a first pass.`
                       : `Find Best Parameters adds up to ${Math.max(0, ...input.algorithms.map(a => input.tuningVariants?.[a] ?? 4))} extra fits on top of this run — turn it off for a first pass.`}
               </span>
             </p>

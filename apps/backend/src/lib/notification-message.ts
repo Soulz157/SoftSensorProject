@@ -120,6 +120,62 @@ export function buildNotificationMessage(
   };
 }
 
+export interface ParsedNotificationBody {
+  workspace: string | null;
+  detail: string | null;
+  reason: string | null;
+  frozen: string | null;
+  /** Already formatted by `formatTimestamp`: "22 Oct 2026 01:29 UTC". */
+  timestamp: string | null;
+}
+
+type BodyKey = keyof ParsedNotificationBody | 'model';
+
+/** The labels `buildNotificationMessage` writes, one per line. */
+const BODY_PREFIXES: Array<[string, BodyKey]> = [
+  ['Workspace: ', 'workspace'],
+  ['Model: ', 'model'],
+  ['Detail: ', 'detail'],
+  ['Reason: ', 'reason'],
+  ['Frozen: ', 'frozen'],
+  ['Timestamp: ', 'timestamp'],
+];
+
+/**
+ * MODEL-SERVE-039. The inverse of `buildNotificationMessage`: reads the
+ * stored `bodyText` (already redacted) back into fields, so the in-app bell
+ * can show the SAME content the e-mail and Teams alert carried instead of a
+ * second wording. A line without a known label continues the field above it
+ * (a Reason may span lines); parsing stops at Timestamp, after which only
+ * the model link follows. A field the text does not carry is null, so an
+ * older or partial payload degrades to "nothing to show", never to a guess.
+ */
+export function parseNotificationBody(
+  bodyText: string,
+): ParsedNotificationBody {
+  const out: ParsedNotificationBody = {
+    workspace: null,
+    detail: null,
+    reason: null,
+    frozen: null,
+    timestamp: null,
+  };
+  let current: BodyKey | null = null;
+  for (const line of bodyText.split('\n')) {
+    const hit = BODY_PREFIXES.find(([prefix]) => line.startsWith(prefix));
+    if (hit) {
+      current = hit[1];
+      if (current !== 'model') out[current] = line.slice(hit[0].length);
+      if (current === 'timestamp') break;
+      continue;
+    }
+    if (current !== null && current !== 'model' && out[current] !== null) {
+      out[current] = `${out[current]}\n${line}`;
+    }
+  }
+  return out;
+}
+
 /**
  * The five-word vocabulary sentence for a MONITORING transition — shared by
  * every monitoring-axis event so the wording matches the Model Detail badge
@@ -253,16 +309,10 @@ const BAND_RANK: Record<DigestBand, number> = { ok: 0, warn: 1, crit: 2 };
 function rowDescription(r: DigestRow): string {
   const parts = [`${r.model} — ${r.status.toUpperCase()}`, r.reason];
   const candidates: { band: DigestBand; text: string }[] = [];
-  if (r.psiBand && r.psi !== null) {
-    candidates.push({
-      band: r.psiBand,
-      text: `PSI ${r.psi.toFixed(2)} ${BAND_LABEL[r.psiBand]}${r.worstInput ? ` on ${r.worstInput}` : ''}`,
-    });
-  }
   if (r.outOfRangeBand && r.outOfRangePct !== null) {
     candidates.push({
       band: r.outOfRangeBand,
-      text: `OoR ${r.outOfRangePct.toFixed(1)}% ${BAND_LABEL[r.outOfRangeBand]}`,
+      text: `OoR ${r.outOfRangePct.toFixed(1)}% ${BAND_LABEL[r.outOfRangeBand]}${r.worstInput ? ` on ${r.worstInput}` : ''}`,
     });
   }
   if (r.sdBand && r.sdRatio !== null) {
@@ -272,7 +322,7 @@ function rowDescription(r: DigestRow): string {
         : '';
     candidates.push({
       band: r.sdBand,
-      text: `SD ratio ${r.sdRatio.toFixed(1)}x ${BAND_LABEL[r.sdBand]}${band}`,
+      text: `Worst residual ${r.sdRatio.toFixed(1)}x SD ${BAND_LABEL[r.sdBand]}${band}`,
     });
   }
   const worst = candidates.reduce<(typeof candidates)[number] | null>(
@@ -330,7 +380,6 @@ function digestCells(r: DigestRow): DigestCell[] {
     { text: fmtDuration(r.openMinutes), band: null },
     { text: r.reason, band: null },
     { text: r.worstInput ?? '—', band: null },
-    { text: fmtNum(r.psi, 2), band: r.psiBand },
     { text: fmtNum(r.outOfRangePct, 1), band: r.outOfRangeBand },
     { text: fmtNum(r.sdRatio, 1, 'x'), band: r.sdBand },
     { text: band, band: null },
@@ -343,7 +392,6 @@ const DIGEST_HEADERS = [
   'Since',
   'Reason',
   'Worst input',
-  'PSI',
   'OoR %',
   'SD ratio',
   'Band (warn/crit)',
@@ -357,8 +405,7 @@ function legendLines(d: DigestData): string[] {
   const l = d.legend;
   return [
     'Band legend (green OK / yellow WARN / red CRIT):',
-    `PSI: green < ${l.warn}, yellow ${l.warn}-${l.critical}, red >= ${l.critical}`,
-    `OoR %: green < ${l.outOfRangeWarnPct}%, yellow ${l.outOfRangeWarnPct}-${l.outOfRangeCriticalPct}%, red >= ${l.outOfRangeCriticalPct}%`,
+    `OoR % (live values outside the training range): green < ${l.outOfRangeWarnPct}%, yellow ${l.outOfRangeWarnPct}-${l.outOfRangeCriticalPct}%, red >= ${l.outOfRangeCriticalPct}%`,
     'SD ratio (live SD / baseline SD): green < warn, yellow warn to < crit, red >= crit (the warn/crit band is set per model)',
   ];
 }
@@ -435,9 +482,15 @@ function renderTeamsDigestCard(msg: RenderedMessage, d: DigestData): unknown {
   const header = {
     type: 'ColumnSet',
     columns: [
-      ...['Model', 'Status', 'Since', 'Reason', 'PSI', 'OoR %', 'SD ratio'].map(
-        (h) => col(h, { weight: 'Bolder' }),
-      ),
+      ...[
+        'Model',
+        'Status',
+        'Since',
+        'Reason',
+        'Worst input',
+        'OoR %',
+        'SD ratio',
+      ].map((h) => col(h, { weight: 'Bolder' })),
     ],
   };
   const rows = d.rows.map((r) => {
@@ -456,11 +509,11 @@ function renderTeamsDigestCard(msg: RenderedMessage, d: DigestData): unknown {
         col(cells[1].text),
         col(cells[2].text),
         col(cells[3].text),
+        col(cells[4].text),
         bandCol(cells[5]),
-        bandCol(cells[6]),
         col(
-          `${cellText(cells[7])}${sdBand}`,
-          cells[7].band ? { color: BAND_TEAMS_COLOR[cells[7].band] } : {},
+          `${cellText(cells[6])}${sdBand}`,
+          cells[6].band ? { color: BAND_TEAMS_COLOR[cells[6].band] } : {},
         ),
       ],
     };

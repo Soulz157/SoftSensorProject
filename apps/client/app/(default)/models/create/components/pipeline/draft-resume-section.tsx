@@ -235,7 +235,7 @@ export function DraftResumeSection({ workspaceId, dirty }: Props) {
             <AlertDialogTitle>Resume this draft?</AlertDialogTitle>
             <AlertDialogDescription>
               What you have entered here — the name, the selected dataset and
-              any training configuration — is replaced by the saved draft. None
+              any model configuration — is replaced by the saved draft. None
               of it has been saved yet, so it cannot be brought back.
             </AlertDialogDescription>
           </AlertDialogHeader>

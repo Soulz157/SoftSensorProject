@@ -72,12 +72,18 @@ describe('perTagStatsOrdered inversion', () => {
   })
 
   it('returns a tag untouched when only OTHER tags have recorded params', () => {
-    const [row] = perTagStatsOrdered([TAG], stats(), { 'VI-202': { min: 0, max: 1 } })
+    const [row] = perTagStatsOrdered([TAG], stats(), {
+      'VI-202': { min: 0, max: 1 },
+    })
     expect(row!.mean).toBe(0.5)
   })
 
   it('preserves a null statistic as null rather than converting it to a number', () => {
-    const [row] = perTagStatsOrdered([TAG], stats({ std: null, mean: null }), PARAMS)
+    const [row] = perTagStatsOrdered(
+      [TAG],
+      stats({ std: null, mean: null }),
+      PARAMS,
+    )
     expect(row!.std).toBeNull()
     expect(row!.mean).toBeNull()
   })

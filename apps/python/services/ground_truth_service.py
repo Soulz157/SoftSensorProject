@@ -57,6 +57,7 @@ from services.frame_service import (
     diagnose_empty_pi_fetch,
     from_pi_response,
     from_sql_response,
+    rename_mapped_tags,
     utc_to_wall_clock,
 )
 
@@ -111,6 +112,7 @@ def _empty_result(prediction_rows: int, truth_rows: int = 0) -> dict[str, Any]:
         "sum_signed": 0.0,
         "sum_actual": 0.0,
         "sum_actual_sq": 0.0,
+        "max_abs_residual": 0.0,
     }
 
 
@@ -158,7 +160,11 @@ def _fetch_truth_frame(
     an interval with no lab result carries NULL, which `from_sql_response`
     already turns into a Bad hole — absence survives the fetch on its own.
     """
-    tag = request.target_column
+    # MODEL-SERVE-037-T03. Under a live source override the target is read
+    # by its mapped PI tag; `join_window_truth` renames it back.
+    tag = (request.column_tag_map or {}).get(
+        request.target_column, request.target_column
+    )
     start = fetch_start.strftime(_TIME_FMT)
     end = fetch_end.strftime(_TIME_FMT)
 
@@ -266,8 +272,11 @@ def join_window_truth(
     # a window opened or just after it closed can still legitimately pair
     # with a prediction inside it, and the tolerance is the stated rule for
     # how near is near enough.
-    truth = _fetch_truth_frame(
-        request, window_start - tolerance, window_end + tolerance
+    truth = rename_mapped_tags(
+        _fetch_truth_frame(
+            request, window_start - tolerance, window_end + tolerance
+        ),
+        request.column_tag_map,
     )
 
     if tag not in truth.columns or len(truth) == 0:
@@ -370,6 +379,10 @@ def join_window_truth(
         "sum_signed": float(residual.sum()),
         "sum_actual": float(actual.sum()),
         "sum_actual_sq": float((actual**2).sum()),
+        # MODEL-SERVE-046. The window's WORST single residual. The sums above
+        # cannot say whether one point fell beyond k x SD — only a pooled
+        # spread — and the per-point status rule needs exactly that.
+        "max_abs_residual": float(residual.abs().max()),
     }
 
 

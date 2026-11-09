@@ -414,7 +414,7 @@ export function ImputationTrendChart({
           {showAfter && (
             <Line
               dataKey={(row: TagFillPreviewRow) => row.after}
-              name="Imputed"
+              name="Cleaned"
               type={curve}
               stroke={afterColor}
               strokeWidth={2}

@@ -37,6 +37,7 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { useCreateWorkspace } from '@/hooks/workspace/use-create-workspace'
+import { useMyWorkspaceQuota } from '@/hooks/workspace/use-my-workspace-quota'
 import z from 'zod'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -74,6 +75,8 @@ type WorkspaceFormValues = z.infer<typeof workspaceSchema>
 
 export function CreateWorkspaceForm() {
   const { createWorkspace, isCreating } = useCreateWorkspace()
+  // MODEL-SERVE-041. Why Create is disabled (plan allowance used), or null.
+  const { note: slotNote } = useMyWorkspaceQuota()
   const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null)
   const router = useRouter()
 
@@ -330,7 +333,14 @@ export function CreateWorkspaceForm() {
             />
           </div>
 
-          <Button type="submit" className="w-full mt-4" disabled={isCreating}>
+          {slotNote && (
+            <p className="mt-4 text-xs text-muted-foreground">{slotNote}</p>
+          )}
+          <Button
+            type="submit"
+            className="w-full mt-4"
+            disabled={isCreating || slotNote !== null}
+          >
             {isCreating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {isCreating ? 'Creating...' : 'Create workspace'}
           </Button>

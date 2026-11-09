@@ -30,6 +30,12 @@ describe('directSources', () => {
     expect(
       directSources({ kind: 'ratio', config: { tags: ['A', 'B'] } }),
     ).toEqual(['A', 'B']);
+    expect(
+      directSources({
+        kind: 'group',
+        config: { agg: 'mean', tags: ['AI602A.PV', 'AI602B.PV'] },
+      }),
+    ).toEqual(['AI602A.PV', 'AI602B.PV']);
   });
 
   it('returns [] — not null — for datetime, which reads the timestamp and no tag', () => {

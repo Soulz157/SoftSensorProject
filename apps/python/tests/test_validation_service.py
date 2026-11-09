@@ -349,3 +349,24 @@ def test_run_validation_has_real_headroom_under_the_http_timeout_at_scale() -> N
         f"HTTP timeout — only {headroom_seconds:.2f}s headroom, under the "
         "60s margin this test requires."
     )
+
+
+def test_statistical_detail_counts_tags_and_names_them_in_offenders() -> None:
+    """2026-10-19: the detail used to inline every tag as a Python list -
+    hundreds of names on one line. It now counts; `offenders` names them."""
+    from services.validation_service import check_statistical
+
+    n = 40
+    data: dict = {
+        "timestamp": pd.date_range("2026-01-01", periods=n, freq="h"),
+    }
+    for i in range(30):
+        tag = f"STUCK{i}"
+        data[tag] = [5.0] * n
+        data[f"{tag}__status"] = pd.array([0] * n, dtype="int8")
+    result = check_statistical(pd.DataFrame(data))
+
+    assert not result.passed
+    assert result.detail == "30 degenerate (zero-variance)."
+    assert "STUCK" not in result.detail
+    assert len(result.offenders) == 30

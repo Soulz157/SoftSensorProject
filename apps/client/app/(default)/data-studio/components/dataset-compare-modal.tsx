@@ -61,6 +61,7 @@ import {
 } from '@/lib/downsample'
 import {
   describePreviewWindow,
+  holdoutExcludeWindow,
   monthOptions,
   toWallClock,
   type TimeWindow,
@@ -1497,7 +1498,18 @@ interface Props {
   artifactId: string | null
   availableTags: string[]
   holdout: ArtifactHoldout | null
+  /**
+   * The dataset's raw (BRONZE) fetch. Passing it — even as `null` — offers a
+   * "Raw (Bronze)" left side: the fetch as read from PI, before cleaning and
+   * scaling, with the validation window taken OUT (rows before and after it
+   * are kept — a holdout can be cut from the middle). `null` says why it is
+   * unavailable; leaving the prop out keeps the modal Training-only.
+   */
+  rawArtifactId?: string | null
 }
+
+/** Which artifact the left side reads. */
+type CompareSource = 'train' | 'raw'
 
 const TICK_UNIT_OPTIONS: { value: TickUnit; label: string }[] = [
   { value: 'auto', label: 'Auto' },
@@ -1513,8 +1525,11 @@ export function DatasetCompareModal({
   artifactId,
   availableTags,
   holdout,
+  rawArtifactId,
 }: Props) {
   const [selected, setSelected] = useState<string[]>([])
+  const [source, setSource] = useState<CompareSource>('train')
+  const raw = source === 'raw' && !!rawArtifactId
   const [pickerOpen, setPickerOpen] = useState(false)
   // "By side" = the original train-vs-validation view per tag. "By month" =
   // ONE tag: the validation holdout beside each picked training month.
@@ -1554,15 +1569,37 @@ export function DatasetCompareModal({
     error: specError,
   } = useArtifactFeatureSpec(open ? datasetId : null, open ? artifactId : null)
   const scalingParams = featureSpec?.scalingParams ?? null
+  // Raw side: BRONZE is stored in engineering units, so nothing is inverted
+  // and nothing waits on (or is blocked by) the feature spec.
+  const leftScaling = raw ? null : scalingParams
+  const leftSpecLoading = !raw && specLoading
+
+  const { metadata: rawMeta } = useArtifactMetadata(
+    open && rawArtifactId ? datasetId : null,
+    open ? (rawArtifactId ?? null) : null,
+  )
+  // Both bounds or none: until the pair is known the raw side stays idle
+  // rather than reading every validation row along with the rest.
+  const rawExclude = useMemo(
+    () => holdoutExcludeWindow(holdout, rawMeta?.endTime),
+    [holdout, rawMeta?.endTime],
+  )
+  const leftExclude = raw ? rawExclude : null
 
   // A tag is plottable only if its train values can be stated in engineering
   // units. Excluding the rest is the point: an un-invertible tag drawn beside
   // inverted ones on the shared axis is exactly what makes two unit spaces
   // look like a process change.
+  // Raw: no inversion is needed, but a tag must exist in the fetch —
+  // engineered features exist only from the feature stage on.
   const plottableTags = useMemo(() => {
+    if (raw) {
+      const fetched = new Set(rawMeta?.tags ?? [])
+      return availableTags.filter(t => fetched.has(t))
+    }
     if (!scalingParams) return []
     return availableTags.filter(t => isInvertible(scalingParams[t]))
-  }, [availableTags, scalingParams])
+  }, [raw, rawMeta?.tags, availableTags, scalingParams])
 
   const excludedCount = availableTags.length - plottableTags.length
 
@@ -1588,7 +1625,8 @@ export function DatasetCompareModal({
   // dialog (the X, Esc, the overlay, or a parent setting `open` back to
   // false) — the same coverage the effect had, and strictly more than
   // wrapping `onOpenChange` would give.
-  const syncKey = open ? plottableTagsKey : null
+  // The source rides along: switching sides changes the plottable set.
+  const syncKey = open ? `${source}|${plottableTagsKey}` : null
   const [syncedKey, setSyncedKey] = useState(syncKey)
   if (syncedKey !== syncKey) {
     setSyncedKey(syncKey)
@@ -1605,6 +1643,7 @@ export function DatasetCompareModal({
       })
     } else {
       setSelected([])
+      setSource('train')
       // A month picked for one dataset would filter the next one to nothing.
       setTrainPeriod(null)
       setValidationPeriod(null)
@@ -1617,7 +1656,8 @@ export function DatasetCompareModal({
     }
   }
 
-  const trainArtifactId = selected.length > 0 ? artifactId : null
+  const leftArtifactId = raw ? (rawExclude ? rawArtifactId : null) : artifactId
+  const trainArtifactId = selected.length > 0 ? leftArtifactId : null
 
   // The train artifact's own span drives its period picker. Gated on `open`
   // like the feature spec above, so a closed modal leaves no fetch in flight.
@@ -1627,9 +1667,10 @@ export function DatasetCompareModal({
   )
 
   // The months the TRAIN artifact spans. Month compare needs at least two.
+  const leftMeta = raw ? rawMeta : trainMeta
   const availableMonths = useMemo(
-    () => monthOptions(trainMeta?.startTime, trainMeta?.endTime),
-    [trainMeta?.startTime, trainMeta?.endTime],
+    () => monthOptions(leftMeta?.startTime, leftMeta?.endTime),
+    [leftMeta?.startTime, leftMeta?.endTime],
   )
   const canCompareMonths = availableMonths.length >= 2
   const monthly = canCompareMonths && compareMode === 'month'
@@ -1667,6 +1708,14 @@ export function DatasetCompareModal({
     }
   }
 
+  // A period or month picked on one side's span means nothing on the other's.
+  const handleSourceChange = (next: CompareSource) => {
+    setSource(next)
+    setTrainPeriod(null)
+    setMonthTagPick(null)
+    resetMonths()
+  }
+
   const {
     sample: trainSample,
     totalRowCount: trainTotal,
@@ -1675,6 +1724,7 @@ export function DatasetCompareModal({
   } = useArtifactRows(datasetId, trainArtifactId, selected, {
     maxRows: PREVIEW_MAX_ROWS,
     timeWindow: trainPeriod,
+    excludeWindow: leftExclude,
   })
 
   const {
@@ -1694,12 +1744,12 @@ export function DatasetCompareModal({
   const trainTrend = useMemo(
     () =>
       downsampleBy(
-        toSeries(trainSample, selected, scalingParams),
+        toSeries(trainSample, selected, leftScaling),
         selected,
         SIDE_MAX_POINTS,
         (point, tag) => point[tag],
       ),
-    [trainSample, selected, scalingParams],
+    [trainSample, selected, leftScaling],
   )
   const validationTrend = useMemo(
     () =>
@@ -1730,8 +1780,8 @@ export function DatasetCompareModal({
     : null
 
   const trainTable = useMemo(
-    () => inverseDataset(trainSample, scalingParams),
-    [trainSample, scalingParams],
+    () => inverseDataset(trainSample, leftScaling),
+    [trainSample, leftScaling],
   )
   const validationTable = useMemo(
     () => inverseDataset(validationSample, null),
@@ -1814,6 +1864,8 @@ export function DatasetCompareModal({
     trainArtifactId,
     histogramTags,
     CHART_SAMPLE_ROWS,
+    null,
+    leftExclude,
   )
   const validationHistogram = useArtifactValidationHistogram(
     datasetId,
@@ -1826,10 +1878,10 @@ export function DatasetCompareModal({
   // applies to the Line tab.
   const trainHistogramInverted = useMemo(
     () =>
-      trainHistogram.histogram
+      trainHistogram.histogram && !raw
         ? inverseScaleHistogram(trainHistogram.histogram, scalingParams)
-        : null,
-    [trainHistogram.histogram, scalingParams],
+        : trainHistogram.histogram,
+    [trainHistogram.histogram, raw, scalingParams],
   )
   const mergedHistogram = useMemo(
     () =>
@@ -1856,7 +1908,7 @@ export function DatasetCompareModal({
   const histogramStatus: ChartTabStatus =
     selected.length === 0
       ? 'no-tags'
-      : trainHistogram.loading || validationHistogram.loading || specLoading
+      : trainHistogram.loading || validationHistogram.loading || leftSpecLoading
         ? 'loading'
         : 'ready'
   const validationHistogramMessage =
@@ -1874,6 +1926,8 @@ export function DatasetCompareModal({
     trainArtifactId,
     boxplotTags,
     CHART_SAMPLE_ROWS,
+    null,
+    leftExclude,
   )
   const validationBoxplot = useArtifactValidationBoxplot(
     datasetId,
@@ -1883,10 +1937,10 @@ export function DatasetCompareModal({
   )
   const trainBoxplotInverted = useMemo(
     () =>
-      trainBoxplot.boxplot
+      trainBoxplot.boxplot && !raw
         ? inverseScaleBoxplot(trainBoxplot.boxplot, scalingParams)
-        : null,
-    [trainBoxplot.boxplot, scalingParams],
+        : trainBoxplot.boxplot,
+    [trainBoxplot.boxplot, raw, scalingParams],
   )
   const mergedBoxplot = useMemo(
     () =>
@@ -1906,7 +1960,7 @@ export function DatasetCompareModal({
   const boxplotStatus: ChartTabStatus =
     selected.length === 0
       ? 'no-tags'
-      : trainBoxplot.loading || validationBoxplot.loading || specLoading
+      : trainBoxplot.loading || validationBoxplot.loading || leftSpecLoading
         ? 'loading'
         : 'ready'
   const validationBoxplotMessage =
@@ -1916,7 +1970,12 @@ export function DatasetCompareModal({
   // then the validation holdout's entry for that tag put in front. Train is
   // stored scaled, so each month is inverted to engineering units first;
   // validation is raw on disk and needs none (same asymmetry as above).
-  const monthLeg: ArtifactLeg = { kind: 'dataset', datasetId, artifactId }
+  const monthLeg: ArtifactLeg = {
+    kind: 'dataset',
+    datasetId,
+    artifactId: leftArtifactId,
+    excludeWindow: leftExclude,
+  }
   const monthlyHist = useMonthlyHistograms(
     monthLeg,
     monthTag,
@@ -1933,7 +1992,8 @@ export function DatasetCompareModal({
     if (!monthly || !monthTag || !monthlyHist.results) return null
     const inverted = monthlyHist.results.map(r => ({
       ...r,
-      data: r.data ? inverseScaleHistogram(r.data, scalingParams) : null,
+      data:
+        r.data && !raw ? inverseScaleHistogram(r.data, scalingParams) : r.data,
     }))
     return withReferenceHistogram(
       mergeMonthlyHistograms(inverted, monthTag),
@@ -1944,6 +2004,7 @@ export function DatasetCompareModal({
     monthly,
     monthTag,
     monthlyHist.results,
+    raw,
     scalingParams,
     validationHistogram.histogram,
   ])
@@ -1951,7 +2012,8 @@ export function DatasetCompareModal({
     if (!monthly || !monthTag || !monthlyBox.results) return null
     const inverted = monthlyBox.results.map(r => ({
       ...r,
-      data: r.data ? inverseScaleBoxplot(r.data, scalingParams) : null,
+      data:
+        r.data && !raw ? inverseScaleBoxplot(r.data, scalingParams) : r.data,
     }))
     return withReferenceBoxplot(
       mergeMonthlyBoxplots(inverted, monthTag),
@@ -1962,18 +2024,21 @@ export function DatasetCompareModal({
     monthly,
     monthTag,
     monthlyBox.results,
+    raw,
     scalingParams,
     validationBoxplot.boxplot,
   ])
   const monthlyReady = Boolean(monthTag && pickedMonths.length > 0)
   const monthlyHistStatus: ChartTabStatus = !monthlyReady
     ? 'no-tags'
-    : monthlyPending(monthlyHist) || validationHistogram.loading || specLoading
+    : monthlyPending(monthlyHist) ||
+        validationHistogram.loading ||
+        leftSpecLoading
       ? 'loading'
       : 'ready'
   const monthlyBoxStatus: ChartTabStatus = !monthlyReady
     ? 'no-tags'
-    : monthlyPending(monthlyBox) || validationBoxplot.loading || specLoading
+    : monthlyPending(monthlyBox) || validationBoxplot.loading || leftSpecLoading
       ? 'loading'
       : 'ready'
   // When no month produced anything the chart still gets the TAG, so its
@@ -1993,6 +2058,8 @@ export function DatasetCompareModal({
     correlationTags,
     CORRELATION_TOP_K,
     CHART_SAMPLE_ROWS,
+    null,
+    leftExclude,
   )
   const validationCorrelation = useArtifactValidationCorrelation(
     datasetId,
@@ -2011,13 +2078,13 @@ export function DatasetCompareModal({
   const trainCorrelationStatus: ChartTabStatus =
     correlationTags.length === 0
       ? 'no-tags'
-      : trainCorrelation.loading || specLoading
+      : trainCorrelation.loading || leftSpecLoading
         ? 'loading'
         : 'ready'
   const validationCorrelationStatus: ChartTabStatus =
     correlationTags.length === 0
       ? 'no-tags'
-      : validationCorrelation.loading || specLoading
+      : validationCorrelation.loading || leftSpecLoading
         ? 'loading'
         : 'ready'
   const validationCorrelationMessage = validationUnavailableMessage(
@@ -2032,6 +2099,16 @@ export function DatasetCompareModal({
     [trainCorrelation.correlation, validationCorrelation.correlation],
   )
 
+  const leftLabel = raw ? 'Raw (Bronze)' : 'Dataset (train)'
+  // Offered only when the caller passes `rawArtifactId` at all; `null` means
+  // the dataset kept no raw fetch, and the reason is shown instead.
+  const offersRaw = rawArtifactId !== undefined
+  const rawUnavailable = !rawArtifactId
+    ? 'This dataset keeps no raw (BRONZE) fetch to compare.'
+    : !holdout
+      ? 'This dataset has no validation window to compare against.'
+      : null
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto scrollbar-none sm:max-w-5xl">
@@ -2045,8 +2122,30 @@ export function DatasetCompareModal({
                     : ''
                 } · ${holdout.rowCount.toLocaleString()} validation rows.`
               : 'Both sides on one shared value axis, in engineering units.'}
+            {raw &&
+              ' Raw side: the fetch before cleaning, with the validation window taken out — rows before and after it are kept.'}
           </DialogDescription>
         </DialogHeader>
+
+        {offersRaw && (
+          <div className="flex flex-wrap items-center gap-3">
+            {rawUnavailable ? (
+              <p className="text-[11px] text-muted-foreground">
+                Compare against: Training (cleaned) only. {rawUnavailable}
+              </p>
+            ) : (
+              <SegmentedToggle
+                ariaLabel="Compare validation against"
+                value={source}
+                onChange={handleSourceChange}
+                options={[
+                  { value: 'train', label: 'Training (cleaned)' },
+                  { value: 'raw', label: 'Raw (Bronze)' },
+                ]}
+              />
+            )}
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-2">
           <Dialog open={pickerOpen} onOpenChange={handlePickerOpenChange}>
@@ -2099,7 +2198,9 @@ export function DatasetCompareModal({
                     {availableTags.length === 0
                       ? 'No tags available.'
                       : plottableTags.length === 0
-                        ? 'No tag on this dataset can be shown in engineering units.'
+                        ? raw
+                          ? 'None of these tags is in the raw fetch.'
+                          : 'No tag on this dataset can be shown in engineering units.'
                         : 'No signals found.'}
                   </CommandEmpty>
                   {plottableTags.map(tag => {
@@ -2177,8 +2278,10 @@ export function DatasetCompareModal({
           )}
           {excludedCount > 0 && plottableTags.length > 0 && (
             <span className="text-[11px] text-muted-foreground">
-              {excludedCount} tag{excludedCount > 1 ? 's' : ''} hidden — no
-              recorded scaler fit, so they cannot be shown in engineering units.
+              {excludedCount} tag{excludedCount > 1 ? 's' : ''} hidden —{' '}
+              {raw
+                ? 'not in the raw fetch (engineered features are added later).'
+                : 'no recorded scaler fit, so they cannot be shown in engineering units.'}
             </span>
           )}
 
@@ -2234,16 +2337,16 @@ export function DatasetCompareModal({
         <div className="flex flex-wrap items-start gap-x-8 gap-y-3">
           <div className="flex flex-col gap-1">
             <MonthWindowSelect
-              label="Train period"
-              startTime={trainMeta?.startTime}
-              endTime={trainMeta?.endTime}
+              label={raw ? 'Raw period' : 'Train period'}
+              startTime={leftMeta?.startTime}
+              endTime={leftMeta?.endTime}
               value={trainPeriod}
               onChange={setTrainPeriod}
               loading={trainLoading}
             />
             {trainSummary && (
               <p className="text-[11px] text-muted-foreground">
-                Train: {trainSummary}
+                {raw ? 'Raw' : 'Train'}: {trainSummary}
               </p>
             )}
           </div>
@@ -2272,7 +2375,7 @@ export function DatasetCompareModal({
             the train side in engineering units, and plotting its scaled values
             against the raw holdout is the defect this whole path exists to
             fix — so say so instead of drawing it. */}
-        {specMissing || specError ? (
+        {!raw && (specMissing || specError) ? (
           <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
             {specMissing
               ? 'This dataset records no scaler fit, so its stored values cannot be converted to engineering units. A comparison here would put two different unit scales on one axis, so it is not shown.'
@@ -2335,7 +2438,7 @@ export function DatasetCompareModal({
 
             <TabsContent value="line" className="mt-0 space-y-3">
               <ChartBox
-                title="Train vs. validation"
+                title={raw ? 'Raw vs. validation' : 'Train vs. validation'}
                 subtitle={
                   axis === 'time'
                     ? 'Engineering units · adjacent in date order'
@@ -2344,7 +2447,7 @@ export function DatasetCompareModal({
                 // Only the TRAIN side gates the chart: a missing holdout still
                 // leaves a real train line worth drawing, so its error goes to
                 // that side's legend rather than replacing the whole chart.
-                loading={trainLoading || validationLoading || specLoading}
+                loading={trainLoading || validationLoading || leftSpecLoading}
                 errorMessage={
                   trainError ? `Could not load rows — ${trainError}` : null
                 }
@@ -2367,7 +2470,7 @@ export function DatasetCompareModal({
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <SideLegend
-                  title="Dataset (train)"
+                  title={leftLabel}
                   series={trainSeries}
                   tags={selected}
                   dashed={false}
@@ -2417,19 +2520,23 @@ export function DatasetCompareModal({
                 )}{' '}
                 {(trainTrend.downsampled || validationTrend.downsampled) &&
                   'A side with more rows than the chart can draw is thinned, keeping peaks — pick a period for full detail. '}
+                {raw &&
+                  'Raw rows after the validation window are on the raw side too — the marked line is only where validation begins. '}
                 Gaps inside a line are Bad-status readings, not zero.
               </p>
             </TabsContent>
 
             <TabsContent value="raw-table" className="mt-0 space-y-3">
               <TableBox
-                title="Dataset (train)"
+                title={leftLabel}
                 subtitle={
                   trainTable
                     ? `${trainSummary ?? `${trainTable.rows.length.toLocaleString()} rows loaded.`} · engineering units`
-                    : 'Training artifact · engineering units'
+                    : raw
+                      ? 'Raw fetch · engineering units'
+                      : 'Training artifact · engineering units'
                 }
-                loading={trainLoading || specLoading}
+                loading={trainLoading || leftSpecLoading}
                 errorMessage={
                   trainError ? `Could not load rows — ${trainError}` : null
                 }
@@ -2613,7 +2720,7 @@ export function DatasetCompareModal({
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <p className="mb-2 text-[11px] font-semibold text-foreground">
-                    Dataset (train)
+                    {leftLabel}
                   </p>
                   <TagCorrelationChart
                     data={trainCorrelation.correlation}
@@ -2678,10 +2785,9 @@ export function DatasetCompareModal({
             </TabsContent>
 
             <p className="mt-3 text-[11px] text-muted-foreground/70">
-              The saved dataset is stored model-ready (scaled); its values are
-              converted back to engineering units from the recorded scaler fit,
-              accurate to about 0.1% of each tag&apos;s range. The validation
-              holdout is stored raw and is shown as-is.
+              {raw
+                ? 'The raw side is the BRONZE fetch as read from PI — before cleaning, outlier removal and scaling — minus the validation window. Both sides are shown as stored, in engineering units.'
+                : "The saved dataset is stored model-ready (scaled); its values are converted back to engineering units from the recorded scaler fit, accurate to about 0.1% of each tag's range. The validation holdout is stored raw and is shown as-is."}
             </p>
           </Tabs>
         )}

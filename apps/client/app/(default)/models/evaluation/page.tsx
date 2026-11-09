@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAllModels } from '@/hooks/use-all-models'
-import { ModelEvaluation } from './components/model-evaluation'
+import { ModelEvaluation } from './components/model-backfill'
 
 export default function ModelEvaluationPage() {
   const { models, loading } = useAllModels()
@@ -32,7 +32,7 @@ export default function ModelEvaluationPage() {
             </div>
             <div>
               <h1 className="text-xl font-semibold text-foreground">
-                Model Evaluation
+                BackFill
               </h1>
               <p className="text-sm text-muted-foreground">
                 AI analysis of predictions vs laboratory data

@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { HelpNav, type HelpSection } from './help-nav'
 import { SectionQuickStart } from './section-quick-start'
 import { SectionWorkspaceSetup } from './section-workspace-setup'
-import { SectionCanvasNodes } from './section-canvas-nodes'
+import { SectionCanvasEquipment } from './section-canvas-equipment'
 import { SectionFaq } from './section-faq'
 import { SectionTroubleshooting } from './section-troubleshooting'
 import { SectionContact } from './section-contact'
@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 const MOBILE_TABS: { id: HelpSection; label: string }[] = [
   { id: 'quick-start', label: 'Quick Start' },
   { id: 'workspace-setup', label: 'Workspace' },
-  { id: 'canvas-nodes', label: 'Canvas' },
+  { id: 'canvas-equipment', label: 'Canvas' },
   { id: 'faq', label: 'FAQ' },
   { id: 'troubleshooting', label: 'Troubleshoot' },
   { id: 'contact', label: 'Contact' },
@@ -27,8 +27,8 @@ function ActiveSection({ section }: { section: HelpSection }) {
       return <SectionQuickStart />
     case 'workspace-setup':
       return <SectionWorkspaceSetup />
-    case 'canvas-nodes':
-      return <SectionCanvasNodes />
+    case 'canvas-equipment':
+      return <SectionCanvasEquipment />
     case 'faq':
       return <SectionFaq />
     case 'troubleshooting':

@@ -113,7 +113,7 @@ export function VersionsTab({ modelId }: Props) {
       <p className="text-xs text-muted-foreground">
         Scores each version was trained and accepted with — frozen at that
         moment, not a live measurement. For how production is performing right
-        now, see the Evaluation tab.
+        now, see the BackFill tab.
       </p>
 
       <div className="overflow-x-auto rounded-xl border border-border">

@@ -15,7 +15,8 @@ cannot calibrate an unlabelled number. Permutation importance is a recorded
 follow-up, not built here.
 
 FOUR METHOD VALUES, not two:
-  - "impurity"        — feature_importances_ (random_forest, lightgbm, xgboost)
+  - "impurity"        — feature_importances_ (random_forest, extra_trees, lightgbm,
+                         xgboost)
   - "coefficient"      — coef_ (ols, ridge, and svm when its kernel is linear)
                           over inputs a RECORDED scaler already made comparable
   - "standardized-coefficient" (MODEL-FLOW-019-T32)
@@ -75,12 +76,11 @@ from typing import Any, Callable, Mapping
 
 LogFn = Callable[..., None]
 
-# hgb/hist_gradient_boosting, mlp, grp, non-linear svm, lstm, gru have no
-# per-feature quantity THIS function reads — deliberately absent from every
-# branch below, falling through to the final `return None`. lstm/gru get a
-# permutation figure from `extract_permutation_importance` instead; the other
-# four remain excluded from both functions (MODEL-FLOW-023's own scope).
-_IMPURITY_ALGORITHMS = ("random_forest", "lightgbm", "xgboost")
+# mlp, grp, non-linear svm, lstm, gru have no per-feature quantity THIS
+# function reads — deliberately absent from every branch below, falling
+# through to the final `return None`. lstm/gru get a permutation figure from
+# `extract_permutation_importance` instead; the other three remain excluded from both functions (MODEL-FLOW-023's own scope).
+_IMPURITY_ALGORITHMS = ("random_forest", "extra_trees", "lightgbm", "xgboost")
 _COEFFICIENT_ALGORITHMS = ("ols", "ridge")
 
 # MODEL-FLOW-023-T02/T10. A window count below this makes a permuted-vs-

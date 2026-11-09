@@ -136,6 +136,26 @@ export function timeQuery(params: Partial<TimeWindow>): string {
 }
 
 /**
+ * One inner window to DROP from a read — the validation holdout, which can
+ * sit in the middle of a dataset's span with training rows on both sides. A
+ * raw (BRONZE) artifact still holds those rows, so "raw minus validation"
+ * needs this alongside (not instead of) a `TimeWindow`. Same wall-clock and
+ * inclusive-bounds rules as `TimeWindow`; the server refuses a lone bound.
+ */
+export interface ExcludeWindow {
+  excludeStart: string
+  excludeEnd: string
+}
+
+/** `&excludeStart=…&excludeEnd=…` for a GET query string, or `''`. */
+export function excludeQuery(params: Partial<ExcludeWindow>): string {
+  return params.excludeStart && params.excludeEnd
+    ? `&excludeStart=${encodeURIComponent(params.excludeStart)}` +
+        `&excludeEnd=${encodeURIComponent(params.excludeEnd)}`
+    : ''
+}
+
+/**
  * The wall clock every artifact timestamp is written in. `frame_service.py`
  * flattens PI's tz-aware times with `tz_convert("Asia/Bangkok").tz_localize(
  * None)`, so what is stored — and what the metadata and `/rows` report — is
@@ -176,6 +196,25 @@ export function toWallClock<T extends string | null | undefined>(
       .map(part => [part.type, part.value]),
   )
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
+}
+
+/**
+ * The validation holdout as an `ExcludeWindow` on the artifact's wall clock,
+ * or `null` when it cannot be stated in full. Both bounds go through
+ * `toWallClock`: the holdout arrives as UTC instants, and sent as-is the
+ * window would sit 7 hours off. A holdout with no recorded end runs to the
+ * end of the data, so `fallbackEnd` (the raw artifact's own last timestamp)
+ * closes it; `null` until that is known, because a lone bound is refused and
+ * a read without the pair would silently include every validation row.
+ */
+export function holdoutExcludeWindow(
+  holdout: { holdoutFrom: string; holdoutTo: string | null } | null,
+  fallbackEnd: string | null | undefined,
+): ExcludeWindow | null {
+  if (!holdout) return null
+  const excludeStart = toWallClock(holdout.holdoutFrom)
+  const excludeEnd = toWallClock(holdout.holdoutTo) ?? toWallClock(fallbackEnd)
+  return excludeStart && excludeEnd ? { excludeStart, excludeEnd } : null
 }
 
 /** `Mar 2026` for a month window, or `''` for none. */

@@ -8,6 +8,7 @@ import {
   presignPredictionJobUpload,
 } from '@/lib/python-preprocess-client';
 import { predictionJobKey, OUTPUT_FILENAME } from '@/lib/artifact-keys';
+import { ContainerDispatchService } from '../../trainning-container/authorized/container-dispatch.service';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
 import type {
@@ -38,6 +39,7 @@ export class PredictionJobAuthorizedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly runner: TrainningContainerAuthorizedService,
+    private readonly dispatch: ContainerDispatchService,
     private readonly descriptor: ModelServingAuthorizedService,
   ) {}
 
@@ -127,28 +129,6 @@ export class PredictionJobAuthorizedService {
     return mintRunToken();
   }
 
-  /**
-   * Spawn out of band — mirrors `ModelRunLaunchAuthorizedService.
-   * trackSpawn`'s exact shape. A submit request must not block for the
-   * length of an image pull, and the job row is already durable; a spawn
-   * failure marks it FAILED rather than losing it.
-   */
-  private trackSpawn(jobId: string, token: string): void {
-    void this.runner.spawn(jobId, token, 'batch').catch(async (err) => {
-      const reason = err instanceof Error ? err.message : String(err);
-      this.log.error(`spawn failed for prediction job ${jobId}`, err);
-      await this.prisma.predictionJob.update({
-        where: { id: jobId },
-        data: {
-          status: 'FAILED',
-          failureReason: `Could not start container: ${reason}`.slice(0, 2000),
-          finishedAt: new Date(),
-          tokenExpiresAt: new Date(0),
-        },
-      });
-    });
-  }
-
   // ── user-facing ──────────────────────────────────────────────────────────
 
   /**
@@ -182,7 +162,7 @@ export class PredictionJobAuthorizedService {
       });
     }
 
-    const { token, tokenHash } = this.mintToken();
+    const { tokenHash } = this.mintToken();
 
     try {
       const job = await this.prisma.predictionJob.create({
@@ -198,7 +178,7 @@ export class PredictionJobAuthorizedService {
           createdById: user.id,
         },
       });
-      this.trackSpawn(job.id, token);
+      void this.dispatch.enqueue('batch', job.id);
       return {
         statusCode: 201,
         message: 'Batch prediction job submitted',
@@ -332,6 +312,10 @@ export class PredictionJobAuthorizedService {
       featureColumns: d.featureColumns,
       scalers: d.scalers,
       scalingParams: d.scalingParams,
+      // MODEL-SERVE-043. lstm/gru score (rows, sequenceLength, features)
+      // windows in file order; null for every other algorithm.
+      algorithm: d.algorithm,
+      sequenceLength: d.sequenceLength,
     };
   }
 

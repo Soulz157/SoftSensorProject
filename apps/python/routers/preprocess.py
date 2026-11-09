@@ -76,6 +76,8 @@ from schemas.preprocess import (
     PredictionJobUploadPresignResponse,
     PredictionJobObjectPresignRequest,
     PredictionJobObjectPresignResponse,
+    InferenceEvalFrameRequest,
+    InferenceEvalFrameResponse,
     InferenceWindowMaterializeRequest,
     InferenceWindowMaterializeResponse,
     InferenceWindowTruthJoinRequest,
@@ -86,6 +88,8 @@ from schemas.preprocess import (
     InferenceWindowTruthSeriesResponse,
     InferenceWindowUploadPresignRequest,
     InferenceWindowUploadPresignResponse,
+    InferenceWindowLastPredictionRequest,
+    InferenceWindowLastPredictionResponse,
     InferenceWindowObjectPresignRequest,
     InferenceWindowObjectPresignResponse,
     PredictionLogAppendRequest,
@@ -103,6 +107,8 @@ from schemas.preprocess import (
     ResplitHoldoutRequest,
     RunCvFoldsRequest,
     RunCvFoldsResponse,
+    RunGridSearchRequest,
+    RunGridSearchResponse,
     RunFeatureImportanceRequest,
     RunFeatureImportanceResponse,
     RunPermutationImportanceRequest,
@@ -118,6 +124,8 @@ from schemas.preprocess import (
     ScatterResponse,
     SplitStatsRequest,
     SplitStatsResponse,
+    InferenceWindowInputSeriesRequest,
+    InferenceWindowInputSeriesResponse,
     TagCatalogRequest,
     TagCatalogResponse,
     ValidateRequest,
@@ -127,6 +135,7 @@ from services import (
     artifact_service,
     ground_truth_service,
     inference_window_service,
+    input_series_service,
     prediction_log_service,
 )
 from services.boxplot_service import build_boxplot
@@ -982,6 +991,25 @@ async def run_cv_folds(
 
 
 @router.post(
+    "/models/runs/grid-search",
+    response_model=RunGridSearchResponse,
+    summary="A training run's grid_search_results.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-038. `grid_search_results.json` is already exactly the "
+        "response shape (images/trainer/app/pipelines/grid_search.py writes "
+        "it that way on purpose) — a read-and-validate, same discipline as "
+        "/models/runs/cv-folds. `source_key` is guarded the same structural "
+        "way."
+    ),
+)
+async def run_grid_search(
+    body: RunGridSearchRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_grid_search, store, body)
+
+
+@router.post(
     "/models/runs/feature-importance",
     response_model=RunFeatureImportanceResponse,
     summary="A training run's feature_importance.json, read and shape-checked",
@@ -1142,6 +1170,25 @@ async def materialize_inference_window(
 
 
 @router.post(
+    "/evaluation-frame",
+    response_model=InferenceEvalFrameResponse,
+    summary="Evaluation page: one range's scoring input, returned inline",
+    description=(
+        "MODEL-SERVE-032. Same fetch + recipe + trim as /inference-window, "
+        "but rows come back in the response and NOTHING is persisted. Bad "
+        "rows are kept and flagged (`usable: false`, Bad cells `value: null`) "
+        "instead of dropped. Timestamps are UTC. A range implying more than "
+        "`max_rows` is refused before any fetch."
+    ),
+)
+async def evaluation_frame(
+    body: InferenceEvalFrameRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(inference_window_service.evaluation_frame, store, body)
+
+
+@router.post(
     "/inference-window/truth-join",
     response_model=InferenceWindowTruthJoinResponse,
     summary="Join one window's late-arriving ground truth to its predictions",
@@ -1206,6 +1253,25 @@ async def read_inference_window_metrics_series(
 
 
 @router.post(
+    "/inference-window/input-series",
+    response_model=InferenceWindowInputSeriesResponse,
+    summary="Raw input values per tag across scheduled windows",
+    description=(
+        "MODEL-SERVE-036. Reads each window's input Parquet and returns, per "
+        "tag, the trend (raw, or bucketed with min/max kept), per-window "
+        "stats, and below/above counts against the frozen training edges — "
+        "counted with the same bucket primitive as the window histograms. "
+        "A key that does not resolve is counted in `missing` and skipped."
+    ),
+)
+async def read_inference_window_input_series(
+    body: InferenceWindowInputSeriesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(input_series_service.build_input_series, store, body)
+
+
+@router.post(
     "/inference-window/presign-upload",
     response_model=InferenceWindowUploadPresignResponse,
     summary="Time-limited write URLs for one inference window's own outputs",
@@ -1240,6 +1306,22 @@ async def presign_inference_window_object(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.presign_inference_window_object, store, body)
+
+
+@router.post(
+    "/inference-window/last-prediction",
+    response_model=InferenceWindowLastPredictionResponse,
+    summary="Newest prediction of one inference window",
+    description=(
+        "Run Predict for lstm/gru, which apps/serving cannot score: the "
+        "button reports the newest row of the window it dispatched."
+    ),
+)
+async def last_inference_prediction(
+    body: InferenceWindowLastPredictionRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.last_inference_prediction, store, body)
 
 
 @router.post(

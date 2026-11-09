@@ -34,6 +34,11 @@ const PART_OPTIONS: { value: DatetimePart; label: string }[] = [
   { value: 'hour', label: 'Hour of day' },
   { value: 'dayOfWeek', label: 'Day of week' },
   { value: 'month', label: 'Month' },
+  // Cyclic encoding: 23:00 sits next to 00:00 (2026-10-19).
+  { value: 'hourSin', label: 'Hour (sin)' },
+  { value: 'hourCos', label: 'Hour (cos)' },
+  { value: 'dayOfWeekSin', label: 'Day of week (sin)' },
+  { value: 'dayOfWeekCos', label: 'Day of week (cos)' },
 ]
 
 interface Props {
@@ -93,9 +98,10 @@ export function ExtractionPanel({
     }
   }
 
-  const extracted = features.filter(
-    f => f.kind === 'lag' || f.kind === 'rolling' || f.kind === 'datetime',
-  )
+  // Every non-formula feature is listed here (formulas are on the Creation
+  // tab), so a delta, a pairwise difference or a loop aggregate added by
+  // Auto-generate can be removed one by one too - not only as a batch.
+  const extracted = features.filter(f => f.kind !== 'formula')
 
   return (
     <Card>
@@ -265,7 +271,8 @@ export function ExtractionPanel({
         </div>
 
         {extracted.length > 0 && (
-          <ul className="space-y-1.5">
+          // Scrolls: an auto-generated recipe can run to hundreds of rows.
+          <ul className="max-h-80 space-y-1.5 overflow-y-auto">
             {extracted.map(f => (
               <li
                 key={f.id}

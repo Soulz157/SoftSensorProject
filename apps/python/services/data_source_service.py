@@ -22,6 +22,12 @@ from schemas.data_source import (
     ConnectionTestResponse,
     PICredentials,
     PIFetchRequest,
+    PIRecordedPoint,
+    PIRecordedRequest,
+    PIRecordedResponse,
+    PIWriteItemResult,
+    PIWriteRequest,
+    PIWriteResponse,
     SQLColumn,
     SQLColumnsResponse,
     SQLCredentials,
@@ -31,6 +37,7 @@ from schemas.data_source import (
     TagCurrentResponse,
 )
 from services.data_service import DataService
+from services.frame_service import normalize_utc_instant
 from services.tag_service import TagService
 
 
@@ -105,6 +112,7 @@ class PIDataSourceService:
                 questionable=(snap or {}).get("questionable"),
                 substituted=(snap or {}).get("substituted"),
                 timestamp=(snap or {}).get("timestamp"),
+                pointType=(snap or {}).get("point_type"),
             )
             for name, snap in resolved.items()
         ]
@@ -112,6 +120,45 @@ class PIDataSourceService:
             count=len(items),
             found=sum(1 for i in items if i.exists),
             tags=items,
+        )
+
+    def recorded(self, body: PIRecordedRequest) -> PIRecordedResponse:
+        """Raw recorded events of one tag, UTC in and UTC out."""
+        client = build_pi_client(body.credentials)
+        with pi_timeout(FETCH_TIMEOUT):
+            events = client.get_recorded_events(
+                body.tag, body.start_time, body.end_time, body.max_count
+            )
+        points = [
+            PIRecordedPoint(
+                timestamp=normalize_utc_instant(e["timestamp"]),
+                value=e["value"],
+                good=e["good"],
+            )
+            for e in events
+        ]
+        return PIRecordedResponse(
+            tag=body.tag, points=points, truncated=len(points) >= body.max_count
+        )
+
+    def write(self, body: PIWriteRequest) -> PIWriteResponse:
+        """Replace / Remove recorded events on one tag.
+
+        The destination tag arrives from NestJS, which takes it from the
+        model's saved write-back config -- never from the browser -- and has
+        already refused the model's own target and input tags.
+        """
+        client = build_pi_client(body.credentials)
+        with pi_timeout(FETCH_TIMEOUT):
+            raw = client.write_recorded(
+                body.tag,
+                [(p.timestamp, p.value) for p in body.points],
+                update_option=body.update_option,
+            )
+        return PIWriteResponse(
+            tag=body.tag,
+            update_option=body.update_option,
+            results=[PIWriteItemResult(**r) for r in raw],
         )
 
     async def fetch(

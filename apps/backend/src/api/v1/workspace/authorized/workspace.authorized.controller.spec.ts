@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { WorkspaceAuthorizedController } from './workspace.authorized.controller';
 import { WorkspaceAuthorizedService } from './workspace.authorized.service';
+import { WorkspaceDataIntakeAuthorizedService } from './workspace-data-intake.authorized.service';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be declared before any imports that reference them
@@ -60,6 +61,10 @@ describe('WorkspaceAuthorizedController', () => {
             getAllWorkspaces: jest.fn(),
             getWorkspaceById: jest.fn(),
           },
+        },
+        {
+          provide: WorkspaceDataIntakeAuthorizedService,
+          useValue: { getWorkspaceIntake: jest.fn() },
         },
       ],
     }).compile();

@@ -1,16 +1,29 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
-import { Binary, Wrench } from 'lucide-react'
+import { Binary, Sparkles, Wrench, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   featureColumnName,
   type FeatureConfig,
 } from '@/lib/feature-engineering'
 import {
+  estimateRowCount,
+  isAutoFeature,
+  resolveFeatureInterval,
+  selectionWithFeatures,
+  withoutAutoFeatures,
+} from '@/lib/auto-features'
+import { resolveInterval } from '@/lib/dataset-fetch'
+import {
+  dwCriticalTagsAtom,
+  dwCustomDateRangeAtom,
+  dwCustomIntervalAtom,
   dwDraftArtifactIdAtom,
+  dwFetchConfigAtom,
   dwEditRootValidationRowCountAtom,
   dwFeaturedDatasetAtom,
   dwFeaturePresetAtom,
@@ -27,18 +40,30 @@ import { useDatasetGoldWarm } from '@/hooks/dataset/use-dataset-gold-warm'
 import { useDatasetFeaturePreviewSample } from '@/hooks/dataset/use-dataset-feature-preview-sample'
 import { useEdaWindowControl } from '@/hooks/dataset/use-eda-window-control'
 import { ExtractionPanel } from './feature-engineering/extraction-panel'
+import { AutoFeaturesDialog } from './feature-engineering/auto-features-dialog'
 import {
   CreationPanel,
   type FormulaPatch,
 } from './feature-engineering/creation-panel'
 import { DataAnalysisCard } from './processing/data-analysis-card'
-import { ValidationHoldoutSection } from './processing/validation-holdout-section'
+import {
+  VALIDATION_SPLIT_ID,
+  ValidationHoldoutSection,
+} from './processing/validation-holdout-section'
+import { holdoutStatus } from '@/lib/holdout'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import { cn } from '@/lib/utils'
 import { EditLockBanner } from './step-1-tags'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
+}
+
+function scrollToValidationSplit() {
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  document
+    .getElementById(VALIDATION_SPLIT_ID)
+    ?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
 }
 
 /**
@@ -91,6 +116,11 @@ export function Step4FeatureEngineering({ nav }: Props) {
 
   const period = useAtomValue(dwTimeRangeAtom)
   const range = PERIOD_TO_RANGE[period]
+  const criticalTags = useAtomValue(dwCriticalTagsAtom)
+  const fetchConfig = useAtomValue(dwFetchConfigAtom)
+  const customInterval = useAtomValue(dwCustomIntervalAtom)
+  const customDateRange = useAtomValue(dwCustomDateRangeAtom)
+  const [autoOpen, setAutoOpen] = useState(false)
 
   // RESOLVED (DS-LAKE-024): an earlier version of this block called
   // `ensureDraft`/`ensureBronze` here to seed `dwDraftArtifactIdAtom` with a
@@ -166,6 +196,22 @@ export function Step4FeatureEngineering({ nav }: Props) {
     }
   }
 
+  // One write for the whole batch: `addFeature` reads `selectedColumns` from
+  // this render, so calling it N times would keep only the last column.
+  const addFeatures = (cfgs: FeatureConfig[]) => {
+    if (cfgs.length === 0) return
+    setFeatureConfigs(prev => [...prev, ...cfgs])
+    const next = selectionWithFeatures(selectedColumns, cfgs)
+    if (next !== null) setSelectedColumns(next)
+  }
+
+  const autoFeatureCount = featureConfigs.filter(isAutoFeature).length
+  const removeAutoFeatures = () => {
+    const next = withoutAutoFeatures(featureConfigs, selectedColumns)
+    setFeatureConfigs(next.configs)
+    if (next.selected !== null) setSelectedColumns(next.selected)
+  }
+
   const removeFeature = (id: string) => {
     setFeatureConfigs(prev => prev.filter(c => c.id !== id))
     const cfg = featureConfigs.find(c => c.id === id)
@@ -198,6 +244,21 @@ export function Step4FeatureEngineering({ nav }: Props) {
   const selectedCount =
     selectedColumns === null ? allColumns.length : selectedColumns.length
 
+  const featureInterval = useMemo(
+    () =>
+      resolveFeatureInterval(
+        featured.rows.map(r => r.timestamp),
+        fetchConfig.summaryDuration.trim() ||
+          resolveInterval(period, customInterval),
+      ),
+    [featured.rows, fetchConfig.summaryDuration, period, customInterval],
+  )
+  const autoRowCount = estimateRowCount(
+    customDateRange?.from,
+    customDateRange?.to,
+    featureInterval.ms,
+  )
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -217,10 +278,75 @@ export function Step4FeatureEngineering({ nav }: Props) {
             </p>
           )}
         </div>
-        <Badge variant="secondary" className="tabular-nums">
-          {selectedCount} / {allColumns.length} features
-        </Badge>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {/* What a user sees on arrival: the split card sits below the
+              feature tabs, so this chip says whether one is set and jumps
+              there. Hidden where the card is absent or locked. */}
+          {!fromRetrain && !holdoutDisabledReason && (
+            <button
+              type="button"
+              onClick={scrollToValidationSplit}
+              aria-label="Go to Split Validation data"
+              className="rounded-full focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              {holdoutStatus(holdoutRange).applied ? (
+                <Badge className="cursor-pointer">Validation: Applied</Badge>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="cursor-pointer text-muted-foreground hover:bg-muted"
+                >
+                  Validation: Not set
+                </Badge>
+              )}
+            </button>
+          )}
+          <Badge variant="secondary" className="tabular-nums">
+            {selectedCount} / {allColumns.length} features
+          </Badge>
+          {autoFeatureCount > 0 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={removeAutoFeatures}
+              className="h-7 gap-1 px-2 text-xs"
+            >
+              <X className="h-3.5 w-3.5" />
+              Remove auto-generated ({autoFeatureCount})
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setAutoOpen(true)}
+            disabled={originalColumns.length === 0}
+            title={
+              originalColumns.length === 0
+                ? 'No source tags to build features from yet.'
+                : undefined
+            }
+            className="h-7 gap-1 px-2 text-xs"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Auto-generate
+          </Button>
+        </div>
       </div>
+
+      <AutoFeaturesDialog
+        open={autoOpen}
+        onOpenChange={setAutoOpen}
+        sourceColumns={originalColumns}
+        targetTag={targetTag}
+        criticalTags={criticalTags}
+        intervalMs={featureInterval.ms}
+        intervalSource={featureInterval.source}
+        rowCount={autoRowCount}
+        existingColumns={allColumns}
+        onAdd={addFeatures}
+      />
 
       {/* DS-LAKE-024-T07. Was: "Features and column selection are locked
           while editing preprocessing" — commented out, not corrected, when
@@ -333,6 +459,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
           dataset={featured}
           range={range}
           edaWindow={edaWindow}
+          readFeatureArtifact
         />
       </Tabs>
     </div>

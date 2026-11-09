@@ -10,8 +10,13 @@ Split in two on purpose:
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import pytest
+import requests
+
+from intergrations.storage_backends import MinioBackend
 
 from intergrations.object_store import (
     COLUMN_STATS_FILENAME,
@@ -380,14 +385,37 @@ def test_model_run_outputs_are_referenced() -> None:
 # ── live MinIO ───────────────────────────────────────────────────────────
 
 
-@pytest.fixture(scope="module")
-def store() -> ObjectStore:
+AZURITE_CONNECTION_STRING = os.environ.get(
+    "AZURITE_CONNECTION_STRING", "UseDevelopmentStorage=true"
+)
+
+
+def _azurite_store() -> ObjectStore:
+    from azure.storage.blob import BlobServiceClient
+
+    from intergrations.azure_blob_backend import AzureBlobBackend
+
+    # Azurite waits out the SDK's retries when it is down; one attempt is
+    # enough to know whether to skip.
+    BlobServiceClient.from_connection_string(
+        AZURITE_CONNECTION_STRING, retry_total=0
+    ).get_service_properties()
+    return ObjectStore(
+        backend=AzureBlobBackend.from_connection_string(
+            AZURITE_CONNECTION_STRING, "pytest-object-store"
+        )
+    )
+
+
+@pytest.fixture(scope="module", params=["minio", "azurite"])
+def store(request: pytest.FixtureRequest) -> ObjectStore:
+    """Every live test runs against both stores: this is the contract."""
     try:
-        s = ObjectStore()
+        s = _azurite_store() if request.param == "azurite" else ObjectStore()
         s.ensure_bucket()
         return s
     except Exception as err:  # noqa: BLE001 - any transport failure means skip
-        pytest.skip(f"MinIO unreachable, skipping live storage tests: {err}")
+        pytest.skip(f"{request.param} unreachable, skipping live tests: {err}")
 
 
 def test_round_trip_preserves_values_and_status(store: ObjectStore) -> None:
@@ -697,10 +725,8 @@ def test_tmp_writes_are_tagged_for_lifecycle_expiry(store: ObjectStore) -> None:
     store.put_frame(df, tmp, overwrite=True)
     store.put_frame(df, committed, overwrite=True)
 
-    tmp_tags = dict(store._client.get_object_tags(store.bucket, tmp) or {})
-    committed_tags = dict(
-        store._client.get_object_tags(store.bucket, committed) or {}
-    )
+    tmp_tags = store._backend.get_tags(tmp)
+    committed_tags = store._backend.get_tags(committed)
 
     assert tmp_tags.get(TMP_LIFECYCLE_TAG_KEY) == TMP_LIFECYCLE_TAG_VALUE
     assert TMP_LIFECYCLE_TAG_KEY not in committed_tags
@@ -719,7 +745,7 @@ def test_put_json_tags_its_sidecar_with_a_retention_class(
     key = "pytest-object-store/artifacts/art-1/manifest.json"
     store.put_json(key, {"hello": "world"})
 
-    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    tags = store._backend.get_tags(key)
     assert tags.get(RETENTION_TAG_KEY) == RETENTION_SWEEPABLE
 
     store.delete_prefix("pytest-object-store/")
@@ -735,11 +761,11 @@ def test_tag_retention_labels_an_object_the_server_never_wrote(
     the object, stripping its tags, and re-tagging."""
     key = "pytest-object-store/runs/r1/predictions.parquet"
     store.put_frame(good_frame(), key, overwrite=True)
-    store._client.delete_object_tags(store.bucket, key)
-    assert not dict(store._client.get_object_tags(store.bucket, key) or {})
+    store._backend.set_tags(key, {})
+    assert not store._backend.get_tags(key)
 
     assert store.tag_retention(key) is True
-    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    tags = store._backend.get_tags(key)
     # The LITERAL class, not `class_for_key(key)` — asserting against the same
     # function the implementation calls would pass even if `tag_retention`
     # wrote the wrong class, which is the only thing this test exists to catch.
@@ -760,10 +786,10 @@ def test_tag_retention_labels_an_inference_object_permanent(
         "dt=2026-09-16/hour=00/predictions.parquet"
     )
     store.put_frame(good_frame(), key, overwrite=True)
-    store._client.delete_object_tags(store.bucket, key)
+    store._backend.set_tags(key, {})
 
     assert store.tag_retention(key) is True
-    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    tags = store._backend.get_tags(key)
     assert tags.get(RETENTION_TAG_KEY) == RETENTION_PERMANENT
 
     store.delete_prefix("inference/pytest-model/")
@@ -778,12 +804,12 @@ def test_copy_prefix_tags_the_object_it_mints(store: ObjectStore) -> None:
     src = "pytest-object-store/src/artifacts/a1/data.parquet"
     dst_prefix = "pytest-object-store/dst/artifacts/a1/"
     store.put_frame(good_frame(), src, overwrite=True)
-    store._client.delete_object_tags(store.bucket, src)
+    store._backend.set_tags(src, {})
 
     copied = store.copy_prefix("pytest-object-store/src/artifacts/a1/", dst_prefix)
     assert copied == [f"{dst_prefix}data.parquet"]
 
-    tags = dict(store._client.get_object_tags(store.bucket, copied[0]) or {})
+    tags = store._backend.get_tags(copied[0])
     assert tags.get(RETENTION_TAG_KEY) == RETENTION_SWEEPABLE
 
     store.delete_prefix("pytest-object-store/")
@@ -800,7 +826,7 @@ def test_tag_retention_refuses_a_tmp_key_rather_than_clobber_it(
     store.put_frame(good_frame(), key, overwrite=True)
 
     assert store.tag_retention(key) is False
-    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    tags = store._backend.get_tags(key)
     assert tags.get(TMP_LIFECYCLE_TAG_KEY) == TMP_LIFECYCLE_TAG_VALUE
 
     store.delete_prefix("pytest-object-store/")
@@ -809,11 +835,13 @@ def test_tag_retention_refuses_a_tmp_key_rather_than_clobber_it(
 def test_ensure_tmp_lifecycle_rule_is_idempotent(store: ObjectStore) -> None:
     """Re-running the bootstrap must not accumulate duplicate rules — it is
     meant to be safe to call on every deploy, not just once ever."""
+    if not isinstance(store._backend, MinioBackend):
+        pytest.skip("Azure's lifecycle rule is declared in Bicep, not set here")
     store.ensure_tmp_lifecycle_rule()
-    first = store._client.get_bucket_lifecycle(store.bucket)
+    first = store._backend.client.get_bucket_lifecycle(store.bucket)
 
     store.ensure_tmp_lifecycle_rule()
-    second = store._client.get_bucket_lifecycle(store.bucket)
+    second = store._backend.client.get_bucket_lifecycle(store.bucket)
 
     matching = [r for r in second.rules if r.rule_id == TMP_LIFECYCLE_RULE_ID]
     assert len(matching) == 1
@@ -923,3 +951,54 @@ def test_copy_prefix_refuses_prefixes_without_a_trailing_slash() -> None:
         ObjectStore.copy_prefix(s, "a/b", "c/d/")
     with pytest.raises(ValueError, match="trailing slash|directory-style"):
         ObjectStore.copy_prefix(s, "a/b/", "c/d")
+
+
+def test_presigned_urls_round_trip_the_way_a_container_uses_them(
+    store: ObjectStore,
+) -> None:
+    """AZURE-BLOB-001. The trainer PUTs and GETs with nothing but the URL and
+    this header, and the same image has to work against either store."""
+    key = "pytest-object-store/presigned/model.bin"
+    payload = b"model-bytes"
+
+    put = requests.put(
+        store.presigned_put(key),
+        data=payload,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "x-ms-blob-type": "BlockBlob",
+        },
+        timeout=30,
+    )
+    assert put.status_code in (200, 201), put.text
+
+    got = requests.get(store.presigned_get(key), timeout=30)
+    assert got.status_code == 200
+    assert got.content == payload
+    store.delete_prefix("pytest-object-store/presigned/")
+
+
+def test_a_write_url_cannot_be_used_to_read(store: ObjectStore) -> None:
+    key = "pytest-object-store/presigned-scope/model.bin"
+    store.put_object_bytes(key, b"secret")
+
+    read_with_write_url = requests.get(store.presigned_put(key), timeout=30)
+
+    assert read_with_write_url.status_code in (401, 403)
+    store.delete_prefix("pytest-object-store/presigned-scope/")
+
+
+def test_listing_and_deleting_a_prefix_only_touches_that_prefix(
+    store: ObjectStore,
+) -> None:
+    store.put_object_bytes("pytest-object-store/scope-a/one.bin", b"1")
+    store.put_object_bytes("pytest-object-store/scope-a/two.bin", b"2")
+    store.put_object_bytes("pytest-object-store/scope-b/three.bin", b"3")
+
+    assert sorted(store.list_object_keys("pytest-object-store/scope-a/")) == [
+        "pytest-object-store/scope-a/one.bin",
+        "pytest-object-store/scope-a/two.bin",
+    ]
+    assert store.delete_prefix("pytest-object-store/scope-a/") == 2
+    assert store.exists("pytest-object-store/scope-b/three.bin")
+    store.delete_prefix("pytest-object-store/scope-b/")

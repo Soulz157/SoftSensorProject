@@ -47,9 +47,14 @@ enum WorkspaceRole {
   VIEWER
 }
 
+/// MONITORING_VIEW / NOTIFICATIONS_VIEW: read-only grants for a VIEWER.
+/// MEMBER_ROLE_ASSIGN / MEMBER_INVITE: member-management grants for a STAFF
+/// (MODEL-SERVE-034). Stored per role — see normalizePermissions.
 enum WorkspacePermission {
   MONITORING_VIEW
   NOTIFICATIONS_VIEW
+  MEMBER_ROLE_ASSIGN
+  MEMBER_INVITE
 }
 
 enum NotificationChannelKind {
@@ -62,7 +67,6 @@ enum NotificationSeverity {
   WARNING
   CRITICAL
 }
-
 
 enum NotificationDeliveryStatus {
   PENDING
@@ -114,6 +118,8 @@ model User {
   loaderJobs             LoaderJob[]
   promotedModelVersions  ModelVersion[]
   manualPredictions      ManualPrediction[]
+  piWriteBatches         PiWriteBatch[]
+  writeBackConfigs       ModelWriteBackConfig[]
   predictionJobs         PredictionJob[]
   inferenceSchedules     InferenceSchedule[]
   notificationChannels   NotificationChannel[]
@@ -148,6 +154,10 @@ model Workspace {
   color                String
   description          String?
   thumbnailUrl         String?
+  /// MODEL-SERVE-035. Admin-set caps; null = no limit. A cap below the
+  /// current count is allowed: nothing is removed, new adds are refused.
+  maxModels            Int?
+  maxMembers           Int?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   deletedAt            DateTime?
@@ -234,6 +244,8 @@ model Model {
   candidateJobs         ModelCandidateJob[]
   predictionLogs        PredictionLog[]
   manualPredictions     ManualPrediction[]
+  writeBackConfig       ModelWriteBackConfig?
+  piWriteBatches        PiWriteBatch[]
   inferenceWindows      InferenceWindow[]
   inferenceSchedule     InferenceSchedule?
   tagObservations       TagObservation[]
@@ -253,6 +265,11 @@ model Plan {
   id             String @id @default(uuid())
   name           String @unique
   maxWorkspaces  Int    @default(1)
+  /// MODEL-SERVE-040. Per-workspace quota for workspaces this plan's
+  /// subscriber owns; null = no limit. A Workspace.maxModels / maxMembers an
+  /// admin set overrides it.
+  maxModelsPerWorkspace  Int?
+  maxMembersPerWorkspace Int?
   price          Float?
   durationMonths Int    @default(1)
 
@@ -284,13 +301,19 @@ model Subscription {
 }
 
 model RefreshToken {
-  id        String    @id @default(uuid())
-  token     String    @unique
-  userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
+  id           String    @id @default(uuid())
+  token        String    @unique
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  /// The id of the token this one was rotated into. Set together with
+  /// `revokedAt`; lets a refresh that raced the rotation (same old token, a
+  /// few seconds later) receive the SAME new token instead of a 401 — see
+  /// `refreshService`'s grace window. An id, not the token value, so the
+  /// secret is never stored twice; no FK, so cleanup deletes never cascade.
+  replacedById String?
+  createdAt    DateTime  @default(now())
 
   @@index([userId])
   @@index([token])
@@ -425,6 +448,12 @@ model DatasetDraft {
   savedDatasetId String?
 
   editingDatasetId String?
+
+  // DS-LAKE-037. The wizard's configuration (never rows) so an interrupted
+  // create-mode session can be resumed. Version is a separate Int so list /
+  // sweep filters do not depend on Json null semantics.
+  wizardState        Json?
+  wizardStateVersion Int?
 
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
@@ -921,6 +950,12 @@ model ModelTrainingRun {
   /// neither `predictionsKey` (null/set = not-scored/scored) nor `status`
   /// (already terminal by the time scoring starts) can represent.
   scoringContainerId String?
+
+  /// CONTAINER-QUEUE-001. Set while a scoring request waits for compute
+  /// capacity, cleared when its container starts. Score has no QUEUED status
+  /// of its own (`status` is already terminal), and the queue's repair sweep
+  /// needs a row to rebuild a lost job from.
+  scoringQueuedAt DateTime?
 
   /// sha256 of the run token, never the token. A leaked table dump must not
   /// yield working credentials.
@@ -1563,6 +1598,11 @@ model ModelCandidateJob {
   /// MODEL-FLOW-005-T01's own note on why.
   bestRunId     String?
   bestRmse      Float?
+  /// MODEL-FLOW-035. The metric bestRunId is chosen by: 'rmse' or 'mae'
+  /// (the wizard's Loss function). Existing rows and retrain jobs are 'rmse'.
+  /// For a cross-validated job it is the fold mean of this metric. bestRmse
+  /// still holds the winner's RMSE, whichever metric chose it.
+  rankingMetric String  @default("rmse")
   /// MODEL-FLOW-013-T08. A user's override of bestRunId, written only once
   /// the job is terminal and only to one of its own SUCCEEDED runs — never
   /// bestRunId itself, which stays the metric's own answer even when
@@ -1789,6 +1829,13 @@ model InferenceWindow {
   /// `to_model_ready` and the three paths cannot disagree.
   inputKey      String?
   inputChecksum String?
+  /// MODEL-SERVE-043. A sequence model's (lstm/gru) lead-in: the
+  /// `sequence_length - 1` Good rows BEFORE windowStart, in their own
+  /// context.parquet beside input.parquet. Null for every other algorithm,
+  /// and when no Good lead-in row existed. Kept out of input.parquet because
+  /// every reader of that file treats all its rows as this window's data.
+  contextKey      String?
+  contextChecksum String?
 
   /// Written server-side on /infer-complete from this row's own ids, never
   /// trusted from the container's request body — the discipline
@@ -1942,6 +1989,11 @@ model InferenceWindowTruth {
   sumActual   Float
   sumActualSq Float
 
+  /// MODEL-SERVE-046. The window's worst single |predicted - actual|. The
+  /// sums above only pool a spread; the per-point status needs the extreme.
+  /// 0 with `n = 0`.
+  maxAbsResidual Float @default(0)
+
   /// The tolerance actually in force for THIS join, on the row — never
   /// re-derived from current config when read back later. Same rule and
   /// same reason as PredictionLog.samplingRate.
@@ -2078,6 +2130,15 @@ model InferenceSchedule {
 
   enabled Boolean @default(false)
 
+  /// MODEL-SERVE-042. When this schedule last went OFF -> ON. The scheduler
+  /// never inserts a window that starts before the clock hour containing it,
+  /// so a fresh Start scores from "now", not from the 48 h backfill horizon.
+  /// Written in the SAME upsert that flips `enabled`, only on that edge — a
+  /// settings tweak on a running schedule must not move it. Null on rows that
+  /// predate the column and had no `Model.data.deployedAt` to copy from; the
+  /// scheduler then falls back to the horizon alone.
+  enabledAt DateTime?
+
   /// Minutes. `lagMinutes` is MODEL-SERVE-006-T04's deliberate ingestion
   /// lag: windowEnd = now() - lag. It is never zero and never derived from
   /// the cadence — PI tags do not arrive together, so a window ending at
@@ -2140,7 +2201,7 @@ model InferenceSchedule {
   autoRetrain  Boolean @default(false)
   /// Invariant enforced client-side (use-model-pipeline-nav.ts's clamped
   /// setters) and re-checked server-side at write: warnSd < criticalSd.
-  warnSd       Float   @default(1.5)
+  warnSd       Float   @default(2.0)
   criticalSd   Float   @default(3.0)
   driftMonitor Boolean @default(false)
   /// MODEL-SERVE-001-T31 dropped `driftThresholdPct Float @default(10)` from
@@ -2236,6 +2297,13 @@ model InferenceSchedule {
   /// missed tick is a gap in a live chart rather than a backfill debt.
   /// Null until the first pass.
   livePredictLastRunAt DateTime?
+  /// MODEL-SERVE-045. Timestamp of the newest row the live driver last
+  /// SCORED (not when it ran). A tick whose newest row is still this one
+  /// scores nothing: an hourly-interval model refreshes once an hour, and
+  /// re-scoring the same row every 10 minutes only drew duplicate points and
+  /// re-fetched a sequence model's whole history window from PI. Run Predict
+  /// presses ignore it — a press always answers.
+  livePredictLastRowAt DateTime?
 
   createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
@@ -2489,4 +2557,113 @@ model NotificationUserMute {
   createdAt DateTime @default(now())
 
   @@id([userId, modelId])
+}
+
+/// MODEL-SERVE-032. Where a model's Evaluation page may write back to PI.
+/// One row per model. Both tags are OUTPUT tags: never the model's own
+/// target (`targetY`, which the truth join reads) and never an input tag —
+/// the service validates that on every PUT, not this schema.
+model ModelWriteBackConfig {
+  id String @id @default(uuid())
+
+  modelId String @unique
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Plain string, no FK: a write-back history must stay readable after the
+  /// data source row is edited or removed.
+  sourceId String
+
+  predictionTag String?
+  labTag        String?
+
+  updatedById String?
+  updatedBy   User?   @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum PiWriteKind {
+  PREDICTION
+  LAB
+  ROLLBACK
+}
+
+enum PiWriteStatus {
+  PENDING
+  WRITING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+  ROLLED_BACK
+}
+
+/// MODEL-SERVE-032. One write (or rollback) of a contiguous point set to one
+/// PI tag. The per-point before/after lives in PiWriteValue. Rows are never
+/// deleted by the app: this table IS the audit trail.
+model PiWriteBatch {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  sourceId String
+  kind     PiWriteKind
+  tag      String
+
+  /// UTC instants of the first and last point in the batch.
+  rangeFrom DateTime
+  rangeTo   DateTime
+
+  pointCount Int
+  status     PiWriteStatus @default(PENDING)
+
+  modelVersionId String?
+
+  /// Set on a ROLLBACK batch: the batch it undoes.
+  rollbackOfId String?
+  rollbackOf   PiWriteBatch?  @relation("PiWriteRollback", fields: [rollbackOfId], references: [id], onDelete: SetNull)
+  rollbacks    PiWriteBatch[] @relation("PiWriteRollback")
+
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  /// The PI login the source stores. PI attributes the write to THIS account
+  /// regardless of which app user pressed the button.
+  piAccount String
+
+  error String?
+
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  values PiWriteValue[]
+
+  @@index([modelId, createdAt])
+  @@index([sourceId, tag, status])
+}
+
+model PiWriteValue {
+  id String @id @default(uuid())
+
+  batchId String
+  batch   PiWriteBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  /// UTC instant of the point.
+  timestamp DateTime
+
+  /// Whether PI held a recorded value at this instant BEFORE the write. A
+  /// rollback Replaces when true and Removes when false.
+  beforeExisted Boolean
+  beforeValue   Float?
+
+  /// Null on a ROLLBACK row that REMOVED the point (nothing is sent).
+  sentValue  Float?
+  /// Read back after the write; can differ from sentValue (compression).
+  afterValue Float?
+
+  itemOk    Boolean @default(false)
+  itemError String?
+
+  @@unique([batchId, timestamp])
 }

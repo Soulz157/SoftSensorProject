@@ -6,6 +6,7 @@ import {
   readFeatureSpec,
 } from '@/lib/python-preprocess-client';
 import { canReadWithGrant } from '@/lib/workspace-permission';
+import { baselineResidualSd } from '@/lib/model-version-residual-sd';
 
 /**
  * The Input Data tab's read of a saved Model's trained schema — the
@@ -151,6 +152,9 @@ export class ModelInputSchemaAuthorizedService {
           rmse: readMetric(version.metrics, 'rmse'),
           r2: readMetric(version.metrics, 'r2'),
           mae: readMetric(version.metrics, 'mae'),
+          // The test split's residual SD — the reference the Residual chart
+          // draws its ±SD guardrails with until live data has its own.
+          sd: baselineResidualSd(version.metrics),
         },
         featureColumns,
         unavailableReason,

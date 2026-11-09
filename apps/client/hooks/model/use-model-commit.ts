@@ -9,13 +9,12 @@ import type { ModelVersionNumber } from '@/lib/model-version-number'
 import {
   mpNameAtom,
   mpDescriptionAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpModeAtom,
   mpEditModelIdAtom,
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
@@ -66,11 +65,10 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
   const draftId = useAtomValue(mpServerDraftIdAtom)
   const name = useAtomValue(mpNameAtom)
   const description = useAtomValue(mpDescriptionAtom)
-  const nodeId = useAtomValue(mpNodeIdAtom)
+  const equipmentId = useAtomValue(mpEquipmentIdAtom)
   const dataset = useAtomValue(mpSelectedDatasetAtom)
   const algorithm = useAtomValue(mpAlgorithmAtom)
   const algorithms = useAtomValue(mpAlgorithmsAtom)
-  const findBestModel = useAtomValue(mpFindBestModelAtom)
   const findBestParams = useAtomValue(mpFindBestParamsAtom)
   const targetVariables = useAtomValue(mpTargetVariableAtom)
   const hyperparameters = useAtomValue(mpHyperparamsAtom)
@@ -85,7 +83,6 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
         datasetId: dataset?.id ?? '',
         algorithm,
         algorithms,
-        findBestModel,
         findBestParams,
         targetVariables,
         hyperparameters,
@@ -95,7 +92,7 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
       })
       await updateModel(editModelId, {
         name: name.trim(),
-        nodeId: nodeId || null,
+        nodeId: equipmentId || null,
         datasetId: dataset?.id ?? null,
         config,
       })
@@ -116,7 +113,7 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
 
     const res = await modelDraftService.save(draftId, {
       name: name.trim(),
-      nodeId: nodeId || undefined,
+      nodeId: equipmentId || undefined,
       description: description || undefined,
     })
     setCreatedModelId(res.data.id)
@@ -129,12 +126,11 @@ export function useModelCommit(): () => Promise<ModelCommitResult> {
     createdModelVersion,
     draftId,
     name,
-    nodeId,
+    equipmentId,
     description,
     dataset,
     algorithm,
     algorithms,
-    findBestModel,
     findBestParams,
     hyperparameters,
     lossFunction,

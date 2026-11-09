@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ModelRunScoreAuthorizedService } from './model-run-score.authorized.service';
 import * as pythonClient from '@/lib/python-preprocess-client';
@@ -78,7 +78,7 @@ function makeDeps(
   };
 
   const launch = { assertDraftWritable: jest.fn().mockResolvedValue({}) };
-  const runner = { spawn: jest.fn().mockResolvedValue(undefined) };
+  const runner = { enqueue: jest.fn().mockResolvedValue(undefined) };
 
   const service = new ModelRunScoreAuthorizedService(
     prisma as unknown as ConstructorParameters<
@@ -121,23 +121,19 @@ describe('triggerScoringService — what it refuses BEFORE spawning a container'
     await expect(
       service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER'),
     ).rejects.toThrow(BadRequestException);
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
   // MODEL-FLOW-019-T20. WIDENED, by explicit user decision: a non-CV run
   // may now trigger scoring too, to produce the per-row holdout frame
   // inline training discards (see holdout.ts's own `_score_holdout_if_
   // present` — it computes the aggregate and throws the rows away).
-  it('spawns for a NON-CV run too — its aggregate was scored inline, but the per-row frame was not', async () => {
+  it('queues a NON-CV run too — its aggregate was scored inline, but the per-row frame was not', async () => {
     const { service, runner } = makeDeps({ run: { cvFoldsKey: null } });
 
     await service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER');
 
-    expect(runner.spawn).toHaveBeenCalledWith(
-      'run-1',
-      expect.any(String),
-      'score',
-    );
+    expect(runner.enqueue).toHaveBeenCalledWith('score', 'run-1');
   });
 
   // MODEL-FLOW-019-T29. Score-mode has no windowing path (score.py never
@@ -152,7 +148,7 @@ describe('triggerScoringService — what it refuses BEFORE spawning a container'
     await expect(
       service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER'),
     ).rejects.toThrow(/no windowing path/);
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
   it('refuses a gru run for the same reason', async () => {
@@ -163,21 +159,17 @@ describe('triggerScoringService — what it refuses BEFORE spawning a container'
     await expect(
       service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER'),
     ).rejects.toThrow(/no windowing path/);
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
-  it('still spawns for a non-sequence non-CV run — the guard is algorithm-specific, not a blanket refusal', async () => {
+  it('still queues a non-sequence non-CV run — the guard is algorithm-specific, not a blanket refusal', async () => {
     const { service, runner } = makeDeps({
       run: { cvFoldsKey: null, algorithm: 'random_forest' },
     });
 
     await service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER');
 
-    expect(runner.spawn).toHaveBeenCalledWith(
-      'run-1',
-      expect.any(String),
-      'score',
-    );
+    expect(runner.enqueue).toHaveBeenCalledWith('score', 'run-1');
   });
 
   it('refuses a run already being scored, rather than spawning a second container', async () => {
@@ -188,7 +180,7 @@ describe('triggerScoringService — what it refuses BEFORE spawning a container'
     await expect(
       service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER'),
     ).rejects.toThrow(/already being scored/);
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
   it('refuses a dataset with NO holdout — the phase could never produce a score (V06)', async () => {
@@ -197,23 +189,18 @@ describe('triggerScoringService — what it refuses BEFORE spawning a container'
     await expect(
       service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER'),
     ).rejects.toThrow(/no validation holdout/);
-    expect(runner.spawn).not.toHaveBeenCalled();
+    expect(runner.enqueue).not.toHaveBeenCalled();
   });
 
-  it('mints a FRESH token and spawns in score mode — the training token is already dead by now', async () => {
+  it('marks the run as waiting and queues it, leaving the token to admission', async () => {
     const { service, prisma, runner } = makeDeps();
 
     await service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER');
 
     const [[update]] = prisma.modelTrainingRun.update.mock.calls;
-    expect(update.data.tokenHash).toEqual(expect.any(String));
-    // Not new Date(0) — a live credential, unlike the one complete() closed.
-    expect(update.data.tokenExpiresAt.getTime()).toBeGreaterThan(Date.now());
-    expect(runner.spawn).toHaveBeenCalledWith(
-      'run-1',
-      expect.any(String),
-      'score',
-    );
+    expect(update.data.scoringQueuedAt).toEqual(expect.any(Date));
+    expect(update.data.tokenHash).toBeUndefined();
+    expect(runner.enqueue).toHaveBeenCalledWith('score', 'run-1');
   });
 
   it('checks draft access before anything else', async () => {

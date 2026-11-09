@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { ModelRetrainAuthorizedService } from './model-retrain.authorized.service';
@@ -48,5 +57,16 @@ export class ModelRetrainAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.service.getRetrainJobService(modelId, jobId, user);
+  }
+
+  /** Stop an in-flight retrain and kill its container. */
+  @Post('/retrain/:jobId/cancel')
+  @HttpCode(HttpStatus.OK)
+  cancelController(
+    @Param('modelId') modelId: string,
+    @Param('jobId') jobId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.cancelRetrainJobService(modelId, jobId, user);
   }
 }

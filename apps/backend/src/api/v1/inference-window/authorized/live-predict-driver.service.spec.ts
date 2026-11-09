@@ -89,6 +89,9 @@ function materialized(rows: number) {
     // the fixture carries it because the type requires it — a fixture short
     // of a required field type-checks as a lie even while jest runs it.
     tag_observations: {},
+    context_object_key: null,
+    context_checksum: null,
+    context_rows: 0,
   };
 }
 
@@ -269,5 +272,191 @@ describe('LivePredictDriverService (MODEL-SERVE-008-T02)', () => {
 
     expect(materializeInferenceWindow).not.toHaveBeenCalled();
     expect(predictRows).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * MODEL-SERVE-045. lstm/gru live scores send the newest sequenceLength rows
+ * (the lead-in from context.parquet, then the window's), and a TICK whose
+ * newest row is the one it last scored scores nothing.
+ */
+describe('LivePredictDriverService — sequence models and unchanged rows (MODEL-SERVE-045)', () => {
+  const GOOD_CELLS = {
+    'TI202.PV': { value: 1, status: 'Good' },
+    'TI203.PV': { value: 2, status: 'Good' },
+  };
+  const at = (hh: string) => ({
+    timestamp: `2026-11-02 ${hh}:00:00`,
+    cells: GOOD_CELLS,
+  });
+  const pageOf = (rows: unknown[]) => ({
+    source_key: 'k',
+    total_row_count: rows.length,
+    offset: 0,
+    rows,
+  });
+
+  function sequenceService(
+    prisma: ReturnType<typeof buildPrisma>,
+    sequenceLength: number | null,
+  ) {
+    return new LivePredictDriverService(
+      prisma as never,
+      {
+        getDescriptorByVersionIdService: jest.fn().mockResolvedValue({
+          data: { featureColumns: FEATURES, sequenceLength },
+        }),
+      } as never,
+      {
+        asFetchConfig: jest.fn().mockReturnValue({ intervalTime: '1h' }),
+        resolveSource: jest.fn().mockResolvedValue({ pi: {} }),
+      } as never,
+    );
+  }
+
+  function sequenceMaterialized() {
+    return {
+      ...materialized(1),
+      context_object_key: 'inference/model-1/live/context.parquet',
+      context_checksum: 'ctx',
+      context_rows: 2,
+    };
+  }
+
+  it('sends the lead-in plus the window row, oldest first, with their times', async () => {
+    jest
+      .mocked(materializeInferenceWindow)
+      .mockResolvedValue(sequenceMaterialized());
+    jest
+      .mocked(readArtifactRows)
+      .mockResolvedValueOnce(pageOf([at('12')]) as never) // window rows
+      .mockResolvedValueOnce(pageOf([at('10'), at('11')]) as never); // lead-in
+    jest.mocked(predictRows).mockResolvedValue({
+      predictions: [null, null, 12.5],
+      modelId: 'model-1',
+      version: 1,
+      inputTagCheck: {
+        requiredColumns: FEATURES,
+        receivedColumns: FEATURES,
+        unusedColumns: [],
+      },
+    });
+    const prisma = buildPrisma([schedule()]);
+
+    const out = await sequenceService(prisma, 3).scoreOne('model-1');
+
+    expect(out).toEqual({
+      ok: true,
+      predicted: 12.5,
+      at: '2026-11-02 12:00:00',
+    });
+    const materializeInput = jest.mocked(materializeInferenceWindow).mock
+      .calls[0][0];
+    expect(materializeInput.context_rows).toBe(2);
+    // An hourly model's live window spans at least one interval.
+    const span =
+      new Date(materializeInput.window_end).getTime() -
+      new Date(materializeInput.window_start).getTime();
+    expect(span).toBe(60 * 60_000);
+    // ...and ENDS on the hour, so PI's hourly averages fall on the same
+    // hour-aligned grid the model trained on (not 13:25-14:25).
+    expect(
+      new Date(materializeInput.window_end).getTime() % (60 * 60_000),
+    ).toBe(0);
+    const sent = jest.mocked(predictRows).mock.calls[0][0];
+    expect(sent.rows).toHaveLength(3);
+    expect(sent.timestamps).toEqual([
+      '2026-11-02 10:00:00',
+      '2026-11-02 11:00:00',
+      '2026-11-02 12:00:00',
+    ]);
+    expect(sent.interval).toBe('1h');
+    // 12:00 Bangkok wall clock is 05:00 UTC.
+    expect(prisma.inferenceSchedule.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          livePredictLastRowAt: new Date('2026-11-02T05:00:00.000Z'),
+        }),
+      }),
+    );
+  });
+
+  it('too little history is a reason, not a score', async () => {
+    jest.mocked(materializeInferenceWindow).mockResolvedValue({
+      ...materialized(1),
+      context_object_key: null,
+      context_checksum: null,
+      context_rows: 0,
+    });
+    jest
+      .mocked(readArtifactRows)
+      .mockResolvedValueOnce(pageOf([at('12')]) as never);
+    const out = await sequenceService(buildPrisma([schedule()]), 3).scoreOne(
+      'model-1',
+    );
+    expect(out).toEqual({
+      ok: false,
+      reason:
+        'This model scores from 3 consecutive rows; the source returned 1.',
+    });
+    expect(predictRows).not.toHaveBeenCalled();
+  });
+
+  it('a gap in the history (null prediction) is reported, not scored', async () => {
+    jest
+      .mocked(materializeInferenceWindow)
+      .mockResolvedValue(sequenceMaterialized());
+    jest
+      .mocked(readArtifactRows)
+      .mockResolvedValueOnce(pageOf([at('12')]) as never)
+      .mockResolvedValueOnce(pageOf([at('09'), at('11')]) as never);
+    jest.mocked(predictRows).mockResolvedValue({
+      predictions: [null, null, null],
+      modelId: 'model-1',
+      version: 1,
+      inputTagCheck: {
+        requiredColumns: FEATURES,
+        receivedColumns: FEATURES,
+        unusedColumns: [],
+      },
+    });
+    const out = await sequenceService(buildPrisma([schedule()]), 3).scoreOne(
+      'model-1',
+    );
+    expect(out.ok).toBe(false);
+  });
+
+  it('a tick skips a newest row it already scored; a press does not', async () => {
+    const lastRow = new Date('2026-11-02T05:00:00.000Z');
+    jest.mocked(materializeInferenceWindow).mockResolvedValue(materialized(1));
+    jest
+      .mocked(readArtifactRows)
+      .mockResolvedValue(pageOf([at('12')]) as never);
+    jest.mocked(predictRows).mockResolvedValue({
+      predictions: [7],
+      modelId: 'model-1',
+      version: 1,
+      inputTagCheck: {
+        requiredColumns: FEATURES,
+        receivedColumns: FEATURES,
+        unusedColumns: [],
+      },
+    });
+    const prisma = buildPrisma([schedule({ livePredictLastRowAt: lastRow })]);
+    const service = sequenceService(prisma, null);
+
+    const tick = await service.scoreOne('model-1', { skipIfNotNew: true });
+    expect(tick).toEqual({
+      ok: false,
+      reason: 'No new row since the last live score.',
+    });
+    expect(predictRows).not.toHaveBeenCalled();
+
+    const press = await service.scoreOne('model-1');
+    expect(press).toEqual({
+      ok: true,
+      predicted: 7,
+      at: '2026-11-02 12:00:00',
+    });
   });
 });

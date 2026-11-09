@@ -129,6 +129,7 @@ def test_no_lab_sample_reports_no_error_rather_than_an_error_of_zero(monkeypatch
     assert result["paired_rows"] == 0
     assert result["object_key"] is None
     assert result["checksum"] is None
+    assert result["max_abs_residual"] == 0.0
     # Predictions still counted — "no truth" and "no predictions" are
     # different states and must stay distinguishable.
     assert result["prediction_rows"] == 1
@@ -182,6 +183,7 @@ def test_sample_just_inside_tolerance_pairs_and_the_sums_are_exact(monkeypatch):
     assert result["sum_ae"] == pytest.approx(1.0)
     assert result["sum_actual"] == pytest.approx(40.0)
     assert result["sum_actual_sq"] == pytest.approx(1600.0)
+    assert result["max_abs_residual"] == pytest.approx(1.0)
 
 
 def test_the_pairs_object_lands_in_the_window_s_own_prefix(monkeypatch):
@@ -201,6 +203,30 @@ def test_the_pairs_object_lands_in_the_window_s_own_prefix(monkeypatch):
     written = store.get_frame(key)
     assert list(written.columns) == [TIMESTAMP_COLUMN, "predicted", "actual", "residual"]
     assert written["residual"].iloc[0] == pytest.approx(1.0)
+
+
+def test_max_abs_residual_is_the_worst_single_point_whatever_its_sign(monkeypatch):
+    """MODEL-SERVE-046. The per-point status rule reads this: a window whose
+    pooled sums look tame can still hold one residual beyond 3 SD."""
+    store = RecordingStore()
+    _write_predictions(
+        store,
+        [("2026-09-14 15:00:00", 41.0), ("2026-09-14 15:10:00", 20.0)],
+    )
+    _patch_truth(
+        monkeypatch,
+        _truth_frame(
+            [
+                ("2026-09-14 15:00:00", 40.0, STATUS_GOOD),  # residual +1
+                ("2026-09-14 15:10:00", 50.0, STATUS_GOOD),  # residual -30
+            ]
+        ),
+    )
+
+    result = ground_truth_service.join_window_truth(store, _request(300))
+
+    assert result["n"] == 2
+    assert result["max_abs_residual"] == pytest.approx(30.0)
 
 
 def test_several_lab_samples_snapping_to_one_prediction_keep_only_the_closest(
@@ -424,3 +450,27 @@ def test_a_healthy_but_quiet_pi_source_still_returns_an_honest_empty_result(
 
     assert result["n"] == 0
     assert result["truth_rows"] == 0
+
+
+def test_override_reads_the_target_by_its_mapped_pi_tag(monkeypatch):
+    """MODEL-SERVE-037-T03. A CSV-trained model's target lives in PI under a
+    different name: PI is asked for the mapped tag, and the join still
+    reads the training name."""
+    asked: list[list[str]] = []
+
+    async def fake_fetch(body, interval):
+        asked.append(list(body.tag_list))
+        kind = body.summary_type[0]
+        is_count = getattr(kind, "value", kind) == "Count"
+        data = [{"timestamp": "2026-09-14 15:00:00", "value": 1 if is_count else 40.0}]
+        return {"results": [{"tag_name": "PI_LAB.PV", "status": "ok", "data": data}]}
+
+    monkeypatch.setattr(ground_truth_service._pi, "fetch", fake_fetch)
+    store = RecordingStore()
+    _write_predictions(store, [("2026-09-14 15:00:00", 41.0)])
+    request = _pi_request().model_copy(update={"column_tag_map": {TAG: "PI_LAB.PV"}})
+
+    result = ground_truth_service.join_window_truth(store, request)
+
+    assert asked == [["PI_LAB.PV"], ["PI_LAB.PV"]]
+    assert result["n"] == 1

@@ -14,16 +14,16 @@ export function validateFormula(
   const trimmed = expr.trim()
   if (!trimmed) return { ok: false, error: 'Enter a formula', used: [] }
 
-  let node: MathNode
+  let equipment: MathNode
   try {
-    node = parse(trimmed)
+    equipment = parse(trimmed)
   } catch (e) {
     return { ok: false, error: `Syntax: ${(e as Error).message}`, used: [] }
   }
 
   const used = new Set<string>()
   let blocked: string | null = null
-  node.traverse(n => {
+  equipment.traverse(n => {
     // กัน code-exec: ห้ามประกาศฟังก์ชัน / assign ตัวแปร
     if (n.type === 'AssignmentNode' || n.type === 'FunctionAssignmentNode')
       blocked = 'Assignments are not allowed'

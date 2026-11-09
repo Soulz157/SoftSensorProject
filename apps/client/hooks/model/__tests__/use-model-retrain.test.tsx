@@ -7,6 +7,7 @@ import type { AIModel } from '@/types'
 const trigger = vi.fn()
 const get = vi.fn()
 const current = vi.fn()
+const cancelJob = vi.fn()
 const getRun = vi.fn()
 
 vi.mock('@/services/model-retrain', () => ({
@@ -14,6 +15,7 @@ vi.mock('@/services/model-retrain', () => ({
     trigger: (...a: unknown[]) => trigger(...a),
     get: (...a: unknown[]) => get(...a),
     current: (...a: unknown[]) => current(...a),
+    cancel: (...a: unknown[]) => cancelJob(...a),
   },
   modelRunLogsService: {
     get: (...a: unknown[]) => getRun(...a),
@@ -493,5 +495,79 @@ describe('useModelRetrain — polling to completion (T03, V03)', () => {
     })
     // Polling stopped — no further reads once the job is terminal.
     expect(get.mock.calls.length).toBe(callsAfterTerminal)
+  })
+})
+
+describe('useModelRetrain — cancel', () => {
+  it('stops the live retrain: calls the server, shows the CANCELED job, ends the live state', async () => {
+    current.mockResolvedValue(ok(currentState({ job: job() })))
+    cancelJob.mockResolvedValue(
+      ok(job({ status: 'CANCELED', failureReason: 'Canceled by user.' })),
+    )
+    const onUpdated = vi.fn()
+    const { result } = renderHook(() =>
+      useModelRetrain({ model: MODEL, onUpdated }),
+    )
+    await waitFor(() => expect(result.current.isRetraining).toBe(true))
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+
+    expect(cancelJob).toHaveBeenCalledWith('model-1', 'job-1')
+    expect(result.current.job?.status).toBe('CANCELED')
+    expect(result.current.isRetraining).toBe(false)
+    expect(result.current.phase).toBe('error')
+    expect(result.current.canceling).toBe(false)
+    expect(onUpdated).toHaveBeenCalled()
+  })
+
+  it('a failed cancel leaves the retrain live and says why', async () => {
+    current.mockResolvedValue(ok(currentState({ job: job() })))
+    cancelJob.mockImplementation(() =>
+      Promise.reject(new Error('Network down')),
+    )
+    const { result } = renderHook(() => useModelRetrain({ model: MODEL }))
+    await waitFor(() => expect(result.current.isRetraining).toBe(true))
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+
+    expect(result.current.cancelError).toBe('Network down')
+    expect(result.current.isRetraining).toBe(true)
+    expect(result.current.job?.status).toBe('RUNNING')
+    expect(result.current.canceling).toBe(false)
+  })
+
+  it('clears an old cancel error when the next cancel starts', async () => {
+    current.mockResolvedValue(ok(currentState({ job: job() })))
+    cancelJob
+      .mockImplementationOnce(() => Promise.reject(new Error('Network down')))
+      .mockResolvedValueOnce(ok(job({ status: 'CANCELED' })))
+    const { result } = renderHook(() => useModelRetrain({ model: MODEL }))
+    await waitFor(() => expect(result.current.isRetraining).toBe(true))
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+    expect(result.current.cancelError).toBe('Network down')
+    await act(async () => {
+      await result.current.cancel()
+    })
+    expect(result.current.cancelError).toBeNull()
+  })
+
+  it('does nothing when no retrain is live', async () => {
+    current.mockResolvedValue(
+      ok(currentState({ job: job({ status: 'SUCCEEDED' }) })),
+    )
+    const { result } = renderHook(() => useModelRetrain({ model: MODEL }))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+    expect(cancelJob).not.toHaveBeenCalled()
   })
 })

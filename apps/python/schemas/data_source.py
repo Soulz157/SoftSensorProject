@@ -5,9 +5,10 @@ credentials supplied by NestJS (decrypted from DataSource.secretCiphertext) —
 credentials are used to build a client for that one call and are never
 persisted or logged here.
 """
-from typing import Optional
+from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, Field
+import pandas as pd
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from schemas.data import (
     CalBasis,
@@ -60,6 +61,86 @@ class PIFetchRequest(BaseModel):
     summary_type: list[SummaryType] = [SummaryType.average]
     summary_duration: Optional[str] = Field(None, examples=["1m"])
     batch_size: int = Field(300, ge=1, le=1000)
+
+
+# ── PI recorded events: read + write (MODEL-SERVE-032) ──────────────────────
+# Every timestamp here is a REAL UTC instant (ISO-8601 with `Z` or an offset).
+# A naive stamp is rejected rather than guessed: the repo's frames carry naive
+# Bangkok digits, and reading those as UTC is the 7h trap this API exists to
+# keep out (services/frame_service.wall_clock_to_utc is the only converter).
+
+def _require_aware(value: str) -> str:
+    stamp = pd.Timestamp(value)
+    if stamp.tzinfo is None:
+        raise ValueError(
+            "timestamp must be a UTC instant with 'Z' or an offset, not a "
+            "naive wall-clock string"
+        )
+    return stamp.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+UtcInstant = Annotated[str, AfterValidator(_require_aware)]
+
+
+class PIRecordedRequest(BaseModel):
+    credentials: PICredentials
+    tag: str = Field(..., min_length=1)
+    start_time: UtcInstant
+    end_time: UtcInstant
+    max_count: int = Field(20000, ge=1, le=100000)
+
+
+class PIRecordedPoint(BaseModel):
+    timestamp: str
+    # None when PI holds a non-numeric payload (digital state, system code).
+    value: Optional[float]
+    good: bool
+
+
+class PIRecordedResponse(BaseModel):
+    tag: str
+    points: list[PIRecordedPoint]
+    # True when PI returned max_count events: there may be more.
+    truncated: bool
+
+
+class PIWritePoint(BaseModel):
+    timestamp: UtcInstant
+    # Required for Replace, ignored for Remove.
+    value: Optional[float] = Field(None, allow_inf_nan=False)
+
+
+class PIWriteRequest(BaseModel):
+    credentials: PICredentials
+    tag: str = Field(..., min_length=1)
+    update_option: Literal["Replace", "Remove"] = "Replace"
+    points: list[PIWritePoint] = Field(..., min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def _check_points(self) -> "PIWriteRequest":
+        stamps = [p.timestamp for p in self.points]
+        if len(set(stamps)) != len(stamps):
+            raise ValueError("duplicate timestamps in one write")
+        if self.update_option == "Replace" and any(
+            p.value is None for p in self.points
+        ):
+            raise ValueError("Replace needs a numeric value on every point")
+        return self
+
+
+class PIWriteItemResult(BaseModel):
+    timestamp: str
+    ok: bool
+    error: Optional[str] = None
+
+
+class PIWriteResponse(BaseModel):
+    tag: str
+    update_option: str
+    # PI's own acceptance per point. A fully accepted write comes back with
+    # no per-item body, so ok=True means "PI did not object" -- the caller
+    # reads the range back to learn what PI actually stored.
+    results: list[PIWriteItemResult]
 
 
 # ── SQL Database ─────────────────────────────────────────────────────────────

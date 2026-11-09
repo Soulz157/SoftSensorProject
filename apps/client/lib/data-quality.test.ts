@@ -10,6 +10,10 @@ import {
   frozenByTag,
   badDataByTag,
   badDataDetailByTag,
+  labStaleRuns,
+  describeLabStale,
+  labStaleNotices,
+  LAB_STALE_FLOOR_MS,
 } from './data-quality'
 
 function dataset(values: Record<string, (number | null)[]>): Dataset {
@@ -347,5 +351,177 @@ describe('mostCorrelatedPartner', () => {
     const matrix = pearsonMatrix(ds)
     expect(mostCorrelatedPartner(matrix, 'a')).toBeNull()
     expect(mostCorrelatedPartner(matrix, 'zzz')).toBeNull()
+  })
+})
+
+// ── Lab-tag stale runs ─────────────────────────────────────────────────────
+// Shaped on the real `s611water.lab` (draft 96734a45): hourly grid, the lab
+// value changes about once a day (median run 23h, p90 95h), a few ~9-day
+// stretches, then one value carried forward for 113 days.
+
+const LAB = 's611water.lab'
+const HOUR = 3_600_000
+const DAY = 24 * HOUR
+
+/** Hourly rows for one lab tag; `segments` are [value, hours] in order. */
+function labDataset(
+  segments: Array<[number, number]>,
+  tag = LAB,
+  extra: Partial<Record<number, Partial<Cell> | 'missing'>> = {},
+): Dataset {
+  const rows: DataRow[] = []
+  let h = 0
+  for (const [value, hours] of segments) {
+    for (let i = 0; i < hours; i++, h++) {
+      const override = extra[h]
+      const cells: Record<string, Cell> =
+        override === 'missing'
+          ? {}
+          : { [tag]: { value, status: 'Good', ...override } }
+      rows.push({ timestamp: hoursIso(h), cells })
+    }
+  }
+  return { tags: [tag], rows }
+}
+
+/** 30 daily lab samples, each held 24h — the normal carry-forward shape. */
+function dailySegments(days: number, start = 1): Array<[number, number]> {
+  return Array.from({ length: days }, (_, i) => [start + i * 0.01, 24])
+}
+
+describe('labStaleRuns', () => {
+  it('uses the tag`s own median run as its typical interval', () => {
+    const r = labStaleRuns(labDataset(dailySegments(30)), LAB)
+    expect(r.typicalMs).toBe(DAY)
+    // 5 x 24h = 5 days, above the 3-day floor.
+    expect(r.thresholdMs).toBe(5 * DAY)
+    expect(r.runs).toEqual([])
+  })
+
+  it('flags a 9-day hold and a 113-day hold, but not normal daily samples', () => {
+    const r = labStaleRuns(
+      labDataset([
+        ...dailySegments(30),
+        [1.4651, 9 * 24],
+        ...dailySegments(10, 2),
+        [1.2764, 113 * 24],
+      ]),
+      LAB,
+    )
+    expect(r.runs.map(run => run.value)).toEqual([1.4651, 1.2764])
+    expect(r.runs[1]!.durationMs).toBe(113 * DAY)
+    expect(r.runs[1]!.rows).toBe(113 * 24)
+    expect(r.runs[1]!.from).toBe(hoursIso(49 * 24))
+  })
+
+  it('never goes below the 3-day floor, even for a fast-changing tag', () => {
+    // Value changes every 2h -> 5 x 2h = 10h, floored to 3 days.
+    const segs: Array<[number, number]> = Array.from({ length: 60 }, (_, i) => [
+      i,
+      2,
+    ])
+    segs.push([999, 2 * 24]) // 2 days flat: under the floor
+    const r = labStaleRuns(labDataset(segs), LAB)
+    expect(r.thresholdMs).toBe(LAB_STALE_FLOOR_MS)
+    expect(r.runs).toEqual([])
+  })
+
+  it('falls back to the floor when there are too few runs for a median', () => {
+    // One value for the whole frame — the worst case, must still be caught.
+    const r = labStaleRuns(labDataset([[1.2764, 10 * 24]]), LAB)
+    expect(r.typicalMs).toBeNull()
+    expect(r.thresholdMs).toBe(LAB_STALE_FLOOR_MS)
+    expect(r.runs).toHaveLength(1)
+  })
+
+  it('splits a run at a Bad or missing cell — absence is not evidence of a stale value', () => {
+    const r = labStaleRuns(
+      labDataset(
+        [...dailySegments(30), [1.2764, 8 * 24]],
+        LAB,
+        // Breaks the 8-day hold into two 4-day halves, each under 5 days.
+        { [30 * 24 + 4 * 24]: { status: 'Bad' } },
+      ),
+      LAB,
+    )
+    expect(r.runs).toEqual([])
+  })
+})
+
+describe('qualityByTag — lab tags count Frozen by the stale rule', () => {
+  it('no longer counts normal daily carry-forward as Frozen', () => {
+    const ds = labDataset(dailySegments(30))
+    expect(frozenByTag(ds)[LAB]).toBe(0)
+    // The SAME shape on a non-lab tag keeps the 3h rule: every row frozen.
+    const plain = labDataset(dailySegments(30), 'FI001.PV')
+    expect(frozenByTag(plain)['FI001.PV']).toBe(30 * 24)
+  })
+
+  it('counts exactly the rows of the stale runs', () => {
+    const ds = labDataset([...dailySegments(30), [1.2764, 113 * 24]])
+    expect(frozenByTag(ds)[LAB]).toBe(113 * 24)
+  })
+
+  it('still exempts a lab tag listed in ignoreTags', () => {
+    const ds = labDataset([[1.2764, 10 * 24]])
+    expect(frozenByTag(ds, { ignoreTags: [LAB] })[LAB]).toBe(0)
+  })
+})
+
+describe('describeLabStale', () => {
+  it('names the value, span and usual interval, and says nothing is removed', () => {
+    const r = labStaleRuns(
+      labDataset([...dailySegments(30), [1.2764, 113 * 24]]),
+      LAB,
+    )
+    const [msg] = describeLabStale(LAB, r)
+    expect(msg).toContain('s611water.lab')
+    expect(msg).toContain('1.2764')
+    expect(msg).toContain('113 days')
+    expect(msg).toContain('~1 day')
+    expect(msg).toMatch(/nothing is removed/i)
+  })
+
+  it('leads with the longest hold and folds the rest into one line', () => {
+    const r = labStaleRuns(
+      labDataset([
+        ...dailySegments(30),
+        [1.4651000499725342, 9 * 24],
+        ...dailySegments(5, 2),
+        [1.4651000499725342, 6 * 24],
+        ...dailySegments(5, 3),
+        [1.2763999700546265, 113 * 24],
+      ]),
+      LAB,
+    )
+    const lines = describeLabStale(LAB, r)
+    expect(lines).toHaveLength(2)
+    // float32 noise trimmed for display.
+    expect(lines[0]).toContain('unchanged at 1.2764 for 113 days')
+    expect(lines[1]).toContain('6–9 days on 2 other occasions')
+  })
+
+  it('returns nothing when no run is stale', () => {
+    expect(
+      describeLabStale(LAB, labStaleRuns(labDataset(dailySegments(30)), LAB)),
+    ).toEqual([])
+  })
+})
+
+describe('labStaleNotices', () => {
+  it('reports lab tags only, never a flat sensor tag', () => {
+    const lab = labDataset([...dailySegments(30), [1.2764, 113 * 24]])
+    const sensor = labDataset([[5, 143 * 24]], 'FI001.PV')
+    const ds: Dataset = {
+      tags: [LAB, 'FI001.PV'],
+      rows: lab.rows.map((row, i) => ({
+        ...row,
+        cells: { ...row.cells, ...sensor.rows[i]!.cells },
+      })),
+    }
+    const lines = labStaleNotices(ds)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain(LAB)
+    expect(lines.join(' ')).not.toContain('FI001.PV')
   })
 })

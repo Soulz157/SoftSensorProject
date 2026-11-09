@@ -10,7 +10,7 @@ import {
   type RunPermutationImportance,
 } from '@/services/model-draft'
 import { fitFromRun, type ModelFit, type FitPoint } from '@/lib/model-metrics'
-import type { EvaluationPopulation } from '@/lib/metric-source'
+import { isScoring, type EvaluationPopulation } from '@/lib/metric-source'
 import { ApiError } from '@/lib/fetcher'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 
@@ -47,6 +47,7 @@ export interface DraftRunSummary {
    *  in flight — what Step 5 polls to show "scoring is running" rather
    *  than a dead "trigger scoring" button. */
   scoringContainerId: string | null
+  scoringQueuedAt?: string | null
   /** MODEL-FLOW-019-T35. The run's own training-side metrics blob —
    *  `cv_rmse_mean`/`cv_mae_mean`/etc for a CV run, plain `rmse`/`mae` for
    *  an ordinary one. Needed so `seedMetricMeans` (lib/feature-count-sweep)
@@ -193,6 +194,9 @@ export interface PopulationMetrics {
   std: { r2: number; rmse: number; mae: number } | null
   /** Folds averaged — out-of-fold only. */
   nSplits: number | null
+  /** Distinct target values behind r2 (`isR2Meaningful`, lib/metric-source).
+   *  Null/absent for out-of-fold means and runs from older trainer images. */
+  targetDistinct?: number | null
 }
 
 export interface PopulationEvaluation {
@@ -296,6 +300,7 @@ async function fetchEvaluation(
     predictionsKey: run.predictionsKey,
     holdoutPredictionsKey: run.holdoutPredictionsKey,
     scoringContainerId: run.scoringContainerId,
+    scoringQueuedAt: run.scoringQueuedAt,
     metrics: run.metrics,
     holdoutMetrics: run.holdoutMetrics,
     cvFolds: run.cvFolds ?? null,
@@ -404,6 +409,7 @@ async function loadTestSplit(
     r2: requireMetric(run.metrics, 'r2'),
     rmse: requireMetric(run.metrics, 'rmse'),
     mae: requireMetric(run.metrics, 'mae'),
+    targetDistinct: numberOf(run.metrics, 'y_true_distinct'),
   }
   let predRes: Awaited<ReturnType<typeof modelDraftRunService.predictions>>
   try {
@@ -470,6 +476,7 @@ async function loadOutOfFold(
               ? { r2: std.r2, rmse: std.rmse, mae: std.mae }
               : null,
           nSplits: numberOf(run.metrics, 'n_splits'),
+          targetDistinct: null,
         }
       : null
 
@@ -528,7 +535,14 @@ async function loadHoldout(
   const mae = numberOf(run.holdoutMetrics, 'mae')
   const metrics: PopulationMetrics | null =
     r2 !== null && rmse !== null && mae !== null
-      ? { r2, rmse, mae, std: null, nSplits: null }
+      ? {
+          r2,
+          rmse,
+          mae,
+          std: null,
+          nSplits: null,
+          targetDistinct: numberOf(run.holdoutMetrics, 'y_true_distinct'),
+        }
       : null
 
   const absent = (absence: PopulationAbsence): LoadedPopulation => ({
@@ -657,7 +671,7 @@ export function useDraftRunEvaluation(
   // `awaiting-scoring` polls nothing on its own; the user's own click
   // (`triggerScoring`) is what starts this effect, by setting
   // `scoringContainerId` on the very next fetch.
-  const scoring = run?.scoringContainerId != null
+  const scoring = run != null && isScoring(run)
   useEffect(() => {
     if (!scoring) return
     const id = setInterval(() => setPollTick(t => t + 1), SCORING_POLL_MS)

@@ -51,7 +51,7 @@ const MAX_VISIBLE = 5
 /** Equipment rows a workspace's alerts page lists: alert, warning and
  * offline nodes. An older server sends only `alarmCount`, which then already
  * covered all three. */
-function workspaceNodeAlertCount(ws: {
+function workspaceEquipmentAlertCount(ws: {
   alarmCount?: number
   warningCount?: number
   offlineCount?: number
@@ -303,7 +303,7 @@ export function SidebarWorkspaces({
               {/* The workspace alerts page lists alert, warning and offline
                   equipment, so the link counts all three (MODEL-SERVE-024-D05:
                   `alarmCount` alone is alert nodes only now). */}
-              {workspaceNodeAlertCount(currentWorkspace) > 0 && (
+              {workspaceEquipmentAlertCount(currentWorkspace) > 0 && (
                 <Link
                   href={`/workspaces/${currentWorkspace.id}/alerts`}
                   onClick={onClose}
@@ -318,7 +318,7 @@ export function SidebarWorkspaces({
                   <span className="truncate">Alerts</span>
                   <span className="ml-auto flex items-center gap-1.5 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-600 dark:border dark:border-red-500/20 dark:bg-red-500/15 dark:text-red-400">
                     <TriangleAlert className="h-3.5 w-3.5 animate-pulse" />
-                    {workspaceNodeAlertCount(currentWorkspace)}
+                    {workspaceEquipmentAlertCount(currentWorkspace)}
                   </span>
                 </Link>
               )}

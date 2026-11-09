@@ -3,6 +3,7 @@ import { InferenceWindowAuthorizedService } from './inference-window.authorized.
 import {
   inferenceWindowTruthSeries,
   presignInferenceWindowObject,
+  readLastInferencePrediction,
 } from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';
 
@@ -125,6 +126,10 @@ function buildInputStatus(overrides = {}) {
     preflightSourceService: jest
       .fn()
       .mockResolvedValue({ ok: true, reason: null }),
+    // MODEL-SERVE-037-T02. Read only when a dataset has no schedulable source.
+    resolveOverrideColumnsService: jest
+      .fn()
+      .mockResolvedValue({ baseTags: [], targetY: null }),
     ...overrides,
   };
 }
@@ -135,7 +140,7 @@ function buildInputStatus(overrides = {}) {
  *  reaches it. */
 function buildScheduler(overrides = {}) {
   return {
-    dispatchOne: jest.fn().mockResolvedValue(undefined),
+    requestDispatch: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -439,10 +444,12 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
       user,
     );
 
+    // `{}`: a dataset-derived binding maps no column (MODEL-SERVE-037-T04).
     expect(inputStatus.preflightSourceService).toHaveBeenCalledWith(
       'model-1',
       user,
       'src-b',
+      {},
     );
   });
 
@@ -472,6 +479,10 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
     expect(call.create.preflightReason).toBeNull();
     expect(call.create.preflightAt).toBeInstanceOf(Date);
     expect(call.update.preflightOk).toBe(true);
+    // MODEL-SERVE-042. The scheduler's start anchor is written in the SAME
+    // upsert as `enabled: true`, on both the create and update arms.
+    expect(call.create.enabledAt).toBeInstanceOf(Date);
+    expect(call.update.enabledAt).toBeInstanceOf(Date);
   });
 
   it('does NOT probe a settings-only update on an already-running schedule', async () => {
@@ -542,7 +553,55 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
     const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
     expect(call.update).not.toHaveProperty('preflightOk');
     expect(call.update).not.toHaveProperty('preflightAt');
+    // MODEL-SERVE-042. Same edge: a settings tweak must not move the start
+    // anchor, or every threshold edit would re-open an hourly window grid.
+    expect(call.update).not.toHaveProperty('enabledAt');
     expect(prisma.inferenceSchedule.update).not.toHaveBeenCalled();
+  });
+
+  it('MODEL-SERVE-042: re-enabling a STOPPED schedule moves the start anchor', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-a': { intervalTime: '1m' } },
+            baseTags: [],
+          },
+        }),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        update: jest.fn().mockResolvedValue({}),
+        // STOPPED, with an old anchor — Start must replace it.
+        findUnique: jest.fn().mockResolvedValue({
+          enabled: false,
+          enabledAt: new Date('2026-09-01T00:00:00.000Z'),
+          autoRetrain: false,
+          warnSd: 1.5,
+          criticalSd: 3.0,
+          driftMonitor: false,
+          truthLagMinutes: 1440,
+          truthToleranceMinutes: 30,
+          truthHorizonHours: 168,
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.putScheduleService('model-1', { enabled: true }, user);
+
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(call.update.enabledAt).toBeInstanceOf(Date);
+    expect((call.update.enabledAt as Date).getTime()).toBeGreaterThan(
+      new Date('2026-09-01T00:00:00.000Z').getTime(),
+    );
   });
 
   it('enables a SQL-sourced schedule with preflightOk NULL — not probed is not a pass, and not a refusal', async () => {
@@ -1178,6 +1237,83 @@ describe('InferenceWindowAuthorizedService.claimService', () => {
       statusCode: 409,
     });
     expect(presignInferenceWindowObject).not.toHaveBeenCalled();
+  });
+
+  // MODEL-SERVE-043. A sequence model's container needs its history length,
+  // the schedule's step (to see gaps) and the lead-in file.
+  function claimFixture(
+    sequenceLength: number | null,
+    algorithm: string,
+    contextKey: string | null,
+  ) {
+    (presignInferenceWindowObject as jest.Mock).mockImplementation(
+      ({ source_key }: { source_key: string }) =>
+        Promise.resolve({ data_url: `https://signed/${source_key}` }),
+    );
+    const prisma = buildPrisma({
+      inferenceWindow: {
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          id: 'w1',
+          modelId: 'model-1',
+          modelVersionId: 'version-1',
+          inputKey: 'in.parquet',
+          inputChecksum: 'in-sha',
+          contextKey,
+          contextChecksum: contextKey ? 'ctx-sha' : null,
+          windowStart: new Date('2026-09-10T08:00:00.000Z'),
+          windowEnd: new Date('2026-09-10T09:00:00.000Z'),
+        }),
+      },
+      inferenceSchedule: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ fetchConfig: { intervalTime: '1m' } }),
+      },
+    });
+    const descriptor = buildDescriptor({
+      getDescriptorByVersionIdService: jest.fn().mockResolvedValue({
+        data: {
+          featureColumns: ['a', 'b'],
+          modelId: 'model-1',
+          versionId: 'version-1',
+          modelUrl: 'https://example/model.joblib',
+          modelChecksum: 'checksum',
+          scalers: {},
+          scalingParams: {},
+          algorithm,
+          sequenceLength,
+        },
+      }),
+    });
+    return { service: makeService(prisma, descriptor), prisma };
+  }
+
+  it('MODEL-SERVE-043: hands a sequence model its length, step and lead-in', async () => {
+    const { service } = claimFixture(24, 'lstm', 'context.parquet');
+    const claim = await service.claimService('w1');
+    expect(claim).toMatchObject({
+      algorithm: 'lstm',
+      sequenceLength: 24,
+      intervalTime: '1m',
+      contextUrl: 'https://signed/context.parquet',
+      contextChecksum: 'ctx-sha',
+    });
+  });
+
+  it('MODEL-SERVE-043: a sequence window with no lead-in file still claims', async () => {
+    const { service } = claimFixture(24, 'gru', null);
+    const claim = await service.claimService('w1');
+    expect(claim.contextUrl).toBeNull();
+    expect(claim.contextChecksum).toBeNull();
+    expect(presignInferenceWindowObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('MODEL-SERVE-043: a tabular model reads no schedule and gets no lead-in', async () => {
+    const { service, prisma } = claimFixture(null, 'random_forest', null);
+    const claim = await service.claimService('w1');
+    expect(claim.sequenceLength).toBeNull();
+    expect(claim.intervalTime).toBeNull();
+    expect(prisma.inferenceSchedule.findUnique).not.toHaveBeenCalled();
   });
 });
 
@@ -2279,8 +2415,8 @@ describe('InferenceWindowAuthorizedService.runNowService (MODEL-SERVE-011)', () 
 
     expect(res.statusCode).toBe(202);
     expect(res.data).toMatchObject({ windowId: 'win-1', dispatched: true });
-    expect(scheduler.dispatchOne).toHaveBeenCalledTimes(1);
-    expect(scheduler.dispatchOne).toHaveBeenCalledWith('win-1');
+    expect(scheduler.requestDispatch).toHaveBeenCalledTimes(1);
+    expect(scheduler.requestDispatch).toHaveBeenCalledWith('win-1');
 
     // ONE row, PENDING, skipDuplicates — and its windowStart is a multiple
     // of the cadence since the epoch, which is what lets the unique
@@ -2323,7 +2459,7 @@ describe('InferenceWindowAuthorizedService.runNowService (MODEL-SERVE-011)', () 
     expect(res.statusCode).toBe(200);
     expect(res.data).toMatchObject({ status: 'SUCCEEDED', dispatched: false });
     expect(res.message).toContain('SUCCEEDED');
-    expect(scheduler.dispatchOne).not.toHaveBeenCalled();
+    expect(scheduler.requestDispatch).not.toHaveBeenCalled();
   });
 
   it('does not re-run a FAILED window — it points at the explicit retry path', async () => {
@@ -2345,7 +2481,7 @@ describe('InferenceWindowAuthorizedService.runNowService (MODEL-SERVE-011)', () 
     );
 
     expect(res.message).toContain('retry');
-    expect(scheduler.dispatchOne).not.toHaveBeenCalled();
+    expect(scheduler.requestDispatch).not.toHaveBeenCalled();
   });
 
   it('always picks a FULLY ELAPSED window — never one ending in the future', async () => {
@@ -2461,7 +2597,7 @@ describe('InferenceWindowAuthorizedService.runNowService — live score (MODEL-S
     });
   });
 
-  it('reads a timestamp with no timezone as UTC, like the client does', async () => {
+  it('reads a timestamp with no timezone as plant wall-clock (Bangkok, UTC+7)', async () => {
     const prisma = readyPrisma();
     const live = buildLivePredict({
       scoreOne: jest.fn().mockResolvedValue({
@@ -2472,12 +2608,15 @@ describe('InferenceWindowAuthorizedService.runNowService — live score (MODEL-S
     });
     await serviceWith(prisma, live).runNowService('model-1', user);
 
+    // A frame row's naive stamp is Bangkok wall-clock: 04:59 there is
+    // 21:59 UTC the day before. Reading it as UTC put presses 7h in the
+    // future and off the Actual vs Predict chart (2026-10-16).
     expect(prisma.manualPrediction.create).toHaveBeenCalledWith({
       data: {
         modelId: 'model-1',
         modelVersionId: 'ver-1',
         predicted: 1,
-        predictedAt: new Date('2026-09-17T04:59:00.000Z'),
+        predictedAt: new Date('2026-09-16T21:59:00.000Z'),
         requestedById: 'user-1',
       },
     });
@@ -2915,5 +3054,545 @@ describe('InferenceWindowAuthorizedService.getManualPredictionsService', () => {
         modelVersionId: 'ver-1',
       },
     ]);
+  });
+});
+
+describe('InferenceWindowAuthorizedService.putScheduleService — live source override (MODEL-SERVE-037-T02)', () => {
+  const OVERRIDE_FETCH = {
+    type: 'pi',
+    intervalTime: '1m',
+    calcType: 'Average',
+    calcBasis: 'TimeWeighted',
+    baseTags: ['PI_A.PV', 'PI_B.PV'],
+    columnTagMap: { a: 'PI_A.PV', b: 'PI_B.PV' },
+    liveSourceOverride: true,
+  };
+  const LIVE = {
+    sourceId: 'pi-1',
+    intervalTime: '1m',
+    calcType: 'Average' as const,
+    calcBasis: 'TimeWeighted' as const,
+    columnTagMap: { a: 'PI_A.PV', b: 'PI_B.PV' },
+  };
+
+  function buildOverridePrisma(
+    opts: {
+      datasetSourceTypes?: string[];
+      piSource?: Record<string, unknown> | null;
+      stored?: Record<string, unknown> | null;
+    } = {},
+  ) {
+    const {
+      datasetSourceTypes = ['csv'],
+      piSource = { id: 'pi-1', type: 'aveva', workspaceId: 'ws-1' },
+      stored = null,
+    } = opts;
+    return buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+        findFirstOrThrow: jest.fn(),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['csv-1'],
+          // A CSV dataset records no PI fetch config — the reason a plain
+          // re-resolve would refuse (or rebind to CSV).
+          pipelineConfig: {
+            sourceFetchConfigs: { 'csv-1': { type: 'csv' } },
+            baseTags: ['a', 'b', 'y'],
+          },
+        }),
+      },
+      dataSource: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue(datasetSourceTypes.map((type) => ({ type }))),
+        findFirst: jest.fn().mockResolvedValue(piSource),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn().mockResolvedValue({}),
+        findUnique: jest.fn().mockResolvedValue(stored),
+      },
+    });
+  }
+
+  function overrideInputStatus() {
+    return buildInputStatus({
+      resolveOverrideColumnsService: jest
+        .fn()
+        .mockResolvedValue({ baseTags: ['a', 'b'], targetY: 'y' }),
+    });
+  }
+
+  function svc(
+    prisma: ReturnType<typeof buildPrisma>,
+    inputStatus = overrideInputStatus(),
+  ) {
+    return makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    );
+  }
+
+  it('binds the PI source with the mapped tags and probes the mapped tags', async () => {
+    const prisma = buildOverridePrisma();
+    const inputStatus = overrideInputStatus();
+    await svc(prisma, inputStatus).putScheduleService(
+      'model-1',
+      { enabled: true, liveSource: LIVE },
+      user,
+    );
+
+    const write = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(write.create).toMatchObject({
+      sourceId: 'pi-1',
+      fetchConfig: OVERRIDE_FETCH,
+    });
+    expect(inputStatus.preflightSourceService).toHaveBeenCalledWith(
+      'model-1',
+      user,
+      'pi-1',
+      { a: 'PI_A.PV', b: 'PI_B.PV' },
+    );
+  });
+
+  it('refuses an override when the dataset already has a PI source', async () => {
+    const prisma = buildOverridePrisma({ datasetSourceTypes: ['aveva'] });
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        { enabled: true, liveSource: LIVE },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('already has a PI or SQL source'),
+    });
+    expect(prisma.inferenceSchedule.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses a source that is not PI (SQL is T07)', async () => {
+    const prisma = buildOverridePrisma({
+      piSource: { id: 'pi-1', type: 'sql', workspaceId: 'ws-1' },
+    });
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        { enabled: true, liveSource: LIVE },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('must be a PI source'),
+    });
+  });
+
+  it("refuses a source shared with a different workspace than the model's", async () => {
+    const prisma = buildOverridePrisma({
+      piSource: { id: 'pi-1', type: 'aveva', workspaceId: 'ws-other' },
+    });
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        { enabled: true, liveSource: LIVE },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("shared with this model's workspace"),
+    });
+  });
+
+  it("refuses a private source, even the caller's own", async () => {
+    const prisma = buildOverridePrisma({
+      piSource: { id: 'pi-1', type: 'aveva', workspaceId: null },
+    });
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        { enabled: true, liveSource: LIVE },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("shared with this model's workspace"),
+    });
+  });
+
+  it('names the unmapped inputs and writes nothing', async () => {
+    const prisma = buildOverridePrisma();
+    await expect(
+      svc(prisma).putScheduleService(
+        'model-1',
+        {
+          enabled: true,
+          liveSource: { ...LIVE, columnTagMap: { a: 'PI_A.PV' } },
+        },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: 'Map every model input to a PI tag. Unmapped: b.',
+    });
+    expect(prisma.inferenceSchedule.upsert).not.toHaveBeenCalled();
+  });
+
+  it('keeps the override on a settings-only update of a running schedule', async () => {
+    const prisma = buildOverridePrisma({
+      stored: { sourceId: 'pi-1', fetchConfig: OVERRIDE_FETCH, enabled: true },
+    });
+    await svc(prisma).putScheduleService(
+      'model-1',
+      { enabled: true, warnSd: 1.2 },
+      user,
+    );
+    const write = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(write.update).toMatchObject({
+      sourceId: 'pi-1',
+      fetchConfig: OVERRIDE_FETCH,
+    });
+  });
+
+  it('keeps the override on a plain Start after a Stop', async () => {
+    const prisma = buildOverridePrisma({
+      stored: { sourceId: 'pi-1', fetchConfig: OVERRIDE_FETCH, enabled: false },
+    });
+    const inputStatus = overrideInputStatus();
+    await svc(prisma, inputStatus).putScheduleService(
+      'model-1',
+      { enabled: true },
+      user,
+    );
+    const write = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(write.update).toMatchObject({ sourceId: 'pi-1' });
+    expect(inputStatus.preflightSourceService).toHaveBeenCalledWith(
+      'model-1',
+      user,
+      'pi-1',
+      { a: 'PI_A.PV', b: 'PI_B.PV' },
+    );
+  });
+
+  it('drops a kept override once the PRODUCTION version reads a PI dataset', async () => {
+    // Promotion never rebinds the schedule, so the next Start must notice.
+    const prisma = buildOverridePrisma({
+      datasetSourceTypes: ['aveva'],
+      stored: { sourceId: 'pi-1', fetchConfig: OVERRIDE_FETCH, enabled: false },
+    });
+    prisma.dataset.findUnique = jest.fn().mockResolvedValue({
+      sourceIds: ['pi-ds'],
+      pipelineConfig: {
+        sourceFetchConfigs: { 'pi-ds': { type: 'pi', intervalTime: '1m' } },
+        baseTags: ['a', 'b'],
+      },
+    });
+    await svc(prisma).putScheduleService('model-1', { enabled: true }, user);
+    const write = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(write.update.sourceId).toBe('pi-ds');
+    expect(write.update.fetchConfig.liveSourceOverride).toBeUndefined();
+  });
+
+  it('refuses a kept override whose map no longer covers the new version', async () => {
+    const prisma = buildOverridePrisma({
+      stored: { sourceId: 'pi-1', fetchConfig: OVERRIDE_FETCH, enabled: true },
+    });
+    const inputStatus = buildInputStatus({
+      resolveOverrideColumnsService: jest
+        .fn()
+        .mockResolvedValue({ baseTags: ['a', 'c'], targetY: 'y' }),
+    });
+    await expect(
+      svc(prisma, inputStatus).putScheduleService(
+        'model-1',
+        { enabled: true, warnSd: 1.2 },
+        user,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('no longer matches'),
+    });
+    expect(prisma.inferenceSchedule.upsert).not.toHaveBeenCalled();
+  });
+
+  it('creates a STOPPED schedule when a never-deployed model gets an override', async () => {
+    const prisma = buildOverridePrisma({ stored: null });
+    const create = jest.fn().mockResolvedValue({});
+    (prisma.inferenceSchedule as Record<string, unknown>).create = create;
+    const inputStatus = overrideInputStatus();
+    await svc(prisma, inputStatus).putScheduleService(
+      'model-1',
+      { enabled: false, liveSource: LIVE },
+      user,
+    );
+    expect(create.mock.calls[0][0].data).toMatchObject({
+      modelId: 'model-1',
+      enabled: false,
+      sourceId: 'pi-1',
+      fetchConfig: OVERRIDE_FETCH,
+    });
+    expect(inputStatus.preflightSourceService).not.toHaveBeenCalled();
+    expect(prisma.inferenceSchedule.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('relinks a STOPPED schedule to an override', async () => {
+    const prisma = buildOverridePrisma({ stored: { cadenceMinutes: 60 } });
+    await svc(prisma).putScheduleService(
+      'model-1',
+      { enabled: false, liveSource: LIVE },
+      user,
+    );
+    const write = prisma.inferenceSchedule.updateMany.mock.calls[0][0];
+    expect(write.data).toMatchObject({
+      enabled: false,
+      sourceId: 'pi-1',
+      fetchConfig: OVERRIDE_FETCH,
+      minRows: 30,
+    });
+  });
+});
+
+describe('InferenceWindowAuthorizedService.getScheduleService — live source override (MODEL-SERVE-037-T02)', () => {
+  it('marks a CSV-only dataset as requiring an override and lists its columns', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue({ sourceDatasetId: 'ds-1' }),
+        findFirstOrThrow: jest.fn(),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({ sourceIds: ['csv-1'] }),
+      },
+      dataSource: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { id: 'csv-1', name: 'upload', type: 'csv', status: 'active' },
+          ]),
+      },
+    });
+    const inputStatus = buildInputStatus({
+      resolveOverrideColumnsService: jest
+        .fn()
+        .mockResolvedValue({ baseTags: ['a', 'b'], targetY: 'y' }),
+    });
+    const res = await makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    ).getScheduleService('model-1', user);
+
+    expect(res.data.liveSource).toEqual({
+      required: true,
+      columns: ['a', 'b'],
+      target: 'y',
+      current: null,
+    });
+  });
+
+  it('does not offer an override when the dataset reads PI', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue({ sourceDatasetId: 'ds-1' }),
+        findFirstOrThrow: jest.fn(),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({ sourceIds: ['pi-1'] }),
+      },
+      dataSource: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { id: 'pi-1', name: 'PI', type: 'aveva', status: 'active' },
+          ]),
+      },
+    });
+    const inputStatus = buildInputStatus({
+      resolveOverrideColumnsService: jest.fn(),
+    });
+    const res = await makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    ).getScheduleService('model-1', user);
+
+    expect(res.data.liveSource.required).toBe(false);
+    expect(inputStatus.resolveOverrideColumnsService).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Run Predict for lstm/gru. apps/serving cannot score a sequence model, so the
+ * one button reports the window it dispatched instead: runNow says so
+ * (`liveVia: 'window'`) without calling Serving, and the client polls
+ * windowPredictionService, which reads the window's newest prediction itself
+ * and records the same ManualPrediction a served press does.
+ */
+describe('InferenceWindowAuthorizedService — Run Predict through the window for sequence models (MODEL-SERVE-044/045)', () => {
+  const schedule = {
+    modelId: 'model-1',
+    enabled: true,
+    cadenceMinutes: 60,
+    lagMinutes: 0,
+  };
+
+  function runNowPrisma(algorithm: string) {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue(schedule);
+    prisma.modelVersion.findFirst.mockResolvedValue({ id: 'ver-1', algorithm });
+    prisma.inferenceWindow.findUniqueOrThrow.mockResolvedValue({
+      id: 'win-1',
+      status: 'PENDING',
+      windowStart: new Date('2026-11-02T05:00:00.000Z'),
+      windowEnd: new Date('2026-11-02T06:00:00.000Z'),
+    });
+    return prisma;
+  }
+
+  function serviceFor(
+    prisma: ReturnType<typeof buildPrisma>,
+    livePredict = buildLivePredict(),
+  ) {
+    return makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      buildInputStatus(),
+      buildScheduler(),
+      livePredict,
+    );
+  }
+
+  it('MODEL-SERVE-045: an lstm press tries Serving first and keeps its value', async () => {
+    const live = buildLivePredict();
+    const res = await serviceFor(runNowPrisma('lstm'), live).runNowService(
+      'model-1',
+      user,
+    );
+    expect(live.scoreOne).toHaveBeenCalledWith('model-1');
+    expect(res.data.liveVia).toBe('serving');
+    expect(res.data.live.ok).toBe(true);
+  });
+
+  it('an lstm press whose live score comes back empty falls back to the window', async () => {
+    const live = buildLivePredict({
+      scoreOne: jest.fn().mockResolvedValue({
+        ok: false,
+        reason: "Algorithm 'lstm' is not servable by this process",
+      }),
+    });
+    const res = await serviceFor(runNowPrisma('lstm'), live).runNowService(
+      'model-1',
+      user,
+    );
+    expect(res.data.liveVia).toBe('window');
+    expect(res.data.windowId).toBe('win-1');
+  });
+
+  it('a tabular press with no live reading does not fall back', async () => {
+    const live = buildLivePredict({
+      scoreOne: jest.fn().mockResolvedValue({ ok: false, reason: 'quiet' }),
+    });
+    const res = await serviceFor(
+      runNowPrisma('random_forest'),
+      live,
+    ).runNowService('model-1', user);
+    expect(res.data.liveVia).toBe('serving');
+  });
+
+  it('a tabular press still scores through Serving', async () => {
+    const live = buildLivePredict();
+    const res = await serviceFor(
+      runNowPrisma('random_forest'),
+      live,
+    ).runNowService('model-1', user);
+    expect(live.scoreOne).toHaveBeenCalledWith('model-1');
+    expect(res.data.liveVia).toBe('serving');
+  });
+
+  function windowPrisma(window: Record<string, unknown>, existing = null) {
+    const prisma = buildPrisma({
+      manualPrediction: {
+        create: jest.fn().mockResolvedValue({}),
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(existing),
+      },
+    });
+    prisma.inferenceWindow.findFirst.mockResolvedValue({
+      id: 'win-1',
+      modelVersionId: 'ver-1',
+      predictionsKey: 'inference/m/v/dt=2026-11-02/hour=05/predictions.parquet',
+      failureReason: null,
+      ...window,
+    });
+    return prisma;
+  }
+
+  it('reports pending while the window is still running', async () => {
+    const res = await serviceFor(
+      windowPrisma({ status: 'RUNNING' }),
+    ).windowPredictionService('model-1', 'win-1', user);
+    expect(res.data.pending).toBe(true);
+    expect(readLastInferencePrediction).not.toHaveBeenCalled();
+  });
+
+  it('on success reads the newest prediction and records it at plant time', async () => {
+    (readLastInferencePrediction as jest.Mock).mockResolvedValue({
+      timestamp: '2026-11-02T12:00:00',
+      prediction: 20.33,
+      row_count: 1,
+    });
+    const prisma = windowPrisma({ status: 'SUCCEEDED' });
+    const res = await serviceFor(prisma).windowPredictionService(
+      'model-1',
+      'win-1',
+      user,
+    );
+    expect(res.data).toMatchObject({
+      pending: false,
+      live: { ok: true, predicted: 20.33, at: '2026-11-02T12:00:00' },
+    });
+    // 12:00 Bangkok wall clock is 05:00 UTC.
+    expect(prisma.manualPrediction.create).toHaveBeenCalledWith({
+      data: {
+        modelId: 'model-1',
+        modelVersionId: 'ver-1',
+        predicted: 20.33,
+        predictedAt: new Date('2026-11-02T05:00:00.000Z'),
+        requestedById: 'user-1',
+      },
+    });
+  });
+
+  it('a second poll after success records nothing new', async () => {
+    (readLastInferencePrediction as jest.Mock).mockResolvedValue({
+      timestamp: '2026-11-02T12:00:00',
+      prediction: 20.33,
+      row_count: 1,
+    });
+    const prisma = windowPrisma({ status: 'SUCCEEDED' }, {
+      id: 'mp-1',
+    } as never);
+    await serviceFor(prisma).windowPredictionService('model-1', 'win-1', user);
+    expect(prisma.manualPrediction.create).not.toHaveBeenCalled();
+  });
+
+  it('a failed window returns its own failure reason', async () => {
+    const res = await serviceFor(
+      windowPrisma({ status: 'FAILED', failureReason: 'source unreachable' }),
+    ).windowPredictionService('model-1', 'win-1', user);
+    expect(res.data.live).toEqual({ ok: false, reason: 'source unreachable' });
+  });
+
+  it('refuses a window that does not belong to the model', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceWindow.findFirst.mockResolvedValue(null);
+    await expect(
+      serviceFor(prisma).windowPredictionService('model-1', 'other', user),
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 });

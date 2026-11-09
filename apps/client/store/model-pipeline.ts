@@ -1,4 +1,5 @@
 import { atom } from 'jotai'
+import type { CalBasis, SummaryType } from '@/types/pi'
 import type { TimeRange } from '@/lib/mock-readings'
 import type { Dataset, FillStrategyConfig } from '@/lib/preprocessing'
 import type {
@@ -62,12 +63,12 @@ export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)
 export type Algorithm =
   | 'ols'
   | 'ridge'
-  | 'hist_gradient_boosting'
   | 'svm'
   | 'mlp'
   | 'grp'
   | 'pls'
   | 'random_forest'
+  | 'extra_trees'
   | 'lightgbm'
   | 'xgboost'
   | 'lstm'
@@ -75,26 +76,35 @@ export type Algorithm =
 export const ALGORITHMS: Algorithm[] = [
   'ols',
   'ridge',
-  'hist_gradient_boosting',
   'svm',
   'mlp',
   'grp',
   'pls',
   'random_forest',
+  'extra_trees',
   'lightgbm',
   'xgboost',
   'lstm',
   'gru',
 ]
+/**
+ * MODEL-FLOW-034. Ids no longer offered or accepted, kept here only so a
+ * stored run trained with one still reads by name in history (every display
+ * site falls back to the raw id when a label is missing).
+ */
+const RETIRED_ALGORITHM_LABELS: Record<string, string> = {
+  hist_gradient_boosting: 'Histogram Gradient Boosting (retired)',
+}
 export const ALGORITHM_LABELS: Record<Algorithm, string> = {
+  ...RETIRED_ALGORITHM_LABELS,
   ols: 'Linear Regression',
   ridge: 'Ridge Regression',
-  hist_gradient_boosting: 'Histogram Gradient Boosting',
   svm: 'Support Vector Machine',
   grp: 'Gaussian Process Regression',
   mlp: 'MLP (Neural Network)',
   pls: 'PLS Regression',
   random_forest: 'Random Forest',
+  extra_trees: 'Extra Trees',
   xgboost: 'XGBoost',
   lightgbm: 'LightGBM',
   lstm: 'LSTM',
@@ -107,9 +117,10 @@ export type HyperparamValue = number | string | boolean | null
 export const mpAlgorithmAtom = atom<Algorithm>('ols')
 /** Up to 3 candidate algorithms. `mpAlgorithmAtom` mirrors the primary (index 0). */
 export const mpAlgorithmsAtom = atom<Algorithm[]>(['ols'])
-/** AutoML Step A — evaluate the selected algorithms and auto-pick the best. */
-export const mpFindBestModelAtom = atom<boolean>(false)
-/** AutoML Step B — hyperparameter-tune the best model (requires Step A). */
+/** Find Best Parameters: with one algorithm, search the curated grid for it;
+ * with two or more, tune whichever candidate wins on Test RMSE. (Find Best
+ * Model was removed 2026-10-14 — training every selected algorithm is the
+ * default, and Step 4 recommends the best.) */
 export const mpFindBestParamsAtom = atom<boolean>(false)
 export const mpTargetVariableAtom = atom<string[]>([])
 export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
@@ -152,6 +163,46 @@ export const mpPerAlgorithmHyperparamsAtom = atom<
  */
 export const mpExtraVariantsAtom = atom<
   Partial<Record<Algorithm, Record<string, HyperparamValue>[]>>
+>({})
+/**
+ * MODEL-FLOW-035. Step 3's fine-tune section (Round 2): the run the user chose
+ * to tune. `null` = not chosen, so the section opens on the best run. View
+ * state only — nothing is written to the draft by choosing, and an id that no
+ * longer names a run of this draft is ignored.
+ */
+export const mpFineTuneSourceRunIdAtom = atom<string | null>(null)
+/**
+ * MODEL-FLOW-035/036. The Fine-tune switch: decides what Step 3's one Start
+ * button does — off, train every selected algorithm once (Round 1); on,
+ * fine-tune the picked run (Round 2). Only takes effect once a run has
+ * succeeded. Not run-config draft state, so it does not ask for an Apply.
+ */
+export const mpFineTuneEnabledAtom = atom<boolean>(false)
+/**
+ * MODEL-FLOW-035. Fine-tune's Find Best Parameters switch: whether it also tries the curated hyperparameter
+ * variants (on) or only the base and the rows the user added (off). Not
+ * run-config draft state, so toggling it does not ask for an Apply.
+ */
+export const mpFineTuneUseGridAtom = atom<boolean>(true)
+/**
+ * MODEL-FLOW-035. Hyperparameter edits the user made on the fine-tune
+ * selector's open card, keyed by the run they edit. Laid over that run's own
+ * values to form the fine-tune's base, so switching cards keeps each card's
+ * edits and an untouched card tunes from the run exactly as trained.
+ */
+export const mpFineTuneBaseEditsAtom = atom<
+  Record<string, Record<string, HyperparamValue>>
+>({})
+/**
+ * MODEL-FLOW-038. Fine-tune's grid-search editor: the RAW TEXT the user typed
+ * into each hyperparameter's value box (`0.1, 1, 10`), per algorithm and key.
+ * Text, not parsed values, so a half-typed list survives a re-render and an
+ * error can name the token. A key with no entry shows the server's default
+ * list. Parsed by `lib/param-grid.ts`; not run-config draft state, so it asks
+ * for no Apply.
+ */
+export const mpFineTuneParamGridEditsAtom = atom<
+  Partial<Record<Algorithm, Record<string, string>>>
 >({})
 /**
  * Evaluation metric recorded on the saved model. See `LOSS_OPTIONS` in
@@ -252,7 +303,7 @@ export const mpNameAtom = atom<string>('')
 export const mpDescriptionAtom = atom<string>('')
 export const mpWorkspaceIdAtom = atom<string>('')
 export const mpPlantIdAtom = atom<string>('')
-export const mpNodeIdAtom = atom<string>('')
+export const mpEquipmentIdAtom = atom<string>('')
 
 // Phase 5/6 — training + results.
 export const mpTrainStateAtom = atom<TrainState>({
@@ -360,8 +411,8 @@ export const mpArtifactRefAtom = atom<string | null>(null)
 // to `Model.data.config.deployment`. No runtime retrain/drift engine yet.
 /** Master toggle for the auto-retrain policy. */
 export const mpAutoRetrainAtom = atom<boolean>(false)
-/** Layer 1 (Warning, amber) — tighter ±SD band. Invariant: warn < critical. */
-export const mpRetrainWarnSdAtom = atom<number>(1.5)
+/** Layer 1 (Warning, amber) — a residual beyond this many SD. Invariant: warn < critical. */
+export const mpRetrainWarnSdAtom = atom<number>(2)
 /** Layer 2 (Critical, red) — wider ±SD band; reaching it triggers auto-retrain. */
 export const mpRetrainCriticalSdAtom = atom<number>(3.0)
 /** Master toggle for input-sensor drift monitoring. */
@@ -422,11 +473,10 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpDescriptionAtom, '')
   set(mpWorkspaceIdAtom, '')
   set(mpPlantIdAtom, '')
-  set(mpNodeIdAtom, '')
+  set(mpEquipmentIdAtom, '')
   set(mpSelectedDatasetAtom, null)
   set(mpAlgorithmAtom, 'ols')
   set(mpAlgorithmsAtom, ['ols'])
-  set(mpFindBestModelAtom, false)
   set(mpFindBestParamsAtom, false)
   set(mpTargetVariableAtom, [])
   // Default algorithm is `ols` — seed its clean hyperparameters (mirrors
@@ -436,6 +486,11 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   // MODEL-FLOW-026. Hand-added variant rows belong to the draft that was
   // being configured; a fresh wizard must not inherit them.
   set(mpExtraVariantsAtom, {})
+  set(mpFineTuneEnabledAtom, false)
+  set(mpFineTuneSourceRunIdAtom, null)
+  set(mpFineTuneUseGridAtom, true)
+  set(mpFineTuneBaseEditsAtom, {})
+  set(mpFineTuneParamGridEditsAtom, {})
   // MODEL-FLOW-019-T37. Was 'mse' — not a `LOSS_OPTIONS` member, so a reset
   // wizard rendered an empty Loss control. Same inlined literal as the atom's
   // own default above, held equal to `DEFAULT_LOSS_FUNCTION` by test.
@@ -486,8 +541,15 @@ export interface PIConfig {
   type: 'pi'
   piName?: string
   piServerUrl: string
-  calcType: 'Average' | 'Interpolated' | 'Recorded'
-  calcBasis: 'TimeWeighted' | 'EventWeighted'
+  /**
+   * Read by the backend's inference-window scheduler as the LIVE fetch's
+   * `summary_type` / `cal_basis` / bucket (`asFetchConfig`). Since
+   * 2026-10-19 the Data Studio wizard writes them at Save from the Interval
+   * and Historical Fetch Settings (`withPiFetchSettings`), so inference reads
+   * the source the way the dataset was built.
+   */
+  calcType: 'Average' | 'Interpolated' | 'Recorded' | SummaryType
+  calcBasis: 'TimeWeighted' | 'EventWeighted' | CalBasis
   intervalTime: string
   userName?: string
   password?: string

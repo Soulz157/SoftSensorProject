@@ -114,6 +114,13 @@ export const SDTA_FILENAME = 'sdta.json';
  */
 export const CV_OOF_PREDICTIONS_FILENAME = 'cv_oof_predictions.parquet';
 
+/**
+ * MODEL-FLOW-038. Filename of a grid-search run's ranked combinations. No run
+ * column records its key; `getDraftRunService` reads it by name under the run
+ * prefix, like `cv_gap_predictions.parquet`.
+ */
+export const GRID_SEARCH_RESULTS_FILENAME = 'grid_search_results.json';
+
 export const RUN_UPLOAD_FILENAMES = [
   'model.joblib',
   'metrics.json',
@@ -128,6 +135,11 @@ export const RUN_UPLOAD_FILENAMES = [
   // Mirrored from CV_FOLDS_FILENAME in object_store.py and train.py —
   // change all three.
   'cv_folds.json',
+  // MODEL-FLOW-038. Every GridSearchCV combination, ranked — present only on a
+  // grid-search run. Mirrored from GRID_SEARCH_RESULTS_FILENAME in
+  // object_store.py and images/trainer/app/artifacts.py — change all three.
+  // See images/trainer/app/MIRRORS.md entry 14.
+  'grid_search_results.json',
   // MODEL-FLOW-019-T09. Per-feature importance — present only for the
   // algorithms images/trainer/app/importance.py can read a real quantity
   // from. Mirrored from FEATURE_IMPORTANCE_FILENAME in object_store.py and

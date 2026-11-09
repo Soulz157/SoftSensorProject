@@ -21,6 +21,11 @@ import type { ScheduleSourceRef } from '@/services/inference-window'
  *                      offered.
  * - `selectable`     — two or more choices; the only state with a live
  *                      picker.
+ * - `override-required` — MODEL-SERVE-037. No dataset source can be read on
+ *                      a schedule (a CSV upload). Checked FIRST, deployed or
+ *                      not: the only way to run such a model is a live PI
+ *                      source with a column-to-tag mapping, which the dialog
+ *                      shows in place of the candidate picker.
  */
 export type RelinkState =
   | 'no-schedule'
@@ -28,6 +33,7 @@ export type RelinkState =
   | 'no-candidates'
   | 'single-source'
   | 'selectable'
+  | 'override-required'
 
 export interface RelinkView {
   state: RelinkState
@@ -41,8 +47,20 @@ export interface RelinkView {
 export function describeRelink(input: {
   currentSource: ScheduleSourceRef | null
   sourceCandidates: ScheduleSourceRef[]
+  overrideRequired?: boolean
 }): RelinkView {
-  const { currentSource, sourceCandidates } = input
+  const { currentSource, sourceCandidates, overrideRequired } = input
+
+  if (overrideRequired) {
+    return {
+      state: 'override-required',
+      canRelink: false,
+      note:
+        'This model was trained on an uploaded CSV, which cannot be read on ' +
+        'a schedule. Choose a PI source and map each training column to its ' +
+        'PI tag.',
+    }
+  }
 
   if (!currentSource) {
     return {

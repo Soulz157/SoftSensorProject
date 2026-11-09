@@ -236,7 +236,7 @@ export function ModelRetrainDialog({
 
         <ScrollArea className="min-h-0">
           {/* Landscape: decisions on the left, read-only context on the
-              right (base dataset + drift/PSI). Stacks below `md`. The right
+              right (base dataset + input drift). Stacks below `md`. The right
               column exists only once an incumbent does — with none, there is
               no base dataset or monitoring to show, and an empty 17rem track
               would just squeeze the left. */}

@@ -70,6 +70,7 @@ export const FeatureConfigSchema = z.object({
     'log',
     'datetime',
     'formula',
+    'group',
   ]),
   tag: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -153,6 +154,15 @@ export const CreateRawVersionSchema = z.object({
   startTime: z.string().min(1),
   endTime: z.string().min(1),
   summaryDuration: z.string().optional(),
+  /**
+   * PI summary parameters (2026-10-19). Step 2's Historical Fetch Settings
+   * used to reach only the browser's own fetch: the BRONZE that trains got
+   * python's defaults (TimeWeighted / Average / 300), so a Maximum picked on
+   * screen trained on averages. Same names and limits as `FetchParamsSchema`.
+   */
+  calBasis: z.string().optional(),
+  summaryType: z.array(z.string()).min(1).optional(),
+  batchSize: z.number().int().min(1).max(1000).optional(),
   /** SQL sources only — the canonical frame is built around a declared axis. */
   timestampColumn: z.string().optional(),
   table: z.string().optional(),
@@ -213,6 +223,20 @@ export const StartCleanJobSchema = z.object({
   scaleRecipe: CreateFeaturesSchema.optional(),
 });
 
+/**
+ * The validation holdout window to DROP from a read (2026-10-18). A raw
+ * (BRONZE) artifact still holds the holdout rows, and the holdout can sit in
+ * the middle of the span, so "raw minus validation" is not expressible with
+ * `startTime`/`endTime` alone. Spread into a schema rather than `.refine`d:
+ * a refine would turn the schema into a ZodEffects (see
+ * `StartCleanJobSchema`). Python's `ExcludeWindowFields` refuses a lone
+ * bound or an inverted pair with a 422.
+ */
+const excludeWindowFields = {
+  excludeStart: z.string().optional(),
+  excludeEnd: z.string().optional(),
+};
+
 export const ListRowsSchema = z.object({
   offset: z.coerce.number().int().nonnegative().default(0),
   /**
@@ -241,6 +265,7 @@ export const ListRowsSchema = z.object({
     .optional(),
   startTime: z.string().optional(),
   endTime: z.string().optional(),
+  ...excludeWindowFields,
   /**
    * DS-LAKE-005B-A-T05 (rescoped: server-side transport only). `json`
    * (default) is unchanged — every existing caller gets the same body it
@@ -308,6 +333,7 @@ export const HistogramRequestSchema = z.object({
   sampleRows: z.number().int().min(1).max(50_000).optional(),
   startTime: z.string().optional(),
   endTime: z.string().optional(),
+  ...excludeWindowFields,
   kdeSamples: z.number().int().min(3).max(500).optional(),
   binCount: z.number().int().min(1).max(200).optional(),
 });
@@ -327,6 +353,7 @@ export const BoxplotRequestSchema = z.object({
   sampleRows: z.number().int().min(1).max(50_000).optional(),
   startTime: z.string().optional(),
   endTime: z.string().optional(),
+  ...excludeWindowFields,
   /** Caps the OUTLIER LIST only — `outlierCount` on each tag always carries
    * the true, uncapped total regardless of this cap. */
   outlierCap: z.number().int().min(1).max(500).optional(),
@@ -409,6 +436,7 @@ export const CorrelationRequestSchema = z.object({
   sampleRows: z.number().int().min(1).max(50_000).optional(),
   startTime: z.string().optional(),
   endTime: z.string().optional(),
+  ...excludeWindowFields,
   topK: z.number().int().min(2).max(100).optional(),
 });
 

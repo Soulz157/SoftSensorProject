@@ -35,13 +35,22 @@ anchored on the dot and stops there.
 `A/B.PV` remains genuinely ambiguous from text alone (is it one tag, or `A`
 divided by `B.PV`?). The parser commits to reading it as one tag and records a
 `parse_warning` so the UI can ask a human, rather than guessing in silence.
+
+A hyphen gets the same treatment as a slash, minus the warning. `AI301-1B.PV`
+and `TPE-H2-FC3931.PV` are single tags; `TI240.PV-TI239.PV` is subtraction.
+The dot-suffix separates them again: the suffix never takes a hyphen, so the
+match ends at `.PV` and the next one starts after the minus. Reading
+`A-B.PV` as subtraction would need `A` to be an operand with no dot-suffix —
+a bare constant like `BIAS`, which the formula grammar cannot resolve anyway —
+so committing to one tag costs nothing that worked before, and a warning on
+every hyphenated tag would bury the slash warnings that do need a human.
 """
 
 from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -50,9 +59,10 @@ import pandas as pd
 from services.range_parser import ParsedRange, parse_range, range_parse_warning
 
 #: A plant tag: leading letter, then name characters that MAY include a slash,
-#: terminated by a dot-suffix. The dot is what stops the match, which is what
-#: keeps `FIC226.PV/FIC227.PV` from collapsing into one token.
-TAG_RE = re.compile(r"[A-Za-z][A-Za-z0-9/]*\.[A-Za-z][A-Za-z0-9]*")
+#: and hyphens that each join two name segments, terminated by a dot-suffix.
+#: The dot is what stops the match, which is what keeps `FIC226.PV/FIC227.PV`
+#: and `TI240.PV-TI239.PV` from collapsing into one token.
+TAG_RE = re.compile(r"[A-Za-z][A-Za-z0-9/]*(?:-[A-Za-z0-9/]+)*\.[A-Za-z][A-Za-z0-9]*")
 
 #: A cut condition on the SD&TA sheet, e.g. `<1700`.
 CONDITION_RE = re.compile(r"^(<=|>=|<|>|==|=)\s*(-?\d+(?:\.\d+)?)$")
@@ -64,7 +74,16 @@ EXCEL_EPOCH = datetime(1899, 12, 30)
 #: Header labels -> canonical column key. Matched against a casefolded, stripped
 #: cell; the `range`/`description`/`effect` entries match by prefix because the
 #: sheets append qualifiers (`Range control`, `effect กับ Y`).
-_EXACT_LABELS = {"no": "no", "y": "y", "x": "x", "relation": "relation"}
+#: `unit` (DS-LAKE-038): some workbooks - ROC COLD's HOT-format copy - write the
+#: engineering unit in its own `Unit` column and leave the range bare
+#: (`45 - 95` next to `T/H`).
+_EXACT_LABELS = {
+    "no": "no",
+    "y": "y",
+    "x": "x",
+    "relation": "relation",
+    "unit": "unit",
+}
 _PREFIX_LABELS = (
     ("description", "description"),
     ("range", "range"),
@@ -267,8 +286,7 @@ def find_header_row(frame: pd.DataFrame) -> int | None:
     """Index of the `No | Y | X` header, or `None` when this is not a unit sheet."""
     for row in range(frame.shape[0]):
         labels = {
-            _text(frame.iat[row, column]).casefold()
-            for column in range(frame.shape[1])
+            _text(frame.iat[row, column]).casefold() for column in range(frame.shape[1])
         }
         if all(required in labels for required in _REQUIRED_COLUMNS):
             return row
@@ -332,6 +350,22 @@ def _config_number(text: str) -> int | None:
         return None
 
 
+def _with_unit_column(parsed: ParsedRange, unit_text: str) -> ParsedRange:
+    """Give a bare range (`45 - 95`) the unit from the row's `Unit` column.
+
+    A unit written INSIDE the range cell (`105-120 C`) wins: it is the more
+    specific statement. A blank or `-` Unit cell, or a range that did not
+    parse, leaves the range as it was. Without this, a workbook that keeps its
+    units in their own column has every range treated as dimensionless - the
+    number applied as-is, skipping the unit check that guards a kg/h bound
+    against a t/h tag.
+    """
+    unit = unit_text.strip()
+    if parsed.kind == "none" or parsed.unit is not None or unit in ("", "-"):
+        return parsed
+    return replace(parsed, unit=unit)
+
+
 def _build_feature(
     frame: pd.DataFrame,
     row: int,
@@ -355,7 +389,9 @@ def _build_feature(
         formula = expression
 
     range_text = _cell(frame, row, columns.get("range"))
-    range_parsed = parse_range(range_text)
+    range_parsed = _with_unit_column(
+        parse_range(range_text), _cell(frame, row, columns.get("unit"))
+    )
     warnings = _tag_warnings(tags)
     range_warning = range_parse_warning(range_parsed)
     if range_warning is not None:

@@ -96,4 +96,16 @@ def build_run_manifest(
         "model_sha256": sha256_of(model_path),
         "duration_ms": duration_ms,
         "framework_versions": framework_versions(spec["algorithm"]),
+        # MODEL-FLOW-038. Present only for a grid-search run: the grid searched
+        # and its ranking metric. `hyperparameters` above is the WINNING combo.
+        **(
+            {
+                "search": {
+                    "param_grid": spec["paramGrid"],
+                    "ranking_metric": spec.get("rankingMetric"),
+                }
+            }
+            if spec.get("paramGrid")
+            else {}
+        ),
     }

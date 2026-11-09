@@ -1,7 +1,7 @@
 'use client'
 
 import React, { use, memo, useEffect, useRef } from 'react'
-import { isNodeAbnormal } from '@/lib/overview-status'
+import { isEquipmentAbnormal } from '@/lib/overview-status'
 import {
   ChevronLeft,
   ChevronRight,
@@ -11,9 +11,11 @@ import {
   Map,
   Cpu,
   AlertTriangle,
+  Database,
 } from 'lucide-react'
+import Link from 'next/link'
 import { IsometricMap } from './components/isometric-map'
-import { NodeDetailPanel } from './components/node-detail-panel'
+import { EquipmentDetailPanel } from './components/equipment-detail-panel'
 import type { CanvasNode } from '@/services/canvas'
 import { Button } from '@/components/ui/button'
 import { AddPlanDialog } from './components/plant-dialog'
@@ -31,20 +33,20 @@ const BINARY_TEXT = {
 } as const
 
 const EquipmentGridView = memo(function EquipmentGridView({
-  nodes,
-  selectedNodeId,
-  onNodeClick,
-  failedNodeIds,
-  abnormalModelNodeIds,
+  equipmentList,
+  selectedEquipmentId,
+  onEquipmentClick,
+  failedEquipmentIds,
+  abnormalModelEquipmentIds,
 }: {
-  nodes: CanvasNode[]
-  selectedNodeId: string | null
-  onNodeClick: (nodeId: string) => void
-  failedNodeIds: Set<string>
+  equipmentList: CanvasNode[]
+  selectedEquipmentId: string | null
+  onEquipmentClick: (equipmentId: string) => void
+  failedEquipmentIds: Set<string>
   /** MODEL-SERVE-024-D02. Equipment carrying an abnormal model. */
-  abnormalModelNodeIds: ReadonlySet<string>
+  abnormalModelEquipmentIds: ReadonlySet<string>
 }) {
-  if (nodes.length === 0) {
+  if (equipmentList.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-background text-center">
         <Cpu className="h-10 w-10 text-muted-foreground/30" />
@@ -53,7 +55,7 @@ const EquipmentGridView = memo(function EquipmentGridView({
             No equipment in this plant
           </p>
           <p className="text-xs text-muted-foreground">
-            Create nodes in Canvas to populate this operations grid.
+            Create equipment in Canvas to populate this operations grid.
           </p>
         </div>
       </div>
@@ -63,16 +65,19 @@ const EquipmentGridView = memo(function EquipmentGridView({
   return (
     <div className="h-full overflow-auto bg-background p-4">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {nodes.map(node => {
-          const binary = isNodeAbnormal(node, abnormalModelNodeIds)
+        {equipmentList.map(equipment => {
+          const binary = isEquipmentAbnormal(
+            equipment,
+            abnormalModelEquipmentIds,
+          )
             ? 'abnormal'
             : 'normal'
-          const hasFailedModel = failedNodeIds.has(node.id)
-          const selected = selectedNodeId === node.id
+          const hasFailedModel = failedEquipmentIds.has(equipment.id)
+          const selected = selectedEquipmentId === equipment.id
           return (
             <div
-              key={node.id}
-              onClick={() => onNodeClick(node.id)}
+              key={equipment.id}
+              onClick={() => onEquipmentClick(equipment.id)}
               className={cn(
                 'group flex flex-col justify-between rounded-xl border border-border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/60 hover:shadow-md cursor-pointer',
                 selected && 'border-primary bg-primary/5 ring-1 ring-primary',
@@ -82,10 +87,10 @@ const EquipmentGridView = memo(function EquipmentGridView({
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate text-base font-semibold text-foreground">
-                      {node.data.name}
+                      {equipment.data.name}
                     </p>
                     <p className="text-xs capitalize text-muted-foreground">
-                      {node.data.type} node
+                      {equipment.data.type} node
                     </p>
                   </div>
                   <span
@@ -105,9 +110,9 @@ const EquipmentGridView = memo(function EquipmentGridView({
                     </p>
                   </div>
                   <div className="rounded-md bg-muted/50 p-2.5">
-                    <p className="text-muted-foreground mb-1">AI Models</p>
+                    <p className="text-muted-foreground mb-1">Models</p>
                     <p className="font-semibold text-foreground">
-                      {node.models?.length || 0} Connected
+                      {equipment.models?.length || 0} Connected
                     </p>
                   </div>
                   {hasFailedModel && (
@@ -137,11 +142,11 @@ interface PlantsPageProps {
 
 export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
   const { id } = use(params)
-  const { nodeId } = use(searchParams)
+  const { nodeId: equipmentId } = use(searchParams)
 
   const { state, data, setters, handlers } = usePlantsController(
     id,
-    nodeId ?? null,
+    equipmentId ?? null,
   )
 
   const panelRef = useRef<HTMLDivElement>(null)
@@ -216,12 +221,12 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
               </>
             )}
 
-            {data.selectedNode && (
+            {data.selectedEquipment && (
               <>
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50" />
                 <span className="flex items-center gap-2">
                   <span className="max-w-36 truncate font-semibold text-foreground">
-                    {data.selectedNode.data.name}
+                    {data.selectedEquipment.data.name}
                   </span>
                 </span>
               </>
@@ -261,6 +266,28 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
               )
             })}
           </div>
+          {/* Laws of UX: the toolbar is two groups split by a divider
+              (Proximity / Common Region). Left changes how THIS page is
+              viewed; right leaves for, or adds to, the workspace. Data
+              Management uses the sidebar's label and icon (Jakob's Law).
+              The single primary action sits last, where the eye ends
+              (Serial Position Effect). */}
+          <div aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
+          <Button size="sm" variant="ghost" className="h-8 gap-1.5" asChild>
+            <Link href={`/analytics/${state.activeWorkspaceId || id}`}>
+              <Database className="h-4 w-4" />
+              Data Management
+            </Link>
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5"
+            onClick={handlers.handleOpenAddPlan}
+          >
+            <Plus className="h-4 w-4" />
+            Create Plant
+          </Button>
           {state.viewMode === 'equipment' && state.selectedPlanId && (
             <Button
               size="sm"
@@ -271,15 +298,6 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
               Add Equipment
             </Button>
           )}
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 gap-1.5"
-            onClick={handlers.handleOpenAddPlan}
-          >
-            <Plus className="h-4 w-4" />
-            Create Plant
-          </Button>
         </div>
       </div>
 
@@ -294,63 +312,68 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
                     ? [data.selectedPlan]
                     : []
               }
-              nodes={data.filteredNodes}
-              workspaceNodes={data.workspaceNodes}
-              zoneNodeKey="planId"
+              equipmentList={data.filteredEquipmentList}
+              workspaceEquipmentList={data.workspaceEquipmentList}
+              zoneEquipmentKey="planId"
               selectedZoneId={state.selectedPlanId}
-              selectedNodeId={state.selectedNodeId}
+              selectedEquipmentId={state.selectedEquipmentId}
               onZoneSelect={handlers.handleZoneSelect}
               onZoneDoubleClick={handlers.handleDrillDown}
-              onNodeClick={handlers.handleNodeClick}
+              onEquipmentClick={handlers.handleEquipmentClick}
               viewMode={state.viewMode}
-              abnormalModelNodeIds={data.abnormalModelNodeIds}
+              abnormalModelEquipmentIds={data.abnormalModelEquipmentIds}
             />
           ) : (
             <EquipmentGridView
-              nodes={data.visibleGridNodes}
-              selectedNodeId={state.selectedNodeId}
-              onNodeClick={handlers.handleNodeClick}
-              failedNodeIds={data.failedNodeIds}
-              abnormalModelNodeIds={data.abnormalModelNodeIds}
+              equipmentList={data.visibleGridEquipmentList}
+              selectedEquipmentId={state.selectedEquipmentId}
+              onEquipmentClick={handlers.handleEquipmentClick}
+              failedEquipmentIds={data.failedEquipmentIds}
+              abnormalModelEquipmentIds={data.abnormalModelEquipmentIds}
             />
           )}
         </main>
 
-        {state.isPanelOpen && (data.selectedNode || data.breadcrumbPlant) && (
-          <>
-            <div
-              className="fixed inset-0 z-10 bg-black/30 sm:hidden"
-              onClick={handlers.handleClosePanel}
-              aria-hidden="true"
-            />
-            <div
-              ref={panelRef}
-              role="dialog"
-              aria-modal="true"
-              aria-label={
-                data.selectedNode
-                  ? `${data.selectedNode.data.name} — equipment details`
-                  : `${data.breadcrumbPlant?.name} — plant details`
-              }
-              tabIndex={-1}
-              className="fixed inset-x-0 bottom-0 z-20 h-[65svh] overflow-hidden rounded-t-2xl outline-none sm:relative sm:inset-auto sm:z-auto sm:h-full sm:rounded-none"
-            >
-              <NodeDetailPanel
-                viewMode={state.inspectorMode}
-                node={data.selectedNode}
-                plan={data.breadcrumbPlant}
-                planNodes={data.filteredNodes.filter(
-                  n => n.planId === state.selectedPlanId,
-                )}
-                workspaceId={state.activeWorkspaceId}
-                onDrillDown={handlers.handleDrillDown}
-                onEditClick={node => handlers.handleOpenEditEquipment(node.id)}
-                onDeleteClick={node => handlers.handleDeleteEquipment(node.id)}
-                onClose={handlers.handleClosePanel}
+        {state.isPanelOpen &&
+          (data.selectedEquipment || data.breadcrumbPlant) && (
+            <>
+              <div
+                className="fixed inset-0 z-10 bg-black/30 sm:hidden"
+                onClick={handlers.handleClosePanel}
+                aria-hidden="true"
               />
-            </div>
-          </>
-        )}
+              <div
+                ref={panelRef}
+                role="dialog"
+                aria-modal="true"
+                aria-label={
+                  data.selectedEquipment
+                    ? `${data.selectedEquipment.data.name} — equipment details`
+                    : `${data.breadcrumbPlant?.name} — plant details`
+                }
+                tabIndex={-1}
+                className="fixed inset-x-0 bottom-0 z-20 h-[65svh] overflow-hidden rounded-t-2xl outline-none sm:relative sm:inset-auto sm:z-auto sm:h-full sm:rounded-none"
+              >
+                <EquipmentDetailPanel
+                  viewMode={state.inspectorMode}
+                  equipment={data.selectedEquipment}
+                  plan={data.breadcrumbPlant}
+                  planEquipmentList={data.filteredEquipmentList.filter(
+                    n => n.planId === state.selectedPlanId,
+                  )}
+                  workspaceId={state.activeWorkspaceId}
+                  onDrillDown={handlers.handleDrillDown}
+                  onEditClick={equipment =>
+                    handlers.handleOpenEditEquipment(equipment.id)
+                  }
+                  onDeleteClick={equipment =>
+                    handlers.handleDeleteEquipment(equipment.id)
+                  }
+                  onClose={handlers.handleClosePanel}
+                />
+              </div>
+            </>
+          )}
       </div>
 
       <AddPlanDialog
@@ -370,10 +393,12 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
       {/* MODEL-SERVE-025-D02. The same form in edit mode (name, type,
           status) — the canvas page it used to live on is gone. */}
       <AddEquipmentDialog
-        open={state.editingNodeId !== null}
+        open={state.editingEquipmentId !== null}
         plantName={data.breadcrumbPlant?.name ?? ''}
-        node={
-          data.workspaceNodes.find(n => n.id === state.editingNodeId) ?? null
+        equipment={
+          data.workspaceEquipmentList.find(
+            n => n.id === state.editingEquipmentId,
+          ) ?? null
         }
         onClose={handlers.handleCloseEditEquipment}
         onSubmit={handlers.handleEditEquipment}

@@ -31,6 +31,8 @@ export function CreateDatasetDialog({
   open,
   onOpenChange,
   onConfirm,
+  defaultWorkspaceId,
+  lockWorkspace = false,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
@@ -40,12 +42,25 @@ export function CreateDatasetDialog({
     workspaceId: string,
     sources: ReturnType<typeof useDataSources>['sources'],
   ) => void
+  /** Pre-selected each time the dialog opens (MODEL-FLOW-032). */
+  defaultWorkspaceId?: string
+  /** Create Model Step 1 lists one workspace's datasets — a dataset saved
+   * into another would never appear back there, so the field is fixed. */
+  lockWorkspace?: boolean
 }) {
   const { workspaces } = useWorkspaces()
   const { sources } = useDataSources()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [workspaceId, setWorkspaceId] = useState('')
+  // Seeded on the open transition, adjusted during render: the dialog stays
+  // mounted while closed, so an initial `useState` value would go stale the
+  // moment the caller's workspace changes.
+  const [prevOpen, setPrevOpen] = useState(open)
+  if (open !== prevOpen) {
+    setPrevOpen(open)
+    if (open && defaultWorkspaceId) setWorkspaceId(defaultWorkspaceId)
+  }
   const [showSources, setShowSources] = useState(false)
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(
     new Set(),
@@ -121,7 +136,11 @@ export function CreateDatasetDialog({
             <Label className="text-xs font-medium">
               Workspace <span className="text-destructive">*</span>
             </Label>
-            <Select value={workspaceId} onValueChange={setWorkspaceId}>
+            <Select
+              value={workspaceId}
+              onValueChange={setWorkspaceId}
+              disabled={lockWorkspace}
+            >
               <SelectTrigger className="h-9 text-sm">
                 <SelectValue placeholder="Select a workspace" />
               </SelectTrigger>

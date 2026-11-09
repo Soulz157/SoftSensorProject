@@ -76,10 +76,10 @@ export function Navbar({ onMenuClick }: NavbarProps) {
         ) : (
           <>
             <Button variant="ghost" size="sm" asChild>
-              <Link href="/login">Log in</Link>
+              <Link href="/auth/login">Log in</Link>
             </Button>
             <Button variant="outline" size="sm" asChild>
-              <Link href="/register">Register</Link>
+              <Link href="/auth/register">Register</Link>
             </Button>
           </>
         )}

@@ -8,7 +8,7 @@ import type { WorkspacePlant } from '@/types'
 
 interface HierarchyState {
   plantsByWorkspaceId: Record<string, WorkspacePlant[]>
-  nodesByWorkspaceId: Record<string, CanvasNode[]>
+  equipmentListByWorkspaceId: Record<string, CanvasNode[]>
   isFetching: boolean
   error: string | null
 }
@@ -19,7 +19,7 @@ type HierarchyAction =
   | {
       type: 'FETCH_SUCCESS'
       plantsByWorkspaceId: Record<string, WorkspacePlant[]>
-      nodesByWorkspaceId: Record<string, CanvasNode[]>
+      equipmentListByWorkspaceId: Record<string, CanvasNode[]>
     }
   | { type: 'FETCH_ERROR'; message: string }
 
@@ -31,7 +31,7 @@ function reducer(
     case 'EMPTY':
       return {
         plantsByWorkspaceId: {},
-        nodesByWorkspaceId: {},
+        equipmentListByWorkspaceId: {},
         isFetching: false,
         error: null,
       }
@@ -40,7 +40,7 @@ function reducer(
     case 'FETCH_SUCCESS':
       return {
         plantsByWorkspaceId: action.plantsByWorkspaceId,
-        nodesByWorkspaceId: action.nodesByWorkspaceId,
+        equipmentListByWorkspaceId: action.equipmentListByWorkspaceId,
         isFetching: false,
         error: null,
       }
@@ -51,7 +51,7 @@ function reducer(
 
 const INITIAL: HierarchyState = {
   plantsByWorkspaceId: {},
-  nodesByWorkspaceId: {},
+  equipmentListByWorkspaceId: {},
   isFetching: true,
   error: null,
 }
@@ -74,22 +74,26 @@ export function useModelHierarchy() {
       Promise.all(
         workspaces.map(ws =>
           Promise.all([getWorkspacePlants(ws.id), getNodes(ws.id)]).then(
-            ([plants, nodes]) => ({ wsId: ws.id, plants, nodes }),
+            ([plants, equipmentList]) => ({
+              wsId: ws.id,
+              plants,
+              equipmentList,
+            }),
           ),
         ),
       )
         .then(results => {
           if (signal?.aborted) return
           const plantsByWorkspaceId: Record<string, WorkspacePlant[]> = {}
-          const nodesByWorkspaceId: Record<string, CanvasNode[]> = {}
-          for (const { wsId, plants, nodes } of results) {
+          const equipmentListByWorkspaceId: Record<string, CanvasNode[]> = {}
+          for (const { wsId, plants, equipmentList } of results) {
             plantsByWorkspaceId[wsId] = plants
-            nodesByWorkspaceId[wsId] = nodes
+            equipmentListByWorkspaceId[wsId] = equipmentList
           }
           dispatch({
             type: 'FETCH_SUCCESS',
             plantsByWorkspaceId,
-            nodesByWorkspaceId,
+            equipmentListByWorkspaceId,
           })
         })
         .catch(() => {
@@ -114,7 +118,7 @@ export function useModelHierarchy() {
 
   return {
     plantsByWorkspaceId: state.plantsByWorkspaceId,
-    nodesByWorkspaceId: state.nodesByWorkspaceId,
+    equipmentListByWorkspaceId: state.equipmentListByWorkspaceId,
     loading:
       state.isFetching && Object.keys(state.plantsByWorkspaceId).length === 0,
     isFetching: state.isFetching,

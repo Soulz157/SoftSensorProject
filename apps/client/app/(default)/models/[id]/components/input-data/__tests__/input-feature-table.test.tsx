@@ -15,10 +15,8 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
     column: 'FI001.PV',
     driftStatus: 'UNKNOWN',
     driftReason: undefined,
-    psi: null,
-    psiLiveTotal: 0,
-    psiBins: null,
-    psiOutOfRangePct: null,
+    outOfRangePct: null,
+    drift: null,
     piStatus: 'UNKNOWN',
     piReason: undefined,
     failingSources: undefined,
@@ -40,19 +38,21 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
 }
 
 describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
-  it('names the drift column Drift (PSI), and keeps Status for the real quality reading', () => {
+  it('names the drift column Out of range, and the PI quality column Is connected', () => {
     render(<InputFeatureTable rows={[row()]} />)
 
     // T12 renamed this header away from "Status" because a drift verdict is
     // not a data-quality reading, and the old name let a reader mistake one
     // for the other. T15 then gave "Status" back its honest meaning: PI's
     // own Good/Bad flag. Both headers now exist, each saying what it is.
-    // MODEL-SERVE-028: PSI is the only drift signal, so the header names it.
+    // MODEL-SERVE-036: drift is the share of live values outside the
+    // training range, so the header names that. "Status" was then renamed
+    // "Is connected" so PI's Good/Bad no longer reads as a drift verdict.
     expect(
-      screen.getByRole('columnheader', { name: 'Drift (PSI)' }),
+      screen.getByRole('columnheader', { name: 'Out of range' }),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('columnheader', { name: 'Status' }),
+      screen.getByRole('columnheader', { name: 'Is connected' }),
     ).toBeInTheDocument()
   })
 
@@ -66,7 +66,7 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
       />,
     )
 
-    expect(screen.getByRole('columnheader', { name: 'Status' })).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: 'Is connected' })).toBeVisible()
 
     // Two different questions, two different answers on the same row: a
     // tag can be Bad in PI while its distribution has not drifted at all.
@@ -139,18 +139,27 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
     expect(screen.getByText(/via FI003\.PV/)).toBeVisible()
   })
 
-  it('MODEL-SERVE-028: the Drift column IS the PSI verdict — no second PSI column', () => {
+  it('MODEL-SERVE-036: no PSI column or wording is left', () => {
     render(<InputFeatureTable rows={[row({ driftStatus: 'OK' })]} />)
-
-    // The z-score drift verdict this column used to show was removed;
-    // the column now shows PSI, so a separate PSI column would be the same
-    // metric twice.
     expect(
-      screen.queryByRole('columnheader', { name: 'PSI' }),
+      screen.queryByRole('columnheader', { name: /PSI/ }),
     ).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('columnheader', { name: 'Drift (PSI)' }),
-    ).toBeVisible()
+    expect(document.body.textContent).not.toMatch(/PSI/)
+  })
+
+  it('shows the out-of-range share beside the verdict', () => {
+    render(
+      <InputFeatureTable
+        rows={[
+          row({ column: 'TI202.PV', driftStatus: 'WARN', outOfRangePct: 6.9 }),
+        ]}
+      />,
+    )
+    const cell = screen
+      .getByText('TI202.PV')
+      .closest('tr')!
+      .querySelectorAll('td')[2]!
+    expect(cell.textContent).toBe('WARN6.9%')
   })
 
   // The Drift badge carries the same explanation tooltip, wording and
@@ -160,8 +169,12 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
   it('renders the Drift verdict as a tooltip trigger, worded like the card', () => {
     render(
       <InputFeatureTable
-        rows={[row({ column: 'TI010.PV', driftStatus: 'OK', psi: 0.04 })]}
-        psiThresholds={{ warn: 0.1, critical: 0.25, minSamplesPerBin: 20, outOfRangeWarnPct: 5, outOfRangeCriticalPct: 20 }}
+        rows={[row({ column: 'TI010.PV', driftStatus: 'OK' })]}
+        driftThresholds={{
+          outOfRangeWarnPct: 5,
+          outOfRangeCriticalPct: 20,
+          minSamples: 30,
+        }}
       />,
     )
 
@@ -294,10 +307,11 @@ describe('InputFeatureTable — Sensor Frozen (MODEL-SERVE-001-T30)', () => {
       .getByText('TI010.PV')
       .closest('tr')!
       .querySelectorAll('td')
+    // The Frozen badge sits after the tag name, describing the instrument.
+    expect(cells[1]?.textContent).toBe('TI010.PVFrozen')
     expect(cells[2]?.textContent).toBe('Good') // drift
-    // The Frozen badge lives INSIDE the PI cell, so this reads
-    // "GoodFrozen" — PI itself still says Good, which is the point.
-    expect(cells[3]?.textContent).toBe('GoodFrozen')
+    // PI itself still says Good, which is the point.
+    expect(cells[3]?.textContent).toBe('Good')
   })
 })
 

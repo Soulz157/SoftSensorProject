@@ -1,3 +1,4 @@
+import { env } from '@/config/env.config';
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- jest mocks are `any` by design */
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
@@ -261,7 +262,7 @@ describe('AuthPublicService', () => {
       expect(typeof result.refreshToken).toBe('string');
       expect(result.refreshToken).toHaveLength(128); // 64 bytes → 128 hex chars
 
-      // JWT signed with resolved user's fields + 15m TTL
+      // JWT signed with resolved user's fields + configured access TTL
       expect(jwtMock.sign).toHaveBeenCalledWith(
         expect.objectContaining({
           id: 'new-user-id',
@@ -270,7 +271,7 @@ describe('AuthPublicService', () => {
           lastName: 'Doe',
           role: 'USER',
         }),
-        { expiresIn: '15m' },
+        { expiresIn: env.JWT_ACCESS_EXPIRES },
       );
     });
 
@@ -301,7 +302,7 @@ describe('AuthPublicService', () => {
       expect(prismaMock.user.create).not.toHaveBeenCalled();
       expect(jwtMock.sign).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'existing-user-id' }),
-        { expiresIn: '15m' },
+        { expiresIn: env.JWT_ACCESS_EXPIRES },
       );
       expect(result.response).toMatchObject({
         statusCode: 200,
@@ -330,7 +331,7 @@ describe('AuthPublicService', () => {
       expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
       expect(jwtMock.sign).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'linked-user-id' }),
-        { expiresIn: '15m' },
+        { expiresIn: env.JWT_ACCESS_EXPIRES },
       );
       expect(result.response).toMatchObject({
         statusCode: 200,

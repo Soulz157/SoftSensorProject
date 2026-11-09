@@ -30,7 +30,7 @@ const STATUS_TOKENS: Record<NodeStatus, { dot: string; text: string }> = {
 
 interface OverviewHoverCardProps {
   workspace: Workspace
-  nodes: CanvasNode[]
+  equipmentList: CanvasNode[]
   models: AIModel[]
   failedCount: number
   isDark: boolean
@@ -39,15 +39,15 @@ interface OverviewHoverCardProps {
 }
 export function OverviewHoverCard({
   workspace,
-  nodes,
+  equipmentList,
   models,
   failedCount,
   isDark,
   width,
   style,
 }: OverviewHoverCardProps) {
-  const abnormal = abnormalEquipment(nodes, models)
-  const normalCount = nodes.length - abnormal.length
+  const abnormal = abnormalEquipment(equipmentList, models)
+  const normalCount = equipmentList.length - abnormal.length
   const binary = abnormal.length > 0 ? 'abnormal' : 'normal'
   const binaryMeta = BINARY_STATUS_META[binary]
 
@@ -292,8 +292,8 @@ export function OverviewHoverCard({
                 isDark ? 'text-white/35' : 'text-muted-foreground',
               )}
             >
-              {nodes.length} node{nodes.length === 1 ? '' : 's'} · double-click
-              to open
+              {equipmentList.length} node{equipmentList.length === 1 ? '' : 's'}{' '}
+              · double-click to open
             </p>
           </div>
         </CardContent>

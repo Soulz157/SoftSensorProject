@@ -24,16 +24,16 @@ export class PredictionLogAuthorizedController {
     return this.service.getPredictionSeriesService(modelId, query, user);
   }
 
-  // MODEL-SERVE-001-T13. The only input-drift route since MODEL-SERVE-028
-  // removed the z-score `/drift` and `/live-drift`. A caller passes whatever
-  // [from, to] it wants; the wider window this metric needs to clear its
-  // sample floor is a client-side default range.
-  @Get('/psi')
-  getPsiController(
+  // MODEL-SERVE-036. The only input-drift route: per tag, the share of live
+  // values outside the training range, plus the trend and per-window stats
+  // behind it. Replaces `/psi`. Ranges longer than 31 days are cut to the
+  // newest 31 (`basis.capped`).
+  @Get('/input-drift')
+  getInputDriftController(
     @Param('modelId') modelId: string,
     @Query() query: PredictionLogRangeQueryDto,
     @Users() user: Auth.UserPayload,
   ) {
-    return this.service.getPsiService(modelId, query, user);
+    return this.service.getInputDriftService(modelId, query, user);
   }
 }

@@ -6,7 +6,7 @@ import {
   mpHighestUnlockedAtom,
   mpHyperparamsAtom,
   mpNameAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpPlantIdAtom,
   mpSelectedDatasetAtom,
   mpServerDraftIdAtom,
@@ -132,7 +132,7 @@ describe('useModelWizardMode — resume a draft (MODEL-FLOW-010-T08)', () => {
     expect(store.get(mpNameAtom)).toBe('Boiler efficiency')
     expect(store.get(mpWorkspaceIdAtom)).toBe('ws-1')
     expect(store.get(mpPlantIdAtom)).toBe('plant-1')
-    expect(store.get(mpNodeIdAtom)).toBe('node-1')
+    expect(store.get(mpEquipmentIdAtom)).toBe('node-1')
     expect(store.get(mpSelectedDatasetAtom)?.id).toBe('ds-1')
   })
 

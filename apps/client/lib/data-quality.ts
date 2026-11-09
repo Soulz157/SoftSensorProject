@@ -12,6 +12,7 @@
  *   - `Good`, unchanged for a long stretch → **Frozen** (see `qualityByTag`)
  */
 import type { Dataset } from '@/lib/preprocessing'
+import { isLabTag } from '@/lib/lab-tag'
 
 export interface TagQuality {
   total: number
@@ -96,6 +97,11 @@ function inferStepMs(timestamps: (number | null)[]): number | null {
  * of a freeze). `stepMs` is inferred from the dataset's own timestamps, never
  * from a wizard atom, so this stays correct for CSV uploads and any caller
  * outside the Data Studio wizard. Tags in `ignoreTags` always report 0.
+ *
+ * NOTE — lab tags (`isLabTag`, the `.lab` suffix) count Frozen differently:
+ * only rows inside a `labStaleRuns` run (unchanged longer than 5x the tag's
+ * own usual change interval, at least 3 days). The UI states this beside the
+ * Frozen figure; a lab tag's Frozen is not comparable to a sensor tag's.
  */
 export function qualityByTag(
   ds: Dataset,
@@ -117,7 +123,11 @@ export function qualityByTag(
     let suspect = 0
     let frozen = 0
 
-    const canFreeze = stepMs !== null && !ignoreTags.has(tag)
+    // Lab tags are judged by `labStaleRuns` below instead of the 3h rule: a
+    // lab value is carried forward between samples by design, so 3h flat is
+    // normal for it and would flag nearly every row.
+    const labTag = isLabTag(tag)
+    const canFreeze = stepMs !== null && !ignoreTags.has(tag) && !labTag
     let runStart = -1
     let runValue: number | null = null
 
@@ -172,6 +182,13 @@ export function qualityByTag(
       }
 
       if (i === ds.rows.length - 1) closeRun(i)
+    }
+
+    if (labTag && stepMs !== null && !ignoreTags.has(tag)) {
+      frozen = staleRunsFor(ds, tag, timestamps, stepMs).runs.reduce(
+        (sum, run) => sum + run.rows,
+        0,
+      )
     }
 
     const total = good + missing + suspect
@@ -681,4 +698,194 @@ export function tagBoxplotStats(ds: Dataset, tag: string): BoxplotStats {
   const mean = sorted.reduce((sum, v) => sum + v, 0) / sorted.length
 
   return { min, q1, median, mean, q3, max, whiskerLow, whiskerHigh, outliers }
+}
+
+// ── Lab-tag stale runs ──────────────────────────────────────────────────────
+
+/**
+ * A lab value unchanged for longer than `LAB_STALE_MULTIPLIER` x the tag's own
+ * median hold, and never less than `LAB_STALE_FLOOR_MS`, is stale. Chosen
+ * (2026-10-13, with the user) against real `s611water.lab`: median hold 23h,
+ * p90 95h, several ~9-day holds of one repeated value, and one value carried
+ * forward for 113 days. 5x the median catches both kinds of hold; the 3-day
+ * floor keeps a fast-changing tag from being flagged after a few hours.
+ */
+export const LAB_STALE_MULTIPLIER = 5
+export const LAB_STALE_FLOOR_MS = 3 * 24 * 60 * 60 * 1000
+/** Fewer holds than this and a median says nothing — the floor alone applies. */
+const LAB_STALE_MIN_RUNS = 3
+
+export interface LabStaleRun {
+  /** Row timestamps exactly as the frame carries them. */
+  from: string
+  to: string
+  value: number
+  durationMs: number
+  rows: number
+}
+
+export interface LabStaleResult {
+  /** Median hold of this tag's own value — null when too few holds exist. */
+  typicalMs: number | null
+  thresholdMs: number
+  runs: LabStaleRun[]
+}
+
+interface ValueRun {
+  start: number
+  end: number
+  value: number
+}
+
+/**
+ * Every hold of one Good value. Breaks on the same things the 3h freeze rule
+ * breaks on — a non-Good or missing cell, an unparseable timestamp, a
+ * timestamp gap beyond `FREEZE_GAP_FACTOR x stepMs` — because an absent
+ * reading is not evidence of a stuck one.
+ */
+function valueRuns(
+  ds: Dataset,
+  tag: string,
+  timestamps: (number | null)[],
+  stepMs: number,
+): ValueRun[] {
+  const runs: ValueRun[] = []
+  let current: ValueRun | null = null
+  for (let i = 0; i < ds.rows.length; i++) {
+    const cell = ds.rows[i]!.cells[tag]
+    const ts = timestamps[i] ?? null
+    if (!cell || cell.status !== 'Good' || ts === null) {
+      if (current) runs.push(current)
+      current = null
+      continue
+    }
+    const prevTs = timestamps[i - 1] ?? null
+    const continues =
+      current !== null &&
+      current.value === cell.value &&
+      prevTs !== null &&
+      ts - prevTs <= FREEZE_GAP_FACTOR * stepMs
+    if (continues && current) {
+      current.end = i
+    } else {
+      if (current) runs.push(current)
+      current = { start: i, end: i, value: cell.value }
+    }
+  }
+  if (current) runs.push(current)
+  return runs
+}
+
+function staleRunsFor(
+  ds: Dataset,
+  tag: string,
+  timestamps: (number | null)[],
+  stepMs: number,
+): LabStaleResult {
+  const runs = valueRuns(ds, tag, timestamps, stepMs)
+  const durationOf = (run: ValueRun) =>
+    (timestamps[run.end] ?? 0) - (timestamps[run.start] ?? 0) + stepMs
+
+  let typicalMs: number | null = null
+  if (runs.length >= LAB_STALE_MIN_RUNS) {
+    const sorted = runs.map(durationOf).sort((a, b) => a - b)
+    const mid = Math.floor(sorted.length / 2)
+    typicalMs =
+      sorted.length % 2 === 0
+        ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2
+        : (sorted[mid] ?? 0)
+  }
+  const thresholdMs =
+    typicalMs === null
+      ? LAB_STALE_FLOOR_MS
+      : Math.max(LAB_STALE_MULTIPLIER * typicalMs, LAB_STALE_FLOOR_MS)
+
+  return {
+    typicalMs,
+    thresholdMs,
+    runs: runs
+      .filter(run => durationOf(run) > thresholdMs)
+      .map(run => ({
+        from: ds.rows[run.start]!.timestamp,
+        to: ds.rows[run.end]!.timestamp,
+        value: run.value,
+        durationMs: durationOf(run),
+        rows: run.end - run.start + 1,
+      })),
+  }
+}
+
+/**
+ * Holds of one lab tag's value long enough to mean the lab stopped
+ * reporting rather than "not sampled yet". Display-only: nothing here or in
+ * any caller removes these rows — the user decides what to do with them.
+ */
+export function labStaleRuns(ds: Dataset, tag: string): LabStaleResult {
+  const timestamps = ds.rows.map(row => {
+    const t = Date.parse(row.timestamp)
+    return Number.isNaN(t) ? null : t
+  })
+  const stepMs = inferStepMs(timestamps)
+  if (stepMs === null) {
+    return { typicalMs: null, thresholdMs: LAB_STALE_FLOOR_MS, runs: [] }
+  }
+  return staleRunsFor(ds, tag, timestamps, stepMs)
+}
+
+const HOUR_MS = 60 * 60 * 1000
+const DAY_MS = 24 * HOUR_MS
+
+function spanText(ms: number): string {
+  if (ms < DAY_MS) return `~${Math.max(1, Math.round(ms / HOUR_MS))}h`
+  const days = Math.round(ms / DAY_MS)
+  return `~${days} day${days === 1 ? '' : 's'}`
+}
+
+/** A held value as the lab reported it: float32 storage turns 1.4651 into
+ *  1.4651000499725342, so trim to 6 significant digits for display. */
+function heldValueText(value: number): string {
+  return String(Number(value.toPrecision(6)))
+}
+
+/**
+ * Plain-language lines for one lab tag: the LONGEST hold in full, then one
+ * summary line for the rest. Live data (`s611water.lab`) had 13 holds of 5-9
+ * days beside a 113-day one; listing each buried the hold that mattered.
+ */
+export function describeLabStale(
+  tag: string,
+  result: LabStaleResult,
+): string[] {
+  if (result.runs.length === 0) return []
+  const usual =
+    result.typicalMs === null
+      ? 'too few changes to measure its usual interval'
+      : `usually changes every ${spanText(result.typicalMs)}`
+  const byLength = [...result.runs].sort((a, b) => b.durationMs - a.durationMs)
+  const longest = byLength[0]!
+  const lines = [
+    `${tag} unchanged at ${heldValueText(longest.value)} for ` +
+      `${Math.round(longest.durationMs / DAY_MS)} days ` +
+      `(${longest.from.slice(0, 10)} → ${longest.to.slice(0, 10)}); ${usual}. ` +
+      'Kept as-is — nothing is removed.',
+  ]
+  const rest = byLength.slice(1)
+  if (rest.length > 0) {
+    const days = rest.map(run => Math.round(run.durationMs / DAY_MS))
+    const lo = Math.min(...days)
+    const hi = Math.max(...days)
+    const span = lo === hi ? `${lo} days` : `${lo}–${hi} days`
+    lines.push(
+      `${tag} also held one value for ${span} on ${rest.length} other ` +
+        `occasion${rest.length === 1 ? '' : 's'}.`,
+    )
+  }
+  return lines
+}
+
+/** Every stale-hold line for every lab tag in `ds`, in tag order. */
+export function labStaleNotices(ds: Dataset): string[] {
+  return ds.tags
+    .filter(isLabTag)
+    .flatMap(tag => describeLabStale(tag, labStaleRuns(ds, tag)))
 }

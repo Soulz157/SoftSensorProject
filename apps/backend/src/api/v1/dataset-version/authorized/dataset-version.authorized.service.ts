@@ -550,6 +550,8 @@ export class DatasetVersionAuthorizedService {
       ...(query.tags && { tags: query.tags }),
       ...(query.startTime && { start_time: query.startTime }),
       ...(query.endTime && { end_time: query.endTime }),
+      ...(query.excludeStart && { exclude_start: query.excludeStart }),
+      ...(query.excludeEnd && { exclude_end: query.excludeEnd }),
     };
 
     if (query.format === 'arrow') {
@@ -1128,6 +1130,8 @@ export class DatasetVersionAuthorizedService {
           ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
           ...(dto.startTime && { start_time: dto.startTime }),
           ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.excludeStart && { exclude_start: dto.excludeStart }),
+          ...(dto.excludeEnd && { exclude_end: dto.excludeEnd }),
           ...(dto.topK && { top_k: dto.topK }),
         },
         PYTHON_TIMEOUT.metadata,
@@ -1172,6 +1176,8 @@ export class DatasetVersionAuthorizedService {
           ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
           ...(dto.startTime && { start_time: dto.startTime }),
           ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.excludeStart && { exclude_start: dto.excludeStart }),
+          ...(dto.excludeEnd && { exclude_end: dto.excludeEnd }),
           ...(dto.kdeSamples && { kde_samples: dto.kdeSamples }),
           ...(dto.binCount && { bin_count: dto.binCount }),
         },
@@ -1217,6 +1223,8 @@ export class DatasetVersionAuthorizedService {
           ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
           ...(dto.startTime && { start_time: dto.startTime }),
           ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.excludeStart && { exclude_start: dto.excludeStart }),
+          ...(dto.excludeEnd && { exclude_end: dto.excludeEnd }),
           ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
         },
         PYTHON_TIMEOUT.metadata,

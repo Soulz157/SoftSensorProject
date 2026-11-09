@@ -3,6 +3,7 @@ import {
   buildDigestMessage,
   buildNotificationMessage,
   monitoringTransitionDetail,
+  parseNotificationBody,
   renderEmail,
   renderTeamsCard,
 } from './notification-message';
@@ -190,7 +191,7 @@ describe('monitoringTransitionDetail — five-word vocabulary (D02/D09)', () => 
   it('omits the "from" side on a first-ever notified transition', () => {
     expect(
       monitoringTransitionDetail(null, 'WARN', 'DRIFT_WARN', 'running'),
-    ).toBe('warning (PSI input drift)');
+    ).toBe('warning (Input outside training range)');
   });
 });
 
@@ -203,8 +204,6 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     frozenCount: 0,
     offlineCount: 0,
     legend: {
-      warn: 0.1,
-      critical: 0.25,
       outOfRangeWarnPct: 5,
       outOfRangeCriticalPct: 20,
     },
@@ -222,8 +221,6 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
         status: 'alert' as const,
         reason: 'Drift',
         worstInput: 'FI-1001',
-        psi: 0.31,
-        psiBand: 'crit' as const,
         outOfRangePct: 24,
         outOfRangeBand: 'crit' as const,
         sdRatio: null,
@@ -239,8 +236,6 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
         status: 'warning' as const,
         reason: 'Residual SD',
         worstInput: null,
-        psi: 0.14,
-        psiBand: 'warn' as const,
         outOfRangePct: 6.5,
         outOfRangeBand: 'warn' as const,
         sdRatio: 2.1,
@@ -260,10 +255,13 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
 
   it('states how many models need attention, with the cutoffs in the legend', () => {
     expect(msg.title).toContain('2 of 12 models need attention');
-    expect(msg.bodyText).toContain('0.31 CRIT');
+    expect(msg.bodyText).toContain('24.0 CRIT');
     expect(msg.bodyText).toContain('2.1x WARN');
     expect(msg.bodyText).toContain('1.5x / 3.0x');
-    expect(msg.bodyText).toContain('PSI: green < 0.1, yellow 0.1-0.25');
+    expect(msg.bodyText).toContain(
+      'OoR % (live values outside the training range): green < 5%, yellow 5-20%',
+    );
+    expect(msg.bodyText).not.toContain('PSI');
     expect(msg.bodyText).toContain(
       'Changed this check: TS-101 warning -> alert',
     );
@@ -290,7 +288,7 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     expect(card).toContain('"type":"ColumnSet"');
     expect(card).toContain('"color":"Attention"');
     expect(card).toContain('"color":"Warning"');
-    expect(card).toContain('0.31 CRIT');
+    expect(card).toContain('24.0 CRIT');
   });
 
   it('links every digest row to its own model page in all three renderings', () => {
@@ -310,10 +308,10 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     const tableEnd = body.lastIndexOf('| FLASH-303');
     const models = body.indexOf('Models:');
     expect(models).toBeGreaterThan(tableEnd);
-    // Worst-graded metric wins: TS row is PSI CRIT; FLASH-303's three
-    // metrics are all WARN, so the first (PSI) is shown.
-    expect(body).toContain('FLASH-303 — WARNING · Residual SD · PSI 0.14 WARN');
-    expect(body).toContain('ALERT · Drift · PSI 0.31 CRIT on FI-1001');
+    // Worst-graded metric wins: TS row is OoR CRIT; FLASH-303's two
+    // metrics are both WARN, so the first (OoR) is shown.
+    expect(body).toContain('FLASH-303 — WARNING · Residual SD · OoR 6.5% WARN');
+    expect(body).toContain('ALERT · Drift · OoR 24.0% CRIT on FI-1001');
 
     const card = JSON.stringify(renderTeamsCard(msg));
     expect(card).toContain('"title":"Open FLASH-303"');
@@ -347,7 +345,7 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     expect(msg.bodyText).toContain('since 5 Oct 2026 06:15 UTC (2d 3h)');
     // A row with no known since-time shows a dash and no "since" phrase.
     expect(msg.bodyText).not.toContain(
-      'FLASH-303 — WARNING · Residual SD · PSI 0.14 WARN · since',
+      'FLASH-303 — WARNING · Residual SD · OoR 6.5% WARN · since',
     );
 
     const card = JSON.stringify(renderTeamsCard(msg));
@@ -396,7 +394,7 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
       'Status',
       'Since',
       'Reason',
-      'PSI',
+      'Worst input',
       'OoR %',
       'SD ratio',
     ]);
@@ -407,5 +405,71 @@ describe('workspace digest (MODEL-SERVE-031)', () => {
     const legacy = { title: 't', bodyText: 'a\nb', modelUrl: 'u' };
     expect(renderEmail(legacy).html).toContain('a<br/>b');
     expect(JSON.stringify(renderTeamsCard(legacy))).not.toContain('ColumnSet');
+  });
+});
+
+describe('parseNotificationBody — the bell reads the alert back (MODEL-SERVE-039)', () => {
+  const base = {
+    modelId: 'model-1',
+    modelName: 'Lab Quality-1 Soft Sensor',
+    workspaceName: 'Plant A',
+    axis: 'DEPLOY' as const,
+    title: 'Lab Quality-1 Soft Sensor: deploy failed',
+    detail: 'running -> error (deploy failed)',
+    severity: 'CRITICAL' as const,
+    at: new Date('2026-10-22T01:29:00Z'),
+  };
+
+  it('returns every field the builder wrote, and ignores the Model and link lines', () => {
+    const msg = buildNotificationMessage({
+      ...base,
+      rawDetailSuffix: 'PI returned no current reading for these mapped tags.',
+    });
+    expect(parseNotificationBody(msg.bodyText)).toEqual({
+      workspace: 'Plant A',
+      detail: 'running -> error (deploy failed)',
+      reason: 'PI returned no current reading for these mapped tags.',
+      frozen: null,
+      timestamp: '22 Oct 2026 01:29 UTC',
+    });
+  });
+
+  it('reads the Frozen line and leaves Reason null when none was given', () => {
+    const msg = buildNotificationMessage({
+      ...base,
+      axis: 'MONITORING',
+      detail: 'normal -> frozen',
+      frozenColumns: [{ column: 'TI-101', flatMinutes: 90 }],
+    });
+    const parsed = parseNotificationBody(msg.bodyText);
+    expect(parsed.frozen).toBe('TI-101 (flat 90min)');
+    expect(parsed.reason).toBeNull();
+  });
+
+  it('keeps a multi-line Reason whole and does not swallow the link into Timestamp', () => {
+    const msg = buildNotificationMessage({
+      ...base,
+      rawDetailSuffix: 'first line\nsecond line',
+    });
+    const parsed = parseNotificationBody(msg.bodyText);
+    expect(parsed.reason).toBe('first line\nsecond line');
+    expect(parsed.timestamp).toBe('22 Oct 2026 01:29 UTC');
+  });
+
+  it('gives all nulls for text the builder never wrote', () => {
+    expect(parseNotificationBody('')).toEqual({
+      workspace: null,
+      detail: null,
+      reason: null,
+      frozen: null,
+      timestamp: null,
+    });
+    expect(parseNotificationBody('something else\nentirely')).toEqual({
+      workspace: null,
+      detail: null,
+      reason: null,
+      frozen: null,
+      timestamp: null,
+    });
   });
 });

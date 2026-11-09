@@ -1,7 +1,7 @@
 /**
  * Pure derivation for the Model detail Input Data tab — left-joins the
  * trained X feature list (`featureColumns`, predict-time order) against
- * live PSI drift status and logged prediction values. No React, no IO,
+ * live out-of-range drift status and logged prediction values. No React, no IO,
  * matching the `lib/` convention of `model-config.ts`/`dataset-stats.ts`.
  *
  * T12: `points[].features` is the `/predict` request's own RAW values —
@@ -14,29 +14,25 @@
  * is nothing to invert here; the value already IS engineering units.
  */
 import type {
-  ColumnBins,
+  ColumnRangeDrift,
+  InputDriftReport,
+  InputDriftStatus,
   ModelInputStatus,
   PiTagStatus,
-  PsiReport,
-  PsiStatus,
 } from '@/services/model-monitoring'
 import type { LivePredictionPoint } from '@/hooks/model/use-prediction-monitoring'
 
 export interface InputFeatureRow {
   column: string
-  /** MODEL-SERVE-028. This column's PSI verdict — the only input-drift
-   *  signal. `UNKNOWN` when the report has no row for it. */
-  driftStatus: PsiStatus
+  /** MODEL-SERVE-036. This column's training-range verdict — the only
+   *  input-drift signal. `UNKNOWN` when the report has no row for it. */
+  driftStatus: InputDriftStatus
   driftReason?: string
-  /** The computed PSI, or null when none was published (UNKNOWN /
-   *  INSUFFICIENT_DATA never carry a number). */
-  psi: number | null
-  /** PSI's live sample count and bin readout, carried for the tooltip's
-   *  rows-vs-floor line on INSUFFICIENT_DATA. */
-  psiLiveTotal: number
-  psiBins: ColumnBins | null
-  /** MODEL-SERVE-029. Graded beside PSI — the tooltip quotes it. */
-  psiOutOfRangePct: number | null
+  /** Share of live values outside the training range; null when ungraded. */
+  outOfRangePct: number | null
+  /** The report's own column, for the badge tooltip. Null when the report
+   *  has no row for this column. */
+  drift: ColumnRangeDrift | null
   /** MODEL-SERVE-001-T15. PI's OWN quality flag for this tag, read live —
    *  a different question from `driftStatus` ("has the distribution moved
    *  since training"), and the one this tab is actually for. `UNKNOWN`
@@ -110,8 +106,8 @@ export interface BuildInputFeatureRowsInput {
    *  values to these rows. */
   versionId: string
   points: LivePredictionPoint[]
-  psi: PsiReport | null
-  /** MODEL-SERVE-001-T15. Same left-join role as `psi` above — a column
+  inputDrift: InputDriftReport | null
+  /** MODEL-SERVE-001-T15. Same left-join role as `inputDrift` above — a column
    *  absent from `piStatus.features` (PI unreachable, or a tag it said
    *  nothing about) still renders a row, `piStatus` falling back to
    *  `UNKNOWN`. */
@@ -158,7 +154,7 @@ export interface BuildInputFeatureRowsInput {
 
 /** Builds one row per `featureColumns` entry, in that exact order — never
  *  re-sorted, since predict-time column order is meaningful. Every column
- *  in the list gets a row even when absent from `psi` and every logged
+ *  in the list gets a row even when absent from `inputDrift` and every logged
  *  point (left join, never inner): `driftStatus` falls back to `UNKNOWN`,
  *  `lastValueRaw`/`lastSeen` fall back to `null`. Nothing in
  *  `featureColumns` is ever dropped. */
@@ -166,7 +162,7 @@ export function buildInputFeatureRows({
   featureColumns,
   versionId,
   points,
-  psi,
+  inputDrift,
   piStatus,
   derivedFeatures,
   frozenColumns,
@@ -177,8 +173,8 @@ export function buildInputFeatureRows({
   const flatByColumn = new Map(
     (frozenSince ?? []).map(e => [e.column, e.flatMinutes]),
   )
-  const psiByColumn = new Map(
-    (psi?.columns ?? []).map(col => [col.column, col]),
+  const driftByColumn = new Map(
+    (inputDrift?.columns ?? []).map(col => [col.column, col]),
   )
   const piByColumn = new Map((piStatus?.features ?? []).map(f => [f.column, f]))
   // A Set, not an includes() per row: the same left-join shape the two maps
@@ -191,7 +187,7 @@ export function buildInputFeatureRows({
   const versionPoints = points.filter(p => p.modelVersionId === versionId)
 
   return featureColumns.map(column => {
-    const psiCol = psiByColumn.get(column)
+    const driftCol = driftByColumn.get(column)
     const piCol = piByColumn.get(column)
 
     let lastValueRaw: number | null = null
@@ -217,12 +213,10 @@ export function buildInputFeatureRows({
 
     return {
       column,
-      driftStatus: psiCol?.status ?? 'UNKNOWN',
-      driftReason: psiCol?.reason,
-      psi: psiCol?.psi ?? null,
-      psiLiveTotal: psiCol?.liveTotal ?? 0,
-      psiBins: psiCol?.bins ?? null,
-      psiOutOfRangePct: psiCol?.outOfRangePct ?? null,
+      driftStatus: driftCol?.status ?? 'UNKNOWN',
+      driftReason: driftCol?.reason,
+      outOfRangePct: driftCol?.outOfRangePct ?? null,
+      drift: driftCol ?? null,
       piStatus: piCol?.status ?? 'UNKNOWN',
       piReason: piCol?.reason,
       failingSources: piCol?.failingSources,

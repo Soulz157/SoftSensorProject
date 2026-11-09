@@ -220,7 +220,7 @@ describe('VariantPreview hand-added variants (MODEL-FLOW-026)', () => {
     algorithm: Algorithm,
     props: {
       base?: Record<string, number | string | boolean | null>
-      mode?: 'direct' | 'sweep-then-tune'
+      mode?: 'manual' | 'direct' | 'sweep-then-tune'
     } = {},
   ) {
     return render(
@@ -306,12 +306,31 @@ describe('VariantPreview hand-added variants (MODEL-FLOW-026)', () => {
     expect(screen.getAllByRole('spinbutton')).toHaveLength(MAX_EXTRA_VARIANTS)
   })
 
-  it('offers no Add with a sweep — the tuning phase is built after the winner is known', () => {
+  // 2026-10-14. With several algorithms the user's rows are first-round
+  // candidates in their own right, so they can be added; only the curated
+  // grid waits on which candidate wins.
+  it('offers Add with several algorithms — the rows train in the first round', () => {
     serve(gridFor('ridge'))
     renderAddable('ridge', { base: { alpha: 1 }, mode: 'sweep-then-tune' })
 
-    expect(screen.queryByRole('button', { name: /^add$/i })).toBeNull()
-    expect(screen.getByText(/needs Find Best Model off/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^add$/i })).toBeInTheDocument()
+    expect(screen.getByText(/these run only if Ridge/i)).toBeInTheDocument()
+  })
+
+  it('offers Add with Find Best Parameters off, and fetches no grid', () => {
+    // The mocked hook returns nothing until told to; manual mode hands it
+    // no algorithm, which the real hook answers with an empty result.
+    vi.mocked(useTuningGrid).mockReturnValue({
+      grid: null,
+      loading: false,
+      error: null,
+    })
+    renderAddable('ridge', { base: { alpha: 1 }, mode: 'manual' })
+
+    expect(vi.mocked(useTuningGrid).mock.calls[0]?.[0]).toBeNull()
+
+    expect(screen.getByRole('button', { name: /^add$/i })).toBeInTheDocument()
+    expect(screen.queryByText('Hyperparameter Tuning')).toBeNull()
   })
 
   it('can still add when the base covers every curated variant', async () => {

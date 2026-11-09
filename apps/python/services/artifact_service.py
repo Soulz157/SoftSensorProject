@@ -25,6 +25,7 @@ import pyarrow as pa
 from fastapi import Response
 
 from intergrations.object_store import (
+    GRID_SEARCH_RESULTS_FILENAME,
     COLUMN_STATS_FILENAME,
     FEATURE_SPEC_FILENAME,
     MANIFEST_FILENAME,
@@ -67,6 +68,7 @@ from intergrations.object_store import (
     model_run_key,
     prediction_job_key,
     inference_window_key,
+    INFERENCE_CONTEXT_FILENAME,
     INFERENCE_INPUT_FILENAME,
     split_data_key,
     OUTPUT_FILENAME,
@@ -98,6 +100,7 @@ from schemas.preprocess import (
     TagCatalogRequest,
     ValidateRequest,
 )
+from services.frame_window import filter_time_window, is_window_filtered
 from services.cleaning_service import apply_operations
 from services.column_stats_service import build_column_stats
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
@@ -137,6 +140,9 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         LOSS_HISTORY_FILENAME,
         # MODEL-FLOW-016-T04. Per-fold CV metrics — present only on a CV run.
         CV_FOLDS_FILENAME,
+        # MODEL-FLOW-038. Every GridSearchCV combination, ranked — present only
+        # on a grid-search run.
+        GRID_SEARCH_RESULTS_FILENAME,
         # MODEL-FLOW-019-T09. Per-feature importance — present only for the
         # algorithms images/trainer/app/importance.py can read a real
         # quantity from.
@@ -697,6 +703,28 @@ def replay_holdout(store: ObjectStore, request: ReplayHoldoutRequest) -> dict[st
     )
 
 
+def _refuse_legacy_scaled_target(spec: dict[str, Any], target_y: Any) -> None:
+    """Refuse holdout scoring for a spec that contradicts itself about the
+    target.
+
+    Datasets built before MODEL-SERVE-010-T05 (`_scalable_tags`) min-max
+    scaled the target in GOLD anyway, while their spec still says
+    `target_scaled: false`. The only trace is a `scalingParams` entry for the
+    target — a correct spec never has one, because the target is never
+    scaled. The holdout path leaves the target raw, so the model's 0..1
+    predictions were scored against raw lab values: r2 ≈ -35000, MAE ≈ the
+    raw mean (live: FINAL 66173c35). That number is worse than no number, so
+    refuse with the one remedy that works — rebuild the dataset.
+    """
+    if target_y and target_y in (spec.get("scalingParams") or {}):
+        raise ValueError(
+            f"This dataset was built with its target '{target_y}' scaled to "
+            "0-1, so its validation data cannot be scored in the same units. "
+            "Rebuild the dataset (open it in Data Studio and save it again) "
+            "to get a validation score."
+        )
+
+
 def replay_holdout_for_run(
     store: ObjectStore, request: ReplayHoldoutForRunRequest
 ) -> dict[str, Any]:
@@ -730,6 +758,7 @@ def replay_holdout_for_run(
             "feature_spec.json — refusing holdout replay (no inverse "
             "transform recorded)."
         )
+    _refuse_legacy_scaled_target(spec, target_y)
 
     features_config = [
         FeatureConfigRequest(
@@ -789,6 +818,7 @@ def prepare_holdout_for_run(
             "feature_spec.json — refusing holdout scoring (no inverse "
             "transform recorded)."
         )
+    _refuse_legacy_scaled_target(spec, target_y)
 
     scalers = {row["tag"]: row["method"] for row in spec.get("scaling", [])}
     scaling_params = spec.get("scalingParams") or {}
@@ -805,7 +835,15 @@ def prepare_holdout_for_run(
     # this used to be an inline copy; now shared with the serving loader's
     # own predict-time coverage check via softsensor_scaling, so the two
     # cannot silently disagree about which tags need coverage.
-    assert_scaling_coverage(tag_columns(frame), scalers, scaling_params)
+    #
+    # Checked over `_scalable_tags` — the SAME list `to_model_ready` scales
+    # below — never every tag in the frame. A correct spec records no
+    # `scalingParams` entry for the target (it is never scaled), so checking
+    # the full tag list refused every feature-bearing holdout with
+    # "Scaling refused: ['<target>']" and the run silently got no validation
+    # score. `combine_for_retrain` carries the same fix for the same refusal.
+    assert_scaling_coverage(
+        _scalable_tags(frame, target_y), scalers, scaling_params)
 
     # DS-LAKE-023-T05. BEFORE `to_model_ready` — see `drop_bad_feature_rows`'s
     # own docstring for why this must run here, not after. `target_y` is
@@ -1249,6 +1287,13 @@ def combine_for_retrain(
     return payload
 
 
+#: DS-LAKE-042. Feature kinds whose column name the USER chooses. A collision
+#: on one of these with an existing column is the deliberate, silent skip
+#: `apply_features` keeps (a preset formula named like a real tag); a
+#: collision on any other kind means the source already holds the feature.
+_USER_NAMED_FEATURE_KINDS = frozenset({"formula", "group"})
+
+
 def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     """DS-LAKE-006-T05. `source_key` is the SILVER artifact; `target_key` is
     the GOLD artifact. `_commit`'s `parent_key=request.source_key` is what
@@ -1307,6 +1352,34 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     # would make the hash describe bytes that don't exist.
     effective_selected = force_keep_target(
         request.selected_columns, request.target_y)
+
+    # DS-LAKE-042. A GENERATED feature name (lag/rolling/ratio/delta/arith/
+    # log/datetime) already present in the source means the source already
+    # carries this recipe's output — it is not raw data. apply_features would
+    # skip every such config as a name collision, and the spec below would
+    # then list none of them while the frame keeps the old columns (live:
+    # DatasetTest v2, 108 lag columns, spec features = []). Refused here.
+    # User-NAMED kinds (formula, group) still skip silently: a preset formula
+    # named like a real tag is the deliberate collision apply_features keeps.
+    already_present = [
+        feature_column_name(cfg)
+        for cfg in step_configs
+        if cfg.get("kind") not in _USER_NAMED_FEATURE_KINDS
+        and feature_column_name(cfg) in source.columns
+    ]
+    if already_present:
+        shown = ", ".join(already_present[:5])
+        more = (
+            f" and {len(already_present) - 5} more"
+            if len(already_present) > 5
+            else ""
+        )
+        raise ValueError(
+            f"The source data already contains {len(already_present)} "
+            f"feature column(s) this recipe computes ({shown}{more}). "
+            "Features must be computed from data without them — the source "
+            "is an already feature-engineered artifact."
+        )
 
     skipped_columns: list[str] = []
     result = apply_features(source, step_configs, skipped=skipped_columns)
@@ -1601,13 +1674,16 @@ def _paginate(store: ObjectStore, request: RowsRequest) -> tuple[pd.DataFrame, p
 
     frame = store.get_frame(request.source_key, columns=columns)
 
-    is_filtered = request.start_time is not None or request.end_time is not None
-    if request.start_time is not None:
-        frame = frame[frame[TIMESTAMP_COLUMN]
-                      >= pd.Timestamp(request.start_time)]
-    if request.end_time is not None:
-        frame = frame[frame[TIMESTAMP_COLUMN]
-                      <= pd.Timestamp(request.end_time)]
+    is_filtered = is_window_filtered(
+        request.start_time, request.end_time, request.exclude_start, request.exclude_end
+    )
+    frame = filter_time_window(
+        frame,
+        start_time=request.start_time,
+        end_time=request.end_time,
+        exclude_start=request.exclude_start,
+        exclude_end=request.exclude_end,
+    )
     if is_filtered:
         frame = frame.reset_index(drop=True)
 
@@ -2397,6 +2473,31 @@ def get_run_cv_folds(store: ObjectStore, body) -> dict[str, Any]:
     }
 
 
+def get_run_grid_search(store: ObjectStore, body) -> dict[str, Any]:
+    """A grid-search run's `grid_search_results.json`, read and shape-checked —
+    MODEL-FLOW-038. Same discipline as `get_run_cv_folds`: the file is already
+    exactly the response shape, so this is a read-and-validate."""
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != GRID_SEARCH_RESULTS_FILENAME:
+        raise ValueError(f"'{key}' does not name {GRID_SEARCH_RESULTS_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("combinations"), list)
+        or not isinstance(data.get("best"), dict)
+    ):
+        raise ValueError(f"'{key}' is not a well-formed grid_search_results.json.")
+    return data
+
+
 def get_run_feature_importance(store: ObjectStore, body) -> dict[str, Any]:
     """A training run's `feature_importance.json`, read and shape-checked —
     MODEL-FLOW-019-T09.
@@ -2820,9 +2921,38 @@ def presign_inference_window_upload(store: ObjectStore, body) -> dict:
 #: lives under this SAME root. The infer-mode container reads it at claim
 #: time through this endpoint, not /artifacts/presign, which would refuse it
 #: outright (is_committed_artifact_key would reject an inference/ key).
+#: MODEL-SERVE-043: context.parquet — a sequence model's lead-in, written by
+#: `materialize_window` beside input.parquet and read by the container at
+#: claim time exactly like it. Missing from this set, every lstm/gru claim
+#: 400'd (live, 2026-11-02, LSTM 3) before the container could start.
 _ALLOWED_INFERENCE_WINDOW_OBJECT_PRESIGNS = frozenset(
-    {PREDICTIONS_FILENAME, INFERENCE_INPUT_FILENAME}
+    {PREDICTIONS_FILENAME, INFERENCE_INPUT_FILENAME, INFERENCE_CONTEXT_FILENAME}
 )
+
+
+def last_inference_prediction(store: ObjectStore, body) -> dict[str, Any]:
+    """Run Predict for lstm/gru: the newest row of ONE window's
+    predictions.parquet. Serving cannot score a sequence model, so the button
+    reports the hourly window it just dispatched instead — this is that
+    value. Same key guard as `presign_inference_window_object`, narrowed to
+    predictions.parquet: nothing else here is a prediction.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != PREDICTIONS_FILENAME:
+        raise ValueError(f"'{key}' is not a window's {PREDICTIONS_FILENAME}.")
+    if not is_inference_window_key(key):
+        raise ValueError(
+            f"'{key}' is not a well-formed inference-window output key."
+        )
+    frame = store.get_frame(key)
+    if len(frame) == 0:
+        return {"timestamp": None, "prediction": None, "row_count": 0}
+    newest = frame.sort_values(TIMESTAMP_COLUMN).iloc[-1]
+    return {
+        "timestamp": pd.Timestamp(newest[TIMESTAMP_COLUMN]).isoformat(),
+        "prediction": float(newest["prediction"]),
+        "row_count": int(len(frame)),
+    }
 
 
 def presign_inference_window_object(store: ObjectStore, body) -> dict[str, Any]:

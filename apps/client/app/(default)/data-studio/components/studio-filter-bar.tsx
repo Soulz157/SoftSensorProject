@@ -1,6 +1,6 @@
 'use client'
 
-import { Search, SlidersHorizontal, Wifi, WifiOff } from 'lucide-react'
+import { Search, SlidersHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -21,7 +21,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { KIND_META } from '@/app/(default)/data-studio/create/components/add-connection-dialog'
 import type { DataSourceKind } from '@/lib/mock-data-sources'
-import { cn } from '@/lib/utils'
 import type { useDataStudio } from '@/hooks/dataset/use-data-studio'
 
 type Studio = ReturnType<typeof useDataStudio>
@@ -34,8 +33,6 @@ type Props = Pick<
   | 'workspaceFilter'
   | 'setWorkspaceFilter'
   | 'workspaces'
-  | 'statusFilter'
-  | 'setStatusFilter'
   | 'typeFilter'
   | 'setTypeFilter'
 >
@@ -47,8 +44,6 @@ export function StudioFilterBar({
   workspaceFilter,
   setWorkspaceFilter,
   workspaces,
-  statusFilter,
-  setStatusFilter,
   typeFilter,
   setTypeFilter,
 }: Props) {
@@ -82,34 +77,11 @@ export function StudioFilterBar({
         </Select>
       </div>
 
-      {/* Type & Status — Data Sources tab only */}
+      {/* Type — Data Sources tab only. Connection status is not a filter: it
+          is checked when a connection is created and again on every raw-data
+          fetch, so an Online/Offline toggle here only repeated it. */}
       {activeTab === 'datasources' && (
         <div className="flex w-full items-center gap-2 overflow-x-auto pb-1 md:w-auto md:pb-0">
-          <div className="flex items-center gap-1 rounded-md border bg-background p-0.5">
-            {(['all', 'connected', 'offline'] as const).map(f => (
-              <Button
-                key={f}
-                type="button"
-                variant="ghost"
-                onClick={() => setStatusFilter(f)}
-                className={cn(
-                  'h-8 px-3 text-xs font-medium transition-colors',
-                  statusFilter === f
-                    ? f === 'connected'
-                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                      : f === 'offline'
-                        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                        : 'bg-muted text-foreground'
-                    : 'text-muted-foreground',
-                )}
-              >
-                {f === 'connected' && <Wifi className="mr-1.5 h-3 w-3" />}
-                {f === 'offline' && <WifiOff className="mr-1.5 h-3 w-3" />}
-                {f === 'all' ? 'All' : f === 'connected' ? 'Online' : 'Offline'}
-              </Button>
-            ))}
-          </div>
-
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button

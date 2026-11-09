@@ -63,9 +63,9 @@ describe('equipmentParts', () => {
 })
 
 describe('needsAttention', () => {
-  it('is true only for alarm — warning and offline read normal', () => {
+  it('is true for alarm and warning — offline reads normal', () => {
     expect(needsAttention({ status: 'alarm' })).toBe(true)
-    expect(needsAttention({ status: 'warning' })).toBe(false)
+    expect(needsAttention({ status: 'warning' })).toBe(true)
     expect(needsAttention({ status: 'offline' })).toBe(false)
     expect(needsAttention({ status: undefined })).toBe(false)
   })

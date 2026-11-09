@@ -67,6 +67,39 @@ def test_a_minus_between_two_tags_is_an_operator_and_yields_two_tags():
     assert extract_tags("TT240.PV-TT239.PV") == ["TT240.PV", "TT239.PV"]
 
 
+def test_a_hyphen_inside_a_tag_name_does_not_split_the_tag():
+    """The COLD and UT workbooks carry `AI301-1B.PV`, `AI002-1V.PV`,
+    `TPE-H2-FC3931.PV` and `s3299ph-roc.lab`. Before this case existed each one
+    was silently cut to its last segment (`B.PV`, `roc.lab`) — no warning, just
+    a base tag that names a column nobody has."""
+    assert extract_tags("AA301-1B.PV") == ["AA301-1B.PV"]
+    assert extract_tags("TPX-H2-FC3931.PV") == ["TPX-H2-FC3931.PV"]
+    assert extract_tags("AA002-1V.PV + AA002-1W.PV") == ["AA002-1V.PV", "AA002-1W.PV"]
+    assert extract_tags("ss3299ph-roc.lab*(FF3227.AF+FF228.PV)") == [
+        "ss3299ph-roc.lab",
+        "FF3227.AF",
+        "FF228.PV",
+    ]
+
+
+def test_a_minus_right_after_a_tag_suffix_is_still_subtraction():
+    """The suffix never takes a hyphen, so a hyphenated name and a minus
+    between two tags stay distinguishable even when they share an expression."""
+    assert extract_tags("AA301-1B.PV-TT239.PV") == ["AA301-1B.PV", "TT239.PV"]
+    assert extract_tags("TT240.PV-2") == ["TT240.PV"]
+
+
+def test_a_hyphen_must_join_two_name_segments():
+    """A dangling or doubled hyphen is an operator, not part of the name."""
+    assert extract_tags("GG-.PV") == []
+    assert extract_tags("GG--TT239.PV") == ["TT239.PV"]
+
+
+def test_a_lone_hyphenated_tag_is_a_raw_tag():
+    tags = extract_tags("AA301-1B.PV")
+    assert classify("AA301-1B.PV", tags) == "raw_tag"
+
+
 def test_a_trailing_scale_factor_is_not_mistaken_for_a_tag():
     tags = extract_tags("GG204.PV/(YY107.CPV+GG114A.PV)/1000")
 

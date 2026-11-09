@@ -32,18 +32,32 @@ LogFn = Callable[..., None]
 MAX_LOSS_HISTORY_POINTS = 5_000
 
 
-def regression_metrics(y_true, y_pred, prefix: str = "") -> dict[str, float]:
+def regression_metrics(
+    y_true, y_pred, prefix: str = ""
+) -> dict[str, float | int]:
     """r2/mae/rmse over one pair of arrays, optionally key-prefixed.
 
     `prefix="train_"` is how MODEL-FLOW-013-T04's naming is applied: named
     train_* so nothing later mistakes these for holdout figures, which are a
     distinct object — MODEL-FLOW-004 already had to rename a heading for
     exactly that confusion.
+
+    `{prefix}y_true_distinct` is the number of distinct finite target values
+    the figures were computed over. sklearn's `r2_score` returns a plain 0.0
+    for a constant `y_true` (`force_finite`), so r2 alone cannot tell a flat
+    target (e.g. a lab value carried forward for a month) from a zero-skill
+    model; a count below 2 means r2 is not meaningful. r2 itself stays a
+    float — the log lines, CV aggregation and sorting all read it as one.
+    RMSE/MAE are unaffected by a constant target and stay meaningful.
     """
+    y_values = np.asarray(y_true, dtype=float)
     return {
         f"{prefix}r2": float(r2_score(y_true, y_pred)),
         f"{prefix}mae": float(mean_absolute_error(y_true, y_pred)),
         f"{prefix}rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        f"{prefix}y_true_distinct": int(
+            np.unique(y_values[np.isfinite(y_values)]).size
+        ),
     }
 
 
@@ -76,7 +90,7 @@ def extract_loss_history(
     `metric` names exactly what is plotted, never assumed comparable across
     algorithms: "rmse" for lightgbm/xgboost, because the fit explicitly requests
     that eval_metric so it IS the same number metrics.json reports; "loss" for
-    mlp/hist_gradient_boosting/lstm/gru, whose native trajectory is in the
+    mlp/lstm/gru, whose native trajectory is in the
     estimator's own loss units — forcing an RMSE label on those would be false,
     the exact failure class this feature's findings name.
 
@@ -95,27 +109,6 @@ def extract_loss_history(
             # changing model quality outside this feature's scope). Train
             # series only, honestly.
             series = {"train": [float(v) for v in model.loss_curve_]}
-            metric = "loss"
-        elif algorithm in ("hgb", "hist_gradient_boosting"):
-            # LIVE-VERIFIED against the pinned scikit-learn (1.5.2): both
-            # train_score_ and validation_score_ ALWAYS exist as attributes,
-            # but are EMPTY arrays (not absent) whenever `early_stopping`
-            # resolves to False — the unconfigured default ('auto') for any
-            # dataset at or under 10,000 training rows, which is the common
-            # case in this trainer's domain (see GPR_MAX_TRAIN_ROWS). `len()
-            # == 0`, not `hasattr`/`is None`, is what actually distinguishes
-            # "no trajectory this run" from a real one. Never forced on —
-            # forcing early_stopping=True would carve a held-out slice out
-            # of every hgb run's training data, changing model quality
-            # outside this feature's scope, the same reason mlp's branch
-            # above does not force it either.
-            train_score = model.train_score_
-            if len(train_score) == 0:
-                return None
-            series = {"train": [float(v) for v in train_score]}
-            validation_score = getattr(model, "validation_score_", None)
-            if validation_score is not None and len(validation_score) > 0:
-                series["validation"] = [float(v) for v in validation_score]
             metric = "loss"
         elif algorithm == "lightgbm":
             evals = model.evals_result_
@@ -149,7 +142,7 @@ def extract_loss_history(
             # not "rmse": the value plotted is the un-rooted mean squared
             # error, and labelling it rmse would repeat the exact
             # mismatched-unit failure this function's own docstring warns
-            # against for mlp/hist_gradient_boosting.
+            # against for mlp.
             metric = "loss"
         else:
             return None

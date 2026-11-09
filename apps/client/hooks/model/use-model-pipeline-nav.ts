@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useModels } from '@/hooks/workspace/use-models'
+import { useWorkspaceModelLimit } from '@/hooks/workspace/use-workspace-model-limit'
 import type { SavedDataset } from '@/store/datasets'
 import {
   MP_TOTAL_STEPS,
@@ -10,12 +11,12 @@ import {
   mpNameAtom,
   mpWorkspaceIdAtom,
   mpPlantIdAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpEditModelIdAtom,
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
+  mpExtraVariantsAtom,
   mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
@@ -45,10 +46,12 @@ export interface UsePipelineNavResult {
   currentStep: number
   highestUnlocked: number
   nameConflict: boolean
+  /** MODEL-SERVE-041. Why the chosen workspace takes no more models (its cap
+   *  is reached), or null. Never set while editing a saved model. */
+  modelLimitNote: string | null
   selectedDataset: SavedDataset | null
   algorithm: Algorithm
   algorithms: Algorithm[]
-  findBestModel: boolean
   findBestParams: boolean
   targetVariables: string[]
   hyperparameters: Record<string, HyperparamValue>
@@ -103,7 +106,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const name = useAtomValue(mpNameAtom)
   const workspaceId = useAtomValue(mpWorkspaceIdAtom)
   const plantId = useAtomValue(mpPlantIdAtom)
-  const nodeId = useAtomValue(mpNodeIdAtom)
+  const equipmentId = useAtomValue(mpEquipmentIdAtom)
   const editModelId = useAtomValue(mpEditModelIdAtom)
   const { data: workspaceModels } = useModels(workspaceId || null)
   const nameConflict = useMemo(() => {
@@ -115,12 +118,14 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     )
   }, [workspaceModels, name, editModelId])
 
+  // MODEL-SERVE-041. Warn here, not at Save Model after a whole training run.
+  const modelLimitNote = useWorkspaceModelLimit(workspaceId, !editModelId)
+
   const [selectedDataset, setSelectedDatasetAtom] = useAtom(
     mpSelectedDatasetAtom,
   )
   const [algorithm, setAlgorithmAtom] = useAtom(mpAlgorithmAtom)
   const [algorithms, setAlgorithmsAtom] = useAtom(mpAlgorithmsAtom)
-  const [findBestModel, setFindBestModelAtom] = useAtom(mpFindBestModelAtom)
   const [findBestParams, setFindBestParamsAtom] = useAtom(mpFindBestParamsAtom)
   const [targetVariables, setTargetVariableAtom] = useAtom(mpTargetVariableAtom)
   const [hyperparameters, setHyperparametersAtom] = useAtom(mpHyperparamsAtom)
@@ -142,6 +147,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const setCreatedModelId = useSetAtom(mpCreatedModelIdAtom)
   const setSelectedMetrics = useSetAtom(mpSelectedMetricsAtom)
   const setServerDraftId = useSetAtom(mpServerDraftIdAtom)
+  const setExtraVariants = useSetAtom(mpExtraVariantsAtom)
 
   const resetTraining = useCallback(() => {
     setTrainState({ status: 'idle', progress: 0 })
@@ -155,8 +161,9 @@ export function useModelPipelineNav(): UsePipelineNavResult {
             name.trim() !== '' &&
             workspaceId !== '' &&
             plantId !== '' &&
-            nodeId !== '' &&
+            equipmentId !== '' &&
             !nameConflict &&
+            modelLimitNote === null &&
             selectedDataset !== null
           )
         case 2:
@@ -189,8 +196,9 @@ export function useModelPipelineNav(): UsePipelineNavResult {
       name,
       workspaceId,
       plantId,
-      nodeId,
+      equipmentId,
       nameConflict,
+      modelLimitNote,
       selectedDataset,
       trainState,
     ],
@@ -233,7 +241,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   )
 
   // MODEL-FLOW-014-T08: the per-field relock setters that used to live here
-  // (setAlgorithm, setAlgorithms, setFindBestModel, setFindBestParams,
+  // (setAlgorithm, setAlgorithms, setFindBestParams,
   // setFetchTagOverride, setTargetVariable, setHyperparameter,
   // setLossFunction, setTrainTestSplit, setSeed) are gone — Step 3 now
   // edits a local draft (`useRunConfigDraft`) and commits all nine fields
@@ -266,7 +274,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setSelectedDatasetAtom(null)
     setAlgorithmAtom('ols')
     setAlgorithmsAtom(['ols'])
-    setFindBestModelAtom(false)
     setFindBestParamsAtom(false)
     setTargetVariableAtom([])
     setHyperparametersAtom(defaultHyperparams('ols'))
@@ -297,11 +304,13 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     // (use-create-model.ts), so a draft keyed to the OLD workspace must
     // not survive; the next meaningful edit creates a fresh one.
     setServerDraftId(null)
+    // Added rows now always train (2026-10-14) — a workspace change must not
+    // carry one model's rows into the next.
+    setExtraVariants({})
   }, [
     setSelectedDatasetAtom,
     setAlgorithmAtom,
     setAlgorithmsAtom,
-    setFindBestModelAtom,
     setFindBestParamsAtom,
     setTargetVariableAtom,
     setHyperparametersAtom,
@@ -321,16 +330,17 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setHighestUnlocked,
     setCurrentStep,
     setServerDraftId,
+    setExtraVariants,
   ])
 
   return {
     currentStep,
     highestUnlocked,
     nameConflict,
+    modelLimitNote,
     selectedDataset,
     algorithm,
     algorithms,
-    findBestModel,
     findBestParams,
     targetVariables,
     hyperparameters,

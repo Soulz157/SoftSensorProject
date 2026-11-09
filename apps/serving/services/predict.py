@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pandas as pd
+from softsensor_scaling.windows import build_inference_windows, parse_interval
 from softsensor_scaling import (
     assert_scaling_coverage,
     max_replay_lookback,
@@ -22,6 +24,10 @@ from softsensor_scaling import (
 
 class PredictError(ValueError):
     """Safe to surface to the /predict caller as a 422 — never a bare 500."""
+
+
+SEQUENCE_ALGORITHMS = frozenset({"lstm", "gru"})
+DEFAULT_SEQUENCE_LENGTH = 24
 
 
 def _validate_rows(
@@ -150,8 +156,12 @@ def assert_history_satisfies_target_derivation(
 
 
 def rows_to_predictions(
-    model: Any, descriptor: dict[str, Any], rows: list[dict[str, Any]]
-) -> tuple[list[float], pd.DataFrame]:
+    model: Any,
+    descriptor: dict[str, Any],
+    rows: list[dict[str, Any]],
+    timestamps: list[str] | None = None,
+    interval: str | None = None,
+) -> tuple[list[float | None], pd.DataFrame]:
     """Returns `(predictions, scaled)` — MODEL-SERVE-005-T01 needs the
     model-ready frame `to_model_ready` already built here to compute its
     drift aggregates over the SAME values the model actually scored,
@@ -191,5 +201,58 @@ def rows_to_predictions(
     scaled, _ = to_model_ready(
         frame, feature_columns, scalers, fitted_params=scaling_params
     )
+    if descriptor.get("algorithm") in SEQUENCE_ALGORITHMS:
+        return (
+            _sequence_predictions(
+                model, descriptor, scaled[feature_columns], timestamps, interval
+            ),
+            scaled[feature_columns],
+        )
     predicted = model.predict(scaled[feature_columns])
     return [float(p) for p in predicted], scaled[feature_columns]
+
+
+def _sequence_predictions(
+    model: Any,
+    descriptor: dict[str, Any],
+    scaled: pd.DataFrame,
+    timestamps: list[str] | None,
+    interval: str | None,
+) -> list[float | None]:
+    """MODEL-SERVE-045. lstm/gru score row i from rows [i-L+1, i], built by
+    the SAME build_inference_windows the trainer's hourly and batch paths use,
+    so a served value equals the window's. Rows are oldest first; a row
+    without a complete L-row history comes back None (no padding — training
+    never padded). With `timestamps` and `interval`, a gap inside a window
+    (a dropped Bad row, a missing PI sample) also leaves that row None."""
+    length = int(descriptor.get("sequenceLength") or DEFAULT_SEQUENCE_LENGTH)
+    n = len(scaled)
+    if n < length:
+        raise PredictError(
+            f"A {descriptor.get('algorithm')} model scores from {length} "
+            f"consecutive rows; this request has {n}. Send the {length} "
+            "newest rows, oldest first."
+        )
+    stamps = None
+    step = parse_interval(interval)
+    if timestamps is not None:
+        if len(timestamps) != n:
+            raise PredictError(
+                f"`timestamps` has {len(timestamps)} entries for {n} rows."
+            )
+        stamps = pd.to_datetime(pd.Series(timestamps))
+    try:
+        X, positions = build_inference_windows(
+            scaled.to_numpy(dtype=float),
+            length,
+            np.ones(n, dtype=bool),
+            timestamps=stamps if step is not None else None,
+            interval=step,
+        )
+    except RuntimeError as exc:
+        raise PredictError(str(exc)) from exc
+    out: list[float | None] = [None] * n
+    if len(positions):
+        for position, value in zip(positions, model.predict(X)):
+            out[int(position)] = float(value)
+    return out

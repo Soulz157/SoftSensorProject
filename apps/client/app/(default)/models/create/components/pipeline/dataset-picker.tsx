@@ -1,8 +1,9 @@
 'use client'
 
 import { useMemo, useRef, useState } from 'react'
-import { Layers, Search, X } from 'lucide-react'
+import { Layers, Plus, Search, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Select,
   SelectContent,
@@ -12,6 +13,8 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { useDatasets } from '@/hooks/dataset/use-datasets'
+import { sourceTagsOf } from '@/lib/dataset-source-tags'
+import { visibleTagChips } from '@/lib/tag-chips'
 import type { SavedDataset } from '@/store/datasets'
 import { DatasetCard } from '../dataset-card'
 
@@ -27,6 +30,8 @@ interface Props {
   workspaceId: string
   selectedDataset: SavedDataset | null
   onSelectDataset: (dataset: SavedDataset) => void
+  /** MODEL-FLOW-032. Omitted (edit mode), no Create action is offered. */
+  onCreateDataset?: () => void
 }
 
 /**
@@ -43,18 +48,36 @@ export function DatasetPicker({
   workspaceId,
   selectedDataset,
   onSelectDataset,
+  onCreateDataset,
 }: Props) {
   const { datasets, loading } = useDatasets(workspaceId || undefined)
   const [query, setQuery] = useState('')
   const [activeTags, setActiveTags] = useState<string[]>([])
+  const [tagsExpanded, setTagsExpanded] = useState(false)
   const [sort, setSort] = useState<SortKey>('name')
   const gridRef = useRef<HTMLDivElement>(null)
 
+  // Source tags only: engineered columns (lag, rolling, delta, formula…)
+  // would otherwise multiply the chip row by every feature a dataset adds,
+  // and no one picks a dataset by its lag column.
+  const tagsById = useMemo(
+    () => new Map(datasets.map(d => [d.id, sourceTagsOf(d)])),
+    [datasets],
+  )
+
   const distinctTags = useMemo(() => {
     const set = new Set<string>()
-    for (const d of datasets) for (const t of d.tags) set.add(t)
+    for (const tags of tagsById.values()) for (const t of tags) set.add(t)
     return Array.from(set).sort((a, b) => a.localeCompare(b))
-  }, [datasets])
+  }, [tagsById])
+
+  // A workspace can hold hundreds of distinct source tags; the row shows the
+  // first dozen and folds the rest behind "Show more". A tag switched on is
+  // never folded away (lib/tag-chips.ts).
+  const tagChips = useMemo(
+    () => visibleTagChips(distinctTags, activeTags, tagsExpanded),
+    [distinctTags, activeTags, tagsExpanded],
+  )
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -65,12 +88,14 @@ export function DatasetPicker({
         d =>
           d.name.toLowerCase().includes(q) ||
           (d.description ?? '').toLowerCase().includes(q) ||
-          d.tags.some(t => t.toLowerCase().includes(q)),
+          (tagsById.get(d.id) ?? []).some(t => t.toLowerCase().includes(q)),
       )
     }
 
     if (activeTags.length > 0) {
-      result = result.filter(d => activeTags.every(t => d.tags.includes(t)))
+      result = result.filter(d =>
+        activeTags.every(t => (tagsById.get(d.id) ?? []).includes(t)),
+      )
     }
 
     const sorted = [...result]
@@ -86,7 +111,7 @@ export function DatasetPicker({
         break
     }
     return sorted
-  }, [datasets, query, activeTags, sort])
+  }, [datasets, tagsById, query, activeTags, sort])
 
   const filterActive = query.trim() !== '' || activeTags.length > 0
   // The selection can fall out of the filtered set without disappearing —
@@ -138,14 +163,32 @@ export function DatasetPicker({
 
   return (
     <div className="space-y-3">
-      <div>
-        <h2 className="text-sm font-medium text-foreground">
-          Select a dataset
-        </h2>
-        <p className="text-xs text-muted-foreground">
-          Train on a curated dataset built in Data Studio — no need to reconnect
-          or re-clean data.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-medium text-foreground">
+            Select a dataset
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            Train on a curated dataset built in Data Studio — no need to
+            reconnect or re-clean data.
+          </p>
+        </div>
+        {onCreateDataset && (
+          // Disabled rather than hidden without a workspace: the dataset is
+          // created INTO this workspace, and the empty state below already
+          // says to pick one first.
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!workspaceId}
+            onClick={onCreateDataset}
+            className="shrink-0 gap-1.5"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Create dataset
+          </Button>
+        )}
       </div>
 
       {/* State (a): no workspace — the search row stays mounted (disabled)
@@ -191,7 +234,7 @@ export function DatasetPicker({
 
       {distinctTags.length >= 2 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          {distinctTags.map(tag => {
+          {tagChips.visible.map(tag => {
             const on = activeTags.includes(tag)
             return (
               <button
@@ -210,6 +253,20 @@ export function DatasetPicker({
               </button>
             )
           })}
+          {tagChips.collapsible && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setTagsExpanded(prev => !prev)}
+              aria-expanded={tagsExpanded}
+              className="h-6 rounded-full px-2.5 text-[11px] text-primary hover:text-primary"
+            >
+              {tagsExpanded
+                ? 'Show less'
+                : `Show more (${tagChips.hiddenCount})`}
+            </Button>
+          )}
         </div>
       )}
 
@@ -267,6 +324,15 @@ export function DatasetPicker({
           <p className="text-xs text-muted-foreground">
             No datasets yet in this workspace — create one in Data Studio first.
           </p>
+          {onCreateDataset && (
+            <button
+              type="button"
+              onClick={onCreateDataset}
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              Create a dataset
+            </button>
+          )}
         </div>
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-xl bg-muted/30 py-8 text-center ring-1 ring-border">

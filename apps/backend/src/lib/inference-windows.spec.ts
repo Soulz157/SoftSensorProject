@@ -2,6 +2,7 @@ import {
   deriveMinRows,
   formatDtHour,
   windowEndFor,
+  windowFloor,
   windowStartsBetween,
 } from './inference-windows';
 
@@ -81,6 +82,38 @@ describe('windowStartsBetween (MODEL-SERVE-006-T01/T02/T11)', () => {
     expect(() => windowStartsBetween(new Date(0), new Date(1_000), -5)).toThrow(
       /cadenceMinutes must be positive/,
     );
+  });
+});
+
+describe('windowFloor (MODEL-SERVE-042)', () => {
+  it('floors to the clock hour that CONTAINS the instant at 60-minute cadence', () => {
+    expect(
+      windowFloor(new Date('2026-10-16T06:12:16.875Z'), 60).toISOString(),
+    ).toBe('2026-10-16T06:00:00.000Z');
+  });
+
+  it('is the identity on an already-aligned instant', () => {
+    expect(
+      windowFloor(new Date('2026-10-16T06:00:00.000Z'), 60).toISOString(),
+    ).toBe('2026-10-16T06:00:00.000Z');
+  });
+
+  it('aligns to the epoch for other cadences, like windowStartsBetween', () => {
+    expect(
+      windowFloor(new Date('2026-10-16T06:47:00.000Z'), 30).toISOString(),
+    ).toBe('2026-10-16T06:30:00.000Z');
+    const floored = windowFloor(new Date('2026-10-16T06:47:00.000Z'), 30);
+    // The floored anchor is itself a boundary the backfill grid would mint.
+    const [first] = windowStartsBetween(
+      floored,
+      new Date('2026-10-16T08:00:00.000Z'),
+      30,
+    );
+    expect(first.toISOString()).toBe(floored.toISOString());
+  });
+
+  it('refuses a non-positive cadence, like its siblings', () => {
+    expect(() => windowFloor(new Date(), 0)).toThrow(/positive/);
   });
 });
 

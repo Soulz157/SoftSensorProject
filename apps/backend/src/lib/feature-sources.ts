@@ -18,7 +18,7 @@
  * `feature_spec_service._derived_from_target` computes a transitive closure
  * rather than a direct-read check.
  *
- * Pure functions, no I/O — same discipline as `prediction-psi.ts`.
+ * Pure functions, no I/O — same discipline as `input-range-drift.ts`.
  */
 
 /** One `feature_spec.json` `features[]` entry, kept deliberately loose:
@@ -75,6 +75,7 @@ export function directSources(entry: FeatureSpecEntry): string[] | null {
       return typeof config.tag === 'string' ? [config.tag] : null;
     case 'arith':
     case 'ratio':
+    case 'group':
       return asStringArray(config.tags);
     case 'datetime':
       // Reads the timestamp, never a tag — always computable, so no tag's

@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
 import { TrainningContainerAuthorizedService } from './trainning-container.authorized.service';
+import { trainerCpuBudget } from '@/lib/trainer-cpu';
 
 /**
  * MODEL-FLOW-011-T04. Previously a 20-line CLI stub with no PrismaService and
@@ -12,11 +13,13 @@ import { TrainningContainerAuthorizedService } from './trainning-container.autho
 
 const mockGetImageInspect = jest.fn();
 const mockGetContainer = jest.fn();
+const mockCreateContainer = jest.fn();
 
 jest.mock('dockerode', () =>
   jest.fn().mockImplementation(() => ({
     getImage: () => ({ inspect: mockGetImageInspect }),
     getContainer: mockGetContainer,
+    createContainer: mockCreateContainer,
     pull: jest.fn(),
     modem: { followProgress: jest.fn() },
   })),
@@ -233,6 +236,45 @@ describe('TrainningContainerAuthorizedService — boot reconcile (MODEL-FLOW-011
     watchSpy.mockRestore();
   });
 
+  it('records the failure, with the real error text, when the log tail is a multiplexed Docker stream (NUL header bytes)', async () => {
+    // Docker frames every line with an 8-byte header holding 0x00; written
+    // into failureReason as-is, Postgres refused it and the run was never
+    // marked FAILED. The real error must reach the row, header-free.
+    const payload = Buffer.from('RuntimeError: boom\n');
+    const header = Buffer.alloc(8);
+    header[0] = 2;
+    header.writeUInt32BE(payload.length, 4);
+    const watchSpy = jest.spyOn(
+      TrainningContainerAuthorizedService.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => Promise<void>
+      >,
+      'watch',
+    );
+    const container = {
+      id: 'c1',
+      inspect: jest
+        .fn()
+        .mockResolvedValue({ Id: 'c1', State: { Running: false } }),
+      wait: jest.fn().mockResolvedValue({ StatusCode: 1 }),
+      logs: jest.fn().mockResolvedValue(Buffer.concat([header, payload])),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+    mockGetContainer.mockReturnValue(container);
+    const prisma = buildPrisma({ runs: [{ id: 'run-1', containerId: 'c1' }] });
+    const service = makeService(prisma);
+
+    await service.onModuleInit();
+    await watchSpy.mock.results[0].value;
+
+    const [call] = prisma.modelTrainingRun.update.mock.calls;
+    const reason = call[0].data.failureReason as string;
+    expect(reason).toContain('RuntimeError: boom');
+    expect(reason).not.toContain('\u0000');
+
+    watchSpy.mockRestore();
+  });
+
   it('reconciles every orphaned run independently — one failure does not block the others', async () => {
     mockGetContainer.mockImplementation((id: string) => {
       if (id === 'gone') {
@@ -403,5 +445,120 @@ describe('TrainningContainerAuthorizedService — boot reconcile (MODEL-FLOW-011
     expect(prisma.predictionJob.update).not.toHaveBeenCalled();
 
     watchSpy.mockRestore();
+  });
+});
+
+describe('trainerCpuBudget', () => {
+  it('is the whole CPUs of the quota — 2 for the production default', () => {
+    expect(trainerCpuBudget(2 * 1e9)).toBe(2);
+    expect(trainerCpuBudget(4 * 1e9)).toBe(4);
+  });
+
+  it('rounds a fractional quota down, never up past what is allowed', () => {
+    expect(trainerCpuBudget(2.5 * 1e9)).toBe(2);
+  });
+
+  it('never drops below one CPU, whatever the quota says', () => {
+    expect(trainerCpuBudget(0.5 * 1e9)).toBe(1);
+    expect(trainerCpuBudget(0)).toBe(1);
+  });
+});
+
+/** CONTAINER-QUEUE-001. Spawning is now reached through the admission queue. */
+describe('spawn and adopt under the container queue', () => {
+  function makeRunner(count = 1) {
+    const prisma = {
+      modelTrainingRun: {
+        update: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count }),
+        findUnique: jest.fn().mockResolvedValue({ status: 'SUCCEEDED' }),
+      },
+      predictionJob: { updateMany: jest.fn().mockResolvedValue({ count }) },
+      inferenceWindow: {
+        updateMany: jest.fn().mockResolvedValue({ count }),
+        findUnique: jest.fn().mockResolvedValue({ status: 'SUCCEEDED' }),
+      },
+    };
+    const service = new TrainningContainerAuthorizedService(prisma as never);
+    const container = {
+      id: 'c1',
+      start: jest.fn().mockResolvedValue(undefined),
+      wait: jest.fn().mockResolvedValue({ StatusCode: 0 }),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+    mockCreateContainer.mockResolvedValue(container);
+    return { service, prisma, container };
+  }
+
+  it("applies the mode's own memory cap and workspace label", async () => {
+    const { service } = makeRunner();
+
+    await service.spawn('w1', 'tok', 'infer', null);
+    await service.spawn('r1', 'tok', 'train', 'ws1');
+
+    const [[infer], [train]] = mockCreateContainer.mock.calls as [
+      [{ HostConfig: { Memory: number }; Labels: Record<string, string> }],
+      [{ HostConfig: { Memory: number }; Labels: Record<string, string> }],
+    ];
+    expect(infer.HostConfig.Memory).toBe(1024 ** 3);
+    expect(infer.Labels['dslake.workspaceId']).toBeUndefined();
+    expect(train.HostConfig.Memory).toBe(4 * 1024 ** 3);
+    expect(train.Labels['dslake.workspaceId']).toBe('ws1');
+  });
+
+  it('removes the container when the run was canceled while it started', async () => {
+    const { service, prisma, container } = makeRunner(0);
+
+    await service.spawn('r1', 'tok', 'train');
+
+    expect(prisma.modelTrainingRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'r1', status: { in: ['QUEUED', 'RUNNING'] } },
+      }),
+    );
+    expect(container.remove).toHaveBeenCalledWith({ force: true });
+    expect(container.wait).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing to adopt when no container has that name', async () => {
+    const { service } = makeRunner();
+    mockGetContainer.mockReturnValue({
+      inspect: jest.fn().mockRejectedValue(new Error('404')),
+    });
+
+    await expect(service.adopt('r1', 'train')).resolves.toBe(false);
+  });
+
+  it('removes a stopped leftover so the name is free', async () => {
+    const { service } = makeRunner();
+    const remove = jest.fn().mockResolvedValue(undefined);
+    mockGetContainer.mockReturnValue({
+      inspect: jest
+        .fn()
+        .mockResolvedValue({ Id: 'c9', State: { Running: false } }),
+      remove,
+    });
+
+    await expect(service.adopt('r1', 'train')).resolves.toBe(false);
+    expect(remove).toHaveBeenCalled();
+  });
+
+  it('marks a waiting row RUNNING when its container is alive', async () => {
+    const { service, prisma } = makeRunner();
+    mockGetContainer.mockReturnValue({
+      id: 'c9',
+      inspect: jest
+        .fn()
+        .mockResolvedValue({ Id: 'c9', State: { Running: true } }),
+      wait: jest.fn().mockResolvedValue({ StatusCode: 0 }),
+      remove: jest.fn().mockResolvedValue(undefined),
+    });
+
+    await expect(service.adopt('r1', 'train')).resolves.toBe(true);
+    expect(prisma.modelTrainingRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ containerId: 'c9' }) as object,
+      }),
+    );
   });
 });

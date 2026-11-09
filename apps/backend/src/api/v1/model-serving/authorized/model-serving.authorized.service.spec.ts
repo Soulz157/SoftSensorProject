@@ -139,6 +139,33 @@ describe('ModelServingAuthorizedService.getDescriptorService', () => {
     expect(mockedReadFeatureSpec).toHaveBeenCalledWith(VERSION.goldObjectKey);
   });
 
+  // MODEL-SERVE-043. The pickle never stored a sequence model's history
+  // length, so the descriptor resolves it from the version's hyperparameters.
+  it('resolves sequenceLength for a sequence model and null otherwise', async () => {
+    const ols = await new ModelServingAuthorizedService(
+      makePrisma(),
+    ).getDescriptorService('model-1');
+    expect(ols.data.sequenceLength).toBeNull();
+
+    const lstm = await new ModelServingAuthorizedService(
+      makePrisma({
+        version: {
+          ...VERSION,
+          algorithm: 'lstm',
+          hyperparameters: { sequence_length: 12 },
+        },
+      }),
+    ).getDescriptorService('model-1');
+    expect(lstm.data.sequenceLength).toBe(12);
+
+    const gruDefault = await new ModelServingAuthorizedService(
+      makePrisma({
+        version: { ...VERSION, algorithm: 'gru', hyperparameters: {} },
+      }),
+    ).getDescriptorService('model-1');
+    expect(gruDefault.data.sequenceLength).toBe(24);
+  });
+
   // MODEL-SERVE-002-T06. feature_spec.json nests per-kind fields under
   // `config`; max_replay_lookback (on the serving side) reads them at the
   // top level. If this flattening regresses, serving silently computes a

@@ -14,6 +14,18 @@ const ALGO_COST: Record<string, number> = {
   catboost: 2.0,
   mlp: 2.5,
   svr: 3.0,
+  // MEASURED 2026-11-05 (scgc/soft-sensor-trainer:1.0.27, one fit, 100 trees,
+  // default depth, 80% of the rows as training, 10k-60k rows x 10-20 features):
+  // random_forest 104-151 and extra_trees 29-37 in this table's unit, where
+  // lightgbm measured 0.6-1.7. Before these entries both fell back to 1, i.e.
+  // priced like lightgbm — 120x and 33x too cheap — so a 30-minute forest
+  // search read as seconds and the long-run notice never appeared. The middle
+  // of each range is used; cost grows a little faster than linearly in rows
+  // (random_forest 104 at 10k rows, 151 at 60k). A grid's shallower
+  // combinations finish sooner than this default-depth fit, so a grid reads
+  // high rather than low (one measured grid: 93s real vs ~188s here).
+  random_forest: 120,
+  extra_trees: 32,
 }
 
 export const ALGO_LABEL: Record<string, string> = {
@@ -45,6 +57,38 @@ const TUNE_VARIANTS = 4
 
 export const SUPERLINEAR = new Set(['svr', 'knn', 'mlp'])
 
+/**
+ * MODEL-FLOW-038. Of the ideal N-fold speed-up, the share a parallel grid
+ * search actually gets. Measured on 2 workers under a 2-CPU cap: 1.8x on a
+ * script, 1.5x through the real `run_grid_search` (109.8s -> 72.9s), with
+ * identical results — worker start-up, the final fit and uneven combinations
+ * eat the rest. 0.75 reproduces the more cautious of the two.
+ */
+export const PARALLEL_EFFICIENCY = 0.75
+
+/** How much faster a search runs on `workers` processes than on one. */
+export function searchSpeedup(workers: number | undefined): number {
+  return workers !== undefined && workers > 1
+    ? workers * PARALLEL_EFFICIENCY
+    : 1
+}
+
+/**
+ * The workers the trainer will use for a search — the same rule as
+ * `search_parallelism` in images/trainer/app/pipelines/grid_search.py: only an
+ * algorithm the server marks `parallel`, never more than the CPU budget or
+ * than the number of fits, and none for a single fit or a one-CPU budget.
+ * `tasks` is combinations x folds.
+ */
+export function searchWorkersFor(
+  parallel: boolean,
+  cpuBudget: number,
+  tasks: number,
+): number {
+  if (!parallel || tasks < 2 || cpuBudget < 2) return 1
+  return Math.min(cpuBudget, tasks)
+}
+
 export interface AlgoShare {
   id: string
   label: string
@@ -74,7 +118,11 @@ export function breakdownRuntime(input: RuntimeInput): AlgoShare[] {
   const ids = input.algorithms
   if (ids.length === 0) return []
 
-  const weights = selectedCosts(ids)
+  // Weighted by each algorithm's candidate count too, so an algorithm with
+  // three added rows reads as three fits' worth of the total.
+  const weights = selectedCosts(ids).map(
+    (c, i) => c * (input.candidatesPerAlgorithm?.[ids[i]!] ?? 1),
+  )
   const sum = weights.reduce((s, w) => s + w, 0) || 1
   const total = estimateRuntimeSeconds(input)
   return ids
@@ -94,8 +142,14 @@ export interface RuntimeInput {
   features: number
   algorithms: string[]
   targets: number
-  findBestModel: boolean
   findBestParams: boolean
+  /**
+   * How many first-round candidates each algorithm trains: its card plus the
+   * rows the user added on it (`firstRoundFits`'s per-algorithm count). An
+   * algorithm missing here counts once. Absent for a grid search on one
+   * algorithm, whose added rows are priced in `tuningVariants` instead.
+   */
+  candidatesPerAlgorithm?: Partial<Record<string, number>>
   nEstimators?: number
   /**
    * MODEL-FLOW-025-T06. How many variants Find Best Parameters would actually
@@ -112,6 +166,21 @@ export interface RuntimeInput {
    * direction this file already errs in for an unknown variant count.
    */
   nSplits?: number
+  /**
+   * MODEL-FLOW-038. Fits a GridSearchCV search runs on ONE algorithm: every
+   * combination on every fold (`fitCount`). Present only for a grid search,
+   * which replaces the curated-variant pricing above — the trainer runs the
+   * search inside one container, then fits the winner once (k folds + a refit
+   * under CV) like any single run.
+   */
+  gridFits?: number
+  /**
+   * MODEL-FLOW-038. Processes the search is fitted on (`searchWorkersFor`).
+   * Divides the SEARCH only, by `searchSpeedup`; the winner's own run is one
+   * process. Absent or 1 = serial, so a caller that does not know it never
+   * under-estimates.
+   */
+  searchWorkers?: number
 }
 
 /** Fits each candidate costs: 1, or k folds + the refit under CV. */
@@ -123,6 +192,9 @@ export interface CvFitCount {
   candidates: number
   fitsEach: number
   total: number
+  /** MODEL-FLOW-038. Set for a grid search: the fits the search itself runs,
+   *  on top of the `fitsEach` the winner then costs. `candidates` is 1. */
+  searchFits?: number
 }
 
 /**
@@ -134,12 +206,22 @@ export interface CvFitCount {
  */
 export function cvFitCount(input: RuntimeInput): CvFitCount | null {
   if (input.nSplits === undefined) return null
+  if (input.findBestParams && input.gridFits !== undefined) {
+    const fitsEach = fitsPerCandidate(input.nSplits)
+    return {
+      candidates: 1,
+      fitsEach,
+      total: input.gridFits + fitsEach,
+      searchFits: input.gridFits,
+    }
+  }
   const [algorithm] = input.algorithms
   const variants =
     input.findBestParams && algorithm
       ? (input.tuningVariants?.[algorithm] ?? TUNE_VARIANTS)
       : 0
-  const candidates = Math.max(input.algorithms.length, 1) + variants
+  const own = algorithm ? (input.candidatesPerAlgorithm?.[algorithm] ?? 1) : 1
+  const candidates = own + variants
   const fitsEach = fitsPerCandidate(input.nSplits)
   return { candidates, fitsEach, total: candidates * fitsEach }
 }
@@ -159,11 +241,11 @@ export function cvFitCount(input: RuntimeInput): CvFitCount | null {
  *            (MODEL-FLOW-025-T06), else TUNE_VARIANTS
  *
  * A single algorithm with Find Best Parameters is therefore 5x one fit, not
- * 10x. `findBestModel` no longer changes the number: a sweep costs what
- * fitting its selected algorithms costs. It stays on `RuntimeInput` because
- * callers still pass it. Left alone: `ALGO_COST` is keyed on ids this
+ * 10x. A first round costs what fitting its candidates costs: each selected
+ * algorithm times its own candidate count (the card plus added rows). Left
+ * alone: `ALGO_COST` is keyed on ids this
  * catalogue does not have (rf, svr, gbr...), so `random_forest`, `svm`,
- * `hist_gradient_boosting`, `grp`, `pls`, `lstm` and `gru` all fall back to
+ * `grp`, `pls`, `lstm` and `gru` all fall back to
  * cost 1 — the numbers are invented, and inventing more is not this change.
  */
 export function estimateRuntimeSeconds({
@@ -174,13 +256,34 @@ export function estimateRuntimeSeconds({
   findBestParams,
   nEstimators,
   tuningVariants,
+  candidatesPerAlgorithm,
   nSplits,
+  gridFits,
+  searchWorkers,
 }: RuntimeInput): number {
   const cells = Math.max(rows, 1) * Math.max(features, 1)
   const trees = (nEstimators ?? 100) / 100
 
   const costs = selectedCosts(algorithms)
-  const baseCost = costs.reduce((s, c) => s + c, 0) || 1
+  // MODEL-FLOW-038. A grid search is the search's own fits plus the winner's
+  // single run, all of ONE algorithm: `combos x folds + (folds + refit)`.
+  if (findBestParams && gridFits !== undefined && costs.length === 1) {
+    const cost = costs[0]!
+    return Math.max(
+      2,
+      cells *
+        SEC_PER_CELL *
+        trees *
+        cost *
+        (gridFits / searchSpeedup(searchWorkers) + fitsPerCandidate(nSplits)) *
+        Math.max(targets, 1),
+    )
+  }
+  const baseCost =
+    costs.reduce(
+      (s, c, i) => s + c * (candidatesPerAlgorithm?.[algorithms[i]!] ?? 1),
+      0,
+    ) || 1
   // MODEL-FLOW-025-T06. Each algorithm's tuning cost is ITS variant count times
   // its cost; the mean over the selection stands for "whichever wins". With one
   // algorithm (a direct search) that is exact rather than 4x by assumption.

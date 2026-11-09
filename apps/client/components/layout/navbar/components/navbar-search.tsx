@@ -20,7 +20,7 @@ export function NavbarSearch() {
           models: searchSuggestions.models.filter(m =>
             m.name.toLowerCase().includes(searchQuery.toLowerCase()),
           ),
-          nodes: searchSuggestions.nodes.filter(n =>
+          equipment: searchSuggestions.equipment.filter(n =>
             n.name.toLowerCase().includes(searchQuery.toLowerCase()),
           ),
         }
@@ -29,7 +29,7 @@ export function NavbarSearch() {
   const hasResults =
     filteredResults.workspaces.length > 0 ||
     filteredResults.models.length > 0 ||
-    filteredResults.nodes.length > 0
+    filteredResults.equipment.length > 0
 
   return (
     <div className="flex flex-1 items-center justify-center px-4">
@@ -39,7 +39,7 @@ export function NavbarSearch() {
           <Input
             ref={inputRef}
             type="search"
-            placeholder="Search workspaces, models, nodes..."
+            placeholder="Search workspaces, models, equipment..."
             value={searchQuery}
             onChange={e => {
               setSearchQuery(e.target.value)
@@ -114,13 +114,13 @@ export function NavbarSearch() {
                     ))}
                   </div>
                 )}
-                {/* Nodes Section */}
-                {filteredResults.nodes.length > 0 && (
+                {/* Equipment Section */}
+                {filteredResults.equipment.length > 0 && (
                   <div className="p-2">
                     <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
-                      Nodes
+                      Equipment
                     </div>
-                    {filteredResults.nodes.map(item => (
+                    {filteredResults.equipment.map(item => (
                       <Link
                         key={item.id}
                         href={`/workspaces/1`}

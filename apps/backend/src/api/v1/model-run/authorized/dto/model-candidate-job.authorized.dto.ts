@@ -4,6 +4,7 @@ import {
   HyperparametersSchema,
   TrainingAlgorithmEnum,
 } from './model-run.authorized.dto';
+import { validateParamGrid } from '@/lib/tuning-grid';
 
 /**
  * MODEL-FLOW-005, generalized by MODEL-FLOW-013-T03. Originally "fine-tuning"
@@ -42,6 +43,10 @@ export const CreateCandidateJobSchema = z
     // SEARCH only, and exclusive with trainTestSplit — both refined below.
     nSplits: z.coerce.number().int().min(2).max(10).optional(),
     kind: CandidateJobKindEnum,
+    // MODEL-FLOW-035. The metric the winner (bestRunId) is chosen by — the
+    // wizard's Loss function. Omitted = 'rmse', so retrain and every older
+    // client rank exactly as before.
+    rankingMetric: z.enum(['rmse', 'mae']).optional(),
 
     // At least 1 for HYPERPARAMETER_SEARCH — a single algorithm + its
     // current hyperparameters, expanded server-side into the curated
@@ -109,8 +114,53 @@ export const CreateCandidateJobSchema = z
     // so this grants nothing a client could not already do by sending
     // arbitrary hyperparameters on a candidate.
     extraVariants: z.array(HyperparametersSchema).max(8).optional(),
+
+    // MODEL-FLOW-038. A real GridSearchCV: ONE trainer run fits every
+    // combination of these value lists. Keys and the combination cap are
+    // checked by `validateParamGrid` below (it knows each algorithm's
+    // searchable keys); the shape here only bounds the payload.
+    // HYPERPARAMETER_SEARCH with exactly one tabular candidate, and exclusive
+    // with `extraVariants` — both refined below.
+    paramGrid: z
+      .record(
+        z.string().min(1).max(64),
+        z
+          .array(z.union([z.string(), z.number(), z.boolean(), z.null()]))
+          .min(1)
+          .max(10),
+      )
+      .optional(),
   })
   .strict()
+  .refine(
+    (data) =>
+      data.paramGrid === undefined ||
+      (data.kind === 'HYPERPARAMETER_SEARCH' && data.candidates.length === 1),
+    {
+      message:
+        'paramGrid is only supported for a HYPERPARAMETER_SEARCH with exactly one candidate.',
+      path: ['paramGrid'],
+    },
+  )
+  .refine(
+    (data) =>
+      data.paramGrid === undefined || (data.extraVariants ?? []).length === 0,
+    {
+      message:
+        'paramGrid and extraVariants are mutually exclusive — a grid search already tries every combination.',
+      path: ['paramGrid'],
+    },
+  )
+  .superRefine((data, ctx) => {
+    if (data.paramGrid === undefined || data.candidates.length !== 1) return;
+    const problem = validateParamGrid(
+      data.candidates[0].algorithm,
+      data.paramGrid,
+    );
+    if (problem) {
+      ctx.addIssue({ code: 'custom', message: problem, path: ['paramGrid'] });
+    }
+  })
   .refine(
     (data) =>
       data.extraVariants === undefined ||

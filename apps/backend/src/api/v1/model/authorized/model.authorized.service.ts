@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { assertWorkspaceCapacity } from '@/lib/workspace-limits';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
 import { z } from 'zod';
@@ -240,16 +241,20 @@ export class ModelAuthorizedService {
       logs: [],
       ...(dto.config && { config: dto.config }),
     };
-    const model = await this.prisma.model.create({
-      data: {
-        workspaceId: dto.workspaceId,
-        name: dto.name,
-        nodesId: dto.nodeId ?? null,
-        datasetId: dto.datasetId ?? null,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-        data: JSON.parse(JSON.stringify(initData)),
-      },
-      include: NODE_INCLUDE,
+    const model = await this.prisma.$transaction(async (tx) => {
+      // MODEL-SERVE-035: refuse when the workspace is at its model limit.
+      await assertWorkspaceCapacity(tx, dto.workspaceId, 'models');
+      return tx.model.create({
+        data: {
+          workspaceId: dto.workspaceId,
+          name: dto.name,
+          nodesId: dto.nodeId ?? null,
+          datasetId: dto.datasetId ?? null,
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: JSON.parse(JSON.stringify(initData)),
+        },
+        include: NODE_INCLUDE,
+      });
     });
     return {
       statusCode: 201,

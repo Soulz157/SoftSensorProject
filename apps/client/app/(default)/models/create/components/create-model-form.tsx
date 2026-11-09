@@ -16,7 +16,7 @@ import { Phase4ModelSelection } from './pipeline/phase-4-model-selection'
 const STEP_LABELS = [
   'Select Dataset',
   'Dataset Review',
-  'Training Config',
+  'Model Config',
   'Model Selection',
   'Evaluation',
   'Save Model',
@@ -37,9 +37,9 @@ export function CreateModelForm() {
     setDescription,
     changeWorkspace,
     changePlant,
-    setNodeId,
+    setEquipmentId,
     plants,
-    nodes,
+    equipmentList,
     plantsLoading,
     cancel,
   } = useCreateModel()
@@ -62,17 +62,18 @@ export function CreateModelForm() {
           description={form.description}
           workspaceId={form.workspaceId}
           plantId={form.plantId}
-          nodeId={form.nodeId}
+          equipmentId={form.equipmentId}
           plants={plants}
-          nodes={nodes}
+          equipmentList={equipmentList}
           plantsLoading={plantsLoading}
           nameConflict={nav.nameConflict}
+          modelLimitNote={nav.modelLimitNote}
           selectedDataset={nav.selectedDataset}
           onName={setName}
           onDescription={setDescription}
           onWorkspace={changeWorkspace}
           onPlant={changePlant}
-          onNode={setNodeId}
+          onEquipment={setEquipmentId}
           onSelectDataset={nav.setSelectedDataset}
         />
       )

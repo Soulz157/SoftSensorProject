@@ -16,21 +16,21 @@ import {
   MONITORING_STATUS_CLASS_ON_TOOLTIP,
   MONITORING_STATUS_LABEL,
 } from '@/lib/drift-status-style'
-import type { PsiStatus } from '@/services/model-monitoring'
+import type { InputDriftStatus } from '@/services/model-monitoring'
 
 interface Props {
-  /** `PsiStatus` is a superset of `DriftStatus`, so one prop serves both
+  /** `InputDriftStatus` is a superset of `DriftStatus`, so one prop serves both
    *  metrics. The label and both palettes are derived from it rather than
    *  passed in — a caller cannot pair one status's word with another's
    *  colour. */
-  status: PsiStatus
+  status: InputDriftStatus
   explanation: StatusExplanation
 }
 
 /**
  * A criteria line is `<condition> → <VERDICT>`, and the verdict half is
  * rendered as its own small badge so the tooltip shows the same colour
- * the table does. The verdict may carry a trailing aside — PSI's WARN
+ * the table does. The verdict may carry a trailing aside — the out-of-range WARN
  * line ends `WARN (critical at 0.25)` — so only the LEADING token is
  * matched, and anything after it stays plain text beside the badge.
  *
@@ -42,7 +42,7 @@ interface Props {
  */
 function splitVerdict(
   line: string,
-): { condition: string; status: PsiStatus; rest: string } | null {
+): { condition: string; status: InputDriftStatus; rest: string } | null {
   const [condition, verdict] = line.split(CRITERIA_VERDICT_SEPARATOR)
   if (condition === undefined || verdict === undefined) return null
 
@@ -61,13 +61,13 @@ function splitVerdict(
 
   return {
     condition,
-    status: entry[0] as PsiStatus,
+    status: entry[0] as InputDriftStatus,
     rest: remainder.join(' '),
   }
 }
 
 /**
- * The status badge shared by the PSI card and inline drift badges: the
+ * The status badge shared by the Input Drift card and inline drift badges: the
  * verdict, plus a tooltip saying what that verdict MEANS and which
  * comparison produced it.
  *
@@ -92,8 +92,8 @@ function splitVerdict(
  * rather than hover alone. `type="button"` because a default submit
  * button would be a trap if these tables ever land inside a form.
  *
- * THE CLICK IS SWALLOWED ON PURPOSE. `PsiRow` puts `onToggle` on the
- * `<tr>`, so without `stopPropagation` this button's click would bubble
+ * THE CLICK IS SWALLOWED ON PURPOSE. A table row may carry its own toggle
+ * (the Input Data table, a row-click pattern), so without `stopPropagation` this button's click would bubble
  * and expand/collapse the bin drill-down — turning "I clicked the badge
  * to read it" into a row action the reader never asked for. The badge
  * itself has nothing to activate; the tooltip opens on hover and focus.

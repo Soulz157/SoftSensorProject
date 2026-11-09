@@ -9,32 +9,35 @@ import { classifyModelHealth, type ModelHealth } from '@/lib/model-health';
 // rather than reimplemented, so the list and the detail page grade a model by
 // one rule over one sample. Acyclic: neither module imports this one.
 import {
-  classifyResidualSd,
+  classifyResidualPoints,
+  type ResidualPointWindow,
   truthPoolSince,
   type ResidualSdStatus,
 } from '@/lib/residual-sd-health';
 import { baselineResidualSd } from '@/lib/model-version-residual-sd';
+import { loadHeldFallbacks } from '@/lib/held-deviation';
 // MODEL-SERVE-001-T30 (list-payload frozen detection). THE SAME detector the
 // single-model path uses (`InferenceWindowMonitoringService.getHealthStatus`)
 // — one rule for "is this tag frozen", not a second one that could disagree
 // with the detail page about the same tag.
 import { detectFrozenColumns } from '@/lib/sensor-frozen';
-// `resolveColumnBaseline`'s and `resolvePsiReference`'s OWN caching (by
+// `resolveColumnBaseline`'s and `resolveDriftReference`'s OWN caching (by
 // `goldObjectKey`, an immutable artifact key) is what makes calling them here
 // affordable — see their own doc comments. Without that cache each read would
 // be an uncached HTTP round trip to apps/python per enabled model, on every
 // Alerts/Overview/sidebar load.
 import {
   resolveColumnBaseline,
-  resolvePsiReference,
+  resolveDriftReference,
 } from '@/lib/artifact-baseline';
 import type { FeatureStatsMap } from '@/lib/feature-stats';
 import {
-  computePsi,
+  computeRangeDrift,
+  driftThresholds,
   poolHistograms,
   type FeatureHistogramMap,
-  type PsiStatus,
-} from '@/lib/prediction-psi';
+  type DriftStatus,
+} from '@/lib/input-range-drift';
 
 /**
  * MODEL-SERVE-024-D03. The window sample the list's drift verdict is graded
@@ -43,12 +46,15 @@ import {
  */
 const DRIFT_WINDOW_TAKE = 24;
 
-type PsiVerdict = {
-  psiStatus: PsiStatus | null;
-  psiEvidence: boolean;
+type DriftVerdict = {
+  driftStatus: DriftStatus | null;
+  driftEvidence: boolean;
 };
 
-const NO_PSI: PsiVerdict = { psiStatus: null, psiEvidence: false };
+const NO_DRIFT_EVIDENCE: DriftVerdict = {
+  driftStatus: null,
+  driftEvidence: false,
+};
 
 /**
  * MODEL-SERVE-006-T12. Per decisions.deploy_status_currently_asserts_
@@ -321,7 +327,14 @@ export async function deriveDeployStatuses(
   // comment) rather than by avoiding the call.
   const productionVersions = await prisma.modelVersion.findMany({
     where: { modelId: { in: modelIds }, stage: 'PRODUCTION' },
-    select: { id: true, modelId: true, metrics: true, goldObjectKey: true },
+    select: {
+      id: true,
+      modelId: true,
+      metrics: true,
+      goldObjectKey: true,
+      // MODEL-SERVE-046. The target tag, for the held-deviation fallback.
+      sourceRun: { select: { targetY: true } },
+    },
   });
   const versionByModel = new Map(productionVersions.map((v) => [v.modelId, v]));
 
@@ -349,7 +362,7 @@ export async function deriveDeployStatuses(
   // per enabled model, so a DRIFT_WARN/DRIFT_CRITICAL reaches the Alerts
   // page, plant and workspace instead of living only on the detail page.
   // The per-model reference read is cached by artifact key.
-  const psiByModel = new Map<string, PsiVerdict>();
+  const psiByModel = new Map<string, DriftVerdict>();
   await Promise.all(
     enabledIds.map(async (modelId) => {
       const schedule = scheduleByModel.get(modelId)!;
@@ -357,7 +370,7 @@ export async function deriveDeployStatuses(
       if (schedule.driftMonitor && productionForDrift) {
         psiByModel.set(
           modelId,
-          await resolveListPsi(
+          await resolveListDrift(
             prisma,
             productionForDrift.id,
             productionForDrift.goldObjectKey,
@@ -449,50 +462,59 @@ export async function deriveDeployStatuses(
   // this feature exists to remove.
   const truthGroups = productionVersions.length
     ? await prisma.inferenceWindowTruth.groupBy({
-        by: ['modelVersionId'],
+        // MODEL-SERVE-046. Per WINDOW, not per version: the latest-24h cut
+        // is anchored to the newest joined window and applied in memory
+        // (`classifyResidualPoints`), so it needs the windows themselves.
+        // Still ONE query for every model — a window is unique per version,
+        // so this is a row-per-window read of two numbers.
+        by: ['modelVersionId', 'windowStart'],
         where: {
           modelVersionId: { in: productionVersions.map((v) => v.id) },
           windowStart: { gte: truthPoolSince() },
         },
-        _sum: {
-          n: true,
-          sumSe: true,
-          sumAe: true,
-          sumSigned: true,
-          sumActual: true,
-          sumActualSq: true,
-        },
+        _sum: { n: true },
+        _max: { maxAbsResidual: true },
       })
     : [];
-  const truthByVersion = new Map(
-    truthGroups.map((g) => [
-      g.modelVersionId,
-      {
-        // A group with no rows sums to null, which is zero pairs — and
-        // `poolTruthStats` skips an n <= 0 row rather than adding its zeros.
-        n: g._sum.n ?? 0,
-        sumSe: g._sum.sumSe ?? 0,
-        sumAe: g._sum.sumAe ?? 0,
-        sumSigned: g._sum.sumSigned ?? 0,
-        sumActual: g._sum.sumActual ?? 0,
-        sumActualSq: g._sum.sumActualSq ?? 0,
-      },
-    ]),
+  const truthByVersion = new Map<string, ResidualPointWindow[]>();
+  for (const g of truthGroups) {
+    const windows = truthByVersion.get(g.modelVersionId) ?? [];
+    windows.push({
+      windowStart: g.windowStart,
+      // A group with no rows sums to null, which is zero pairs.
+      n: g._sum.n ?? 0,
+      maxAbsResidual: g._max.maxAbsResidual ?? 0,
+    });
+    truthByVersion.set(g.modelVersionId, windows);
+  }
+
+  // MODEL-SERVE-046. Held-deviation fallback, ONLY for versions with no joined
+  // pair at all — two more batched reads for the whole page, none per model.
+  const heldFallbacks = await loadHeldFallbacks(
+    prisma,
+    productionVersions
+      .filter((v) => !(truthByVersion.get(v.id) ?? []).some((w) => w.n > 0))
+      .map((v) => ({
+        id: v.id,
+        modelId: v.modelId,
+        targetY: v.sourceRun?.targetY || null,
+      })),
   );
 
   const residualSdByModel = new Map<string, ResidualSdStatus>();
   for (const schedule of schedules) {
     const version = versionByModel.get(schedule.modelId);
-    const pooled = version ? truthByVersion.get(version.id) : undefined;
+    const windows = version ? truthByVersion.get(version.id) : undefined;
     residualSdByModel.set(
       schedule.modelId,
-      classifyResidualSd({
-        windows: pooled ? [pooled] : [],
+      classifyResidualPoints({
+        windows: windows ?? [],
         baselineSd: baselineResidualSd(version?.metrics ?? null),
         thresholds: {
           warnSd: schedule.warnSd,
           criticalSd: schedule.criticalSd,
         },
+        heldFallback: heldFallbacks.get(schedule.modelId) ?? null,
       }).status,
     );
   }
@@ -523,8 +545,10 @@ export async function deriveDeployStatuses(
         // and env PSI thresholds, for opted-in schedules. Off, or no
         // evidence, is "no drift claim", never "PSI said fine".
         driftMonitor: schedule.driftMonitor,
-        psiStatus: (psiByModel.get(schedule.modelId) ?? NO_PSI).psiStatus,
-        psiEvidence: (psiByModel.get(schedule.modelId) ?? NO_PSI).psiEvidence,
+        driftStatus: (psiByModel.get(schedule.modelId) ?? NO_DRIFT_EVIDENCE)
+          .driftStatus,
+        driftEvidence: (psiByModel.get(schedule.modelId) ?? NO_DRIFT_EVIDENCE)
+          .driftEvidence,
         // T27's `missingPct` band is STILL the detail page's job alone: it
         // reads the NEWEST terminal window's own missingPct ("is the data
         // bad RIGHT NOW"), which this batched query has no per-model reason
@@ -572,11 +596,11 @@ export async function deriveDeployStatuses(
  * as the detail page (`getHealthStatus`): no window histograms or an empty
  * reference is NO evidence, and no evidence is never read as "no drift".
  */
-async function resolveListPsi(
+async function resolveListDrift(
   prisma: PrismaService,
   productionVersionId: string,
   goldObjectKey: string,
-): Promise<PsiVerdict> {
+): Promise<DriftVerdict> {
   const windows = await prisma.inferenceWindow.findMany({
     where: { modelVersionId: productionVersionId },
     orderBy: { windowStart: 'desc' },
@@ -586,18 +610,16 @@ async function resolveListPsi(
   const histogramRows = windows
     .filter((w) => w.featureHistograms != null)
     .map((w) => w.featureHistograms as unknown as FeatureHistogramMap);
-  if (histogramRows.length === 0) return NO_PSI;
-  const reference = await resolvePsiReference(goldObjectKey);
-  if (Object.keys(reference).length === 0) return NO_PSI;
+  if (histogramRows.length === 0) return NO_DRIFT_EVIDENCE;
+  const reference = await resolveDriftReference(goldObjectKey);
+  if (Object.keys(reference).length === 0) return NO_DRIFT_EVIDENCE;
   return {
-    psiStatus: computePsi(poolHistograms(histogramRows), reference, {
-      warn: env.PSI_WARN,
-      critical: env.PSI_CRITICAL,
-      minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
-      outOfRangeWarnPct: env.PSI_OUT_OF_RANGE_WARN_PCT,
-      outOfRangeCriticalPct: env.PSI_OUT_OF_RANGE_CRITICAL_PCT,
-    }).status,
-    psiEvidence: true,
+    driftStatus: computeRangeDrift(
+      poolHistograms(histogramRows),
+      reference,
+      driftThresholds(),
+    ).status,
+    driftEvidence: true,
   };
 }
 

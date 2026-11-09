@@ -1,103 +1,88 @@
-import { computeLiveError, poolTruthStats, TruthStats } from './live-error';
-
 /**
- * MODEL-SERVE-012-T03. THE OUTPUT-ERROR AXIS of model health.
+ * MODEL-SERVE-046 (replacing MODEL-SERVE-012-T03's spread ratio).
+ * THE OUTPUT-ERROR AXIS of model health, graded PER POINT.
  *
- * Every existing health signal watches the model's INPUTS or its PLUMBING:
+ * Every other health signal watches the model's INPUTS or its PLUMBING:
  * `SOURCE_UNREACHABLE`/`STALE`/`NO_PREDICTIONS` say the schedule is not
  * delivering, `BAD_DATA`/`SENSOR_FROZEN` say the readings are wrong, and
  * `DRIFT_*` says the feature distribution has moved. None of them looks at
- * whether the model is still RIGHT. A model can fetch cleanly, from live
- * instruments, with un-drifted inputs, and be predicting badly — and until
- * this module that state rendered as a green pill.
+ * whether the model is still RIGHT. This axis does.
  *
- * THE STATISTIC: `liveSd / baselineSd`, where the numerator is the residual
- * spread over recently joined pairs and the denominator is the run's own
- * test-split residual SD (`lib/model-version-residual-sd.ts`).
+ * THE RULE: take the worst single residual among the joined (predicted,
+ * actual) pairs of the LATEST 24 HOURS of joined windows and divide it by the
+ * model's reference residual SD (`lib/model-version-residual-sd.ts`, the
+ * run's own test-split SD). Beyond `warnSd` x SD is a WARNING; beyond
+ * `criticalSd` x SD is an ALERT (defaults 2 and 3) — the same +/-2 SD and
+ * +/-3 SD guard lines the Residual chart draws, so the pill and the chart
+ * cannot disagree about what "outside the band" means.
  *
- * WHY A RATIO AGAINST A FROZEN NUMBER, rather than "what share of points
- * fell outside the ±k·SD bands the chart draws". Two reasons, both load-
- * bearing:
+ * WHY THE EXTREME IS STORED PER WINDOW. `InferenceWindowTruth` keeps pooled
+ * SUMS, which can grade a spread but not whether ONE point fell outside a
+ * band; the individual residuals live in object storage behind `pairsKey`,
+ * and reading those per window per model on the list endpoint is what the
+ * earlier design rejected. The join already holds every residual in memory,
+ * so it records the window's `maxAbsResidual` once, and this axis reads it
+ * with a grouped aggregate — no object read.
  *
- *   1. A coverage share measured against an SD recomputed from the SAME
- *      residuals is scale-invariant. Multiply every live residual by ten —
- *      the model is now ten times worse — and the share outside its own 1 SD
- *      is unchanged. It would grade nothing.
- *   2. `InferenceWindowTruth` stores per-window SUMS, not individual
- *      residuals (those live in object storage behind `pairsKey`), so a true
- *      per-point count would mean an object read per window per model — on
- *      the list endpoint, for every model in the workspace. Counting window
- *      MEANS instead would not rescue it: the null spread of a mean of n
- *      residuals is baselineSd/√n, so with ~60 scored rows a window mean
- *      beyond 1·baselineSd is a ~7.7σ event and the Warning tier would be
- *      unreachable dead code.
+ * WHY "LATEST 24 H" IS ANCHORED TO THE NEWEST JOINED WINDOW, NOT TO NOW. A
+ * residual needs a MEASURED lab actual, and the join only runs once a
+ * window is `truthLagMinutes` old (a day, for a daily lab). A cut at
+ * `now - 24h` would therefore be empty by construction and the axis would
+ * report UNKNOWN forever. Anchoring to the newest joined window keeps
+ * "the latest day of evidence" meaningful, and `RESIDUAL_POINT_STALE_HOURS`
+ * stops a stale verdict outliving its evidence.
  *
- * The pooled sums give the right statistic exactly, with no object read.
- *
- * THIS MODULE COMPUTES NO ERROR MATH. `poolTruthStats`/`computeLiveError`
- * own that, and the truth endpoint already serves their output; a second
- * formula here could drift from the figure shown for the same model on the
- * same screen. Same rule `heldEvalPoints` states on the client side.
- *
- * Sign convention, in case `bias` is ever surfaced from here: `live-error.ts`
- * uses `residual = predicted − actual`; the client's `lib/monitoring.ts` uses
- * the reverse. Irrelevant to `sd`, which is a spread.
+ * Sign convention: `live-error.ts` uses `residual = predicted - actual`; only
+ * the magnitude is used here.
  */
 export type ResidualSdStatus = 'UNKNOWN' | 'OK' | 'WARN' | 'ALERT';
 
+export interface ResidualPointWindow {
+  windowStart: Date;
+  /** Joined pairs in the window. A window with `n <= 0` carries no evidence. */
+  n: number;
+  /** The window's worst single |predicted - actual|. */
+  maxAbsResidual: number;
+}
+
 export interface ResidualSdVerdict {
   status: ResidualSdStatus;
-  /** Pooled residual SD over the joined pairs. Null when there are none. */
-  liveSd: number | null;
-  /** `liveSd / baselineSd`. Null whenever the verdict is UNKNOWN. */
+  /** Worst single |residual| in the judged span. Null when none. */
+  worstAbsResidual: number | null;
+  /** `worstAbsResidual / baselineSd` — how many SDs out the worst point is.
+   *  Null whenever the verdict is UNKNOWN. */
   ratio: number | null;
+  /** What the figure was measured against: JOINED lab pairs, or — only while
+   *  none exists — the last reported lab value carried forward ('held', see
+   *  `lib/held-deviation.ts`). Null when there is no evidence at all. */
+  basis: 'pairs' | 'held' | null;
   /** The reference SD the ratio was taken against, echoed so a reader can
    *  see both halves of the comparison rather than one derived number. */
   baselineSd: number | null;
-  /** Joined pairs behind the verdict — the sample size, rendered beside the
-   *  verdict so a thin one is visible rather than implied. */
+  /** Joined pairs behind the verdict — the sample size. */
   n: number;
 }
 
 export interface ResidualSdThresholds {
-  /** Ratio at or above which the spread is a WARNING. The schedule's
-   *  `warnSd` column — residual-SD is its only reader since MODEL-SERVE-028
-   *  removed the z-score drift signal. */
+  /** Multiple of the reference SD beyond which a point is a WARNING. */
   warnSd: number;
-  /** Ratio at or above which it is an ALERT. */
+  /** Multiple of the reference SD beyond which a point is an ALERT. */
   criticalSd: number;
 }
 
-/**
- * MINIMUM PAIRS before this axis may raise anything.
- *
- * A residual needs a MEASURED actual, so these pairs arrive at lab cadence —
- * roughly daily on this plant, not at scoring cadence (the client's
- * `residualDensityNote` states the same limit to the reader). An SD over a
- * handful of pairs is mostly noise, and a noisy numerator over a frozen
- * denominator would alarm on sampling luck. Thirty is the conventional bar
- * for treating a sample SD as informative at all; below it the honest answer
- * is UNKNOWN, which renders as "no evidence" and never as healthy.
- */
-export const MIN_RESIDUAL_SD_PAIRS = 30;
+/** How much joined history is judged, counted back from the newest joined
+ *  window (see the header for why not from now). */
+export const RESIDUAL_POINT_HOURS = 24;
+
+/** Evidence older than this, measured from now, grades nothing. */
+export const RESIDUAL_POINT_STALE_HOURS = 7 * 24;
 
 /**
- * MODEL-SERVE-012-T08. HOW FAR BACK joined pairs are pooled from, in days.
- *
- * A TIME horizon, not a row count, and SHARED by both readers — the detail
- * page's `getHealthStatus` and the list's `deriveDeployStatuses`. That is the
- * point of it living here rather than beside either caller: the list can only
- * pool with a grouped aggregate (one query for every model, no per-model
- * fan-out) while the detail page selects rows, and a row-count `take` cannot
- * be expressed as a group-by bound at all. Two different bounds would mean
- * the badge on the list and the badge on the detail page could grade the same
- * model from different samples and disagree — the contradiction this whole
- * feature exists to remove.
- *
- * Thirty days because a residual needs a MEASURED lab actual and those
- * arrive at roughly daily cadence here, against a `MIN_RESIDUAL_SD_PAIRS` of
- * 30. A shorter horizon cannot accumulate the sample, so the axis would
- * report UNKNOWN forever.
+ * HOW FAR BACK joined windows are READ, in days — the query bound shared by
+ * the detail page's `getHealthStatus` and the list's `deriveDeployStatuses`,
+ * so the two badges grade the same model from the same sample. Wider than
+ * the judged span on purpose: the 24 h cut is applied in memory off the
+ * newest joined window, which needs those windows in hand.
  */
 export const TRUTH_POOL_DAYS = 30;
 
@@ -106,49 +91,96 @@ export function truthPoolSince(now: Date = new Date()): Date {
   return new Date(now.getTime() - TRUTH_POOL_DAYS * 24 * 60 * 60 * 1000);
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
 /**
- * Grade a model's live residual spread against its reference SD.
+ * Grade a model's latest residuals against its reference SD.
  *
  * UNKNOWN — never OK — whenever the comparison cannot be made: no reference
- * SD (a run that recorded no usable metric), no joined pairs, too few pairs,
- * or a degenerate live SD. "We cannot tell" and "it is fine" are different
- * answers, and collapsing them is how a monitoring axis goes quietly green
- * on a model nobody is actually watching.
+ * SD, no joined pairs, or evidence gone stale. "We cannot tell" and "it is
+ * fine" are different answers, and collapsing them is how a monitoring axis
+ * goes quietly green on a model nobody is actually watching.
+ *
+ * There is no minimum sample: one point beyond 3 SD IS the evidence, unlike
+ * a spread, which needs a sample to mean anything.
  */
-export function classifyResidualSd(input: {
-  /** `InferenceWindowTruth` rows for the range being judged. */
-  windows: readonly TruthStats[];
+export function classifyResidualPoints(input: {
+  windows: readonly ResidualPointWindow[];
   /** From `baselineResidualSd` — null when the version has none. */
   baselineSd: number | null;
   thresholds: ResidualSdThresholds;
+  /** Used ONLY when no joined pair exists. */
+  heldFallback?: { worstAbsResidual: number } | null;
+  now?: Date;
 }): ResidualSdVerdict {
   const { baselineSd, thresholds } = input;
-  const pooled = poolTruthStats(input.windows);
-  const live = computeLiveError(pooled);
+  const now = input.now ?? new Date();
 
   const unknown: ResidualSdVerdict = {
     status: 'UNKNOWN',
-    liveSd: live?.sd ?? null,
+    worstAbsResidual: null,
     ratio: null,
+    basis: null,
     baselineSd,
-    n: pooled.n,
+    n: 0,
   };
 
-  if (baselineSd === null || !(baselineSd > 0)) return unknown;
-  if (!live) return unknown;
-  if (live.n < MIN_RESIDUAL_SD_PAIRS) return unknown;
-  if (!Number.isFinite(live.sd)) return unknown;
+  const evidence = input.windows.filter(
+    (w) => w.n > 0 && Number.isFinite(w.maxAbsResidual),
+  );
+  if (evidence.length === 0) {
+    // No joined pair yet. Grade the held deviation instead, if there is one;
+    // the moment a pair joins this branch is never taken again.
+    const held = input.heldFallback;
+    if (!held || !Number.isFinite(held.worstAbsResidual)) return unknown;
+    if (baselineSd === null || !(baselineSd > 0)) {
+      return { ...unknown, worstAbsResidual: held.worstAbsResidual };
+    }
+    const ratio = held.worstAbsResidual / baselineSd;
+    return {
+      status: statusFor(ratio, thresholds),
+      worstAbsResidual: held.worstAbsResidual,
+      ratio,
+      basis: 'held',
+      baselineSd,
+      n: 0,
+    };
+  }
 
-  const ratio = live.sd / baselineSd;
+  const newest = Math.max(...evidence.map((w) => w.windowStart.getTime()));
+  const recent = evidence.filter(
+    (w) => w.windowStart.getTime() >= newest - RESIDUAL_POINT_HOURS * HOUR_MS,
+  );
+  const n = recent.reduce((sum, w) => sum + w.n, 0);
+  const worstAbsResidual = Math.max(...recent.map((w) => w.maxAbsResidual));
 
-  // A spread SMALLER than the reference is a better model than the one that
-  // was accepted, not a fault — the test is one-sided on purpose.
-  const status: ResidualSdStatus =
-    ratio >= thresholds.criticalSd
-      ? 'ALERT'
-      : ratio >= thresholds.warnSd
-        ? 'WARN'
-        : 'OK';
+  if (baselineSd === null || !(baselineSd > 0)) {
+    return { ...unknown, worstAbsResidual, n };
+  }
+  if (now.getTime() - newest > RESIDUAL_POINT_STALE_HOURS * HOUR_MS) {
+    return { ...unknown, worstAbsResidual, n };
+  }
 
-  return { status, liveSd: live.sd, ratio, baselineSd, n: live.n };
+  const ratio = worstAbsResidual / baselineSd;
+  return {
+    status: statusFor(ratio, thresholds),
+    worstAbsResidual,
+    ratio,
+    basis: 'pairs',
+    baselineSd,
+    n,
+  };
+}
+
+/** Strictly BEYOND the multiple: a point exactly on the guard line is on the
+ *  band, not outside it. */
+function statusFor(
+  ratio: number,
+  thresholds: ResidualSdThresholds,
+): ResidualSdStatus {
+  return ratio > thresholds.criticalSd
+    ? 'ALERT'
+    : ratio > thresholds.warnSd
+      ? 'WARN'
+      : 'OK';
 }

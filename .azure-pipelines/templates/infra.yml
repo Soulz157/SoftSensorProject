@@ -1,0 +1,46 @@
+parameters:
+  - name: environmentName
+    type: string
+  - name: paramFile
+    type: string
+  - name: serviceConnection
+    type: string
+
+jobs:
+  - job: preview
+    displayName: Bicep what-if
+    steps:
+      - task: AzureCLI@2
+        displayName: Build and what-if
+        inputs:
+          azureSubscription: ${{ parameters.serviceConnection }}
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            az bicep build --file infra/main.bicep --stdout > /dev/null
+            az deployment group what-if \
+              --resource-group "$(RESOURCE_GROUP)" \
+              --parameters ${{ parameters.paramFile }}
+
+  - deployment: deploy
+    displayName: Bicep deploy
+    dependsOn: preview
+    condition: and(succeeded(), eq(variables.isPullRequest, 'False'))
+    environment: ${{ parameters.environmentName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+            - task: AzureCLI@2
+              displayName: Deploy
+              inputs:
+                azureSubscription: ${{ parameters.serviceConnection }}
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  az deployment group create \
+                    --resource-group "$(RESOURCE_GROUP)" \
+                    --parameters ${{ parameters.paramFile }}

@@ -21,7 +21,8 @@ import { env } from '@/config/env.config';
  */
 
 const PredictResponseSchema = z.object({
-  predictions: z.array(z.number()),
+  // MODEL-SERVE-045: null only for an lstm/gru row with no complete history.
+  predictions: z.array(z.number().nullable()),
   modelId: z.string(),
   version: z.number().int(),
   // Computed on EVERY call by the serving route, not sampled: what the
@@ -62,6 +63,10 @@ function servingBaseUrl(): string {
 export async function predictRows(input: {
   modelId: string;
   rows: Array<Record<string, number>>;
+  /** MODEL-SERVE-045, lstm/gru: each row's time (oldest first) and the
+   *  sampling step, so serving can refuse to score across a gap. */
+  timestamps?: string[];
+  interval?: string;
   timeoutMs?: number;
 }): Promise<PredictResult> {
   const controller = new AbortController();
@@ -75,7 +80,11 @@ export async function predictRows(input: {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: input.rows }),
+        body: JSON.stringify({
+          rows: input.rows,
+          ...(input.timestamps && { timestamps: input.timestamps }),
+          ...(input.interval && { interval: input.interval }),
+        }),
         signal: controller.signal,
       },
     );

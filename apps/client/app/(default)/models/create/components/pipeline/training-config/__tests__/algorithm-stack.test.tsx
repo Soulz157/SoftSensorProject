@@ -1,30 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AlgorithmStack } from '../algorithm-stack'
 import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
 import { ineligibleReason } from '@/lib/algorithm-eligibility'
-import { SIZE_TIER_LOWER_BOUNDS } from '@/lib/hyperparam-ranges'
-import type { TuningGridResponse } from '@/services/tuning-grid'
-import {
-  TUNE_VARIANTS_PER_JOB,
-  tuningVariantsFor,
-} from '../../../../../../../../../backend/src/lib/tuning-grid'
-
-// MODEL-FLOW-025. A card with Find Best Parameters on mounts the variant table,
-// which fetches through this hook; without the mock every such case would try a
-// real request. Default to "still loading" so cases that do not care stay inert.
-vi.mock('@/hooks/model/use-tuning-grid', () => ({ useTuningGrid: vi.fn() }))
-import { useTuningGrid } from '@/hooks/model/use-tuning-grid'
-
-beforeEach(() => {
-  vi.mocked(useTuningGrid).mockReset()
-  vi.mocked(useTuningGrid).mockReturnValue({
-    grid: null,
-    loading: true,
-    error: null,
-  })
-})
 
 /**
  * MODEL-FLOW-019-T30. MERGED FROM TWO ORPHANED FILES, not written fresh.
@@ -63,8 +42,6 @@ function stackProps(overrides: Partial<StackProps> = {}): StackProps {
     >,
     hyperparameters: {} as Record<string, HyperparamValue>,
     onHyperparameterChange: vi.fn(),
-    findBestParams: false,
-    findBestModel: false,
     ...overrides,
   }
 }
@@ -77,7 +54,9 @@ function renderStack(overrides: Partial<StackProps> = {}) {
  * `fireEvent.click` does not produce — the same reason
  * phase-4-model-selection.test.tsx reaches for userEvent on its own menu. */
 function openAddMenu() {
-  return userEvent.setup().click(screen.getByRole('button', { name: /add/i }))
+  return userEvent
+    .setup()
+    .click(screen.getByRole('button', { name: /add algorithm/i }))
 }
 
 function gpItem() {
@@ -126,6 +105,16 @@ describe('AlgorithmStack — MODEL-FLOW-020-T06 GPR size refusal', () => {
 
     expect(gpItem()).not.toHaveAttribute('aria-disabled', 'true')
     expect(screen.queryByText(/kernel matrix/)).not.toBeInTheDocument()
+    // MODEL-FLOW-036: the algorithms sit above the target now, so the
+    // unchecked state is stated instead of left silent.
+    expect(gpItem()).toHaveTextContent(/Size not checked until a target/)
+  })
+
+  it('drops the unchecked note once the train-split figure is known', async () => {
+    renderStack({ trainLabelledRows: UNDER })
+    await openAddMenu()
+
+    expect(screen.queryByText(/Size not checked/)).not.toBeInTheDocument()
   })
 
   it('refuses ONLY Gaussian Process — the ceiling is its own, not the dataset being too big to model', async () => {
@@ -204,93 +193,40 @@ describe('AlgorithmStack — MODEL-FLOW-022 self-correcting eligibility', () => 
  * user cannot select lstm, turn on Find Best Model, and only discover the
  * refusal at launch.
  */
-describe('AlgorithmStack — sequence algorithms: unavailable for Find Best Model, allowed for Find Best Parameters', () => {
+/**
+ * Find Best Model was removed 2026-10-14. Two or more algorithms now always
+ * train together, and that job refuses lstm/gru (scope decision), so the
+ * rule keys on the selection, not a toggle. Adding lstm stays allowed: it is
+ * how the only algorithm is swapped for a sequence model.
+ */
+describe('AlgorithmStack — sequence algorithms train on their own', () => {
   function lstmItem() {
-    // Anchored at the start, no \b: the label and reason spans concatenate
-    // with NO space in the accessible name ("LSTMNot available..."), and
-    // the reason text itself says "LSTM/GRU" — a bare /lstm/i would match
-    // GRU's own item too. ^ alone already disambiguates ("GRUNot..." does
-    // not start with "lstm").
+    // Anchored at the start: the label and any reason span concatenate with
+    // no space in the accessible name, so ^ keeps GRU's item out.
     return screen.getByRole('menuitemcheckbox', { name: /^lstm/i })
   }
 
-  it('leaves lstm selectable when neither Find Best Model nor Find Best Parameters is on', async () => {
-    renderStack({ findBestModel: false, findBestParams: false })
+  it('leaves lstm selectable in the picker beside another algorithm', async () => {
+    renderStack()
     await openAddMenu()
 
     expect(lstmItem()).not.toHaveAttribute('aria-disabled', 'true')
   })
 
-  it('disables lstm in the picker while Find Best Model is on, naming the reason', async () => {
-    renderStack({ findBestModel: true })
-    await openAddMenu()
+  it('says LSTM/GRU train on their own while mixed with another algorithm', () => {
+    renderStack({ algorithms: ['lstm', 'ridge'] as Algorithm[] })
 
-    expect(lstmItem()).toHaveAttribute('aria-disabled', 'true')
-    // Scoped to lstm's own item — gru's item carries the same reason text
-    // (both are sequence algorithms), so an unscoped query finds two.
     expect(
-      within(lstmItem()).getByText(/Not available for Find Best Model/),
+      screen.getByText(/LSTM and GRU train on their own/i),
     ).toBeInTheDocument()
   })
 
-  it('leaves lstm selectable while Find Best Parameters is on without a sweep — a direct search can tune it', async () => {
-    // MODEL-FLOW-024. This case used to assert the opposite.
-    renderStack({ findBestModel: false, findBestParams: true })
-    await openAddMenu()
-
-    expect(lstmItem()).not.toHaveAttribute('aria-disabled', 'true')
-  })
-
-  it('does not drop lstm when only Find Best Parameters turns on', () => {
-    const onAlgorithmsChange = vi.fn()
-    const props = stackProps({
-      algorithms: ['lstm', 'ridge'] as Algorithm[],
-      onAlgorithmsChange,
-      findBestParams: false,
-    })
-    const { rerender } = render(<AlgorithmStack {...props} />)
-
-    rerender(<AlgorithmStack {...props} findBestParams={true} />)
-
-    expect(onAlgorithmsChange).not.toHaveBeenCalled()
-  })
-
-  it('drops lstm from an existing selection the moment Find Best Model turns on, keeping the rest', () => {
-    const onAlgorithmsChange = vi.fn()
-    const props = stackProps({
-      algorithms: ['lstm', 'ridge'] as Algorithm[],
-      onAlgorithmsChange,
-      findBestModel: false,
-    })
-    const { rerender } = render(<AlgorithmStack {...props} />)
-    expect(onAlgorithmsChange).not.toHaveBeenCalled()
-
-    rerender(<AlgorithmStack {...props} findBestModel={true} />)
-
-    expect(onAlgorithmsChange).toHaveBeenCalledWith(['ridge'])
-  })
-
-  it('never drops the LAST remaining algorithm, even lstm, even under Find Best Model', () => {
-    const onAlgorithmsChange = vi.fn()
-    const props = stackProps({
-      algorithms: ['lstm'] as Algorithm[],
-      onAlgorithmsChange,
-      findBestModel: false,
-    })
-    const { rerender } = render(<AlgorithmStack {...props} />)
-
-    rerender(<AlgorithmStack {...props} findBestModel={true} />)
-
-    expect(onAlgorithmsChange).not.toHaveBeenCalled()
-  })
-
-  it('refuses ONLY lstm/gru — Find Best Model does not disable every algorithm', async () => {
-    renderStack({ findBestModel: true })
-    await openAddMenu()
+  it('says nothing about it for lstm alone', () => {
+    renderStack({ algorithms: ['lstm'] as Algorithm[] })
 
     expect(
-      screen.getByRole('menuitemcheckbox', { name: 'Random Forest' }),
-    ).not.toHaveAttribute('aria-disabled', 'true')
+      screen.queryByText(/LSTM and GRU train on their own/i),
+    ).not.toBeInTheDocument()
   })
 })
 
@@ -370,24 +306,6 @@ describe('AlgorithmStack — per-algorithm hyperparameters', () => {
     // 100 is XGBoost's own catalog default, not anything the flat dict holds.
     expect(screen.getByLabelText(/n_estimators|estimators/i)).toHaveValue(100)
   })
-
-  it('states the sequential-run cost, including the fit count', () => {
-    renderStack({ algorithms: ['ols', 'ridge', 'xgboost'] as Algorithm[] })
-
-    // "Expect", the count and " fits" are separate text nodes, so a plain
-    // `getByText(/3 fits/)` matches none of them — assert on the paragraph's
-    // combined textContent instead, the same way core-config.test.tsx does
-    // for its own multi-node sentence.
-    expect(
-      screen.getByText((_content, element) =>
-        Boolean(
-          element?.tagName === 'P' &&
-          /one at a time/i.test(element.textContent ?? '') &&
-          /3 fits/i.test(element.textContent ?? ''),
-        ),
-      ),
-    ).toBeInTheDocument()
-  })
 })
 
 /**
@@ -463,126 +381,22 @@ describe('AlgorithmStack — suggested ranges follow the dataset size (MODEL-FLO
 })
 
 /**
- * MODEL-FLOW-025. Each open card shows the variants Find Best Parameters will
- * try for it. The list is the endpoint's grid minus what the LAUNCH's base
- * covers, so these cases check the wiring: when it appears, what it is labelled,
- * which cards fetch, and that the base is the job's and not the card's own.
+ * MODEL-FLOW-035. Round 1 trains each algorithm once with its card values, so
+ * a card carries no variants table; the table lives in the fine-tune section
+ * (fine-tune-section.test.tsx).
  */
-describe('AlgorithmStack — Find Best Parameters variant preview (MODEL-FLOW-025)', () => {
-  function serveGrid(algorithm: Algorithm, size?: { rows: number }) {
-    const grid: TuningGridResponse = {
-      algorithm,
-      variants: tuningVariantsFor(algorithm, size),
-      maxVariantsPerJob: TUNE_VARIANTS_PER_JOB,
-      tier: 'medium',
-      sized: false,
-    }
-    vi.mocked(useTuningGrid).mockReturnValue({
-      grid,
-      loading: false,
-      error: null,
-    })
-  }
-
-  const fetchedAlgorithms = () =>
-    vi.mocked(useTuningGrid).mock.calls.map(([algorithm]) => algorithm)
-
-  it('shows no variant table, and fetches nothing, while Find Best Parameters is off', () => {
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestModel: true,
-      findBestParams: false,
-    })
-
-    expect(screen.queryByText(/Hyperparameter Tuning/)).not.toBeInTheDocument()
-    expect(useTuningGrid).not.toHaveBeenCalled()
-  })
-
-  it('direct search (one algorithm, Find Best Parameters only): a table titled "Hyperparameter Tuning"', () => {
-    serveGrid('ridge')
-    renderStack({
-      algorithms: ['ridge'] as Algorithm[],
-      findBestModel: false,
-      findBestParams: true,
-    })
-
-    expect(screen.getByText('Hyperparameter Tuning')).toBeInTheDocument()
-    expect(screen.getByRole('table')).toBeInTheDocument()
-  })
-
-  it('sweep then tune: titled "if this wins", and only the OPEN card fetches', () => {
-    serveGrid('ridge')
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestModel: true,
-      findBestParams: true,
-    })
-
-    expect(screen.getByText('Hyperparameter Tuning')).toBeInTheDocument()
-    // Ridge is primary and therefore open; SVM's card is folded, so it must not
-    // be asking the server for a grid nobody can see.
-    expect(new Set(fetchedAlgorithms())).toEqual(new Set(['ridge']))
-  })
-
-  it('moves the table, and the fetch, to whichever card is opened', async () => {
-    serveGrid('svm')
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestModel: true,
-      findBestParams: true,
-    })
-
-    await userEvent.setup().click(cardToggle(/support vector|svm/i))
-
-    expect(fetchedAlgorithms()).toContain('svm')
-    expect(screen.getAllByText('Hyperparameter Tuning')).toHaveLength(1)
-  })
-
-  it('hands the hook the dataset size the form already sized its ranges with', () => {
-    serveGrid('ridge')
-    const datasetSize = { rows: 6_000 }
-    renderStack({
-      algorithms: ['ridge'] as Algorithm[],
-      findBestParams: true,
-      datasetSize,
-    })
-
-    expect(useTuningGrid).toHaveBeenCalledWith('ridge', datasetSize)
-  })
-
-  it('excludes against the base the LAUNCH sends, not the card’s display record', async () => {
-    // At the large tier SVM's default record IS one of its four variants. With
-    // no entry the card's own record is {} (the wizard's draft pre-fills
-    // defaults, but nothing at this boundary guarantees it), while the job
-    // sends the full defaults — so the search would run three, and the table
-    // must say three.
-    const rows = SIZE_TIER_LOWER_BOUNDS.large * 2
-    serveGrid('svm', { rows })
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestModel: true,
-      findBestParams: true,
-      datasetSize: { rows },
-    })
-
-    await userEvent.setup().click(cardToggle(/support vector|svm/i))
-
-    const table = screen.getByRole('table')
-    expect(within(table).getAllByRole('row').slice(1)).toHaveLength(
-      TUNE_VARIANTS_PER_JOB - 1,
-    )
-    expect(screen.getByText(/1 variant skipped/i)).toBeInTheDocument()
-  })
-
-  it('points the stack’s summary line at the per-card tables instead of leaving the variants unnamed', () => {
-    renderStack({
-      algorithms: ['ridge', 'svm'] as Algorithm[],
-      findBestModel: true,
-      findBestParams: true,
-    })
-
+describe('AlgorithmStack — no variants table on a card (MODEL-FLOW-035)', () => {
+  it('shows hyperparameter fields but no variants table, with one or several algorithms', () => {
+    renderStack({ algorithms: ['ridge'] as Algorithm[] })
     expect(
-      screen.getByText(/open an algorithm to see them/i),
+      screen.queryByText('Hyperparameter variants'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('says each algorithm trains once and points to Run parameters', () => {
+    renderStack({ algorithms: ['ols', 'ridge'] as Algorithm[] })
+    expect(
+      screen.getByText(/trains every algorithm below once/i),
     ).toBeInTheDocument()
   })
 })

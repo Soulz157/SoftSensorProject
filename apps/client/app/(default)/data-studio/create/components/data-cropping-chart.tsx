@@ -231,7 +231,13 @@ export function DataCroppingChart({
     return () => clearTimeout(timer)
   }, [range01, committed, lastIdx, timestamps, pending])
 
-  const chartRows = useMemo(() => toChartRows(chartDataset), [chartDataset])
+  // `chartDataset` is the cleaned frame: show non-Good readings as gaps, the
+  // same as the before/after preview (an Exclude keeps the value but marks it
+  // Bad, and GOLD drops its row).
+  const chartRows = useMemo(
+    () => toChartRows(chartDataset, { goodOnly: true }),
+    [chartDataset],
+  )
   const [startIdx, endIdx] = range01
   const cropped = !(startIdx <= 0 && endIdx >= lastIdx)
   const disabled = timestamps.length < 2

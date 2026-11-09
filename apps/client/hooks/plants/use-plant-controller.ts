@@ -10,28 +10,36 @@ import {
 } from '@/services/canvas'
 import { toast } from 'sonner'
 import { useModels } from '../workspace/use-models'
-import { abnormalModelCountByNodeId, failedDeploys } from '@/lib/model-status'
+import {
+  abnormalModelCountByEquipmentId,
+  failedDeploys,
+} from '@/lib/model-status'
 
 type ViewMode = 'plants' | 'equipment'
 type DisplayMode = 'map' | 'grid'
 
 export function usePlantsController(
   initialWorkspaceId: string,
-  initialNodeId?: string | null,
+  initialEquipmentId?: string | null,
 ) {
-  const { workspaces, nodes, loading, error, refetch } = useDashboardData()
+  const { workspaces, equipmentList, loading, error, refetch } =
+    useDashboardData()
 
   const [viewMode, setViewMode] = useState<ViewMode>('plants')
   const [displayMode, setDisplayMode] = useState<DisplayMode>('map')
   const [selectedWorkspaceId] = useState<string | null>(initialWorkspaceId)
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [selectedEquipmentId, setSelectedEquipmentId] = useState<string | null>(
+    null,
+  )
   const [statusFilter] = useState<NodeStatus | null>(null)
   const [isAddPlanOpen, setIsAddPlanOpen] = useState(false)
   const [isAddEquipmentOpen, setIsAddEquipmentOpen] = useState(false)
   // MODEL-SERVE-025-D02. Equipment being edited in the shared Add/Edit form;
   // null = the form is in add mode (or closed).
-  const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
+  const [editingEquipmentId, setEditingEquipmentId] = useState<string | null>(
+    null,
+  )
   const [isPanelOpen, setIsPanelOpen] = useState(false)
 
   const activeWorkspaceId =
@@ -40,7 +48,7 @@ export function usePlantsController(
 
   const { data: modelsRaw } = useModels(activeWorkspaceId)
 
-  const failedNodeIds = useMemo(
+  const failedEquipmentIds = useMemo(
     () =>
       new Set(
         failedDeploys(modelsRaw ?? [])
@@ -52,8 +60,9 @@ export function usePlantsController(
   // MODEL-SERVE-024-D02. Equipment carrying an abnormal model (failed deploy
   // or monitoring ALERT) — Abnormal on the plant map even when the node's own
   // status is normal.
-  const abnormalModelNodeIds = useMemo(
-    () => new Set(Object.keys(abnormalModelCountByNodeId(modelsRaw ?? []))),
+  const abnormalModelEquipmentIds = useMemo(
+    () =>
+      new Set(Object.keys(abnormalModelCountByEquipmentId(modelsRaw ?? []))),
     [modelsRaw],
   )
 
@@ -61,39 +70,39 @@ export function usePlantsController(
     () => plants.find(p => p.id === selectedPlanId) ?? null,
     [plants, selectedPlanId],
   )
-  const selectedNode = useMemo(
-    () => nodes.find(n => n.id === selectedNodeId) ?? null,
-    [nodes, selectedNodeId],
+  const selectedEquipment = useMemo(
+    () => equipmentList.find(n => n.id === selectedEquipmentId) ?? null,
+    [equipmentList, selectedEquipmentId],
   )
   const selectedWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
-  const selectedNodePlan = useMemo(
-    () => plants.find(p => p.id === selectedNode?.planId) ?? null,
-    [plants, selectedNode],
+  const selectedEquipmentPlan = useMemo(
+    () => plants.find(p => p.id === selectedEquipment?.planId) ?? null,
+    [plants, selectedEquipment],
   )
 
   // Deep link applied once, as soon as its node has loaded — during render
   // (React's "storing information from previous renders" pattern), so the
   // first frame with nodes already shows the selection.
   const [deepLinkApplied, setDeepLinkApplied] = useState(false)
-  const deepLinkNode =
-    !deepLinkApplied && initialNodeId
-      ? nodes.find(n => n.id === initialNodeId)
+  const deepLinkEquipment =
+    !deepLinkApplied && initialEquipmentId
+      ? equipmentList.find(n => n.id === initialEquipmentId)
       : undefined
-  if (deepLinkNode) {
+  if (deepLinkEquipment) {
     setDeepLinkApplied(true)
-    setSelectedNodeId(deepLinkNode.id)
-    if (deepLinkNode.planId) {
-      setSelectedPlanId(deepLinkNode.planId)
+    setSelectedEquipmentId(deepLinkEquipment.id)
+    if (deepLinkEquipment.planId) {
+      setSelectedPlanId(deepLinkEquipment.planId)
       setViewMode('equipment')
     }
     setIsPanelOpen(true)
   }
 
-  const breadcrumbPlant = selectedPlan ?? selectedNodePlan
-  const inspectorMode: ViewMode = selectedNode ? 'equipment' : viewMode
+  const breadcrumbPlant = selectedPlan ?? selectedEquipmentPlan
+  const inspectorMode: ViewMode = selectedEquipment ? 'equipment' : viewMode
 
-  const filteredNodes = useMemo(() => {
-    let result = nodes
+  const filteredEquipmentList = useMemo(() => {
+    let result = equipmentList
     if (statusFilter)
       result = result.filter(n => n.data.status === statusFilter)
     if (viewMode === 'equipment' && selectedPlanId) {
@@ -102,43 +111,49 @@ export function usePlantsController(
       result = result.filter(n => n.workspaceId === activeWorkspaceId)
     }
     return result
-  }, [nodes, statusFilter, viewMode, selectedPlanId, activeWorkspaceId])
+  }, [equipmentList, statusFilter, viewMode, selectedPlanId, activeWorkspaceId])
 
-  const workspaceNodes = useMemo(() => {
-    if (!activeWorkspaceId) return nodes
-    return nodes.filter(n => n.workspaceId === activeWorkspaceId)
-  }, [nodes, activeWorkspaceId])
+  const workspaceEquipmentList = useMemo(() => {
+    if (!activeWorkspaceId) return equipmentList
+    return equipmentList.filter(n => n.workspaceId === activeWorkspaceId)
+  }, [equipmentList, activeWorkspaceId])
 
-  const visibleGridNodes = useMemo(() => {
-    if (viewMode === 'equipment' && selectedPlanId) return filteredNodes
+  const visibleGridEquipmentList = useMemo(() => {
+    if (viewMode === 'equipment' && selectedPlanId) return filteredEquipmentList
     if (activeWorkspaceId)
-      return nodes.filter(n => n.workspaceId === activeWorkspaceId)
-    return nodes
-  }, [filteredNodes, nodes, selectedPlanId, activeWorkspaceId, viewMode])
+      return equipmentList.filter(n => n.workspaceId === activeWorkspaceId)
+    return equipmentList
+  }, [
+    filteredEquipmentList,
+    equipmentList,
+    selectedPlanId,
+    activeWorkspaceId,
+    viewMode,
+  ])
 
   const { alarmCount, warningCount, deployFailedCount } = useMemo(() => {
-    return visibleGridNodes.reduce(
-      (acc, node) => {
-        if (node.data.status === 'alarm') acc.alarmCount++
-        if (node.data.status === 'warning') acc.warningCount++
-        if (failedNodeIds.has(node.id)) acc.deployFailedCount++
+    return visibleGridEquipmentList.reduce(
+      (acc, equipment) => {
+        if (equipment.data.status === 'alarm') acc.alarmCount++
+        if (equipment.data.status === 'warning') acc.warningCount++
+        if (failedEquipmentIds.has(equipment.id)) acc.deployFailedCount++
         return acc
       },
       { alarmCount: 0, warningCount: 0, deployFailedCount: 0 },
     )
-  }, [visibleGridNodes, failedNodeIds])
+  }, [visibleGridEquipmentList, failedEquipmentIds])
 
   const handlers = useMemo(
     () => ({
       handleDrillDown: (planId: string) => {
         setSelectedPlanId(planId)
-        setSelectedNodeId(null)
+        setSelectedEquipmentId(null)
         setViewMode('equipment')
         setIsPanelOpen(true)
       },
       handleBack: () => {
         setViewMode('plants')
-        setSelectedNodeId(null)
+        setSelectedEquipmentId(null)
         setSelectedPlanId(null)
         setIsPanelOpen(false)
       },
@@ -146,13 +161,13 @@ export function usePlantsController(
         if (viewMode === 'plants') {
           const isDeselecting = selectedPlanId === planId
           setSelectedPlanId(isDeselecting ? null : planId)
-          setSelectedNodeId(null)
+          setSelectedEquipmentId(null)
           setIsPanelOpen(!isDeselecting)
         }
       },
-      handleNodeClick: (nodeId: string) => {
-        const isDeselecting = selectedNodeId === nodeId
-        setSelectedNodeId(isDeselecting ? null : nodeId)
+      handleEquipmentClick: (equipmentId: string) => {
+        const isDeselecting = selectedEquipmentId === equipmentId
+        setSelectedEquipmentId(isDeselecting ? null : equipmentId)
         setIsPanelOpen(!isDeselecting)
       },
       handleCreatePlan: async (name: string) => {
@@ -172,9 +187,9 @@ export function usePlantsController(
         refetch()
       },
       handleEditEquipment: async (values: EquipmentFormValues) => {
-        if (!editingNodeId) return
+        if (!editingEquipmentId) return
         try {
-          await updateNode(editingNodeId, values)
+          await updateNode(editingEquipmentId, values)
           toast.success('Equipment updated')
         } catch (err) {
           toast.error(
@@ -184,9 +199,9 @@ export function usePlantsController(
         }
         refetch()
       },
-      handleDeleteEquipment: async (nodeId: string) => {
+      handleDeleteEquipment: async (equipmentId: string) => {
         try {
-          await deleteNode(nodeId)
+          await deleteNode(equipmentId)
           toast.success('Equipment deleted')
         } catch (err) {
           toast.error(
@@ -194,20 +209,21 @@ export function usePlantsController(
           )
           return
         }
-        setSelectedNodeId(null)
+        setSelectedEquipmentId(null)
         setIsPanelOpen(false)
         refetch()
       },
-      handleOpenEditEquipment: (nodeId: string) => setEditingNodeId(nodeId),
-      handleCloseEditEquipment: () => setEditingNodeId(null),
+      handleOpenEditEquipment: (equipmentId: string) =>
+        setEditingEquipmentId(equipmentId),
+      handleCloseEditEquipment: () => setEditingEquipmentId(null),
       handleResetToPlantsView: () => {
         setViewMode('plants')
         setSelectedPlanId(null)
-        setSelectedNodeId(null)
+        setSelectedEquipmentId(null)
         setIsPanelOpen(false)
       },
       handleResetToEquipmentView: () => {
-        setSelectedNodeId(null)
+        setSelectedEquipmentId(null)
         setViewMode('equipment')
         setIsPanelOpen(false)
       },
@@ -219,12 +235,12 @@ export function usePlantsController(
     }),
     [
       selectedPlanId,
-      selectedNodeId,
+      selectedEquipmentId,
       viewMode,
       createPlan,
       activeWorkspaceId,
       refetch,
-      editingNodeId,
+      editingEquipmentId,
     ],
   )
 
@@ -234,10 +250,10 @@ export function usePlantsController(
       displayMode,
       isAddPlanOpen,
       isAddEquipmentOpen,
-      editingNodeId,
+      editingEquipmentId,
       isPanelOpen,
       selectedPlanId,
-      selectedNodeId,
+      selectedEquipmentId,
       activeWorkspaceId,
       inspectorMode,
     },
@@ -245,18 +261,18 @@ export function usePlantsController(
       loading,
       error,
       plants,
-      filteredNodes,
-      workspaceNodes,
-      visibleGridNodes,
+      filteredEquipmentList,
+      workspaceEquipmentList,
+      visibleGridEquipmentList,
       selectedPlan,
-      selectedNode,
+      selectedEquipment,
       selectedWorkspace,
       breadcrumbPlant,
       alarmCount,
       warningCount,
       deployFailedCount,
-      failedNodeIds,
-      abnormalModelNodeIds,
+      failedEquipmentIds,
+      abnormalModelEquipmentIds,
     },
     setters: {
       setDisplayMode,

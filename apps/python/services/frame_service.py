@@ -299,6 +299,43 @@ def utc_to_wall_clock(value: Any) -> pd.Timestamp:
     return ts.tz_convert("Asia/Bangkok").tz_localize(None)
 
 
+def wall_clock_to_utc(value: Any) -> pd.Timestamp:
+    """MODEL-SERVE-032. The exact inverse of `utc_to_wall_clock`: a naive
+    Bangkok-local frame timestamp becomes a tz-aware UTC instant.
+
+    Every API / DB / PI boundary of the Evaluation write-back carries UTC; a
+    frame's naive digits must pass through here (never through a bare
+    `isoformat() + "Z"`, which would stamp Bangkok digits as UTC and shift
+    every point by 7h -- the `ManualPrediction.predictedAt` trap).
+
+    A tz-aware input is a real instant already and is only normalised to UTC.
+    Bangkok has no DST, so the naive -> aware step is never ambiguous.
+    """
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("Asia/Bangkok")
+    return ts.tz_convert("UTC")
+
+
+def normalize_utc_instant(value: Any) -> str:
+    """A REAL UTC instant (ISO string with `Z`/offset, or an aware Timestamp)
+    rendered as `YYYY-MM-DDTHH:MM:SS.mmmZ`. A naive value is refused: unlike
+    `utc_iso` (whose naive input is a Bangkok frame stamp) this is for values
+    that already crossed a UTC boundary, e.g. PI's own recorded timestamps.
+    """
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        raise ValueError(f"expected a UTC instant, got naive timestamp {value!r}")
+    return ts.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def utc_iso(value: Any) -> str:
+    """`wall_clock_to_utc` rendered as ISO-8601 with a literal `Z`, millisecond
+    precision (what JS `Date.toISOString()` produces, so the NestJS side
+    parses and compares it without a format shim)."""
+    return wall_clock_to_utc(value).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 def mark_questionable(
     frame: pd.DataFrame, tag: str, mask: Sequence[bool]
 ) -> pd.DataFrame:
@@ -323,3 +360,26 @@ def mark_questionable(
     out = frame.copy()
     out.loc[out.index[positions], column] = STATUS_QUESTIONABLE
     return out
+
+
+def rename_mapped_tags(
+    frame: pd.DataFrame, column_tag_map: Mapping[str, str] | None
+) -> pd.DataFrame:
+    """MODEL-SERVE-037-T03. Rename fetched PI tags back to training columns.
+
+    A live source override fetches each training column under the PI tag it
+    is mapped to (`column_tag_map`: training column -> PI tag). Everything
+    downstream -- the feature recipe, scaling, the model, TagObservation --
+    knows only the training names, so each mapped tag AND its `__status`
+    sidecar are renamed back before anything else reads the frame. A tag
+    mapped to its own name, or absent from the frame, is left alone.
+    """
+    if not column_tag_map:
+        return frame
+    renames: dict[str, str] = {}
+    for column, tag in column_tag_map.items():
+        if tag == column or tag not in frame.columns:
+            continue
+        renames[tag] = column
+        renames[status_column(tag)] = status_column(column)
+    return frame.rename(columns=renames) if renames else frame

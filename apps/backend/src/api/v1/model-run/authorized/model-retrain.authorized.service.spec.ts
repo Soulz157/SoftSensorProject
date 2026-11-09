@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access -- jest mocks are `any` by design */
+import { AppException } from '@softsensor/common';
 import { ModelRetrainAuthorizedService } from './model-retrain.authorized.service';
 import * as pythonClient from '@/lib/python-client';
 import { TriggerRetrainSchema } from './dto/model-retrain.authorized.dto';
@@ -1731,5 +1732,89 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       );
       expect(same.created()).toHaveLength(1);
     });
+  });
+});
+
+describe('ModelRetrainAuthorizedService.cancelRetrainJobService', () => {
+  const MODEL = { id: 'model-1', workspaceId: 'ws-1' };
+  const JOB = { id: 'job-1', modelId: 'model-1', status: 'CANCELED' };
+
+  function build(opts: { canceled?: boolean; model?: unknown } = {}) {
+    const prisma = {
+      model: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue(opts.model === undefined ? MODEL : opts.model),
+      },
+      workspace: { findFirst: jest.fn().mockResolvedValue(null) },
+      workspaceMember: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    const candidateJobs = {
+      cancelModelJobService: jest
+        .fn()
+        .mockResolvedValue({ canceled: opts.canceled ?? true, job: JOB }),
+    };
+    const service = new ModelRetrainAuthorizedService(
+      prisma as never,
+      candidateJobs as never,
+      {} as never,
+    );
+    const fetched = {
+      statusCode: 200,
+      message: 'Retrain job fetched',
+      type: 'SUCCESS' as const,
+      data: { ...JOB, candidates: [], comparison: null },
+    };
+    const get = jest
+      .spyOn(service, 'getRetrainJobService')
+      .mockResolvedValue(fetched as never);
+    return { prisma, candidateJobs, service, get };
+  }
+
+  const ADMIN = { id: 'user-1', role: 'ADMIN' } as never;
+  const VIEWER = { id: 'user-2', role: 'USER' } as never;
+
+  it('cancels through the job service, then returns the job as the poll would', async () => {
+    const { candidateJobs, service, get } = build();
+    const res = await service.cancelRetrainJobService(
+      'model-1',
+      'job-1',
+      ADMIN,
+    );
+    expect(candidateJobs.cancelModelJobService).toHaveBeenCalledWith(
+      'model-1',
+      'job-1',
+      'user-1',
+      'ADMIN',
+    );
+    expect(get).toHaveBeenCalledWith('model-1', 'job-1', ADMIN);
+    expect(res.message).toBe('Retrain canceled');
+    expect(res.data.status).toBe('CANCELED');
+  });
+
+  it('says so when the retrain was not running', async () => {
+    const { service } = build({ canceled: false });
+    const res = await service.cancelRetrainJobService(
+      'model-1',
+      'job-1',
+      ADMIN,
+    );
+    expect(res.message).toBe('Retrain was not running');
+  });
+
+  it('refuses a user who is not an editor of the model, before touching the job', async () => {
+    const { candidateJobs, service } = build();
+    await expect(
+      service.cancelRetrainJobService('model-1', 'job-1', VIEWER),
+    ).rejects.toBeInstanceOf(AppException);
+    expect(candidateJobs.cancelModelJobService).not.toHaveBeenCalled();
+  });
+
+  it('404s for a model that does not exist', async () => {
+    const { candidateJobs, service } = build({ model: null });
+    await expect(
+      service.cancelRetrainJobService('model-1', 'job-1', ADMIN),
+    ).rejects.toBeInstanceOf(AppException);
+    expect(candidateJobs.cancelModelJobService).not.toHaveBeenCalled();
   });
 });

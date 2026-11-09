@@ -31,6 +31,11 @@ LOSS_HISTORY_FILENAME = "loss_history.json"
 # MODEL-FLOW-013-T05's own note on what happens when one is missed. See
 # MIRRORS.md.
 CV_FOLDS_FILENAME = "cv_folds.json"
+# MODEL-FLOW-038. Every combination a GridSearchCV run tried, ranked. Present
+# only for a grid-search run. Mirrored in apps/python's object_store.py
+# (GRID_SEARCH_RESULTS_FILENAME, also gates _ALLOWED_RUN_UPLOADS) and
+# artifact-keys.ts (RUN_UPLOAD_FILENAMES) — change all three. See MIRRORS.md.
+GRID_SEARCH_RESULTS_FILENAME = "grid_search_results.json"
 # MODEL-FLOW-019-T09. Per-feature importance — present only for the
 # algorithms importance.extract_feature_importance can read a real quantity
 # from; absent, not empty, for one that cannot (see that module's own doc).

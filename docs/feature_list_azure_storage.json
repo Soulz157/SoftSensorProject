@@ -1,0 +1,129 @@
+{
+  "project": "Azure Object Storage and Deployment",
+  "version": "1.0.0",
+  "features": [
+    {
+      "id": "AZURE-BLOB-001",
+      "title": "Object storage on Azure Blob, deployable through Azure DevOps",
+      "description": "Move object storage from MinIO to Azure Blob for production on Azure. ObjectStore stays the only seam; SDK calls move behind a StorageBackend with MinIO (local default) and Azure implementations. User decisions 2026-11-09: no data migration, Azure starts empty, so no copy, checksum check, re-tagging or write freeze.",
+      "dependencies": [],
+      "status": "in_progress",
+      "progress": 85,
+      "tasks": [
+        {
+          "id": "AZURE-BLOB-001-T01",
+          "title": "StorageBackend protocol and MinioBackend",
+          "detail": "apps/python/intergrations/storage_backends.py. Behaviour and error messages unchanged on MinIO.",
+          "status": "completed"
+        },
+        {
+          "id": "AZURE-BLOB-001-T02",
+          "title": "AzureBlobBackend",
+          "detail": "DefaultAzureCredential, user delegation SAS scoped to one blob, blob index tags, copy polling. Azurite connection string for tests only.",
+          "status": "completed"
+        },
+        {
+          "id": "AZURE-BLOB-001-T03",
+          "title": "Trainer sends x-ms-blob-type, image 1.0.28",
+          "detail": "images/trainer/app/storage.py. One image for both stores. Built locally as scgc/soft-sensor-trainer:1.0.28; 125 trainer tests pass inside it. Not pushed.",
+          "status": "completed"
+        },
+        {
+          "id": "AZURE-BLOB-001-T04",
+          "title": "Bicep",
+          "detail": "infra/: storage, lifecycle rule for lifecycle=tmp, identity with Storage Blob Data Owner, ACR. Flat namespace, Shared Key off. Compiles with az bicep build. Not yet deployed.",
+          "status": "completed"
+        },
+        {
+          "id": "AZURE-BLOB-001-T05",
+          "title": "Azure DevOps pipeline",
+          "detail": "azure-pipelines.yml: CI, Images (trainer, serving), Infra. Dev only. No app deploy stage until AZURE-HOST-001 is decided. YAML parses. First real run needs an Azure DevOps org.",
+          "status": "completed"
+        },
+        {
+          "id": "AZURE-BLOB-001-T06",
+          "title": "Train, predict, export on Azure dev",
+          "detail": "Local stack with STORAGE_BACKEND=azure against a real storage account. Needs the user's subscription, az login, Bicep deploy and Redis from CONTAINER-QUEUE-001.",
+          "status": "blocked"
+        },
+        {
+          "id": "AZURE-BLOB-001-T07",
+          "title": "Docs",
+          "detail": "docs/ARCHITECTURE.md storage section and .env.example.",
+          "status": "completed"
+        }
+      ],
+      "acceptance_criteria": [
+        "MinIO behaviour and error messages are unchanged with STORAGE_BACKEND=minio",
+        "The contract test passes against MinIO and Azurite",
+        "Containers receive only SAS URLs scoped to one blob; no account key exists in the app",
+        "Train, predict and export work against a real Azure storage account"
+      ],
+      "known_gaps": [
+        "Backend and client tests are continueOnError in the pipeline: 9 backend suites and 20 client cases were already red.",
+        "Pipeline has not run in Azure DevOps and Bicep has not been deployed.",
+        "Azurite signs with an account key, so a real user delegation SAS is only proven by T06.",
+        "The 7-day lifecycle deletion will not be observed during T06; only the rule and tags are.",
+        "CI has no MinIO, so its live storage tests run against Azurite only."
+      ],
+      "blocked_by": "T06 needs the user: an Azure subscription, az login, deploying infra/env/dev.bicepparam, Redis configured (CONTAINER-QUEUE-001-T02), and TRAINING_IMAGE set to 1.0.28."
+    },
+    {
+      "id": "AZURE-HOST-001",
+      "title": "Decide how containers run on Azure",
+      "description": "Recorded by user request 2026-11-09 and deferred. Storage work does not depend on it, but deploying the app does.",
+      "dependencies": [],
+      "status": "blocked",
+      "progress": 0,
+      "blocked_by": "The backend spawns train, score, batch and inference containers through /var/run/docker.sock (trainning-container.authorized.service.ts). TRAINING network monorepo_network is hard-coded there, and ContainerDispatchService counts capacity on one Docker host.",
+      "investigated": [
+        "Azure Container Apps and Container Apps Jobs do not allow privileged containers or expose a host container socket.",
+        "Azure Container Instances gives no access to the container runtime.",
+        "AKS nodes use containerd, so there is no Docker socket; this path needs spawn, listRunning, adopt, kill and the budget rewritten for Kubernetes Jobs.",
+        "A VM or VM Scale Set with Docker works with the current code, at the cost of operating the VM and a root-equivalent socket."
+      ],
+      "information_required": [
+        "Whether the organisation allows VMs or mandates AKS.",
+        "Expected concurrent trainings, to size the host.",
+        "Whether users reach Azure through VPN or a VNet."
+      ],
+      "decision_needed": "VM with Docker or AKS with Kubernetes Jobs. Recommendation: VM first, because it needs the least change.",
+      "tasks": [
+        {
+          "id": "AZURE-HOST-001-T01",
+          "title": "Choose the container host",
+          "detail": "See decision_needed.",
+          "status": "blocked"
+        },
+        {
+          "id": "AZURE-HOST-001-T02",
+          "title": "Dockerfiles for backend, client and python",
+          "detail": "None exist. The root Dockerfile targets apps/api, which does not exist.",
+          "status": "blocked"
+        },
+        {
+          "id": "AZURE-HOST-001-T03",
+          "title": "App deploy stage in Azure DevOps, staging and production",
+          "detail": "Keep the order migrate, deploy, smoke, rollback.",
+          "status": "blocked"
+        },
+        {
+          "id": "AZURE-HOST-001-T04",
+          "title": "Redis on Azure",
+          "detail": "Self-hosted on the VM or a managed Redis. BullMQ needs maxmemory-policy noeviction.",
+          "status": "blocked"
+        },
+        {
+          "id": "AZURE-HOST-001-T05",
+          "title": "Browser access to private storage",
+          "detail": "Dataset Export opens a SAS URL directly from the browser (use-dataset-export.ts). If public network access is off and users are outside the VNet, the download fails and must be streamed through the backend.",
+          "status": "blocked"
+        }
+      ],
+      "acceptance_criteria": [
+        "A training container runs on the chosen Azure host and reaches both the backend and Blob Storage"
+      ],
+      "known_gaps": []
+    }
+  ]
+}

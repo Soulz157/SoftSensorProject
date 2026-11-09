@@ -191,8 +191,10 @@ def check_feature_consistency(
     return CheckResult(
         "feature_consistency",
         False,
+        # Counts only - the names are `offenders` (2026-10-19): the full
+        # list in prose made one check line hundreds of tags long.
         f"{len(missing)} feature(s) named in feature_spec.json are missing "
-        f"from the artifact: {missing}.",
+        "from the artifact.",
         measured=float(len(missing)),
         threshold=0.0,
         offenders=missing,
@@ -233,11 +235,13 @@ def check_statistical(
         )
     parts = []
     if degenerate:
-        parts.append(f"{len(degenerate)} degenerate (zero-variance): {degenerate}")
+        # Counts only; the tags are `offenders` (2026-10-19) - with 100+
+        # tags the inline Python list made this one line unreadable.
+        parts.append(f"{len(degenerate)} degenerate (zero-variance)")
     if high_outlier:
         parts.append(
-            f"{len(high_outlier)} over the outlier-fraction threshold "
-            f"(worst {worst_outlier_fraction:.1%}): {high_outlier}"
+            f"{len(high_outlier)} over the {max_outlier_fraction:.0%} "
+            f"outlier-fraction threshold (worst {worst_outlier_fraction:.1%})"
         )
     return CheckResult(
         "statistical",
@@ -268,7 +272,7 @@ def check_completeness(
     return CheckResult(
         "completeness",
         False,
-        f"{len(missing)} expected tag(s) missing from the artifact: {missing}.",
+        f"{len(missing)} expected tag(s) missing from the artifact.",
         measured=float(len(missing)),
         threshold=0.0,
         offenders=missing,

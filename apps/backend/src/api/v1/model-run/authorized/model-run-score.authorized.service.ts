@@ -11,8 +11,7 @@ import {
 } from '@/lib/python-preprocess-client';
 import { buildRunKey, resolveRunOwner } from '@/lib/model-run-owner';
 import { findHoldoutArtifact } from '@/lib/holdout-artifact';
-import { mintRunToken } from '@/lib/mint-run-token';
-import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
+import { ContainerDispatchService } from '../../trainning-container/authorized/container-dispatch.service';
 import { ModelRunAuthorizedService } from './model-run.authorized.service';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';
 import { ScoreCompleteDto } from './dto/model-run.authorized.dto';
@@ -27,13 +26,6 @@ const PREDICTIONS_FILENAME = 'predictions.parquet';
  *  split the moment training finishes. See artifact-keys.ts and
  *  images/trainer/app/MIRRORS.md entry 8. */
 const HOLDOUT_PREDICTIONS_FILENAME = 'holdout_predictions.parquet';
-
-/**
- * Much shorter than training's RUN_TOKEN_TTL_MS (12h): scoring is a
- * predict-only pass over an already-fitted model against one holdout
- * frame, not a fit.
- */
-const SCORE_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
 
 /**
  * MODEL-FLOW-016-T07. Holdout scoring as its own, user-triggered phase.
@@ -72,7 +64,7 @@ export class ModelRunScoreAuthorizedService {
     private readonly prisma: PrismaService,
     private readonly runs: ModelRunAuthorizedService,
     private readonly launch: ModelRunLaunchAuthorizedService,
-    private readonly runner: TrainningContainerAuthorizedService,
+    private readonly dispatch: ContainerDispatchService,
   ) {}
 
   /**
@@ -101,7 +93,7 @@ export class ModelRunScoreAuthorizedService {
           'needs a SUCCEEDED run.',
       );
     }
-    if (run.scoringContainerId) {
+    if (run.scoringContainerId || run.scoringQueuedAt) {
       throw new BadRequestException(`Run ${runId} is already being scored.`);
     }
     // MODEL-FLOW-019-T29. Score-mode has no windowing path — score.py calls
@@ -145,20 +137,16 @@ export class ModelRunScoreAuthorizedService {
       );
     }
 
-    const { token, tokenHash } = mintRunToken();
+    // The token is minted at admission, when the container actually starts.
     await this.prisma.modelTrainingRun.update({
       where: { id: runId },
-      data: {
-        tokenHash,
-        tokenExpiresAt: new Date(Date.now() + SCORE_TOKEN_TTL_MS),
-      },
+      data: { scoringQueuedAt: new Date() },
     });
-
-    await this.runner.spawn(runId, token, 'score');
+    await this.dispatch.enqueue('score', runId);
 
     return {
       statusCode: 200,
-      message: 'Holdout scoring started',
+      message: 'Holdout scoring queued',
       type: 'SUCCESS' as const,
       data: { runId, scoring: true },
     };

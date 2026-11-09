@@ -1,0 +1,493 @@
+'use client'
+
+import Link from 'next/link'
+import { isAbnormal } from '@/lib/overview-status'
+import type { ReactNode } from 'react'
+import {
+  Activity,
+  ArrowRight,
+  CheckCircle2,
+  Cpu,
+  Pencil,
+  Siren,
+  Trash2,
+  X,
+} from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import { cn } from '@/lib/utils'
+import type { CanvasNode } from '@/services/canvas'
+import type { WorkspacePlant } from '@/types'
+import type { NodeStatus } from '../../../../../store/status-colors'
+
+const EQUIPMENT_PRIORITY: Record<NodeStatus, number> = {
+  alarm: 0,
+  warning: 1,
+  offline: 2,
+  normal: 3,
+}
+
+// MODEL-SERVE-001-T22. KEYS ARE `error`, NOT `failed` — 'error' is the wire
+// value (types/index.ts's own deployStatus union). Keyed `failed`, a real
+// failing model missed both lookups and took the `?? 'bg-emerald-500'` /
+// `?? 'text-emerald-500'` fallbacks below, rendering the word "error" in
+// GREEN. Those fallbacks are still correct for their actual case (a model
+// with no deployStatus at all, which the adjacent `{deploy ?? 'active'}`
+// already labels "active") — they simply must stop being the path a real
+// status takes.
+const DEPLOY_DOT: Record<string, string> = {
+  running: 'bg-emerald-500',
+  initializing: 'bg-blue-400',
+  stopped: 'bg-zinc-400',
+  error: 'bg-red-500',
+}
+
+const DEPLOY_LABEL: Record<string, string> = {
+  running: 'text-emerald-500',
+  initializing: 'text-blue-400',
+  stopped: 'text-muted-foreground',
+  error: 'text-red-500',
+}
+
+const MAX_PREVIEW = 5
+
+const STATUS_CHIP: Record<NodeStatus, string> = {
+  normal:
+    'border border-green-500/30 bg-green-500/15 text-green-600 dark:text-green-400',
+  warning: 'border border-red-500/30 bg-red-500/15 text-red-500',
+  alarm: 'border border-red-500/30 bg-red-500/15 text-red-500',
+  offline: 'border border-red-500/30 bg-red-500/15 text-red-500',
+}
+
+const STATUS_DOT: Record<NodeStatus, string> = {
+  normal: 'bg-green-500',
+  warning: 'bg-red-500',
+  alarm: 'bg-red-500',
+  offline: 'bg-red-500',
+}
+
+const STATUS_ICON = {
+  normal: CheckCircle2,
+  warning: Siren,
+  alarm: Siren,
+  offline: Siren,
+} satisfies Record<NodeStatus, typeof CheckCircle2>
+
+interface EquipmentDetailPanelProps {
+  viewMode: 'plants' | 'equipment'
+  equipment: CanvasNode | null
+  plan: WorkspacePlant | null
+  planEquipmentList?: CanvasNode[]
+  workspaceId: string | null
+  onDrillDown?: (planId: string) => void
+  onEditClick?: (equipment: CanvasNode) => void
+  /** Called after the user confirms. MODEL-SERVE-025-D02. */
+  onDeleteClick?: (equipment: CanvasNode) => void
+  onClose: () => void
+}
+
+function formatStatus(status: NodeStatus) {
+  return status === 'normal' ? 'Normal' : 'Abnormal'
+}
+
+function formatDate(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Unknown'
+  return date.toLocaleString()
+}
+
+function PrimaryPanelButton({
+  children,
+  onClick,
+}: {
+  children: ReactNode
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center justify-center rounded-md bg-primary px-3 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+    >
+      {children}
+    </button>
+  )
+}
+
+function PanelHeader({
+  title,
+  onClose,
+}: {
+  title: ReactNode
+  onClose: () => void
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">{title}</div>
+      <button
+        type="button"
+        onClick={onClose}
+        className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        aria-label="Close panel"
+      >
+        <X aria-hidden="true" className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
+
+export function EquipmentDetailPanel({
+  viewMode,
+  equipment,
+  plan,
+  planEquipmentList,
+  workspaceId,
+  onDrillDown,
+  onEditClick,
+  onDeleteClick,
+  onClose,
+}: EquipmentDetailPanelProps) {
+  if (viewMode === 'plants') {
+    if (!plan) return null
+
+    const planStatus = (plan.status ?? 'normal') as NodeStatus
+
+    return (
+      <div className="flex h-full w-full flex-col border-t border-border bg-card/90 backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
+        <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-4">
+          <PanelHeader
+            onClose={onClose}
+            title={
+              <>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Plant Inspector
+                </div>
+                <div className="truncate text-base font-bold text-foreground">
+                  {plan.name}
+                </div>
+              </>
+            }
+          />
+          <span
+            className={cn(
+              'mt-3 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
+              STATUS_CHIP[planStatus],
+            )}
+          >
+            <span
+              className={cn('h-1.5 w-1.5 rounded-full', STATUS_DOT[planStatus])}
+            />
+            {formatStatus(planStatus)}
+          </span>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="border-b border-border/50 px-4 py-4">
+            <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Equipment Summary
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-md bg-muted/30 p-3">
+                <p className="text-xs text-muted-foreground">Total Equipment</p>
+                <p className="text-lg font-bold text-foreground">
+                  {plan.nodeCount ?? 0}
+                </p>
+              </div>
+              <div className="rounded-md bg-muted/30 p-3">
+                <p className="text-xs text-muted-foreground">Alerts</p>
+                <p className="text-lg font-bold text-red-500">
+                  {plan.alarmCount ?? 0}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {planEquipmentList && planEquipmentList.length > 0 && workspaceId && (
+            <div className="border-b border-border/50 px-4 py-4">
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Equipment
+              </div>
+              <div className="space-y-0.5">
+                {[...planEquipmentList]
+                  .sort(
+                    (a, b) =>
+                      (EQUIPMENT_PRIORITY[a.data.status] ?? 3) -
+                      (EQUIPMENT_PRIORITY[b.data.status] ?? 3),
+                  )
+                  .slice(0, MAX_PREVIEW)
+                  .map(n => {
+                    const st = n.data.status as NodeStatus
+                    return (
+                      <button
+                        key={n.id}
+                        type="button"
+                        onClick={() => onDrillDown?.(plan.id)}
+                        className="group flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/50"
+                      >
+                        <span
+                          className={cn(
+                            'h-2 w-2 shrink-0 rounded-full',
+                            STATUS_DOT[st],
+                            st === 'alarm' &&
+                              'ring-4 ring-red-500/20 motion-safe:animate-pulse',
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-medium text-foreground">
+                            {n.data.name}
+                          </p>
+                          <p className="text-[10px] capitalize text-muted-foreground">
+                            {n.data.type}
+                          </p>
+                        </div>
+                        <span
+                          className={cn(
+                            'shrink-0 text-[10px] font-semibold',
+                            STATUS_CHIP[st]
+                              .split(' ')
+                              .find(c => c.startsWith('text-')) ?? '',
+                          )}
+                        >
+                          {formatStatus(st)}
+                        </span>
+                        <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                      </button>
+                    )
+                  })}
+              </div>
+              {planEquipmentList.length > MAX_PREVIEW && (
+                <button
+                  type="button"
+                  onClick={() => onDrillDown?.(plan.id)}
+                  className="mt-2 flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  View all {planEquipmentList.length} equipment
+                  <ArrowRight className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {plan.description && (
+            <div className="border-b border-border/50 px-4 py-4">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Description
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {plan.description}
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="shrink-0 space-y-2 border-t border-border bg-card/80 px-4 py-4">
+          <PrimaryPanelButton onClick={() => onDrillDown?.(plan.id)}>
+            View Equipment
+          </PrimaryPanelButton>
+        </div>
+      </div>
+    )
+  }
+
+  if (!equipment) return null
+
+  const status = equipment.data.status as NodeStatus
+  const StatusIcon = STATUS_ICON[status]
+
+  return (
+    <div className="flex h-full w-full flex-col border-t border-border bg-card/90 backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
+      <div className="relative shrink-0 border-b border-border bg-muted/20 px-4 py-4">
+        <PanelHeader
+          onClose={onClose}
+          title={
+            <>
+              <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <Cpu className="h-3.5 w-3.5 text-primary" />
+                Equipment Inspector
+              </div>
+              <div className="truncate text-base font-bold text-foreground">
+                {equipment.data.name}
+              </div>
+              <div className="text-xs capitalize text-muted-foreground">
+                {equipment.data.type} Node
+              </div>
+            </>
+          }
+        />
+
+        <div className="mt-4 rounded-lg border border-border bg-background/50 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">
+              Real-time status
+            </span>
+            <span
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
+                STATUS_CHIP[status],
+              )}
+            >
+              <StatusIcon className="h-3.5 w-3.5" />
+              {formatStatus(status)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span
+              className={cn(
+                'h-2 w-2 rounded-full',
+                STATUS_DOT[status],
+                isAbnormal(status) && 'animate-pulse',
+              )}
+            />
+            Semantic status from live equipment data
+          </div>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="border-b border-border/50 px-4 py-4">
+          <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Metrics
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-md bg-muted/30 p-3">
+              <p className="text-xs text-muted-foreground">Models</p>
+              <p className="text-lg font-bold text-foreground">
+                {equipment.models.length}
+              </p>
+            </div>
+            <div className="rounded-md bg-muted/30 p-3">
+              <p className="text-xs text-muted-foreground">Equipment Type</p>
+              <p className="truncate text-sm font-semibold capitalize text-foreground">
+                {equipment.data.type}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="border-b border-border/50 px-4 py-4">
+          <div className="mb-3 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Activity className="h-3.5 w-3.5" />
+            Models
+          </div>
+          {equipment.models.length === 0 ? (
+            <p className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              No models assigned
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {equipment.models.map(model => {
+                const deploy =
+                  (model.data?.deployStatus as string | undefined) ?? null
+                return (
+                  <Link
+                    key={model.id}
+                    href={`/models/${model.id}`}
+                    className="group flex items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 transition-colors hover:bg-accent/50"
+                  >
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 shrink-0 rounded-full',
+                        deploy
+                          ? (DEPLOY_DOT[deploy] ?? 'bg-emerald-500')
+                          : 'bg-emerald-500',
+                      )}
+                    />
+                    <span className="flex-1 truncate text-xs font-medium text-foreground">
+                      {model.name}
+                    </span>
+                    <span
+                      className={cn(
+                        'text-[10px] capitalize',
+                        deploy
+                          ? (DEPLOY_LABEL[deploy] ?? 'text-emerald-500')
+                          : 'text-emerald-500',
+                      )}
+                    >
+                      {deploy ?? 'active'}
+                    </span>
+                    <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                  </Link>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="px-4 py-4">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Last Updated
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {formatDate(equipment.updatedAt)}
+          </div>
+        </div>
+      </div>
+
+      <div className="shrink-0 space-y-2 border-t border-border bg-card/80 px-4 py-4">
+        {/* MODEL-SERVE-025-D02. Edit and Delete live here now that the
+            workspace canvas is gone. */}
+        {(onEditClick || onDeleteClick) && (
+          <div className="flex gap-2">
+            {onEditClick && (
+              <Button
+                className="flex-1 gap-1.5"
+                size="sm"
+                onClick={() => onEditClick(equipment)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Edit
+              </Button>
+            )}
+            {onDeleteClick && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-1.5">
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Delete &ldquo;{equipment.data.name}&rdquo;?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This equipment is removed from its plant. Models placed on
+                      it lose that placement. This cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => onDeleteClick(equipment)}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+          </div>
+        )}
+        <button
+          type="button"
+          className="block w-full rounded-md border border-border bg-muted/20 px-3 py-2 text-center text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={status === 'normal' || status === 'offline'}
+        >
+          Acknowledge Alarm
+        </button>
+      </div>
+    </div>
+  )
+}

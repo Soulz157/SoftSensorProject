@@ -1,0 +1,51 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`PlantTower golden markup > lod=false status=alarm squash=0.5 count=0 1`] = `"31679:4ebb2156c498da45a7ed824dd20ea6033125ed43acfad16a503889fc7d4cf30e"`;
+
+exports[`PlantTower golden markup > lod=false status=alarm squash=0.5 count=30 1`] = `"32126:de06639177412b878dfb767281a8113d2a7366072b3ead2b99e2dd4e72034521"`;
+
+exports[`PlantTower golden markup > lod=false status=alarm squash=0.42 count=0 1`] = `"32673:a5ef67502e92a7afb598400b8aac7e137135622b6c13413e0d5945bf5c1b6d6b"`;
+
+exports[`PlantTower golden markup > lod=false status=alarm squash=0.42 count=30 1`] = `"33146:05529dfedcbb14270ac4f04e2af9026e4250af4976e2f343ac1c1d9ca54013b6"`;
+
+exports[`PlantTower golden markup > lod=false status=normal squash=0.5 count=0 1`] = `"31681:dd9935de6a1ad697f03123b926f34a60f66d059e53a2cb136eb034d21682423f"`;
+
+exports[`PlantTower golden markup > lod=false status=normal squash=0.5 count=30 1`] = `"32128:c497e9ed195378dc2d81a1541c610bc6eafd0cf9e14a87b8b2b022f4d2ba6887"`;
+
+exports[`PlantTower golden markup > lod=false status=normal squash=0.42 count=0 1`] = `"32675:b8a6ba52486be2cf29cf4df486fd742866c92d621d0c3ddeb607c993e33c30d0"`;
+
+exports[`PlantTower golden markup > lod=false status=normal squash=0.42 count=30 1`] = `"33148:e2ba9d688cf1339b8e6829df686e41344fac4348d1ae622f27e2323543d7cd5e"`;
+
+exports[`PlantTower golden markup > lod=false status=offline squash=0.5 count=0 1`] = `"31103:6f0e7ecdefc26a1c9d9447f600c2118cc7833c9d49e19c260c2fd9e80604cce8"`;
+
+exports[`PlantTower golden markup > lod=false status=offline squash=0.5 count=30 1`] = `"31548:738e71c2ebee4dfbb970252da61c8f59ce9f2206fd9cd818a63d342864e9a8ff"`;
+
+exports[`PlantTower golden markup > lod=false status=offline squash=0.42 count=0 1`] = `"32011:5f8ec13011dcae1fc87283a52cd8dcfe5a042aa946082a0bed3e0b6608b4e08f"`;
+
+exports[`PlantTower golden markup > lod=false status=offline squash=0.42 count=30 1`] = `"32474:78591e3eac3b57c7b09a58c0c29323ac13c6447330c72766ce0cafbb0e373d2e"`;
+
+exports[`PlantTower golden markup > lod=true status=alarm squash=0.5 count=0 1`] = `"64542:7e23349411cb87003c99b69ec1cb6171cfee97ac615ab0a2571cf4b31d9007ce"`;
+
+exports[`PlantTower golden markup > lod=true status=alarm squash=0.5 count=30 1`] = `"69887:561a5b978f79101bc1c52fa46f2d7c3918e516cd64bfb3e6666a10bc6f1ab0cf"`;
+
+exports[`PlantTower golden markup > lod=true status=alarm squash=0.42 count=0 1`] = `"65811:2951d72d701f37b4a048477602e28cc39313f2488acd29d5ab8b700cfee362f6"`;
+
+exports[`PlantTower golden markup > lod=true status=alarm squash=0.42 count=30 1`] = `"71560:f24d77fc333c7c1e22b519e4d858c2916632db92fb9a1d1c0120fbeec357f661"`;
+
+exports[`PlantTower golden markup > lod=true status=normal squash=0.5 count=0 1`] = `"64544:bdbcbeb00f9dd08e330e9f9472e1c16f8a8f2a23704cd9793645178860fc2ebc"`;
+
+exports[`PlantTower golden markup > lod=true status=normal squash=0.5 count=30 1`] = `"69889:7cbecc2bf8ce29d230064ba0ca9c646dcc9b536a4a1649a237b04240ae6197e0"`;
+
+exports[`PlantTower golden markup > lod=true status=normal squash=0.42 count=0 1`] = `"65813:8b64fffa48efbbca6be5fedf4e08cba4769c05e0a9f082e0bb8e50b82b4b662d"`;
+
+exports[`PlantTower golden markup > lod=true status=normal squash=0.42 count=30 1`] = `"71562:fc61888a94dcac4395183b75a4f9ea33d6bc397e0f132b35cd04b8c9fa3cc9ed"`;
+
+exports[`PlantTower golden markup > lod=true status=offline squash=0.5 count=0 1`] = `"63966:39c2e17eb77e361d00af8dcff5c31e92dacf3ba9baec2be12f8681e25133b430"`;
+
+exports[`PlantTower golden markup > lod=true status=offline squash=0.5 count=30 1`] = `"69309:b9151356f8a8a409a60d8d41d664a90b368f35843d0217d0d5ce161b154b0f15"`;
+
+exports[`PlantTower golden markup > lod=true status=offline squash=0.42 count=0 1`] = `"65149:5ee5366b2476a39e9c1e9c5c95b1608b8c2e5d85459fe03955e575c4267209be"`;
+
+exports[`PlantTower golden markup > lod=true status=offline squash=0.42 count=30 1`] = `"70888:2410bc8912dd24e4ded9f32074ec1e049e0bf31df19796429ec6a03fb27b2189"`;
+
+exports[`PlantTower golden markup > selected ring 1`] = `"68570:ff3c4419be6b803a00e44ae4c2e9f0f5e310e8476af7305198ff31e3a27096c0"`;

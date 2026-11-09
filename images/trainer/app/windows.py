@@ -92,3 +92,8 @@ def build_windows(
         np.array(targets),
         pd.Series(target_ts).reset_index(drop=True),
     )
+
+
+# MODEL-SERVE-045. Moved to the shared package so apps/serving windows a
+# request exactly as this image does; re-exported here for existing callers.
+from softsensor_scaling.windows import build_inference_windows  # noqa: E402,F401

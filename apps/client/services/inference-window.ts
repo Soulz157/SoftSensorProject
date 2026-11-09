@@ -34,6 +34,26 @@ export interface ScheduleSourceRef {
   status: string
 }
 
+/** MODEL-SERVE-037. A live PI source bound in place of the dataset's own
+ *  (a CSV upload), with each training column mapped to a PI tag. */
+export interface LiveSourceSettings {
+  intervalTime: string
+  calcType: string
+  calcBasis: string
+  /** Training column -> PI tag. */
+  columnTagMap: Record<string, string>
+}
+
+export interface LiveSourceOverrideInfo {
+  /** True when none of the dataset's sources can be read on a schedule. */
+  required: boolean
+  /** Training columns to map; null when not required or not readable. */
+  columns: string[] | null
+  /** The target column — optional to map (only the lab-truth join reads it). */
+  target: string | null
+  current: LiveSourceSettings | null
+}
+
 export interface InferenceSchedule {
   enabled: boolean
   cadenceMinutes: number | null
@@ -45,6 +65,7 @@ export interface InferenceSchedule {
   /** The pinned PRODUCTION version's dataset's sources, in the dataset's own
    *  order. Empty when nothing is in production. */
   sourceCandidates: ScheduleSourceRef[]
+  liveSource: LiveSourceOverrideInfo
   autoRetrain: boolean
   warnSd: number
   criticalSd: number
@@ -89,8 +110,8 @@ export interface InferenceStatus {
    * collapsed into it — a model can be `running` (operationally up) while
    * its inputs drift, and a `stopped` model has no reading at all (`OFF`).
    * `thresholds` is this schedule's OWN warnSd/criticalSd — since
-   * MODEL-SERVE-028 these band the residual-SD ratio only (drift is PSI,
-   * thresholded server-side by env). Null only when there is no schedule.
+   * MODEL-SERVE-028 these band the residual-SD ratio only (drift is the
+   * training-range rule, thresholded server-side by env). Null only when there is no schedule.
    */
   health: {
     status: 'OFF' | 'UNKNOWN' | 'OK' | 'WARN' | 'CRITICAL' | 'ALERT' | 'FROZEN'
@@ -106,7 +127,7 @@ export interface InferenceStatus {
       | 'NO_PREDICTIONS'
       | 'BAD_DATA'
       | 'SENSOR_FROZEN'
-      /** MODEL-SERVE-028. Input drift, PSI only. */
+      /** MODEL-SERVE-036. Input drift by training range. */
       | 'DRIFT_CRITICAL'
       | 'DRIFT_WARN'
       /** MODEL-SERVE-012. The OUTPUT-ERROR codes: the model's own residual
@@ -134,8 +155,13 @@ export interface InferenceStatus {
      */
     residualSd: {
       status: 'UNKNOWN' | 'OK' | 'WARN' | 'ALERT'
-      liveSd: number | null
+      /** MODEL-SERVE-046. Worst single |residual| in the latest 24 h of joined pairs. */
+      worstAbsResidual: number | null
+      /** `worstAbsResidual / baselineSd` — SDs out. */
       ratio: number | null
+      /** What the figure was measured against: joined lab pairs, or the last
+       *  reported lab value carried forward ('held') while none has joined. */
+      basis: 'pairs' | 'held' | null
       baselineSd: number | null
       n: number
     }
@@ -440,6 +466,14 @@ export type LiveScoreOutcome =
   | { ok: true; predicted: number; at: string }
   | { ok: false; reason: string }
 
+/** One poll of `windowPrediction`: `pending` until the window is terminal,
+ *  then `live` is the same outcome shape a served press returns. */
+export interface WindowPredictionResult {
+  status: string
+  pending: boolean
+  live: LiveScoreOutcome
+}
+
 export interface RunNowResult {
   windowId: string
   windowStart: string
@@ -449,6 +483,10 @@ export interface RunNowResult {
    *  happened, so this is not a failure. */
   dispatched: boolean
   live: LiveScoreOutcome
+  /** Who carries this press's value. `serving` = `live` above is final.
+   *  `window` = an lstm/gru model Serving cannot score: poll
+   *  `windowPrediction(windowId)` until the dispatched window finishes. */
+  liveVia?: 'serving' | 'window'
   /** The server's own wording. Success answers two ways (202 queued, 200
    *  already ran) and only this distinguishes them. */
   message: string
@@ -529,6 +567,8 @@ export const inferenceWindowService = {
       cadenceMinutes?: number
       lagMinutes?: number
       sourceId?: string
+      /** MODEL-SERVE-037. Never sent together with `sourceId`. */
+      liveSource?: LiveSourceSettings & { sourceId: string }
       autoRetrain?: boolean
       warnSd?: number
       criticalSd?: number
@@ -596,6 +636,19 @@ export const inferenceWindowService = {
       { method: 'POST' },
     )
     return { ...res.data, message: res.message }
+  },
+
+  /** Run Predict for lstm/gru: the dispatched window's newest prediction,
+   *  read and recorded server-side once the window finishes. */
+  async windowPrediction(
+    modelId: string,
+    windowId: string,
+  ): Promise<WindowPredictionResult> {
+    const res: ApiResponse<WindowPredictionResult> = await fetchClient(
+      `${base(modelId)}/inference/windows/${windowId}/prediction`,
+      { method: 'POST' },
+    )
+    return res.data
   },
 
   async retryWindow(modelId: string, windowId: string): Promise<void> {

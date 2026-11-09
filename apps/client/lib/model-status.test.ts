@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { AIModel } from '@/types'
 import {
-  failedCountByNodeId,
-  monitoringCountByNodeId,
+  failedCountByEquipmentId,
+  monitoringCountByEquipmentId,
   monitoringStatus,
 } from './model-status'
 
@@ -53,10 +53,33 @@ describe('monitoringStatus (MODEL-SERVE-012)', () => {
     )
   })
 
-  it('maps UNKNOWN to offline, never normal — no reading is not health', () => {
+  it('maps UNKNOWN on a live deploy to normal — Running and Normal are one status', () => {
     expect(
       monitoringStatus(
         model('m1', {
+          deployStatus: 'running',
+          monitoring: { status: 'UNKNOWN', reason: null, frozenColumns: [] },
+        }),
+      ),
+    ).toBe('normal')
+  })
+
+  it('maps OFF (drift watching off, no evidence) on a live deploy to normal', () => {
+    expect(
+      monitoringStatus(
+        model('m1', {
+          deployStatus: 'running',
+          monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
+        }),
+      ),
+    ).toBe('normal')
+  })
+
+  it('maps UNKNOWN on a stopped deploy to offline', () => {
+    expect(
+      monitoringStatus(
+        model('m1', {
+          deployStatus: 'stopped',
           monitoring: { status: 'UNKNOWN', reason: null, frozenColumns: [] },
         }),
       ),
@@ -75,26 +98,26 @@ describe('monitoringStatus (MODEL-SERVE-012)', () => {
 /**
  * MODEL-SERVE-012. THE OVERVIEW-TOWER DOT BUG, as a regression test.
  *
- * The tower's per-node dots were fed by `failedCountByNodeId` alone, so a
+ * The tower's per-node dots were fed by `failedCountByEquipmentId` alone, so a
  * model alerting on the MONITORING axis left its node green while the same
  * model raised a row on the Alerts page. The workspace-level figure had both
  * rollups; the node level had only one.
  */
-describe('monitoringCountByNodeId', () => {
+describe('monitoringCountByEquipmentId', () => {
   it('counts a monitoring alert that the DEPLOY rollup cannot see', () => {
     const models = [
       model('m1', { nodesId: 'node-a', monitoring: alerting }),
     ]
 
     // The deploy axis is clean — this model is running, not failed.
-    expect(failedCountByNodeId(models)).toEqual({})
+    expect(failedCountByEquipmentId(models)).toEqual({})
     // ...and that is exactly why the dot stayed green before this existed.
-    expect(monitoringCountByNodeId(models)).toEqual({ 'node-a': 1 })
+    expect(monitoringCountByEquipmentId(models)).toEqual({ 'node-a': 1 })
   })
 
   it('sums several alerting models on one node', () => {
     expect(
-      monitoringCountByNodeId([
+      monitoringCountByEquipmentId([
         model('m1', { nodesId: 'node-a', monitoring: alerting }),
         model('m2', { nodesId: 'node-a', monitoring: alerting }),
         model('m3', { nodesId: 'node-b', monitoring: alerting }),
@@ -104,13 +127,13 @@ describe('monitoringCountByNodeId', () => {
 
   it('omits a model with no node — it has no dot to colour', () => {
     expect(
-      monitoringCountByNodeId([model('m1', { monitoring: alerting })]),
+      monitoringCountByEquipmentId([model('m1', { monitoring: alerting })]),
     ).toEqual({})
   })
 
   it('does NOT count OFF or UNKNOWN — no claim is not a fault', () => {
     expect(
-      monitoringCountByNodeId([
+      monitoringCountByEquipmentId([
         model('m1', {
           nodesId: 'node-a',
           monitoring: { status: 'OFF', reason: null, frozenColumns: [] },

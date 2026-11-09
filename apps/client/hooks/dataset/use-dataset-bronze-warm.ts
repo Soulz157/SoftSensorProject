@@ -56,7 +56,10 @@ import {
  * reversal of the failure-invisibility design two paragraphs up.
  * `dwDraftSyncStateAtom` is still never touched here.
  */
-export function useDatasetBronzeWarm(): (tags: string[]) => void {
+export function useDatasetBronzeWarm(): (
+  tags: string[],
+  options?: { fresh?: boolean },
+) => void {
   const workspaceId = useAtomValue(dwWorkspaceIdAtom)
   const selectedSources = useAtomValue(dwSelectedSourcesAtom)
   const customDateRange = useAtomValue(dwCustomDateRangeAtom)
@@ -68,7 +71,14 @@ export function useDatasetBronzeWarm(): (tags: string[]) => void {
   const [, setWarmState] = useAtom(dwBronzeWarmStateAtom)
 
   return useCallback(
-    (tags: string[]) => {
+    (tags: string[], options?: { fresh?: boolean }) => {
+      // `fresh`: Step 2 just fetched NEW data (possibly a new range), so the
+      // BRONZE already on the draft describes the old fetch and must not be
+      // reused — otherwise Step 3 keeps charting the first range's rows.
+      // Cleared up front so Step 3's lazy `ensureBronze` joins this
+      // materialize instead of picking up the stale id meanwhile.
+      const fresh = options?.fresh === true
+      if (fresh) setArtifactId(null)
       setWarmState('materializing')
       void (async () => {
         try {
@@ -93,7 +103,7 @@ export function useDatasetBronzeWarm(): (tags: string[]) => void {
               period,
             },
             id,
-            artifactId,
+            fresh ? null : artifactId,
             tags,
           )
           if (artId !== artifactId) setArtifactId(artId)

@@ -37,6 +37,19 @@ const h = vi.hoisted(() => ({
     loading: false,
     refetch: () => {},
   },
+  /** MODEL-FLOW-038. What `useRunGridSearch` returns, and what it was asked. */
+  gridResult: {
+    gridSearch: null as import('@/services/model-draft').RunGridSearch | null,
+    loading: false,
+  },
+  gridCalls: [] as Array<[string | null, string | null]>,
+}))
+
+vi.mock('@/hooks/model/use-run-grid-search', () => ({
+  useRunGridSearch: (draftId: string | null, runId: string | null) => {
+    h.gridCalls.push([draftId, runId])
+    return h.gridResult
+  },
 }))
 
 vi.mock('@/hooks/model/use-draft-runs', () => ({
@@ -135,6 +148,9 @@ function renderPanel(runs: ModelTrainingRunListItem[]) {
 }
 
 beforeEach(() => {
+  h.gridResult.gridSearch = null
+  h.gridResult.loading = false
+  h.gridCalls.length = 0
   h.runsResult.runs = []
   h.runsResult.loading = false
   h.runsResult.error = null
@@ -506,5 +522,77 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
       'title',
       'Estimator seed — this algorithm consumes it.',
     )
+  })
+})
+
+describe('RunParamsPanel — grid-search run (MODEL-FLOW-038)', () => {
+  const SEARCH = {
+    algorithm: 'ridge',
+    ranking_metric: 'rmse',
+    cv: false,
+    n_folds: 1,
+    n_combinations: 2,
+    grid: { alpha: [0.1, 1] },
+    best: {
+      rank: 1,
+      params: { alpha: 1 },
+      hyperparameters: { alpha: 1 },
+      mean_score: 0.4,
+      std_score: 0.01,
+      mean_fit_time: 0.1,
+    },
+    combinations: [
+      {
+        rank: 1,
+        params: { alpha: 1 },
+        hyperparameters: { alpha: 1 },
+        mean_score: 0.4,
+        std_score: 0.01,
+        mean_fit_time: 0.1,
+      },
+      {
+        rank: 2,
+        params: { alpha: 0.1 },
+        hyperparameters: { alpha: 0.1 },
+        mean_score: 0.5,
+        std_score: 0.02,
+        mean_fit_time: 0.1,
+      },
+    ],
+  }
+
+  it('shows the ranked combinations in the open card of a flagged run', () => {
+    h.gridResult.gridSearch = SEARCH
+    renderPanel([run({ isGridSearch: true })])
+    expect(screen.getByTestId('grid-search-results')).toHaveTextContent(
+      '2 combinations',
+    )
+    expect(h.gridCalls).toContainEqual(['draft-1', 'run-1'])
+  })
+
+  it('fetches nothing for a run the list did not flag', () => {
+    renderPanel([run({ isGridSearch: false }), run({ id: 'run-2' })])
+    expect(screen.queryByTestId('grid-search-results')).toBeNull()
+    expect(h.gridCalls).toEqual([])
+  })
+
+  it('fetches nothing for a flagged run that failed', () => {
+    renderPanel([
+      run({ isGridSearch: true, status: 'FAILED', failureReason: 'boom' }),
+    ])
+    expect(h.gridCalls).toEqual([])
+  })
+
+  it('says it is loading, then says so when the results cannot be read', () => {
+    h.gridResult.loading = true
+    const { unmount } = renderPanel([run({ isGridSearch: true })])
+    expect(screen.getByText(/Loading the grid search/)).toBeInTheDocument()
+    unmount()
+
+    h.gridResult.loading = false
+    renderPanel([run({ isGridSearch: true })])
+    expect(
+      screen.getByText(/could not be read for this run/),
+    ).toBeInTheDocument()
   })
 })

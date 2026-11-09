@@ -64,11 +64,11 @@ describe('IsometricMap', () => {
     const { container } = render(
       <IsometricMap
         zones={mockZones}
-        nodes={mockNodes}
-        zoneNodeKey="workspaceId"
+        equipmentList={mockNodes}
+        zoneEquipmentKey="workspaceId"
         selectedZoneId={null}
-        selectedNodeId={null}
-        onNodeClick={vi.fn()}
+        selectedEquipmentId={null}
+        onEquipmentClick={vi.fn()}
       />,
     )
     expect(container.querySelector('svg')).not.toBeNull()
@@ -82,11 +82,11 @@ describe('IsometricMap', () => {
     const { getByText } = render(
       <IsometricMap
         zones={mockZones}
-        nodes={mockNodes}
-        zoneNodeKey="workspaceId"
+        equipmentList={mockNodes}
+        zoneEquipmentKey="workspaceId"
         selectedZoneId={null}
-        selectedNodeId={null}
-        onNodeClick={vi.fn()}
+        selectedEquipmentId={null}
+        onEquipmentClick={vi.fn()}
         viewMode="plants"
       />,
     )
@@ -94,15 +94,15 @@ describe('IsometricMap', () => {
     expect(getByText('ZONE B')).not.toBeNull()
   })
 
-  it('renders a MachineNode for each node', () => {
+  it('renders an EquipmentMachine for each piece of equipment', () => {
     const { getByText } = render(
       <IsometricMap
         zones={mockZones}
-        nodes={mockNodes}
-        zoneNodeKey="workspaceId"
+        equipmentList={mockNodes}
+        zoneEquipmentKey="workspaceId"
         selectedZoneId={null}
-        selectedNodeId={null}
-        onNodeClick={vi.fn()}
+        selectedEquipmentId={null}
+        onEquipmentClick={vi.fn()}
         viewMode="equipment"
       />,
     )
@@ -116,11 +116,11 @@ describe('IsometricMap', () => {
     const { getByText } = render(
       <IsometricMap
         zones={mockZones}
-        nodes={mockNodes}
-        zoneNodeKey="workspaceId"
+        equipmentList={mockNodes}
+        zoneEquipmentKey="workspaceId"
         selectedZoneId={null}
-        selectedNodeId={null}
-        onNodeClick={onNodeClick}
+        selectedEquipmentId={null}
+        onEquipmentClick={onNodeClick}
         viewMode="equipment"
       />,
     )

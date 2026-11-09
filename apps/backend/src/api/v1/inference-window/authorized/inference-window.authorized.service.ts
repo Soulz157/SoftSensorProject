@@ -1,9 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
+import { wallClockToUtc } from '@/lib/plant-time';
+import { SEQUENCE_ALGORITHMS } from '@/lib/sequence-model';
 import { mintRunToken } from '@/lib/mint-run-token';
 import {
   presignInferenceWindowObject,
+  readLastInferencePrediction,
   presignInferenceWindowUpload,
 } from '@/lib/python-preprocess-client';
 import { inferenceWindowKey } from '@/lib/artifact-keys';
@@ -30,7 +33,10 @@ import {
   type LiveScoreOutcome,
 } from './live-predict-driver.service';
 import { InferenceWindowMonitoringService } from './inference-window-monitoring.authorized.service';
-import { ModelInputStatusAuthorizedService } from '../../model-version/authorized/model-input-status.authorized.service';
+import {
+  ModelInputStatusAuthorizedService,
+  SCHEDULABLE_SOURCE_TYPES,
+} from '../../model-version/authorized/model-input-status.authorized.service';
 import { NotificationOutboxService } from '../../notification/core/notification-outbox.service';
 import type {
   BackfillInferenceWindowsDto,
@@ -42,6 +48,13 @@ import type {
   PutInferenceScheduleDto,
 } from './dto/inference-window.authorized.dto';
 import { canReadWithGrant } from '@/lib/workspace-permission';
+import { dataSourceAccessWhere } from '@/lib/data-source-access';
+import {
+  buildOverrideFetchConfig,
+  checkColumnTagMap,
+  readLiveSourceOverride,
+  type LiveSourceOverride,
+} from '@/lib/live-source-override';
 
 /**
  * MODEL-SERVE-013-T01. One data source, as a SETTINGS surface may see it.
@@ -61,6 +74,30 @@ export interface ScheduleSourceRef {
   name: string | null;
   type: string | null;
   status: string;
+}
+
+/**
+ * MODEL-SERVE-037-T02. What a settings surface needs to offer a live source
+ * override. `required` is true only when none of the pinned dataset's
+ * sources is schedulable (a CSV upload); `columns` are the training columns
+ * to map (null when `required` is false, or they could not be read), and
+ * `target` may optionally be mapped too, for the truth join.
+ */
+export interface LiveSourceOverrideInfo {
+  required: boolean;
+  columns: string[] | null;
+  target: string | null;
+  current: LiveSourceOverride | null;
+}
+
+type LiveSourceInput = NonNullable<PutInferenceScheduleDto['liveSource']>;
+
+interface SourceBinding {
+  sourceId: string;
+  fetchConfig: PrismaTypes.InputJsonObject;
+  rawFetchConfigRecord: Record<string, unknown>;
+  /** Training column -> PI tag; empty for a dataset-derived binding. */
+  columnTagMap: Record<string, string>;
 }
 
 const METRICS_FILENAME = 'metrics.json';
@@ -282,9 +319,11 @@ export class InferenceWindowAuthorizedService {
   private async resolveScheduleSources(
     modelId: string,
     currentSourceId: string | null,
+    currentFetchConfig: unknown,
   ): Promise<{
     currentSource: ScheduleSourceRef | null;
     sourceCandidates: ScheduleSourceRef[];
+    liveSource: LiveSourceOverrideInfo;
   }> {
     const version = await this.prisma.modelVersion.findFirst({
       where: { modelId, stage: 'PRODUCTION' },
@@ -330,7 +369,39 @@ export class InferenceWindowAuthorizedService {
           { id: currentSourceId, name: null, type: null, status: 'missing' };
     }
 
-    return { currentSource, sourceCandidates };
+    // MODEL-SERVE-037-T02. Override only where the dataset offers nothing
+    // the scheduler can read; the columns cost a manifest + spec read, so
+    // they are fetched only then. A failed read is rendered, never thrown.
+    const required =
+      !!dataset &&
+      !sourceCandidates.some((c) =>
+        SCHEDULABLE_SOURCE_TYPES.includes(c.type ?? ''),
+      );
+    let columns: string[] | null = null;
+    let target: string | null = null;
+    if (required) {
+      try {
+        const res =
+          await this.inputStatus.resolveOverrideColumnsService(modelId);
+        columns = res.baseTags;
+        target = res.targetY;
+      } catch (err) {
+        this.log.warn(
+          `override columns unavailable for model ${modelId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return {
+      currentSource,
+      sourceCandidates,
+      liveSource: {
+        required,
+        columns,
+        target,
+        current: readLiveSourceOverride(currentFetchConfig),
+      },
+    };
   }
 
   async getScheduleService(modelId: string, user: Auth.UserPayload) {
@@ -341,8 +412,12 @@ export class InferenceWindowAuthorizedService {
     // On BOTH branches below, so the response shape never depends on whether
     // a schedule row exists — a client that had to test for the key's
     // presence would be reading "never deployed" from the wrong signal.
-    const { currentSource, sourceCandidates } =
-      await this.resolveScheduleSources(modelId, schedule?.sourceId ?? null);
+    const { currentSource, sourceCandidates, liveSource } =
+      await this.resolveScheduleSources(
+        modelId,
+        schedule?.sourceId ?? null,
+        schedule?.fetchConfig ?? null,
+      );
     return {
       statusCode: 200,
       message: 'Schedule',
@@ -355,6 +430,7 @@ export class InferenceWindowAuthorizedService {
             sourceId: schedule.sourceId,
             currentSource,
             sourceCandidates,
+            liveSource,
             autoRetrain: schedule.autoRetrain,
             warnSd: schedule.warnSd,
             criticalSd: schedule.criticalSd,
@@ -382,13 +458,14 @@ export class InferenceWindowAuthorizedService {
             // offering a relink there is nothing to relink.
             currentSource,
             sourceCandidates,
+            liveSource,
             // MODEL-SERVE-006-T09. Defaults mirror the wizard atoms' own
             // defaults (store/model-pipeline.ts) exactly, so a model with
             // no schedule row yet shows the SAME starting values the
             // wizard itself would — never a second, silently different
             // default.
             autoRetrain: false,
-            warnSd: 1.5,
+            warnSd: 2,
             criticalSd: 3.0,
             driftMonitor: false,
             // T28, the SAME defaults the schema and the merge above use —
@@ -444,15 +521,10 @@ export class InferenceWindowAuthorizedService {
     sourceDatasetId: string,
     requestedSourceId: string | undefined,
     opts: { allowSingleSourceFallback: boolean },
-  ): Promise<{
-    sourceId: string;
-    // The Prisma WRITE type, not a bare record: this value goes straight
-    // into `InferenceSchedule.fetchConfig` on both the enable and the
-    // relink path, and `Record<string, unknown>` is not assignable to a
-    // Json column input.
-    fetchConfig: PrismaTypes.InputJsonObject;
-    rawFetchConfigRecord: Record<string, unknown>;
-  }> {
+    // `SourceBinding.fetchConfig` is the Prisma WRITE type, not a bare
+    // record: it goes straight into `InferenceSchedule.fetchConfig` on both
+    // the enable and the relink path.
+  ): Promise<SourceBinding> {
     const dataset = await this.prisma.dataset.findUnique({
       where: { id: sourceDatasetId },
       select: { sourceIds: true, pipelineConfig: true },
@@ -499,12 +571,185 @@ export class InferenceWindowAuthorizedService {
     return {
       sourceId,
       rawFetchConfigRecord,
+      columnTagMap: {},
       fetchConfig: {
         ...rawFetchConfigRecord,
         baseTags: Array.isArray(pipelineConfig.baseTags)
           ? pipelineConfig.baseTags
           : [],
       },
+    };
+  }
+
+  /**
+   * MODEL-SERVE-037-T02. Bind a PI source the dataset never named, for a
+   * model whose dataset has no schedulable source (a CSV upload).
+   *
+   * Refused unless EVERY dataset source is unschedulable — a dataset that
+   * already reads PI or SQL binds through `resolveSourceBinding`, whose
+   * fetch settings are the ones the model was trained on.
+   *
+   * WORKSPACE-SCOPED, not just user-readable: the scheduler fetches with the
+   * source creator's stored credentials and every member of the model's
+   * workspace sees the result, so only a source SHARED INTO THE MODEL'S
+   * WORKSPACE qualifies — a private one and one shared elsewhere are both
+   * refused (user decision 2026-10-21).
+   */
+  private async resolveOverrideBinding(
+    model: { id: string; workspaceId: string },
+    sourceDatasetId: string,
+    live: LiveSourceInput,
+    user: Auth.UserPayload,
+  ): Promise<SourceBinding> {
+    const dataset = await this.prisma.dataset.findUnique({
+      where: { id: sourceDatasetId },
+      select: { sourceIds: true },
+    });
+    if (!dataset) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Source dataset ${sourceDatasetId} not found.`,
+        type: 'ERROR',
+      });
+    }
+    if (await this.hasSchedulableSource(dataset.sourceIds)) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          "This model's dataset already has a PI or SQL source — bind one " +
+          'of those instead of a live source override.',
+        type: 'ERROR',
+      });
+    }
+
+    const source = await this.prisma.dataSource.findFirst({
+      where: { id: live.sourceId, ...dataSourceAccessWhere(user.id) },
+      select: { id: true, type: true, workspaceId: true },
+    });
+    if (!source) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Data source ${live.sourceId} not found.`,
+        type: 'ERROR',
+      });
+    }
+    // PI only for now; SQL is MODEL-SERVE-037-T07.
+    if (source.type !== 'aveva') {
+      throw new AppException({
+        statusCode: 422,
+        message: `A live source override must be a PI source (this one is "${source.type}").`,
+        type: 'ERROR',
+      });
+    }
+    if (source.workspaceId !== model.workspaceId) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          "A live source override must be a PI source shared with this model's workspace.",
+        type: 'ERROR',
+      });
+    }
+
+    const check = await this.checkOverrideMap(model.id, live.columnTagMap);
+    if (!check.ok) {
+      throw new AppException({
+        statusCode: 422,
+        message: check.reason,
+        type: 'ERROR',
+      });
+    }
+
+    const fetchConfig = buildOverrideFetchConfig(live, check.columnTagMap);
+    return {
+      sourceId: source.id,
+      fetchConfig,
+      rawFetchConfigRecord: fetchConfig,
+      columnTagMap: check.columnTagMap,
+    };
+  }
+
+  private async hasSchedulableSource(sourceIds: string[]): Promise<boolean> {
+    if (sourceIds.length === 0) return false;
+    const rows = await this.prisma.dataSource.findMany({
+      where: { id: { in: sourceIds } },
+      select: { type: true },
+    });
+    return rows.some((r) => SCHEDULABLE_SOURCE_TYPES.includes(r.type));
+  }
+
+  /** The map against the CURRENT PRODUCTION version's base tags; the
+   *  target is optional (only the truth join reads it). */
+  private async checkOverrideMap(
+    modelId: string,
+    columnTagMap: Record<string, string>,
+  ) {
+    const { baseTags, targetY } =
+      await this.inputStatus.resolveOverrideColumnsService(modelId);
+    return checkColumnTagMap(
+      baseTags,
+      targetY && !baseTags.includes(targetY) ? [targetY] : [],
+      columnTagMap,
+    );
+  }
+
+  /**
+   * MODEL-SERVE-037-T02. A kept override is re-checked against the version
+   * in PRODUCTION NOW — promotion never rebinds the schedule. A version
+   * trained on a PI/SQL dataset drops the override (null: bind from the
+   * dataset as usual); a version whose inputs the stored map no longer
+   * covers is refused, or every window would fail hourly with nothing
+   * probing (a running schedule skips preflight).
+   */
+  private async revalidateKeptOverride(
+    modelId: string,
+    sourceDatasetId: string,
+    kept: SourceBinding,
+  ): Promise<SourceBinding | null> {
+    const dataset = await this.prisma.dataset.findUnique({
+      where: { id: sourceDatasetId },
+      select: { sourceIds: true },
+    });
+    if (dataset && (await this.hasSchedulableSource(dataset.sourceIds))) {
+      return null;
+    }
+    const check = await this.checkOverrideMap(modelId, kept.columnTagMap);
+    if (!check.ok) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          "The live source mapping no longer matches this model's inputs " +
+          `(${check.reason}) Remap the data source in Edit.`,
+        type: 'ERROR',
+      });
+    }
+    return kept;
+  }
+
+  /**
+   * MODEL-SERVE-037-T02. An override binding is STICKY. Every enable call —
+   * including a settings-only update on a running schedule — re-resolves
+   * the binding from the dataset, and for an override model that would be
+   * the CSV source: preflight does not run on a running schedule, so
+   * nothing would stop every later window failing. A request that brings no
+   * new binding (no `liveSource`, and no `sourceId` or the same one) keeps
+   * the stored override untouched.
+   */
+  private keptOverrideBinding(
+    existing: { sourceId: string; fetchConfig: unknown } | null,
+    dto: PutInferenceScheduleDto,
+  ): SourceBinding | null {
+    if (!existing || dto.liveSource) return null;
+    if (dto.sourceId !== undefined && dto.sourceId !== existing.sourceId) {
+      return null;
+    }
+    const override = readLiveSourceOverride(existing.fetchConfig);
+    if (!override) return null;
+    const record = this.asRecord(existing.fetchConfig);
+    return {
+      sourceId: existing.sourceId,
+      fetchConfig: record as PrismaTypes.InputJsonObject,
+      rawFetchConfigRecord: record,
+      columnTagMap: override.columnTagMap,
     };
   }
 
@@ -521,7 +766,7 @@ export class InferenceWindowAuthorizedService {
     dto: PutInferenceScheduleDto,
     user: Auth.UserPayload,
   ) {
-    await this.assertModelAccess(modelId, user);
+    const model = await this.assertModelAccess(modelId, user);
 
     if (!dto.enabled) {
       /**
@@ -541,24 +786,67 @@ export class InferenceWindowAuthorizedService {
        * enable's verdict forward — or clearing it — would both be claims
        * this call cannot make. The next Start probes, as it always did.
        */
-      const existing =
-        dto.sourceId !== undefined
-          ? await this.prisma.inferenceSchedule.findUnique({
-              where: { modelId },
-              select: { cadenceMinutes: true },
-            })
-          : null;
+      const wantsRelink =
+        dto.sourceId !== undefined || dto.liveSource !== undefined;
+      const existing = wantsRelink
+        ? await this.prisma.inferenceSchedule.findUnique({
+            where: { modelId },
+            select: { cadenceMinutes: true },
+          })
+        : null;
       // `updateMany` below is a no-op without a row, so resolving a binding
       // for a model that was never deployed would refuse a request that
       // could not have written anything anyway.
-      const relink =
-        dto.sourceId !== undefined && existing
-          ? await this.resolveSourceBinding(
+      const relink = !existing
+        ? null
+        : dto.liveSource
+          ? await this.resolveOverrideBinding(
+              model,
               await this.pinnedSourceDatasetId(modelId),
-              dto.sourceId,
-              { allowSingleSourceFallback: false },
+              dto.liveSource,
+              user,
             )
-          : null;
+          : dto.sourceId !== undefined
+            ? await this.resolveSourceBinding(
+                await this.pinnedSourceDatasetId(modelId),
+                dto.sourceId,
+                { allowSingleSourceFallback: false },
+              )
+            : null;
+      // MODEL-SERVE-037-T05. A model trained on a CSV upload can never be
+      // started until it has a live source, and it can never get one through
+      // Start (T01 refuses it). So binding an override on a model that was
+      // never deployed CREATES the schedule row, STOPPED: nothing runs, no
+      // preflight is recorded, and the next Start probes the mapped tags and
+      // keeps this binding (`keptOverrideBinding`).
+      if (!existing && dto.liveSource) {
+        const binding = await this.resolveOverrideBinding(
+          model,
+          await this.pinnedSourceDatasetId(modelId),
+          dto.liveSource,
+          user,
+        );
+        const cadenceMinutes = env.INFERENCE_DEFAULT_CADENCE_MINUTES;
+        await this.prisma.inferenceSchedule.create({
+          data: {
+            modelId,
+            enabled: false,
+            cadenceMinutes,
+            lagMinutes: env.INFERENCE_DEFAULT_LAG_MINUTES,
+            minRows:
+              deriveMinRows(cadenceMinutes, dto.liveSource.intervalTime) ??
+              env.INFERENCE_MIN_ROWS,
+            sourceId: binding.sourceId,
+            fetchConfig: binding.fetchConfig,
+            createdById: user.id,
+          },
+        });
+        return {
+          statusCode: 200,
+          message: `Live data source set to ${binding.sourceId}; the model is not started.`,
+          type: 'SUCCESS' as const,
+        };
+      }
       // T14: `minRows` is DERIVED from the fetch config's own
       // `intervalTime`, so a new fetchConfig must bring a freshly derived
       // floor with it. Leaving the old number beside a new source is
@@ -663,14 +951,32 @@ export class InferenceWindowAuthorizedService {
       });
     }
 
-    const { sourceId, fetchConfig, rawFetchConfigRecord } =
-      await this.resolveSourceBinding(
-        version.sourceDatasetId,
-        dto.sourceId,
-        // The ENABLE path, and the only caller allowed the fallback — see
-        // the helper's own doc for why the disable path is not.
-        { allowSingleSourceFallback: true },
-      );
+    const stored = await this.prisma.inferenceSchedule.findUnique({
+      where: { modelId },
+      select: { sourceId: true, fetchConfig: true },
+    });
+    const kept = this.keptOverrideBinding(stored, dto);
+    const { sourceId, fetchConfig, rawFetchConfigRecord, columnTagMap } =
+      dto.liveSource
+        ? await this.resolveOverrideBinding(
+            model,
+            version.sourceDatasetId,
+            dto.liveSource,
+            user,
+          )
+        : ((kept &&
+            (await this.revalidateKeptOverride(
+              modelId,
+              version.sourceDatasetId,
+              kept,
+            ))) ??
+          (await this.resolveSourceBinding(
+            version.sourceDatasetId,
+            dto.sourceId,
+            // The ENABLE path, and the only caller allowed the fallback —
+            // see the helper's own doc for why the disable path is not.
+            { allowSingleSourceFallback: true },
+          )));
 
     const cadenceMinutes =
       dto.cadenceMinutes ?? env.INFERENCE_DEFAULT_CADENCE_MINUTES;
@@ -721,7 +1027,7 @@ export class InferenceWindowAuthorizedService {
       },
     });
     const autoRetrain = dto.autoRetrain ?? existing?.autoRetrain ?? false;
-    const warnSd = dto.warnSd ?? existing?.warnSd ?? 1.5;
+    const warnSd = dto.warnSd ?? existing?.warnSd ?? 2;
     const criticalSd = dto.criticalSd ?? existing?.criticalSd ?? 3.0;
     const driftMonitor = dto.driftMonitor ?? existing?.driftMonitor ?? false;
     // MODEL-SERVE-005-T03, merged the same way and for the same reason: a
@@ -811,7 +1117,12 @@ export class InferenceWindowAuthorizedService {
     // auto-pause T19 decided against.
     const preflight = wasEnabled
       ? { ok: null, reason: null }
-      : await this.inputStatus.preflightSourceService(modelId, user, sourceId);
+      : await this.inputStatus.preflightSourceService(
+          modelId,
+          user,
+          sourceId,
+          columnTagMap,
+        );
     if (preflight.ok === false) {
       // No `if (existing)` guard needed: this branch is unreachable when
       // `wasEnabled`, and a first enable's refusal must leave NO row behind
@@ -882,6 +1193,8 @@ export class InferenceWindowAuthorizedService {
         preflightAt: new Date(),
         preflightOk: preflight.ok,
         preflightReason: preflight.reason,
+        // MODEL-SERVE-042. A first enable IS an OFF -> ON edge.
+        enabledAt: new Date(),
         createdById: user.id,
       },
       update: {
@@ -919,6 +1232,11 @@ export class InferenceWindowAuthorizedService {
               preflightAt: new Date(),
               preflightOk: preflight.ok,
               preflightReason: preflight.reason,
+              // MODEL-SERVE-042. Same edge, same reason: the scheduler starts
+              // hourly windows here, not at the 48 h horizon. A settings
+              // tweak on a running schedule must not move it, and a
+              // Stop -> Start does — a stopped period is not auto-scored.
+              enabledAt: new Date(),
             }),
       },
     });
@@ -1315,7 +1633,7 @@ export class InferenceWindowAuthorizedService {
     }
     const version = await this.prisma.modelVersion.findFirst({
       where: { modelId, stage: 'PRODUCTION' },
-      select: { id: true },
+      select: { id: true, algorithm: true },
     });
     if (!version) {
       throw new AppException({
@@ -1324,6 +1642,21 @@ export class InferenceWindowAuthorizedService {
         type: 'ERROR',
       });
     }
+    // Run Predict for lstm/gru. Since MODEL-SERVE-045 apps/serving scores
+    // sequence models too, so every algorithm tries Serving first — an
+    // instant value from the newest row. If a sequence model's live score
+    // comes back empty (an older serving image, too little history, Serving
+    // down), the press falls back to the window it dispatched: the client
+    // polls `windowPredictionService` (MODEL-SERVE-044) and the same toast
+    // and chart point follow. A tabular model has no such fallback.
+    const isSequence = SEQUENCE_ALGORITHMS.has(version.algorithm);
+    const liveScore = async (): Promise<{
+      live: LiveScoreOutcome;
+      liveVia: 'serving' | 'window';
+    }> => {
+      const live = await this.scoreLiveAndRecord(modelId, version.id, user.id);
+      return { live, liveVia: isSequence && !live.ok ? 'window' : 'serving' };
+    };
 
     const now = Date.now();
     const to = new Date(
@@ -1385,7 +1718,7 @@ export class InferenceWindowAuthorizedService {
     // retry path that does not carry `attempts` forward.
     if (window.status !== 'PENDING') {
       const stamp = window.windowStart.toISOString();
-      const live = await this.scoreLiveAndRecord(modelId, version.id, user.id);
+      const { live, liveVia } = await liveScore();
       return {
         statusCode: 200,
         message:
@@ -1400,6 +1733,7 @@ export class InferenceWindowAuthorizedService {
           status: window.status,
           dispatched: false,
           live,
+          liveVia,
         },
       };
     }
@@ -1410,7 +1744,7 @@ export class InferenceWindowAuthorizedService {
     // uses, with the same error sink -- a failure here writes the window's
     // own FAILED row via `fail()`, which the status/logs reads already
     // surface.
-    void this.scheduler.dispatchOne(window.id).catch((err: unknown) => {
+    void this.scheduler.requestDispatch(window.id).catch((err: unknown) => {
       this.log.error(
         `Manual dispatch failed for inference window ${window.id}`,
         err,
@@ -1422,7 +1756,7 @@ export class InferenceWindowAuthorizedService {
     // /predict, seconds, no container. Firing it and forgetting would let
     // the client's own refetch race the prediction, which is the entire
     // reason an operator pressed the button.
-    const live = await this.scoreLiveAndRecord(modelId, version.id, user.id);
+    const { live, liveVia } = await liveScore();
 
     return {
       statusCode: 202,
@@ -1435,6 +1769,7 @@ export class InferenceWindowAuthorizedService {
         status: window.status,
         dispatched: true,
         live,
+        liveVia,
       },
     };
   }
@@ -1483,11 +1818,11 @@ export class InferenceWindowAuthorizedService {
     const live = await this.scoreLive(modelId);
     if (!live.ok) return live;
     try {
-      const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(live.at);
-      const predictedAt = new Date(
-        hasZone ? live.at : `${live.at.replace(' ', 'T')}Z`,
-      );
-      if (Number.isNaN(predictedAt.getTime())) {
+      // `live.at` is the scored frame row's NAIVE Bangkok wall-clock stamp.
+      // Reading it as UTC (`…Z`) stored every press 7h in the future, so the
+      // "up to now" chart query never returned it (2026-10-16).
+      const predictedAt = wallClockToUtc(live.at);
+      if (!predictedAt) {
         throw new Error(`unparseable timestamp "${live.at}"`);
       }
       await this.prisma.manualPrediction.create({
@@ -1506,6 +1841,104 @@ export class InferenceWindowAuthorizedService {
       );
     }
     return live;
+  }
+
+  /**
+   * Run Predict for lstm/gru, second half. The client polls this with the
+   * window `runNowService` dispatched; once it SUCCEEDED, its newest
+   * prediction is read SERVER-side from its own predictions.parquet (never
+   * taken from the client) and recorded as a ManualPrediction — the same
+   * row a served model's press writes, so the chart draws the same point.
+   * Recording is idempotent per (version, predictedAt): a second poll after
+   * success adds nothing.
+   */
+  async windowPredictionService(
+    modelId: string,
+    windowId: string,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user);
+    const window = await this.prisma.inferenceWindow.findFirst({
+      where: { id: windowId, modelId },
+      select: {
+        id: true,
+        status: true,
+        modelVersionId: true,
+        predictionsKey: true,
+        failureReason: true,
+      },
+    });
+    if (!window) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Inference window ${windowId} not found for this model.`,
+        type: 'ERROR',
+      });
+    }
+
+    const done = (live: LiveScoreOutcome) => ({
+      statusCode: 200,
+      message: 'Window prediction',
+      type: 'SUCCESS' as const,
+      data: { status: window.status, pending: false, live },
+    });
+
+    if (window.status === 'PENDING' || window.status === 'RUNNING') {
+      return {
+        statusCode: 200,
+        message: 'Window still running',
+        type: 'SUCCESS' as const,
+        data: {
+          status: window.status,
+          pending: true,
+          live: {
+            ok: false,
+            reason: 'The window is still running.',
+          } as LiveScoreOutcome,
+        },
+      };
+    }
+    if (window.status !== 'SUCCEEDED' || !window.predictionsKey) {
+      return done({
+        ok: false,
+        reason:
+          window.failureReason ??
+          `The window finished ${window.status} with no prediction.`,
+      });
+    }
+
+    const last = await readLastInferencePrediction({
+      source_key: window.predictionsKey,
+    });
+    if (last.prediction === null || last.timestamp === null) {
+      return done({
+        ok: false,
+        reason: 'The window wrote no prediction rows.',
+      });
+    }
+    const predictedAt = wallClockToUtc(last.timestamp);
+    if (!predictedAt) {
+      return done({
+        ok: false,
+        reason: `Unparseable prediction timestamp "${last.timestamp}".`,
+      });
+    }
+    const existing = await this.prisma.manualPrediction.findFirst({
+      where: { modelId, modelVersionId: window.modelVersionId, predictedAt },
+      select: { id: true },
+    });
+    if (!existing) {
+      await this.prisma.manualPrediction.create({
+        data: {
+          modelId,
+          modelVersionId: window.modelVersionId,
+          predicted: last.prediction,
+          predictedAt,
+          requestedById: user.id,
+        },
+      });
+    }
+    return done({ ok: true, predicted: last.prediction, at: last.timestamp });
   }
 
   /** D9: FAILED is terminal; a retry is explicit and carries `attempts`
@@ -2316,6 +2749,24 @@ export class InferenceWindowAuthorizedService {
       source_key: window.inputKey,
     });
 
+    // MODEL-SERVE-043. A sequence model scores from `sequenceLength` rows of
+    // history: the lead-in (context.parquet) plus this window's own rows,
+    // checked for gaps at the schedule's sampling step. Absent / null for
+    // every other algorithm, whose container never reads them.
+    const contextPresigned =
+      window.contextKey && window.contextChecksum
+        ? await presignInferenceWindowObject({ source_key: window.contextKey })
+        : null;
+    const schedule = d.sequenceLength
+      ? await this.prisma.inferenceSchedule.findUnique({
+          where: { modelId: window.modelId },
+          select: { fetchConfig: true },
+        })
+      : null;
+    const intervalTime = schedule
+      ? this.asRecord(schedule.fetchConfig).intervalTime
+      : undefined;
+
     return {
       modelId: d.modelId,
       modelVersionId: d.versionId,
@@ -2328,6 +2779,11 @@ export class InferenceWindowAuthorizedService {
       scalingParams: d.scalingParams,
       windowStart: window.windowStart.toISOString(),
       windowEnd: window.windowEnd.toISOString(),
+      algorithm: d.algorithm,
+      sequenceLength: d.sequenceLength,
+      intervalTime: typeof intervalTime === 'string' ? intervalTime : null,
+      contextUrl: contextPresigned?.data_url ?? null,
+      contextChecksum: contextPresigned ? window.contextChecksum : null,
     };
   }
 

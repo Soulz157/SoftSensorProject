@@ -18,7 +18,6 @@ import {
   resolveTagMeta,
   type TimeRange,
 } from '@/lib/mock-readings'
-import type { PresetRangeCandidate } from '@/store/dataset-studio'
 import { RawTrendChart } from './chart/raw-data-chart'
 import { DataCroppingChart } from './data-cropping-chart'
 import { CutoffSidebar } from './cutoff-sidebar'
@@ -44,6 +43,8 @@ interface Props {
   onExcludeRange?: (exclusion: RangeExclusion) => void
   onClearExclusions?: () => void
   scopeTag?: string
+  /** DS-LAKE-038. Per-tag unit for the preset-range rows' window. */
+  tagUnits?: Record<string, string | null>
   breakdown: {
     removed: PrecleanseRemoved
     keptRows: number
@@ -59,14 +60,6 @@ interface Props {
   previewStepCount?: number
   previewTags?: string[]
   onPreviewTagsChange?: (tags: string[]) => void
-  /** DS-LAKE-020: proposed range cutoffs from the applied feature preset. */
-  presetRangeCandidates?: PresetRangeCandidate[]
-  /** True when the applied preset predates range-cutoff support. */
-  presetRangeStale?: boolean
-  /** Per-tag engineering unit, for the T03 unit-reconciliation gate. */
-  tagUnits?: Record<string, string | null>
-  /** Null until Step 4 — the T06 labelled-row guard cannot run without it. */
-  targetTag?: string | null
 }
 
 type Preview = 'raw' | 'cleaned'
@@ -102,6 +95,7 @@ export function CutOffSection({
   onExcludeRange,
   onClearExclusions,
   scopeTag,
+  tagUnits,
   breakdown,
   croppedDataset,
   conditionalRules,
@@ -113,10 +107,6 @@ export function CutOffSection({
   previewStepCount = 0,
   previewTags = [],
   onPreviewTagsChange = () => {},
-  presetRangeCandidates,
-  presetRangeStale,
-  tagUnits,
-  targetTag,
 }: Props) {
   const [preview, setPreview] = useState<Preview>('cleaned')
   const [isCutoffOpen, setIsCutoffOpen] = useState(true)
@@ -171,7 +161,13 @@ export function CutOffSection({
   // dataset alone, it now recomputes only when the preview actually changes —
   // inside the transition above, which is what makes the pending state real.
   // Mirrors what `data-analysis-card.tsx` already does for its own chartRows.
-  const chartRows = useMemo(() => toChartRows(previewDataset), [previewDataset])
+  // The cleaned view hides non-Good readings (an Exclude keeps the value but
+  // marks it Bad, and GOLD drops its row) so it matches the before/after
+  // preview; "Before Clean" stays as fetched, PI's own Bad readings included.
+  const chartRows = useMemo(
+    () => toChartRows(previewDataset, { goodOnly: preview !== 'raw' }),
+    [previewDataset, preview],
+  )
 
   // Anti-flicker: a spinner that shows for one frame is worse than none, so it
   // only appears once the deferred render has genuinely taken 150ms.
@@ -222,10 +218,7 @@ export function CutOffSection({
             onConditionalChange={onConditionalChange}
             onStatisticalChange={onStatisticalChange}
             scopeTag={scopeTag}
-            presetRangeCandidates={presetRangeCandidates}
-            presetRangeStale={presetRangeStale}
             tagUnits={tagUnits}
-            targetTag={targetTag}
           />
 
           <div className="flex items-center justify-between border-t border-border/60 pt-4">

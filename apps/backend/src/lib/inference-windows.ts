@@ -56,6 +56,24 @@ export function windowStartsBetween(
   return starts;
 }
 
+/**
+ * MODEL-SERVE-042. The epoch-aligned boundary at or before `at` — the start of
+ * the window that CONTAINS `at`. A schedule started at 06:12 with a 60 min
+ * cadence floors to 06:00, so the hour it was started in is the first one it
+ * scores and nothing earlier is.
+ *
+ * Same alignment as `windowStartsBetween` (a multiple of the cadence since the
+ * Unix epoch), so a floored anchor can never mint a boundary the backfill
+ * route would not.
+ */
+export function windowFloor(at: Date, cadenceMinutes: number): Date {
+  if (cadenceMinutes <= 0) {
+    throw new Error(`cadenceMinutes must be positive, got ${cadenceMinutes}`);
+  }
+  const cadenceMs = cadenceMinutes * MS_PER_MINUTE;
+  return new Date(Math.floor(at.getTime() / cadenceMs) * cadenceMs);
+}
+
 /** The paired `windowEnd` for a given `windowStart` — always exactly one
  *  cadence later. A separate function rather than inlining `+cadenceMs`
  *  everywhere: the ONE place this arithmetic lives is the one place a
@@ -87,7 +105,7 @@ const DURATION_UNIT_MINUTES: Record<string, number> = {
  * the client copy's own contract: "so callers can fall back to a known-good
  * value rather than a wrong one."
  */
-function parseIntervalMinutes(duration: string): number | null {
+export function parseIntervalMinutes(duration: string): number | null {
   const match = /^(\d+)\s*([smhd])$/.exec(duration.trim());
   if (!match) return null;
   const value = Number(match[1]);
@@ -148,4 +166,18 @@ export function deriveMinRows(
 export function formatDtHour(windowStart: Date): { dt: string; hour: string } {
   const iso = windowStart.toISOString(); // e.g. "2026-09-10T08:00:00.000Z"
   return { dt: iso.slice(0, 10), hour: iso.slice(11, 13) };
+}
+
+/**
+ * CONTAINER-QUEUE-001. True for the newest window a schedule can be working on.
+ * The tick stops inserting at `now - (lag + cadence)`, so one more cadence of
+ * slack covers a window inserted a tick ago. Anything older is backfill.
+ */
+export function isLiveWindow(
+  windowStart: Date,
+  schedule: { cadenceMinutes: number; lagMinutes: number },
+  now: Date,
+): boolean {
+  const slackMinutes = schedule.lagMinutes + 2 * schedule.cadenceMinutes;
+  return windowStart.getTime() >= now.getTime() - slackMinutes * MS_PER_MINUTE;
 }

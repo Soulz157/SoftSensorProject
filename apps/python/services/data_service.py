@@ -119,8 +119,9 @@ class DataService:
     ) -> list[tuple[datetime, datetime]]:
         """
         แกน time — คืน list ของ (start, end).
-        window ถูกสร้างแบบ half-open (window ถัดไปเริ่มที่ prev_end + interval)
-        จุดที่ขอบจึงไม่ถูกส่งกลับซ้ำโดยโครงสร้าง
+        window ถัดไปเริ่มที่ prev_end พอดี — PI summary bucket เริ่มที่ start และ
+        end-exclusive การเริ่มที่ prev_end + interval จะทำให้ bucket ที่ขอบหายไป
+        1 อัน ต่อทุกรอยต่อ ถ้า PI คืนจุดที่ขอบซ้ำ `_dedupe` จะตัดให้
         """
         if end <= start:
             raise ValueError("end_time must be after start_time.")
@@ -137,7 +138,7 @@ class DataService:
         while cursor < end:
             window_end = min(cursor + span, end)
             windows.append((cursor, window_end))
-            cursor = window_end + interval
+            cursor = window_end
         return windows
 
     @staticmethod

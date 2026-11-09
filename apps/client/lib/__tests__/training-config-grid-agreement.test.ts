@@ -336,7 +336,6 @@ describe('MODEL-FLOW-024: every variant a tier can try sits inside that tier’s
     // above would still pass by comparing the medium table to itself.
     for (const algorithm of [
       'ridge',
-      'hist_gradient_boosting',
       'svm',
       'mlp',
       'random_forest',

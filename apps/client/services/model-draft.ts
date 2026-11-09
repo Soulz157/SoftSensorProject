@@ -345,6 +345,10 @@ export interface ModelTrainingRun {
    *  in flight for this run — its ONLY purpose is letting the UI poll
    *  "scoring is currently running" (mirrors `containerId` for training). */
   scoringContainerId: string | null
+  /** CONTAINER-QUEUE-001. Set while scoring waits for compute capacity. */
+  scoringQueuedAt?: string | null
+  /** Training runs queued ahead of this one; null unless it is queued. */
+  queuedAhead?: number | null
   /** MODEL-FLOW-016-T11. Attached by `getDraftRunService` (never a second
    *  endpoint — mirrors the `lossHistory` precedent) when `cvFoldsKey` is
    *  set; `undefined` on a list-endpoint row (`ModelTrainingRunListItem`
@@ -353,6 +357,14 @@ export interface ModelTrainingRun {
    *  table has nothing to show in either case, but only `null` after a
    *  `get()` call means "this really is/was checked". */
   cvFolds?: RunCvFolds | null
+  /** MODEL-FLOW-038. Attached by `getDraftRunService` for a SUCCEEDED run of a
+   *  grid-search job; `null` for every other run, or when the read soft-failed.
+   *  `undefined` on a list-endpoint row. */
+  gridSearch?: RunGridSearch | null
+  /** MODEL-FLOW-038. Set by the draft run LIST: true when this run belongs to
+   *  a grid-search job, so a card fetches `gridSearch` (via `get()`) only for
+   *  those. Absent on a payload from before it, read as false. */
+  isGridSearch?: boolean
   /** MODEL-FLOW-019-T09. Set only for the algorithms
    *  images/trainer/app/importance.py can read a real per-feature quantity
    *  from — null for every other algorithm, and null for a run trained
@@ -452,12 +464,12 @@ export interface CreateDraftRunInput {
   algorithm:
     | 'ols'
     | 'ridge'
-    | 'hist_gradient_boosting'
     | 'svm'
     | 'mlp'
     | 'grp'
     | 'pls'
     | 'random_forest'
+    | 'extra_trees'
     | 'lightgbm'
     | 'xgboost'
     | 'lstm'
@@ -664,6 +676,34 @@ export type ModelCandidateJobKind =
    *  a curated shortlist — see `CandidateResult.phase` below. */
   | 'SWEEP_THEN_TUNE'
 
+/**
+ * MODEL-FLOW-038. One ranked combination of a grid-search run. `params` holds
+ * only the keys the grid varied; `hyperparameters` is the full record it ran.
+ * Scores are the ranking metric itself (RMSE or MAE) — lower is better.
+ */
+export interface GridSearchCombination {
+  rank: number
+  params: Record<string, unknown>
+  hyperparameters: Record<string, unknown>
+  mean_score: number
+  std_score: number
+  mean_fit_time: number
+}
+
+/** MODEL-FLOW-038. A grid-search run's `grid_search_results.json`. */
+export interface RunGridSearch {
+  algorithm: string
+  ranking_metric: 'rmse' | 'mae' | string
+  /** True when scored over CV folds, false for the one chronological fold. */
+  cv: boolean
+  n_folds: number
+  n_combinations: number
+  grid: Record<string, unknown[]>
+  best: GridSearchCombination
+  /** Every combination, best first. */
+  combinations: GridSearchCombination[]
+}
+
 export interface CandidateInput {
   algorithm: CreateDraftRunInput['algorithm']
   hyperparameters: Record<string, unknown>
@@ -677,6 +717,9 @@ export interface CreateCandidateJobInput {
    *  HYPERPARAMETER_SEARCH only and exclusive with `trainTestSplit` — the
    *  server refuses either violation. */
   nSplits?: number
+  /** MODEL-FLOW-035. The metric `bestRunId` is chosen by — the wizard's Loss
+   *  function. Omitted = RMSE. */
+  rankingMetric?: 'rmse' | 'mae'
   kind: ModelCandidateJobKind
   candidates: CandidateInput[]
   /** MODEL-FLOW-020-T04/T02. The two dataset size figures as this form saw
@@ -704,6 +747,10 @@ export interface CreateCandidateJobInput {
    *  because a SWEEP_THEN_TUNE job builds its tuning phase after the winner
    *  is known, from the job row, and this field is not stored there. */
   extraVariants?: Record<string, unknown>[]
+  /** MODEL-FLOW-038. A real GridSearchCV: the value lists ONE trainer run
+   *  crosses. HYPERPARAMETER_SEARCH with one tabular candidate only, never
+   *  beside `extraVariants` — the server refuses both. */
+  paramGrid?: Record<string, Array<string | number | boolean | null>>
 }
 
 /** One candidate's own outcome, resolved against its run row server-side
@@ -756,6 +803,10 @@ export interface CandidateResult {
   holdoutPredictionsKey: string | null
   /** Non-null while a CV candidate's holdout-scoring phase is in flight. */
   scoringContainerId: string | null
+  /** CONTAINER-QUEUE-001. Set while scoring waits for compute capacity. */
+  scoringQueuedAt?: string | null
+  /** Training runs queued ahead of this one; null unless it is queued. */
+  queuedAhead?: number | null
   /** MODEL-FLOW-019-T02. Every figure this candidate can honestly show,
    *  each carrying the SOURCE it is a figure of — the run's own test split,
    *  the dataset's raw validation holdout (with the counts its missing rate
@@ -770,6 +821,13 @@ export interface CandidateResult {
    *  Null when a figure is present, or when the run has produced nothing at
    *  all yet. */
   holdoutAbsence: HoldoutAbsence | null
+  /** MODEL-FLOW-038. Set on a grid-search job's one candidate: the value
+   *  lists it searched. `hyperparameters` above is then the WINNING
+   *  combination once the run succeeded. Null for every other candidate. */
+  paramGrid?: Record<string, unknown[]> | null
+  /** MODEL-FLOW-038. Every combination the search tried, ranked. Null until
+   *  the run succeeds, and for every non-grid candidate. */
+  gridSearch?: RunGridSearch | null
 }
 
 export interface ModelCandidateJob {
@@ -781,6 +839,9 @@ export interface ModelCandidateJob {
   /** MODEL-FLOW-029. k for a cross-validated search, whose `bestRunId` is
    *  the lowest mean CV RMSE rather than test RMSE. Null/absent = not CV. */
   nSplits?: number | null
+  /** MODEL-FLOW-035. The metric `bestRunId` was chosen by ('rmse' | 'mae';
+   *  a CV job uses the fold mean). Absent on a payload from before it. */
+  rankingMetric?: string
   kind: ModelCandidateJobKind
   totalRuns: number
   completedRuns: number
@@ -816,6 +877,17 @@ export const modelDraftCandidateJobService = {
   ): Promise<ApiResponse<ModelCandidateJob>> =>
     fetchClient(oneCandidateJob(draftId, jobId), { method: 'GET' }),
 
+  /** Stop an in-flight job and kill its running container. The server marks
+   *  the job CANCELED first so no further candidate launches; candidates that
+   *  already succeeded are kept. A terminal job comes back unchanged. */
+  cancel: (
+    draftId: string,
+    jobId: string,
+  ): Promise<ApiResponse<ModelCandidateJob>> =>
+    fetchClient(`${oneCandidateJob(draftId, jobId)}/cancel`, {
+      method: 'POST',
+    }),
+
   /** MODEL-FLOW-013-T08. Refused server-side unless the job is terminal and
    *  runId names one of its own SUCCEEDED candidates. */
   select: (
@@ -848,6 +920,14 @@ export const modelDraftRunService = {
     runId: string,
   ): Promise<ApiResponse<ModelTrainingRun>> =>
     fetchClient(oneRun(draftId, runId), { method: 'GET' }),
+
+  /** Stop a single in-flight run and kill its container. A terminal run comes
+   *  back unchanged. */
+  cancel: (
+    draftId: string,
+    runId: string,
+  ): Promise<ApiResponse<ModelTrainingRun>> =>
+    fetchClient(`${oneRun(draftId, runId)}/cancel`, { method: 'POST' }),
 
   predictions: async (
     draftId: string,

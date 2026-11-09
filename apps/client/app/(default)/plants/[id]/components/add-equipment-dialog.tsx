@@ -18,7 +18,7 @@ interface Props {
   open: boolean
   plantName: string
   /** Present = edit this equipment; absent = add a new one. */
-  node?: CanvasNode | null
+  equipment?: CanvasNode | null
   onClose: () => void
   onSubmit: (values: EquipmentFormValues) => Promise<void>
 }
@@ -45,20 +45,22 @@ export function AddEquipmentDialog(props: Props) {
       <DialogContent className="sm:max-w-md">
         {/* Mounted with `open` and keyed by the node, so each open starts
             from its own initial state — never a previous edit's leftovers. */}
-        {open && <EquipmentForm key={props.node?.id ?? 'add'} {...props} />}
+        {open && (
+          <EquipmentForm key={props.equipment?.id ?? 'add'} {...props} />
+        )}
       </DialogContent>
     </Dialog>
   )
 }
 
-function EquipmentForm({ plantName, node, onClose, onSubmit }: Props) {
-  const isEdit = Boolean(node)
-  const [name, setName] = useState(node?.data.name ?? '')
+function EquipmentForm({ plantName, equipment, onClose, onSubmit }: Props) {
+  const isEdit = Boolean(equipment)
+  const [name, setName] = useState(equipment?.data.name ?? '')
   const [type, setType] = useState<EquipmentType>(
-    (node?.data.type as EquipmentType | undefined) ?? 'machine',
+    (equipment?.data.type as EquipmentType | undefined) ?? 'machine',
   )
   const [status, setStatus] = useState<NodeStatus>(
-    (node?.data.status as NodeStatus | undefined) ?? 'normal',
+    (equipment?.data.status as NodeStatus | undefined) ?? 'normal',
   )
   const [loading, setLoading] = useState(false)
 

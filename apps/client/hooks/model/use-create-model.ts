@@ -10,7 +10,7 @@ import {
   mpDescriptionAtom,
   mpWorkspaceIdAtom,
   mpPlantIdAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
 } from '@/store/model-pipeline'
 import { useModelPipelineNav } from '@/hooks/model/use-model-pipeline-nav'
 
@@ -19,13 +19,13 @@ type PlantsState = {
   data: WorkspacePlant[]
 }
 
-type NodesState = {
+type EquipmentListState = {
   data: CanvasNode[]
 }
 
 const PLANTS_IDLE: PlantsState = { loading: false, data: [] }
 const PLANTS_LOADING: PlantsState = { loading: true, data: [] }
-const NODES_IDLE: NodesState = { data: [] }
+const EQUIPMENT_IDLE: EquipmentListState = { data: [] }
 
 export function useCreateModel() {
   const router = useRouter()
@@ -34,10 +34,11 @@ export function useCreateModel() {
   const [description, setDescriptionAtom] = useAtom(mpDescriptionAtom)
   const [workspaceId, setWorkspaceIdAtom] = useAtom(mpWorkspaceIdAtom)
   const [plantId, setPlantIdAtom] = useAtom(mpPlantIdAtom)
-  const [nodeId, setNodeIdAtom] = useAtom(mpNodeIdAtom)
+  const [equipmentId, setEquipmentIdAtom] = useAtom(mpEquipmentIdAtom)
 
   const [plants, setPlants] = useState<PlantsState>(PLANTS_IDLE)
-  const [nodes, setNodes] = useState<NodesState>(NODES_IDLE)
+  const [equipmentList, setEquipmentList] =
+    useState<EquipmentListState>(EQUIPMENT_IDLE)
 
   const { resetPipeline } = useModelPipelineNav()
 
@@ -46,31 +47,31 @@ export function useCreateModel() {
     (v: string) => setDescriptionAtom(v),
     [setDescriptionAtom],
   )
-  const setNodeId = useCallback(
-    (v: string) => setNodeIdAtom(v),
-    [setNodeIdAtom],
+  const setEquipmentId = useCallback(
+    (v: string) => setEquipmentIdAtom(v),
+    [setEquipmentIdAtom],
   )
 
   const changeWorkspace = useCallback(
     (id: string) => {
       setWorkspaceIdAtom(id)
       setPlantIdAtom('')
-      setNodeIdAtom('')
+      setEquipmentIdAtom('')
       setPlants(PLANTS_IDLE)
-      setNodes(NODES_IDLE)
+      setEquipmentList(EQUIPMENT_IDLE)
       resetPipeline()
     },
-    [setWorkspaceIdAtom, setPlantIdAtom, setNodeIdAtom, resetPipeline],
+    [setWorkspaceIdAtom, setPlantIdAtom, setEquipmentIdAtom, resetPipeline],
   )
 
   const changePlant = useCallback(
     (id: string) => {
       setPlantIdAtom(id)
-      setNodeIdAtom('')
-      setNodes(NODES_IDLE)
+      setEquipmentIdAtom('')
+      setEquipmentList(EQUIPMENT_IDLE)
       resetPipeline()
     },
-    [setPlantIdAtom, setNodeIdAtom, resetPipeline],
+    [setPlantIdAtom, setEquipmentIdAtom, resetPipeline],
   )
 
   useEffect(() => {
@@ -101,9 +102,9 @@ export function useCreateModel() {
     void (async () => {
       try {
         const data = await getNodes(workspaceId, plantId || undefined)
-        if (!ignore) setNodes({ data })
+        if (!ignore) setEquipmentList({ data })
       } catch {
-        if (!ignore) setNodes(NODES_IDLE)
+        if (!ignore) setEquipmentList(EQUIPMENT_IDLE)
       }
     })()
 
@@ -115,14 +116,14 @@ export function useCreateModel() {
   const cancel = useCallback(() => router.push('/models/views'), [router])
 
   return {
-    form: { name, description, workspaceId, plantId, nodeId },
+    form: { name, description, workspaceId, plantId, equipmentId },
     setName,
     setDescription,
     changeWorkspace,
     changePlant,
-    setNodeId,
+    setEquipmentId,
     plants: plants.data,
-    nodes: nodes.data,
+    equipmentList: equipmentList.data,
     plantsLoading: plants.loading,
     cancel,
   }

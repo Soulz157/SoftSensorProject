@@ -2,6 +2,7 @@
 
 import type { FitRow } from '@/lib/model-metrics'
 import { formatWallClockFull } from '@/lib/monitoring'
+import { CURRENT_VERSION_COLOR } from '@/lib/retrain-series'
 
 interface PayloadItem {
   /** Full source row recharts attaches to every payload item. */
@@ -74,7 +75,13 @@ export function EvaluationTooltip({
   return (
     <div className="min-w-48 rounded-lg border border-border bg-popover p-3 text-xs shadow-xl">
       <p className="mb-2 border-b border-border pb-2 font-mono text-muted-foreground">
-        {formatWallClockFull(label)}
+        {formatWallClockFull(
+          // A sequence axis labels the crosshair with a row POSITION; the
+          // row itself still carries its real time.
+          typeof payload[0]?.payload?.t === 'number'
+            ? payload[0].payload.t
+            : label,
+        )}
       </p>
       <div className="space-y-1.5">
         {variant === 'fit' ? (
@@ -98,7 +105,7 @@ export function EvaluationTooltip({
             )} */}
             {compareName && comparePredict !== undefined && (
               <Row
-                color="var(--chart-4)"
+                color={CURRENT_VERSION_COLOR}
                 label={compareName}
                 value={fmt(comparePredict)}
               />
@@ -118,7 +125,7 @@ export function EvaluationTooltip({
             />
             {compareName && compareResidual !== undefined && (
               <Row
-                color="var(--chart-4)"
+                color={CURRENT_VERSION_COLOR}
                 label={compareName}
                 value={fmt(compareResidual)}
               />

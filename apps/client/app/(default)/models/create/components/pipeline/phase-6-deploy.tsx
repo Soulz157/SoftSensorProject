@@ -85,7 +85,6 @@ export function Phase6Deploy({ nav }: Props) {
     targetVariables,
     algorithms,
     trainTestSplit,
-    findBestModel,
     findBestParams,
     autoRetrain,
     setAutoRetrain,
@@ -98,6 +97,9 @@ export function Phase6Deploy({ nav }: Props) {
   } = nav
 
   const savedLabel = mode === 'edit' ? 'Changes saved' : 'Model saved'
+  // MODEL-SERVE-041. A resumed draft can reach here without passing Step 1's
+  // check; the draft is kept, only the save waits for room.
+  const limitNote = mode === 'edit' ? null : (nav.modelLimitNote ?? null)
 
   /**
    * Save is the persistence boundary; deploying is a second, separate write on
@@ -205,10 +207,10 @@ export function Phase6Deploy({ nav }: Props) {
         },
     {
       label: 'Automated tuning',
-      value: findBestModel
-        ? findBestParams
-          ? 'Find best model + parameters'
-          : 'Find best model'
+      value: findBestParams
+        ? algorithms.length > 1
+          ? 'Find best parameters — tuned the winning algorithm'
+          : 'Find best parameters'
         : 'Off',
     },
   ]
@@ -253,11 +255,11 @@ export function Phase6Deploy({ nav }: Props) {
         <div className="flex items-center justify-between gap-4">
           <div className="space-y-0.5">
             <Label htmlFor="drift-monitor" className="text-xs font-normal">
-              Drift monitor (PSI)
+              Drift monitor
             </Label>
             <p className="text-xs text-muted-foreground">
-              Flag when live input distributions shift from training, measured
-              by PSI.
+              Flag when live input values fall outside the range the model was
+              trained on.
             </p>
           </div>
           <Switch
@@ -290,7 +292,7 @@ export function Phase6Deploy({ nav }: Props) {
                 htmlFor="warn-sd"
                 className="text-xs font-normal text-muted-foreground"
               >
-                Residual warning (±SD)
+                Warning beyond (× SD)
               </Label>
               <Input
                 id="warn-sd"
@@ -307,7 +309,7 @@ export function Phase6Deploy({ nav }: Props) {
                 htmlFor="critical-sd"
                 className="text-xs font-normal text-muted-foreground"
               >
-                Residual critical (±SD)
+                Alert beyond (× SD)
               </Label>
               <Input
                 id="critical-sd"
@@ -355,11 +357,17 @@ export function Phase6Deploy({ nav }: Props) {
         </div>
       )}
 
+      {limitNote && (
+        <p className="text-right text-xs text-muted-foreground">
+          {limitNote} Your draft is kept.
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-4">
         <Button
           variant="outline"
           onClick={() => handleSave(false)}
-          disabled={busy !== null}
+          disabled={busy !== null || limitNote !== null}
           className="gap-2"
         >
           {busy === 'save' ? (
@@ -378,7 +386,7 @@ export function Phase6Deploy({ nav }: Props) {
 
         <Button
           onClick={() => handleSave(true)}
-          disabled={busy !== null}
+          disabled={busy !== null || limitNote !== null}
           className="gap-2"
         >
           {busy === 'deploy' ? (

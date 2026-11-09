@@ -251,6 +251,7 @@ export class InferenceTruthSweeperService
       sumSigned: result.sum_signed,
       sumActual: result.sum_actual,
       sumActualSq: result.sum_actual_sq,
+      maxAbsResidual: result.max_abs_residual,
       toleranceSeconds,
       // What this row's numbers actually reflect — the end of the range the
       // join just read, not "now".
@@ -358,6 +359,7 @@ export class InferenceTruthSweeperService
           sumSigned: 0,
           sumActual: 0,
           sumActualSq: 0,
+          maxAbsResidual: 0,
           toleranceSeconds: 0,
           joinedThrough: window.windowEnd,
           nextJoinAfter,

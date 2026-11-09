@@ -7,7 +7,6 @@ import { AuthAuthorizedService } from './authorized/auth.authorized.service';
 import { AuthAdminController } from './admin/auth.admin.controller';
 import { AuthAdminService } from './admin/auth.admin.service';
 import { JwtAccessStrategy } from '@/strategies/jwt-access.strategy';
-import { JwtRefreshStrategy } from '@/strategies/jwt-refresh.strategy';
 import { MailModule } from '../mail/mail.module';
 
 @Module({
@@ -25,7 +24,6 @@ import { MailModule } from '../mail/mail.module';
     AuthAuthorizedService,
     AuthAdminService,
     JwtAccessStrategy,
-    JwtRefreshStrategy,
   ],
   exports: [AuthAuthorizedService],
 })

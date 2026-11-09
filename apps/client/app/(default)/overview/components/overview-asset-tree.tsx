@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/tooltip'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { NODE_BADGE, NODE_DOT } from '@/constants/status'
+import { EQUIPMENT_BADGE, EQUIPMENT_DOT } from '@/constants/status'
 import { buildOverviewTree } from '@/lib/overview-tree'
 import type { NodeStatus } from '@/store/status-colors'
 import type { CanvasNode } from '@/services/canvas'
@@ -27,7 +27,7 @@ import type { AIModel, WorkspacePlant } from '@/types'
 
 interface OverviewAssetTreeProps {
   plants: WorkspacePlant[]
-  nodes: CanvasNode[]
+  equipmentList: CanvasNode[]
   models: AIModel[]
   loading: boolean
   highlightedModelId?: string | null
@@ -103,7 +103,7 @@ function StatusTag({
       <span
         className={cn(
           'h-2 w-2 shrink-0 rounded-full',
-          NODE_DOT[status] ?? 'bg-zinc-400',
+          EQUIPMENT_DOT[status] ?? 'bg-zinc-400',
           status === 'alarm' &&
             'ring-4 ring-destructive/20 motion-safe:animate-pulse',
         )}
@@ -111,7 +111,7 @@ function StatusTag({
       <span
         className={cn(
           'text-[10px] font-semibold capitalize',
-          NODE_BADGE[status] ?? 'text-muted-foreground',
+          EQUIPMENT_BADGE[status] ?? 'text-muted-foreground',
         )}
       >
         {status}
@@ -168,14 +168,14 @@ function EmptyHint({ label }: { label: string }) {
 
 export function OverviewAssetTree({
   plants,
-  nodes,
+  equipmentList,
   models,
   loading,
   highlightedModelId,
 }: OverviewAssetTreeProps) {
   const tree = useMemo(
-    () => buildOverviewTree(plants, nodes, models),
-    [plants, nodes, models],
+    () => buildOverviewTree(plants, equipmentList, models),
+    [plants, equipmentList, models],
   )
 
   const modelRefs = useRef<Map<string, HTMLAnchorElement>>(new Map())

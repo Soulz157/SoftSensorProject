@@ -29,11 +29,12 @@ import type { RunPredictionPoint, RunPredictions } from '@/services/model-draft'
  *  set aside (only the new version was ever scored on it). */
 export type RetrainChartDataSet = 'CURRENT_TEST' | 'NEW_DATA'
 
-/** Colour of the current version's line. The evaluation chart draws its
- *  compare series with this exact token (`actual-vs-predicted-chart.tsx`,
- *  `residual-chart.tsx`); named here so the legend cannot claim a colour the
- *  chart does not use. */
-export const CURRENT_VERSION_COLOR = 'var(--chart-4)'
+/** Colour of the current version's line, beside the new version's blue
+ *  `--chart-1`. Magenta because it stays clear of that blue and of the
+ *  residual chart's green and amber SD bands; no `--chart-1..5` token does.
+ *  The charts, their tooltip and the legend all read this one constant, so
+ *  the legend cannot claim a colour the chart does not use. */
+export const CURRENT_VERSION_COLOR = 'var(--chart-6)'
 
 export interface RetrainChartSeries {
   rows: FitRow[]

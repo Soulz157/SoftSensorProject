@@ -11,10 +11,7 @@ import { env } from '@/config/env.config';
 /**
  * MODEL-SERVE-002. Guards the descriptor endpoints `apps/serving` calls to
  * resolve a PRODUCTION ModelVersion and its model bytes — deliberately NOT
- * `JwtAccessGuard`: `JwtAccessStrategy.validate()` carries an unconditional
- * 100ms delay (strategies/jwt-access.strategy.ts:22) with no business being
- * on a path whose whole point is being bounded, and a serving process is
- * not a logged-in user with a workspace to check `assertModelAccess`
+ * `JwtAccessGuard`: a serving process is not a logged-in user with a workspace to check `assertModelAccess`
  * against — see `serving_host_undecided`'s resolution in
  * docs/feature_list_model.json for why serving is a separate process at
  * all.

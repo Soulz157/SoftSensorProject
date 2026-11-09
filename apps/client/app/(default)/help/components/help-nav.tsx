@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils'
 export type HelpSection =
   | 'quick-start'
   | 'workspace-setup'
-  | 'canvas-nodes'
+  | 'canvas-equipment'
   | 'faq'
   | 'troubleshooting'
   | 'contact'
@@ -20,7 +20,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'quick-start', label: 'Quick Start' },
       { id: 'workspace-setup', label: 'Workspace Setup' },
-      { id: 'canvas-nodes', label: 'Canvas & Nodes' },
+      { id: 'canvas-equipment', label: 'Canvas & Equipment' },
     ],
   },
   {

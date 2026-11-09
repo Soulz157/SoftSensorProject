@@ -82,6 +82,8 @@ describe('ModelCandidateJobAuthorizedService', () => {
     currentRunId: 'run-1',
     bestRunId: null as string | null,
     bestRmse: null as number | null,
+    // MODEL-FLOW-035. 'rmse' is what every pre-existing job ranks by.
+    rankingMetric: 'rmse' as string,
     selectedRunId: null as string | null,
     createdById: 'user-1',
     createdAt: new Date(),
@@ -211,6 +213,28 @@ describe('ModelCandidateJobAuthorizedService', () => {
       expect(result.success).toBe(true);
     });
 
+    it('accepts rankingMetric rmse or mae, or none (MODEL-FLOW-035)', () => {
+      for (const rankingMetric of ['rmse', 'mae', undefined]) {
+        const result = CreateCandidateJobSchema.safeParse({
+          ...BASE,
+          kind: 'HYPERPARAMETER_SEARCH',
+          rankingMetric,
+        });
+        expect(result.success).toBe(true);
+      }
+    });
+
+    it('refuses a rankingMetric the job cannot rank by, r2 included (MODEL-FLOW-035)', () => {
+      for (const rankingMetric of ['r2', 'mse', '']) {
+        const result = CreateCandidateJobSchema.safeParse({
+          ...BASE,
+          kind: 'HYPERPARAMETER_SEARCH',
+          rankingMetric,
+        });
+        expect(result.success).toBe(false);
+      }
+    });
+
     it('refuses a single candidate for ALGORITHM_SWEEP', () => {
       const result = CreateCandidateJobSchema.safeParse({
         ...BASE,
@@ -328,6 +352,118 @@ describe('ModelCandidateJobAuthorizedService', () => {
         { algorithm: 'ridge', hyperparameters: { alpha: 0.01 }, phase: 1 },
         { algorithm: 'ridge', hyperparameters: { alpha: 10 }, phase: 1 },
       ]);
+    });
+
+    /**
+     * MODEL-FLOW-038. A grid is ONE candidate and ONE run: the trainer crosses
+     * it, so nothing is expanded and the curated shortlist is never read.
+     */
+    it('MODEL-FLOW-038: a paramGrid stays one candidate carrying the grid, one run, no expansion', async () => {
+      const prisma = makePrisma();
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
+      );
+      const paramGrid = { alpha: [0.1, 1, 10] };
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+          paramGrid,
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      expect(mockedTuningCandidatesFor).not.toHaveBeenCalled();
+      const createCall = prisma.modelCandidateJob.create.mock.calls[0][0];
+      expect(createCall.data.totalRuns).toBe(1);
+      expect(createCall.data.candidates).toEqual([
+        {
+          algorithm: 'ridge',
+          hyperparameters: { alpha: 1 },
+          paramGrid,
+          phase: 1,
+        },
+      ]);
+      expect(runLaunch.launchDraftRun).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * MODEL-FLOW-038. sklearn raises on `n_components` above the feature
+     * count and the search runs with error_score="raise", so the grid is
+     * capped here off the artifact's own feature count.
+     */
+    describe('MODEL-FLOW-038: PLS n_components cap', () => {
+      const plsJob = (n_components: number[]) =>
+        ({
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [{ algorithm: 'pls', hyperparameters: {} }],
+          paramGrid: { n_components },
+        }) as never;
+
+      function build(featureCount: number) {
+        const prisma = makePrisma();
+        (prisma as unknown as Record<string, unknown>).datasetArtifact = {
+          findUnique: jest.fn().mockResolvedValue({ featureCount }),
+        };
+        const service = new ModelCandidateJobAuthorizedService(
+          prisma as never,
+          makeRunLaunch() as never,
+          makeAutoScore() as never,
+          makeNotifications() as never,
+        );
+        return { prisma, service };
+      }
+
+      it('drops components above the feature count before the job is stored', async () => {
+        const { prisma, service } = build(3);
+        await service.createJob(
+          'draft-1',
+          plsJob([1, 2, 4, 6]),
+          'user-1',
+          'ADMIN',
+        );
+        const stored = prisma.modelCandidateJob.create.mock.calls[0][0];
+        expect(stored.data.candidates[0].paramGrid).toEqual({
+          n_components: [1, 2],
+        });
+      });
+
+      it('refuses, naming the feature count, when nothing is left', async () => {
+        const { prisma, service } = build(2);
+        await expect(
+          service.createJob('draft-1', plsJob([4, 6]), 'user-1', 'ADMIN'),
+        ).rejects.toThrow(/2 feature columns/);
+        expect(prisma.modelCandidateJob.create).not.toHaveBeenCalled();
+      });
+
+      it('leaves another algorithm’s grid alone', async () => {
+        const { prisma, service } = build(1);
+        await service.createJob(
+          'draft-1',
+          {
+            goldArtifactId: 'gold-1',
+            targetY: 'TI-101',
+            kind: 'HYPERPARAMETER_SEARCH',
+            candidates: [{ algorithm: 'ridge', hyperparameters: {} }],
+            paramGrid: { alpha: [1, 2] },
+          } as never,
+          'user-1',
+          'ADMIN',
+        );
+        const stored = prisma.modelCandidateJob.create.mock.calls[0][0];
+        expect(stored.data.candidates[0].paramGrid).toEqual({ alpha: [1, 2] });
+      });
     });
 
     /**
@@ -527,6 +663,36 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const { data } = createCalls(prisma)[0][0];
       expect(data.sizedRowCount).toBe(8350);
       expect(data.sizedDistinctLabelled).toBe(32);
+    });
+
+    it('records the ranking metric, defaulting to rmse (MODEL-FLOW-035)', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 0.01 }]);
+      for (const [sent, stored] of [
+        ['mae', 'mae'],
+        [undefined, 'rmse'],
+      ] as const) {
+        const prisma = makePrisma();
+        const service = new ModelCandidateJobAuthorizedService(
+          prisma as never,
+          makeRunLaunch() as never,
+          makeAutoScore() as never,
+          makeNotifications() as never,
+        );
+        await service.createJob(
+          'draft-1',
+          {
+            goldArtifactId: 'gold-1',
+            targetY: 'TI-101',
+            kind: 'HYPERPARAMETER_SEARCH',
+            candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+            ...(sent ? { rankingMetric: sent } : {}),
+          } as never,
+          'user-1',
+          'ADMIN',
+        );
+        const { data } = createCalls(prisma)[0][0];
+        expect(data.rankingMetric).toBe(stored);
+      }
     });
 
     /**
@@ -1305,6 +1471,352 @@ describe('ModelCandidateJobAuthorizedService', () => {
           data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 0.9 }),
         }),
       );
+    });
+  });
+
+  describe('MODEL-FLOW-035 — a job ranked by MAE', () => {
+    /** Resolves a run lookup by id, so the incumbent read sees ITS metrics. */
+    function withRuns(
+      prisma: ReturnType<typeof makePrisma>,
+      byId: Record<string, Record<string, unknown>>,
+    ) {
+      prisma.modelTrainingRun.findUnique.mockImplementation(
+        ({ where }: { where: { id: string } }) =>
+          Promise.resolve(byId[where.id] ?? null),
+      );
+    }
+
+    function serviceFor(prisma: ReturnType<typeof makePrisma>) {
+      return new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
+      );
+    }
+
+    it('picks the lower MAE even when its RMSE is worse, and still records the winner’s RMSE', async () => {
+      const incumbent = {
+        id: 'run-1',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 1, mae: 0.9 },
+      };
+      const current = {
+        id: 'run-2',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 2, mae: 0.5 },
+      };
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          currentRunId: 'run-2',
+          rankingMetric: 'mae',
+          bestRunId: 'run-1',
+          bestRmse: 1,
+        },
+        run: current,
+      });
+      withRuns(prisma, { 'run-1': incumbent, 'run-2': current });
+
+      await serviceFor(prisma).advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'SUCCEEDED',
+            bestRunId: 'run-2',
+            bestRmse: 2,
+          }),
+        }),
+      );
+    });
+
+    it('keeps the incumbent when the new run has a worse MAE but a better RMSE', async () => {
+      const incumbent = {
+        id: 'run-1',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 2, mae: 0.5 },
+      };
+      const current = {
+        id: 'run-2',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 1, mae: 0.9 },
+      };
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          currentRunId: 'run-2',
+          rankingMetric: 'mae',
+          bestRunId: 'run-1',
+          bestRmse: 2,
+        },
+        run: current,
+      });
+      withRuns(prisma, { 'run-1': incumbent, 'run-2': current });
+
+      await serviceFor(prisma).advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 2 }),
+        }),
+      );
+    });
+
+    it('makes the first scored run the winner when nothing is incumbent yet', async () => {
+      const current = {
+        id: 'run-1',
+        status: 'SUCCEEDED',
+        metrics: { rmse: 1, mae: 0.7 },
+      };
+      const prisma = makePrisma({
+        job: { completedRuns: 0, totalRuns: 2, rankingMetric: 'mae' },
+        run: current,
+      });
+      withRuns(prisma, { 'run-1': current });
+
+      await serviceFor(prisma).advanceJobForRun('run-1', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 1 }),
+        }),
+      );
+    });
+
+    it('ranks a CV job on cv_mae_mean', async () => {
+      const incumbent = {
+        id: 'run-1',
+        status: 'SUCCEEDED',
+        metrics: { cv_rmse_mean: 1, cv_mae_mean: 0.9, n_splits: 3 },
+      };
+      const current = {
+        id: 'run-2',
+        status: 'SUCCEEDED',
+        metrics: { cv_rmse_mean: 2, cv_mae_mean: 0.4, n_splits: 3 },
+      };
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          currentRunId: 'run-2',
+          nSplits: 3,
+          rankingMetric: 'mae',
+          bestRunId: 'run-1',
+          bestRmse: 1,
+        },
+        run: current,
+      });
+      withRuns(prisma, { 'run-1': incumbent, 'run-2': current });
+
+      await serviceFor(prisma).advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-2', bestRmse: 2 }),
+        }),
+      );
+    });
+
+    it('an rmse job never reads the incumbent run — bestRmse stays its running score', async () => {
+      const prisma = makePrisma({
+        job: {
+          completedRuns: 1,
+          totalRuns: 2,
+          currentRunId: 'run-2',
+          bestRunId: 'run-1',
+          bestRmse: 0.5,
+        },
+        run: { id: 'run-2', status: 'SUCCEEDED', metrics: { rmse: 0.7 } },
+      });
+      prisma.modelTrainingRun.findUnique.mockClear();
+
+      await serviceFor(prisma).advanceJobForRun('run-2', 'job-1');
+
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ bestRunId: 'run-1', bestRmse: 0.5 }),
+        }),
+      );
+    });
+  });
+
+  describe('cancelJobService', () => {
+    function build(
+      job: Record<string, unknown> | null,
+      opts: { updateManyCount?: number } = {},
+    ) {
+      const prisma = makePrisma({ job, updateManyCount: opts.updateManyCount });
+      const cancelDraftRunService = jest.fn().mockResolvedValue({});
+      const runLaunch = { ...makeRunLaunch(), cancelDraftRunService };
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
+      );
+      return { prisma, runLaunch, cancelDraftRunService, service };
+    }
+    const cancel = (s: ModelCandidateJobAuthorizedService) =>
+      s.cancelJobService('draft-1', 'job-1', 'user-1', 'ADMIN');
+
+    it('marks the job CANCELED first, THEN kills its current run', async () => {
+      const { prisma, cancelDraftRunService, service } = build({
+        status: 'RUNNING',
+        currentRunId: 'run-9',
+      });
+
+      const res = await cancel(service);
+
+      const swap = prisma.modelCandidateJob.updateMany.mock.calls[0][0];
+      expect(swap.where).toEqual({
+        id: 'job-1',
+        status: { in: ['QUEUED', 'RUNNING'] },
+      });
+      expect(swap.data).toMatchObject({
+        status: 'CANCELED',
+        failureReason: 'Canceled by user.',
+        finishedAt: expect.any(Date),
+      });
+      expect(cancelDraftRunService).toHaveBeenCalledWith(
+        'draft-1',
+        'run-9',
+        'user-1',
+        'ADMIN',
+      );
+      // The order is the point: no candidate may launch once the run dies.
+      expect(
+        prisma.modelCandidateJob.updateMany.mock.invocationCallOrder[0],
+      ).toBeLessThan(cancelDraftRunService.mock.invocationCallOrder[0]);
+      expect(res.message).toBe('Job canceled');
+    });
+
+    it('checks the draft is writable before touching anything', async () => {
+      const { runLaunch, service } = build({ status: 'RUNNING' });
+      await cancel(service);
+      expect(runLaunch.assertDraftWritable).toHaveBeenCalledWith(
+        'draft-1',
+        'user-1',
+        'ADMIN',
+      );
+    });
+
+    it('cancels a QUEUED job that has no run yet without killing anything', async () => {
+      const { prisma, cancelDraftRunService, service } = build({
+        status: 'QUEUED',
+        currentRunId: null,
+      });
+      await cancel(service);
+      expect(prisma.modelCandidateJob.updateMany).toHaveBeenCalledTimes(1);
+      expect(cancelDraftRunService).not.toHaveBeenCalled();
+    });
+
+    it.each(['SUCCEEDED', 'FAILED', 'CANCELED'])(
+      'leaves a %s job alone and says so',
+      async (status) => {
+        const { prisma, cancelDraftRunService, service } = build({
+          status,
+          currentRunId: 'run-9',
+        });
+        const res = await cancel(service);
+        expect(res.message).toBe(`Job already ${status.toLowerCase()}`);
+        expect(prisma.modelCandidateJob.updateMany).not.toHaveBeenCalled();
+        expect(cancelDraftRunService).not.toHaveBeenCalled();
+      },
+    );
+
+    it('kills nothing when it lost the race to a job that just finished', async () => {
+      const { cancelDraftRunService, service } = build(
+        { status: 'RUNNING', currentRunId: 'run-9' },
+        { updateManyCount: 0 },
+      );
+      const res = await cancel(service);
+      expect(cancelDraftRunService).not.toHaveBeenCalled();
+      expect(res.message).toMatch(/^Job already /);
+    });
+
+    it('404s for a job that is not under that draft', async () => {
+      const { service } = build(null);
+      await expect(cancel(service)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('cancelModelJobService (a retrain)', () => {
+    function build(
+      job: Record<string, unknown> | null,
+      opts: { updateManyCount?: number } = {},
+    ) {
+      const prisma = makePrisma({ job, updateManyCount: opts.updateManyCount });
+      const cancelRunService = jest.fn().mockResolvedValue({});
+      const cancelDraftRunService = jest.fn().mockResolvedValue({});
+      const runLaunch = {
+        ...makeRunLaunch(),
+        cancelRunService,
+        cancelDraftRunService,
+      };
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+        makeAutoScore() as never,
+        makeNotifications() as never,
+      );
+      return { prisma, cancelRunService, cancelDraftRunService, service };
+    }
+    const cancel = (s: ModelCandidateJobAuthorizedService) =>
+      s.cancelModelJobService('model-1', 'job-1', 'user-1', 'ADMIN');
+
+    it('swaps the job to CANCELED first, then kills the run through the MODEL-scoped route', async () => {
+      const { prisma, cancelRunService, cancelDraftRunService, service } =
+        build({ status: 'RUNNING', currentRunId: 'run-9' });
+
+      const res = await cancel(service);
+
+      expect(res.canceled).toBe(true);
+      expect(cancelRunService).toHaveBeenCalledWith(
+        'model-1',
+        'run-9',
+        'user-1',
+        'ADMIN',
+      );
+      expect(cancelDraftRunService).not.toHaveBeenCalled();
+      expect(
+        prisma.modelCandidateJob.updateMany.mock.invocationCallOrder[0],
+      ).toBeLessThan(cancelRunService.mock.invocationCallOrder[0]);
+    });
+
+    it('looks the job up by MODEL, never by draft', async () => {
+      const { prisma, service } = build({ status: 'RUNNING' });
+      await cancel(service);
+      expect(prisma.modelCandidateJob.findFirst.mock.calls[0][0].where).toEqual(
+        { id: 'job-1', modelId: 'model-1' },
+      );
+    });
+
+    it('is a no-op for a retrain that already finished', async () => {
+      const { prisma, cancelRunService, service } = build({
+        status: 'SUCCEEDED',
+        currentRunId: 'run-9',
+      });
+      const res = await cancel(service);
+      expect(res.canceled).toBe(false);
+      expect(prisma.modelCandidateJob.updateMany).not.toHaveBeenCalled();
+      expect(cancelRunService).not.toHaveBeenCalled();
+    });
+
+    it('kills nothing when it lost the race to a retrain that just finished', async () => {
+      const { cancelRunService, service } = build(
+        { status: 'RUNNING', currentRunId: 'run-9' },
+        { updateManyCount: 0 },
+      );
+      expect((await cancel(service)).canceled).toBe(false);
+      expect(cancelRunService).not.toHaveBeenCalled();
+    });
+
+    it('404s for a job that is not this model’s', async () => {
+      const { service } = build(null);
+      await expect(cancel(service)).rejects.toThrow(NotFoundException);
     });
   });
 

@@ -56,6 +56,28 @@ export function RetrainProgress({
 }) {
   if (phase === 'idle' || !job) return null
 
+  if (phase === 'error' && job.status === 'CANCELED') {
+    // A user action, not a fault: said plainly and without the failure styling.
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2.5 text-xs font-medium text-muted-foreground">
+        <span className="flex-1">
+          Retrain canceled — no new version was staged, and the current version
+          is unchanged.
+        </span>
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Close retrain section"
+            className="-m-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground sm:h-8 sm:w-8"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+    )
+  }
+
   if (phase === 'error') {
     return (
       <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs font-medium text-destructive">

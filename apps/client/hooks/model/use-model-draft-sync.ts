@@ -6,7 +6,7 @@ import { modelDraftService } from '@/services/model-draft'
 import {
   mpWorkspaceIdAtom,
   mpPlantIdAtom,
-  mpNodeIdAtom,
+  mpEquipmentIdAtom,
   mpNameAtom,
   mpSelectedDatasetAtom,
   mpServerDraftIdAtom,
@@ -84,7 +84,7 @@ export function useModelDraftSync(
   const { autoSync = true } = options
   const workspaceId = useAtomValue(mpWorkspaceIdAtom)
   const plantId = useAtomValue(mpPlantIdAtom)
-  const nodeId = useAtomValue(mpNodeIdAtom)
+  const equipmentId = useAtomValue(mpEquipmentIdAtom)
   const name = useAtomValue(mpNameAtom)
   const selectedDataset = useAtomValue(mpSelectedDatasetAtom)
   const targetVariables = useAtomValue(mpTargetVariableAtom)
@@ -105,7 +105,7 @@ export function useModelDraftSync(
         workspaceId,
         name: name || undefined,
         plantId: plantId || undefined,
-        nodeId: nodeId || undefined,
+        nodeId: equipmentId || undefined,
         datasetId: selectedDataset?.id,
       })
       setDraftId(res.data.id)
@@ -116,7 +116,7 @@ export function useModelDraftSync(
     workspaceId,
     name,
     plantId,
-    nodeId,
+    equipmentId,
     selectedDataset?.id,
     setDraftId,
   ])
@@ -146,7 +146,7 @@ export function useModelDraftSync(
     await modelDraftService.patch(id, {
       name: name || undefined,
       plantId: plantId || null,
-      nodeId: nodeId || null,
+      nodeId: equipmentId || null,
       datasetId: selectedDataset?.id ?? null,
       targetY,
       algorithm: algorithms[0] ?? null,
@@ -159,7 +159,7 @@ export function useModelDraftSync(
     ensureDraftId,
     name,
     plantId,
-    nodeId,
+    equipmentId,
     selectedDataset?.id,
     targetVariables,
     algorithms,

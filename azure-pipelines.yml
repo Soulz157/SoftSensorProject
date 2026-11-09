@@ -1,0 +1,54 @@
+# AZURE-BLOB-001. CI, infrastructure and images for the dev environment.
+# Setup steps: infra/README.md. App deployment, staging and production wait on
+# the hosting decision (AZURE-HOST-001).
+
+trigger:
+  branches:
+    include: [Dev, main]
+
+pr:
+  branches:
+    include: [Dev, main]
+
+pool:
+  vmImage: ubuntu-24.04
+
+variables:
+  - group: softsensor-dev
+  # Service connection names are resolved when the pipeline compiles, so this
+  # cannot live in the variable group.
+  - name: azureServiceConnection
+    value: sc-softsensor-dev
+  - name: isPullRequest
+    value: $[eq(variables['Build.Reason'], 'PullRequest')]
+
+stages:
+  - stage: CI
+    jobs:
+      - template: .azure-pipelines/templates/ci.yml
+
+  - stage: Infra
+    dependsOn: CI
+    jobs:
+      - template: .azure-pipelines/templates/infra.yml
+        parameters:
+          environmentName: softsensor-dev
+          paramFile: infra/env/dev.bicepparam
+          serviceConnection: $(azureServiceConnection)
+
+  - stage: Images
+    dependsOn: Infra
+    condition: in(dependencies.Infra.result, 'Succeeded', 'SucceededWithIssues')
+    jobs:
+      - template: .azure-pipelines/templates/image.yml
+        parameters:
+          name: trainer
+          repository: soft-sensor-trainer
+          dockerfile: images/trainer/Dockerfile
+          serviceConnection: $(azureServiceConnection)
+      - template: .azure-pipelines/templates/image.yml
+        parameters:
+          name: serving
+          repository: soft-sensor-serving
+          dockerfile: apps/serving/Dockerfile
+          serviceConnection: $(azureServiceConnection)

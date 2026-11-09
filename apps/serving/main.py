@@ -10,14 +10,18 @@ resolve identically here and under pytest (see tests/conftest.py).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from config import settings
 from routers.serve import router as serve_router
 from services.descriptor import DescriptorClient
+from services.warmup import warm_production_set
 
 logger = logging.getLogger("serving")
 
@@ -33,26 +37,33 @@ async def lifespan(app: FastAPI):
 
     # T03. Warm the production set BEFORE reporting ready — getting this
     # backwards means traffic arrives during cold load and the first
-    # caller pays for everyone. A model that fails to warm is logged, not
-    # fatal: /readyz still flips true once the warm PASS completes, so one
-    # broken model does not block every other model from serving.
-    try:
-        versions = app.state.descriptor_client.list_production_versions()
-        for entry in versions:
-            model_id = entry.get("modelId")
-            if not model_id:
-                continue
-            try:
-                descriptor = app.state.descriptor_client.get_descriptor(
-                    model_id)
-                app.state.loader.get(model_id, descriptor)
-            except Exception:
-                logger.exception("Failed to warm model %s", model_id)
-    except Exception:
-        logger.exception("Failed to list production versions at startup")
+    # caller pays for everyone. The warm runs in a worker thread rather
+    # than inline: it now retries while the backend is unreachable
+    # (`services/warmup.py`), and blocking startup on that would also take
+    # /healthz down with it. /readyz stays 503 until the warm pass ends,
+    # successful or not.
+    stop = threading.Event()
 
-    app.state.ready = True
-    yield
+    def _warm() -> None:
+        try:
+            warm_production_set(
+                app.state.descriptor_client,
+                app.state.loader,
+                retry_seconds=settings.SERVING_WARM_RETRY_SECONDS,
+                stop=stop,
+            )
+        finally:
+            app.state.ready = True
+
+    warm_task = asyncio.create_task(asyncio.to_thread(_warm))
+    try:
+        yield
+    finally:
+        # Ends a pending retry wait at once. An HTTP call or model download
+        # already in flight is bounded by its own timeout, so shutdown waits
+        # only briefly rather than for it.
+        stop.set()
+        await asyncio.wait({warm_task}, timeout=5)
 
 
 def create_app() -> FastAPI:

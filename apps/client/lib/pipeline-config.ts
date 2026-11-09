@@ -28,6 +28,7 @@ import type {
   DataSourceConfig,
 } from '@/store/model-pipeline'
 import type { CustomDateRange } from '@/store/data-visualize'
+import type { HistoricalFetchConfig } from '@/lib/fetch-config'
 
 export interface PipelineConfig {
   timeRange: FetchPeriod
@@ -86,6 +87,18 @@ export interface PipelineConfig {
    * recipe agree on what "absent" looks like.
    */
   targetTag?: string | null
+  /**
+   * Step 2's Historical Fetch Settings (2026-10-19), so a re-fetch reads the
+   * source exactly as the dataset was built (`piSummaryParams`). Optional:
+   * older recipes were fetched with python's defaults, which is what an
+   * absent field resolves to.
+   */
+  fetchConfig?: HistoricalFetchConfig
+  /**
+   * Tags marked critical in Step 1 (lib/critical-tags.ts). Optional: recipes
+   * saved before the field existed hydrate to no critical tags.
+   */
+  criticalTags?: string[]
 }
 
 /** Fixed clock so a saved recipe re-derives identical rows on every call. */

@@ -56,6 +56,9 @@ class TagResolveItem(BaseModel):
     questionable: Optional[bool] = None
     substituted: Optional[bool] = None
     timestamp: Optional[str] = None
+    # MODEL-SERVE-032. PI point type ('Float32', 'Digital', ...); None when PI
+    # did not report one.
+    pointType: Optional[str] = None
 
 
 class TagResolveResponse(BaseModel):

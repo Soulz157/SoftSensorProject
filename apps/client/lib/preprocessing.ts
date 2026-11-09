@@ -353,6 +353,10 @@ export type CleaningMethod =
   | 'clip'
   | 'crop'
   | 'exclude'
+  // DS-LAKE-038. Preset range cutoff "Exclude": out-of-range readings are
+  // marked Bad, value kept (as `exclude` does inside a band). Never offered in
+  // a picker - written by the Preset range card.
+  | 'range_exclude'
   | 'outlier_median'
   // smoothing
   | 'moving_avg'
@@ -362,7 +366,7 @@ export interface CleaningStep {
   uid: string
   category: CleaningCategory
   method: CleaningMethod
-  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip/crop/exclude high */
+  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip/crop/exclude high · interpolate max gap (rows) */
   param?: number
   /** clip/crop/exclude low bound only */
   paramLow?: number
@@ -439,11 +443,63 @@ const FILL_METHODS: Partial<Record<CleaningMethod, FillStrategy>> = {
   backward: 'backward',
 }
 
-/** Linear-interpolate every non-Good cell for a tag; flips them to Good. */
-function interpolateTag(rows: DataRow[], tag: string): void {
+/**
+ * `interpolate`'s optional max gap: a whole number of rows >= 1, else no
+ * limit (absent, blank-as-0, negative). Shared with `cleaning_service.py`'s
+ * `_max_gap` - same reading, so a saved recipe replays identically.
+ */
+export function interpolateMaxGap(param: number | undefined): number | null {
+  if (param === undefined || !Number.isFinite(param)) return null
+  const rows = Math.floor(param)
+  return rows >= 1 ? rows : null
+}
+
+/**
+ * Indices of non-Good cells in a run LONGER than `maxGap` consecutive cells.
+ * Interpolation leaves those alone (they stay non-Good, so a later fill or
+ * Drop Missing step decides) - bridging a long outage with a straight line
+ * invents data the model then trains on as real.
+ */
+function longGapCells(
+  rows: DataRow[],
+  tag: string,
+  maxGap: number,
+): Set<number> {
+  const skip = new Set<number>()
+  let i = 0
+  while (i < rows.length) {
+    if (!rows[i]?.cells[tag] || rows[i]?.cells[tag]?.status === 'Good') {
+      i++
+      continue
+    }
+    let end = i
+    while (
+      end < rows.length &&
+      rows[end]?.cells[tag] &&
+      rows[end]?.cells[tag]?.status !== 'Good'
+    )
+      end++
+    if (end - i > maxGap) for (let j = i; j < end; j++) skip.add(j)
+    i = end
+  }
+  return skip
+}
+
+/**
+ * Linear-interpolate every non-Good cell for a tag; flips them to Good. With
+ * `maxGap`, a run of more than that many consecutive non-Good cells is left
+ * untouched (see `longGapCells`).
+ */
+function interpolateTag(
+  rows: DataRow[],
+  tag: string,
+  maxGap: number | null = null,
+): void {
+  const skip = maxGap === null ? null : longGapCells(rows, tag, maxGap)
   for (let i = 0; i < rows.length; i++) {
     const cell = rows[i]?.cells[tag]
     if (!cell || cell.status === 'Good') continue
+    if (skip?.has(i)) continue
 
     let p = i - 1
     while (p >= 0 && rows[p]?.cells[tag]?.status !== 'Good') p--
@@ -483,7 +539,7 @@ function applyCleaningStep(
     return
   }
   if (method === 'interpolate') {
-    interpolateTag(rows, tag)
+    interpolateTag(rows, tag, interpolateMaxGap(step.param))
     return
   }
   const fill = FILL_METHODS[method]
@@ -520,6 +576,24 @@ function applyCleaningStep(
       if (!cell || !inStepWindow(row.timestamp, step)) continue
       if (low !== undefined && cell.value < low) cell.value = low
       if (high !== undefined && cell.value > high) cell.value = high
+    }
+    return
+  }
+  if (method === 'range_exclude') {
+    const low = step.paramLow
+    const high = step.param
+    if (low === undefined && high === undefined) return
+    for (const row of rows) {
+      const cell = row?.cells[tag]
+      if (!cell) continue
+      // Strict, like the conditional rule it replaces: a value ON a bound is
+      // in range. Every status, like the server op, so the two stay in step.
+      if (
+        (low !== undefined && cell.value < low) ||
+        (high !== undefined && cell.value > high)
+      ) {
+        cell.status = 'Bad'
+      }
     }
     return
   }
@@ -842,15 +916,87 @@ export function datasetStats(
 }
 
 /** Wide rows for the time-series chart (`sensor-trend-chart`). */
-export function toChartRows(ds: Dataset): SensorChartRow[] {
+/**
+ * Chart rows, one series per tag.
+ *
+ * `goodOnly` turns every non-Good reading into a gap (`null`), the rule
+ * `tagFillPreview` already uses. A cleaned view needs it: an Exclude marks a
+ * reading Bad but KEEPS its value, so plotting `cell.value` blindly draws the
+ * excluded readings as if nothing happened — and GOLD drops every row that
+ * still holds one. Off by default, so a raw "as fetched" view keeps showing
+ * PI's own Bad readings.
+ */
+export function toChartRows(
+  ds: Dataset,
+  opts: { goodOnly?: boolean } = {},
+): SensorChartRow[] {
   return ds.rows.map(r => {
     const row: SensorChartRow = { timestamp: r.timestamp }
     for (const t of ds.tags) {
       const cell = r.cells[t]
-      if (cell) row[t] = cell.value
+      if (!cell) continue
+      row[t] = opts.goodOnly && cell.status !== 'Good' ? null : cell.value
     }
     return row
   })
+}
+
+/** One tag's share of the rows GOLD will drop. */
+export interface GoldRowDropTag {
+  tag: string
+  /** Rows where this tag's own reading is not Good. */
+  bad: number
+  /** `bad` as a percent of all rows. */
+  pct: number
+}
+
+export interface GoldRowDropEstimate {
+  total: number
+  dropped: number
+  kept: number
+  /** Tags with at least one non-Good reading, most damaging first. */
+  byTag: GoldRowDropTag[]
+}
+
+/**
+ * How many rows the server will drop when it builds GOLD.
+ *
+ * Mirrors `drop_bad_feature_rows` (apps/python/services/feature_service.py):
+ * a row is dropped when ANY saved feature tag's reading is not Good; the
+ * target is skipped (a missing lab value is handled at training, not here),
+ * and a tag the frame does not carry is ignored. So an Exclude range, or a
+ * PI Bad reading with no fill step after it, removes its whole row from the
+ * saved dataset — this is what the Step 5 notice warns about before Continue.
+ *
+ * An estimate of the train side: the server runs the same rule once on the
+ * training rows and again on the holdout before it is scaled.
+ */
+export function estimateGoldRowDrop(
+  ds: Dataset,
+  opts: { tags: readonly string[]; targetTag: string | null },
+): GoldRowDropEstimate {
+  const tags = opts.tags.filter(
+    t => t !== opts.targetTag && ds.tags.includes(t),
+  )
+  const badByTag = new Map<string, number>(tags.map(t => [t, 0]))
+  let dropped = 0
+  for (const r of ds.rows) {
+    let rowBad = false
+    for (const t of tags) {
+      const cell = r.cells[t]
+      if (cell && cell.status !== 'Good') {
+        rowBad = true
+        badByTag.set(t, badByTag.get(t)! + 1)
+      }
+    }
+    if (rowBad) dropped++
+  }
+  const total = ds.rows.length
+  const byTag = [...badByTag.entries()]
+    .filter(([, bad]) => bad > 0)
+    .map(([tag, bad]) => ({ tag, bad, pct: total ? (bad / total) * 100 : 0 }))
+    .sort((a, b) => b.bad - a.bad || a.tag.localeCompare(b.tag))
+  return { total, dropped, kept: total - dropped, byTag }
 }
 
 export interface TagFillPreviewRow {
@@ -863,7 +1009,9 @@ export interface TagFillPreviewRow {
  * Join `base` (pre-fill) and `filled` (post-`preprocess`) by timestamp for a
  * single tag, for before/after preview charts. Joins by timestamp rather than
  * index since `filled` may have fewer rows (a drop-semantics tag can remove
- * rows that `base` still has).
+ * rows that `base` still has). Both sides keep Good cells only: an excluded
+ * (Bad) cell keeps its value, so reading it on the `after` side would hide
+ * the exclusion; every fill flips its cell to Good, so filled values still show.
  */
 export function tagFillPreview(
   base: Dataset,
@@ -878,7 +1026,10 @@ export function tagFillPreview(
   const afterByTs = new Map<string, number | null>(
     filled.rows
       .filter(r => wanted.has(r.timestamp))
-      .map(r => [r.timestamp, r.cells[tag]?.value ?? null]),
+      .map(r => {
+        const cell = r.cells[tag]
+        return [r.timestamp, cell && cell.status === 'Good' ? cell.value : null]
+      }),
   )
 
   return src.map(r => {

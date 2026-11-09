@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/alert-dialog'
 
 import { cn } from '@/lib/utils'
+import { WorkspaceQuota } from '@/components/workspace/workspace-quota'
 import { workspaceService } from '@/services/workspace'
 import { useUpdateWorkspace } from '@/hooks/workspace/use-update-workspace'
 import { useDeleteWorkspace } from '@/hooks/workspace/use-delete-workspace'
@@ -358,6 +359,23 @@ export function WorkspaceInfo({ workspace, loading }: WorkspaceInfoProps) {
           {isUpdating ? 'Saving...' : 'Save Changes'}
         </Button>
       </div>
+
+      {/* MODEL-SERVE-040. Read-only: the cap is the owner's subscription, or an
+          admin's override. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">
+            Usage &amp; Limits
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <WorkspaceQuota
+            quota={workspace?.quota}
+            owner={workspace?.owner}
+            loading={loading}
+          />
+        </CardContent>
+      </Card>
 
       {/* Danger Zone (Only for Owner) */}
       {isOwner && (

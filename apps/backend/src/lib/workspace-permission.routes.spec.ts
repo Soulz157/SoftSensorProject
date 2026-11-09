@@ -122,7 +122,10 @@ const READ_ROUTES: Route[] = [
     'getPredictionSeries',
     (p) => predictions(p).getPredictionSeriesService('model-1', range, user),
   ],
-  ['getPsi', (p) => predictions(p).getPsiService('model-1', range, user)],
+  [
+    'getInputDrift',
+    (p) => predictions(p).getInputDriftService('model-1', range, user),
+  ],
   [
     'getCurrentRetrainJob',
     (p) => retrain(p).getCurrentRetrainJobService('model-1', user),

@@ -183,15 +183,15 @@ describe('useRunConfigDraft — edits stay local until Apply', () => {
     ).not.toBe(777)
   })
 
-  it('setFindBestModel(false) cascades findBestParams off in the draft, mirroring the deleted cascade', () => {
+  // Find Best Model was removed 2026-10-14, and with it the cascade that
+  // turned Find Best Parameters off: the toggle now stands on its own.
+  it('setFindBestParams edits the draft alone, with no other toggle to cascade', () => {
     const { result } = renderDraft()
 
-    act(() => result.current.runConfig.setFindBestModel(true))
     act(() => result.current.runConfig.setFindBestParams(true))
-    act(() => result.current.runConfig.setFindBestModel(false))
 
-    expect(result.current.runConfig.draft.findBestModel).toBe(false)
-    expect(result.current.runConfig.draft.findBestParams).toBe(false)
+    expect(result.current.runConfig.draft.findBestParams).toBe(true)
+    expect(result.current.runConfig.draft).not.toHaveProperty('findBestModel')
   })
 })
 

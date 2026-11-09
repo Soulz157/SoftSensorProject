@@ -152,7 +152,7 @@ describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => 
     plantsByWorkspaceId: {
       [WS_ID]: [plant(PLANT_A, 'Plant 1'), plant(PLANT_B, 'Plant 2')],
     },
-    nodesByWorkspaceId: { [WS_ID]: [] },
+    equipmentListByWorkspaceId: { [WS_ID]: [] },
   }
 
   /**
@@ -313,7 +313,7 @@ describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => 
   it('merges a monitoring alert and a node alarm into Alert, below a failed deploy', () => {
     const rows = buildAlerts({
       ...base,
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
       },
       models: [
@@ -340,7 +340,7 @@ describe('buildAlerts', () => {
   it('includes only non-normal nodes + failed models', () => {
     const rows = buildAlerts({
       ...base,
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         [WS_ID]: [
           node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' }),
           node('n2', PLANT_B, { status: 'normal', name: 'Healthy Pump' }),
@@ -362,7 +362,7 @@ describe('buildAlerts', () => {
   it('resolves plant into Location for node rows', () => {
     const [row] = buildAlerts({
       ...base,
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
       },
       models: [],
@@ -378,7 +378,7 @@ describe('buildAlerts', () => {
   it('handles a failed model linked to equipment (plant + detail)', () => {
     const [row] = buildAlerts({
       ...base,
-      nodesByWorkspaceId: { [WS_ID]: [] },
+      equipmentListByWorkspaceId: { [WS_ID]: [] },
       models: [
         failedModel('m1', 'Vibration Model', {
           node: { name: 'Pump 02', planId: PLANT_B, planName: 'Plant 2' },
@@ -401,7 +401,7 @@ describe('buildAlerts', () => {
   it('handles an unlinked failed model (no equipment)', () => {
     const [row] = buildAlerts({
       ...base,
-      nodesByWorkspaceId: { [WS_ID]: [] },
+      equipmentListByWorkspaceId: { [WS_ID]: [] },
       models: [failedModel('m2', 'Orphan Model')],
     })
     expect(row!.equipmentName).toBeNull()
@@ -412,7 +412,7 @@ describe('buildAlerts', () => {
   it('resolves plant from the workspace plant map when the join omits plan name', () => {
     const [row] = buildAlerts({
       ...base,
-      nodesByWorkspaceId: { [WS_ID]: [] },
+      equipmentListByWorkspaceId: { [WS_ID]: [] },
       models: [
         failedModel('m1', 'Model X', {
           node: { name: 'Pump 02', planId: PLANT_A }, // no planName on join
@@ -425,7 +425,7 @@ describe('buildAlerts', () => {
   it('default-sorts by severity: failed first', () => {
     const rows = buildAlerts({
       ...base,
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         [WS_ID]: [
           node('n1', PLANT_A, { status: 'warning', name: 'Warn Node' }),
           node('n2', PLANT_A, { status: 'alarm', name: 'Alarm Node' }),
@@ -441,7 +441,7 @@ describe('sortAlerts + filterAlerts', () => {
   const rows = buildAlerts({
     workspaces: [workspace()],
     plantsByWorkspaceId: { [WS_ID]: [plant(PLANT_A, 'Plant 1')] },
-    nodesByWorkspaceId: {
+    equipmentListByWorkspaceId: {
       [WS_ID]: [
         node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' }),
         node('n2', PLANT_A, { status: 'warning', name: 'Mixer B' }),
@@ -502,7 +502,7 @@ describe('timestamp derivation', () => {
     const [row] = buildAlerts({
       workspaces: [workspace()],
       plantsByWorkspaceId: { [WS_ID]: [plant(PLANT_A, 'Plant 1')] },
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
       },
       models: [],
@@ -514,7 +514,7 @@ describe('timestamp derivation', () => {
     const [row] = buildAlerts({
       workspaces: [workspace()],
       plantsByWorkspaceId: { [WS_ID]: [] },
-      nodesByWorkspaceId: { [WS_ID]: [] },
+      equipmentListByWorkspaceId: { [WS_ID]: [] },
       models: [failedModel('m1', 'Temp Predictor V1')],
     })
     expect(row!.timestamp).toBe('2026-06-29T10:00:00Z')
@@ -537,7 +537,7 @@ describe('timestamp derivation', () => {
     const [row] = buildAlerts({
       workspaces: [workspace()],
       plantsByWorkspaceId: { [WS_ID]: [] },
-      nodesByWorkspaceId: { [WS_ID]: [] },
+      equipmentListByWorkspaceId: { [WS_ID]: [] },
       models: [modelNoLogs],
     })
     expect(row!.timestamp).toBe('2026-06-29T00:00:00Z') // modelNoLogs.updatedAt
@@ -551,7 +551,7 @@ describe('locationBreadcrumb', () => {
       plantsByWorkspaceId: {
         [WS_ID]: [plant(PLANT_A, 'Plant 1')],
       },
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
       },
       models: [],
@@ -563,7 +563,7 @@ describe('locationBreadcrumb', () => {
     const [row] = buildAlerts({
       workspaces: [workspace()],
       plantsByWorkspaceId: { [WS_ID]: [] },
-      nodesByWorkspaceId: { [WS_ID]: [] },
+      equipmentListByWorkspaceId: { [WS_ID]: [] },
       models: [
         failedModel('m1', 'Vibration Model', {
           node: { name: 'Pump 02', planId: PLANT_B, planName: 'Plant 2' },
@@ -577,7 +577,7 @@ describe('locationBreadcrumb', () => {
     const [row] = buildAlerts({
       workspaces: [workspace()],
       plantsByWorkspaceId: { [WS_ID]: [] },
-      nodesByWorkspaceId: { [WS_ID]: [] },
+      equipmentListByWorkspaceId: { [WS_ID]: [] },
       models: [failedModel('m2', 'Orphan Model')],
     })
     expect(locationBreadcrumb(row!)).toEqual(['Repco'])
@@ -622,7 +622,7 @@ describe('groupByWorkspace', () => {
     const rows = buildAlerts({
       workspaces: [ws(WS_A, 'Zebra Plant'), ws(WS_B, 'Alpha Plant')],
       plantsByWorkspaceId: { [WS_A]: [], [WS_B]: [] },
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         // Zebra Plant: only a warning (least severe).
         [WS_A]: [nodeIn(WS_A, 'n1', 'warning', 'Warn Node')],
         // Alpha Plant: an alarm + a warning — alarm makes this group worse.
@@ -648,7 +648,7 @@ describe('groupByWorkspace', () => {
     const rows = buildAlerts({
       workspaces: [ws(WS_A, 'Zebra Plant'), ws(WS_B, 'Alpha Plant')],
       plantsByWorkspaceId: { [WS_A]: [], [WS_B]: [] },
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         [WS_A]: [nodeIn(WS_A, 'n1', 'warning', 'Warn Node')],
         [WS_B]: [nodeIn(WS_B, 'n2', 'warning', 'Warn Node 2')],
       },
@@ -668,7 +668,7 @@ describe('MODEL-SERVE-024 status vocabulary', () => {
   const base = {
     workspaces: [workspace()],
     plantsByWorkspaceId: { [WS_ID]: [plant(PLANT_A, 'Plant 1')] },
-    nodesByWorkspaceId: { [WS_ID]: [] },
+    equipmentListByWorkspaceId: { [WS_ID]: [] },
   }
   const mon = (status: 'ALERT' | 'WARN' | 'FROZEN', reason: string) =>
     monitoringModel('m', 'Model', {
@@ -698,7 +698,7 @@ describe('MODEL-SERVE-024 status vocabulary', () => {
   it('writes every row detail as `Source: reason`', () => {
     const rows = buildAlerts({
       ...base,
-      nodesByWorkspaceId: {
+      equipmentListByWorkspaceId: {
         [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
       },
       models: [failedModel('m-f', 'Dead Deploy'), mon('ALERT', 'STALE')],

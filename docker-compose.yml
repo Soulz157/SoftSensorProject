@@ -17,6 +17,36 @@ services:
       timeout: 5s
       retries: 5
 
+  # Job queue for training/prediction containers (CONTAINER-QUEUE-001). On its
+  # own network and published on loopback only: training containers run on the
+  # default network and the spawn code treats their contents as untrusted.
+  # Deliberately NOT `env_file: .env`, same reason as MinIO below. The password
+  # is checked here rather than with ${VAR:?}, which would stop every other
+  # service from starting when it is unset.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - >
+        [ -n "$$REDIS_PASSWORD" ] || { echo "REDIS_PASSWORD is not set"; exit 1; };
+        exec redis-server --appendonly yes --maxmemory-policy noeviction
+        --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - queue
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Object storage for dataset version artifacts (Parquet). This service was
   # already running locally as `minio-local` while this block stayed commented
   # out, so a fresh clone got no MinIO. Uncommented to make the environment
@@ -78,7 +108,10 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  redis_data:
 
 networks:
   default:
     name: monorepo_network
+  queue:
+    name: monorepo_queue

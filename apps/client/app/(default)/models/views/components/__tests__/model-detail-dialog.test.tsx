@@ -68,14 +68,20 @@ describe('ModelDetailDialog production badge (MODEL-SERVE-001-T22)', () => {
     // `frozen` is the fifth prodStatus value and was absent from PROD_MAP,
     // so it took the `?? PROD_MAP.normal` fallback and read green "Normal"
     // — a model whose data is frozen reporting as healthy.
-    renderDialog(buildModel({ prodStatus: 'frozen' }))
+    renderDialog(buildModel({
+        deployStatus: 'running',
+        monitoring: { status: 'FROZEN', reason: null, frozenColumns: [] },
+      }))
 
     expect(screen.getByText(/Prod: Data Frozen/)).toBeInTheDocument()
     expect(screen.queryByText(/Prod: Normal/)).not.toBeInTheDocument()
   })
 
   it('does not paint a frozen model with the healthy green treatment', () => {
-    renderDialog(buildModel({ prodStatus: 'frozen' }))
+    renderDialog(buildModel({
+        deployStatus: 'running',
+        monitoring: { status: 'FROZEN', reason: null, frozenColumns: [] },
+      }))
 
     const badge = screen.getByText(/Prod: Data Frozen/).closest('span')
     expect(badge?.className).not.toContain('text-emerald-500')

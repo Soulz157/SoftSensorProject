@@ -32,7 +32,14 @@ import {
 import { cn } from '@/lib/utils'
 import { workspaceService } from '@/services/workspace'
 import { useWorkspaceMembers } from '@/hooks/workspace/use-workspace-members'
-import { grantedPermissionLabels } from '@/lib/workspace-access'
+import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
+import { formatLimit, limitReachedNote } from '@/lib/workspace-limits'
+import {
+  canManageMemberRow,
+  grantedPermissionLabels,
+  invitableRoleOptions,
+  memberManagementAccess,
+} from '@/lib/workspace-access'
 import type { WorkspaceMember, WorkspaceRole } from '@/types'
 import { MemberAccessDialog } from './member-access-dialog'
 
@@ -45,6 +52,15 @@ const inputClass =
 
 const selectClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
+
+const INVITE_ROLE_LABEL: ReadonlyArray<{
+  value: WorkspaceRole
+  label: string
+}> = [
+  { value: 'VIEWER', label: 'VIEWER — Read-only access' },
+  { value: 'STAFF', label: 'STAFF — Edit access' },
+  { value: 'OWNER', label: 'OWNER — Full access' },
+]
 
 function roleBadge(role: WorkspaceRole) {
   return role === 'OWNER'
@@ -92,8 +108,27 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
   const { data: session } = useSession()
   const currentUserId = session?.user?.id
 
-  const { members, loading, isFetching, isOwner, fetchMembers } =
+  const { members, loading, isFetching, isOwner, currentMember, fetchMembers } =
     useWorkspaceMembers(workspaceId, currentUserId)
+  // MODEL-SERVE-035 / 040. The member cap that applies (an admin override,
+  // else the owner's subscription; null = none): shown as 4 / 5, and a full
+  // workspace disables Invite with the reason. An older server without
+  // `quota` still reports the admin cap.
+  const { workspace } = useWorkspace(workspaceId)
+  const quotaMembers = workspace?.quota?.members
+  const maxMembers = quotaMembers
+    ? quotaMembers.limit
+    : (workspace?.maxMembers ?? null)
+  const inviteBlocked = limitReachedNote(
+    'members',
+    maxMembers,
+    members.length,
+    quotaMembers?.source,
+  )
+  // MODEL-SERVE-034. Owners manage everyone; a STAFF member only what an
+  // owner granted (Assign roles / Invite members). The backend enforces it.
+  const access = memberManagementAccess(currentMember, isOwner)
+  const inviteRoleOptions = invitableRoleOptions(access)
 
   const [inviteOpen, setInviteOpen] = useState(false)
   const [inviteEmail, setInviteEmail] = useState('')
@@ -147,22 +182,28 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
           <h3 className="text-sm font-medium text-foreground">Members</h3>
           {!loading && (
             <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground font-medium">
-              {members.length}
+              {formatLimit(members.length, maxMembers)}
             </span>
           )}
         </div>
-        {isOwner && (
+        {access.invite && (
           <Button
             size="sm"
             variant="outline"
             className="gap-1.5 h-8 text-xs"
             onClick={() => setInviteOpen(true)}
+            disabled={inviteBlocked !== null}
           >
             <UserPlus className="h-3.5 w-3.5" />
             Invite
           </Button>
         )}
       </div>
+      {access.invite && inviteBlocked && !loading && (
+        <p className="text-right text-xs text-muted-foreground">
+          {inviteBlocked}
+        </p>
+      )}
 
       <div className="rounded-md border border-border overflow-hidden">
         <Table>
@@ -248,7 +289,7 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                     </TableCell>
 
                     <TableCell>
-                      {isOwner && (
+                      {canManageMemberRow(access, member, currentUserId) && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -256,6 +297,7 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                               variant="ghost"
                               className="h-7 w-7"
                               disabled={isMutating}
+                              aria-label={`Actions for ${fullName}`}
                             >
                               {isMutating ? (
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -270,13 +312,17 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                             >
                               Manage access…
                             </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              className="text-destructive focus:text-destructive"
-                              onClick={() => handleRemove(member)}
-                            >
-                              Remove
-                            </DropdownMenuItem>
+                            {access.full && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-destructive focus:text-destructive"
+                                  onClick={() => handleRemove(member)}
+                                >
+                                  Remove
+                                </DropdownMenuItem>
+                              </>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       )}
@@ -304,6 +350,7 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
             if (!open) setAccessMember(null)
           }}
           onSaved={() => void fetchMembers()}
+          access={access}
         />
       )}
 
@@ -343,9 +390,13 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                 onChange={e => setInviteRole(e.target.value as WorkspaceRole)}
                 disabled={isInviting}
               >
-                <option value="VIEWER">VIEWER — Read-only access</option>
-                <option value="STAFF">STAFF — Edit access</option>
-                <option value="OWNER">OWNER — Full access</option>
+                {INVITE_ROLE_LABEL.filter(o =>
+                  inviteRoleOptions.some(r => r.value === o.value),
+                ).map(o => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
           </div>

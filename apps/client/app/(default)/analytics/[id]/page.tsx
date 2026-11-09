@@ -13,16 +13,18 @@ export default async function AnalyticsPage({
 }) {
   const { id } = await params
   return (
-    <div className="flex-1 space-y-4 overflow-auto p-6">
-      <Breadcrumb>
-        <BreadcrumbList>
-          <BreadcrumbItem>
-            <BreadcrumbPage>Data Integration</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
+    <div className="flex-1 overflow-auto p-6 md:p-8">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <Breadcrumb>
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <BreadcrumbPage>Data Intake</BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
 
-      <AnalyticsDashboard workspaceId={id} />
+        <AnalyticsDashboard workspaceId={id} />
+      </div>
     </div>
   )
 }

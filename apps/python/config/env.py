@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from typing import List, Literal
 
 # apps/python/config/env.py -> apps/python
 _SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str = ""
     S3_BUCKET: str = "datasets"
     S3_REGION: str = "us-east-1"
+
+    # AZURE-BLOB-001. `azure` in Azure, `minio` for local development.
+    STORAGE_BACKEND: Literal["minio", "azure"] = "minio"
+    # Auth comes from Microsoft Entra ID (managed identity, or `az login`).
+    AZURE_STORAGE_ACCOUNT_URL: str = ""
+    AZURE_STORAGE_CONTAINER: str = "datasets"
+    # Azurite only: real accounts have Shared Key turned off.
+    AZURE_STORAGE_CONNECTION_STRING: str = ""
 
     model_config = SettingsConfigDict(
         # root .env มาก่อน แล้ว apps/python/.env override ได้

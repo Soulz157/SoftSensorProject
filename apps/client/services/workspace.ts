@@ -4,10 +4,12 @@ import type {
   AdminWorkspaceSummary,
   AdminWorkspaceDetail,
   CreateWorkspaceInput,
+  MyWorkspaceQuota,
   Paginated,
   UpdateWorkspacePayload,
   Workspace,
   WorkspaceDetail,
+  WorkspaceLimits,
   WorkspaceLog,
   WorkspaceMember,
   WorkspaceModel,
@@ -30,6 +32,10 @@ export const workspaceService = {
     fetchClient('/api/v1/authorized/workspace', { method: 'GET' }),
   getAllWorkspaces: () =>
     fetchClient('/api/v1/authorized/workspace/all', { method: 'GET' }),
+
+  /** MODEL-SERVE-041. Owned workspaces vs the caller's plan cap. */
+  getMyWorkspaceQuota: (): Promise<{ data: MyWorkspaceQuota }> =>
+    fetchClient('/api/v1/authorized/workspace/quota', { method: 'GET' }),
 
   getWorkspaceById: (id: string): Promise<{ data: WorkspaceDetail }> =>
     fetchClient(`/api/v1/authorized/workspace/${id}`, { method: 'GET' }),
@@ -178,6 +184,16 @@ export const workspaceService = {
   ): Promise<unknown> =>
     fetchClient(`/api/v1/admin/workspace/${workspaceId}/members/${memberId}`, {
       method: 'DELETE',
+    }),
+
+  /** MODEL-SERVE-035. Admin only; null = no limit. */
+  adminUpdateWorkspaceLimits: (
+    workspaceId: string,
+    limits: { maxModels: number | null; maxMembers: number | null },
+  ): Promise<{ data: WorkspaceLimits }> =>
+    fetchClient(`/api/v1/admin/workspace/${workspaceId}/limits`, {
+      method: 'PATCH',
+      body: JSON.stringify(limits),
     }),
 
   adminMoveMember: (

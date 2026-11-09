@@ -34,7 +34,8 @@ const RUNNING: InferenceStatus = {
     // with nulls, never a zero ratio.
     residualSd: {
       status: 'UNKNOWN' as const,
-      liveSd: null,
+      worstAbsResidual: null,
+      basis: null,
       ratio: null,
       baselineSd: null,
       n: 0,

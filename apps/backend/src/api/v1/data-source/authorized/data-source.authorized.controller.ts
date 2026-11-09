@@ -57,7 +57,7 @@ export class DataSourceAuthorizedController {
     @Users() user: Auth.UserPayload,
     @Body() body: CreateDataSourceDto,
   ) {
-    return this.service.createDataSourceService(user.id, body);
+    return this.service.createDataSourceService(user.id, body, user.role);
   }
 
   @Patch('/:id')
@@ -68,7 +68,7 @@ export class DataSourceAuthorizedController {
     @Param('id') id: string,
     @Body() body: UpdateDataSourceDto,
   ) {
-    return this.service.updateDataSourceService(user.id, id, body);
+    return this.service.updateDataSourceService(user.id, id, body, user.role);
   }
 
   @Delete('/:id')

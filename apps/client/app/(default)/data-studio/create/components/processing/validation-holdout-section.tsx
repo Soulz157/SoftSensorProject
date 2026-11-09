@@ -1,16 +1,26 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
-import { Check, Loader2 } from 'lucide-react'
+import { CalendarRange, Check, Loader2 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { toDateTimeLocal } from '@/components/date-time-picker'
 import { CalendarDateTimePicker } from '@/components/calendar-date-time-picker'
-import { describeHoldoutSelection } from '@/lib/holdout'
+import {
+  describeHoldoutSelection,
+  describeTargetInWindow,
+  holdoutStatus,
+  resolveRawTargetKey,
+} from '@/lib/holdout'
+
+/** Scroll target for the Step 4 header chip (`step-4-feature-engineering.tsx`). */
+export const VALIDATION_SPLIT_ID = 'validation-split'
 import { resolveInterval } from '@/lib/dataset-fetch'
 import {
   dwCustomIntervalAtom,
+  dwEditedTagsAtom,
   dwFetchConfigAtom,
   dwHoldoutRangeAtom,
   dwRawDatasetAtom,
@@ -100,6 +110,7 @@ export function ValidationHoldoutSection({
   const fetchConfig = useAtomValue(dwFetchConfigAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const period = useAtomValue(dwTimeRangeAtom)
+  const editedTags = useAtomValue(dwEditedTagsAtom)
 
   const rawWindow = deriveRawWindow(raw)
   const fetchFrom = rawWindow?.from ?? ''
@@ -133,6 +144,16 @@ export function ValidationHoldoutSection({
     setDraftTo(holdoutRange?.to ?? '')
   }
 
+  // Counted on the DRAFT window, so the warning shows before Apply. Null
+  // ("cannot tell") for an incomplete draft, an unset/renamed-away target or a
+  // window with no raw rows — the guard stays silent for all of those.
+  const targetInWindow = useMemo(() => {
+    if (!draftFrom || !draftTo) return null
+    const key = resolveRawTargetKey(raw.tags, targetTag, editedTags)
+    if (key === null) return null
+    return describeTargetInWindow(raw, key, { from: draftFrom, to: draftTo })
+  }, [raw, targetTag, editedTags, draftFrom, draftTo])
+
   const guard = describeHoldoutSelection({
     fetchRange: { from: fetchFrom, to: fetchTo },
     holdoutRange:
@@ -140,6 +161,7 @@ export function ValidationHoldoutSection({
     interval,
     targetChosen: targetTag !== null,
     featureBearing,
+    targetInWindow,
   })
 
   // Commits only a VALID selection — a refusal is shown inline but never
@@ -160,6 +182,7 @@ export function ValidationHoldoutSection({
       interval,
       targetChosen: targetTag !== null,
       featureBearing,
+      targetInWindow,
     })
     if (result.refusals.length === 0) {
       setHoldoutRange({ from: draftFrom, to: draftTo })
@@ -174,6 +197,7 @@ export function ValidationHoldoutSection({
   }
 
   const warmPending = warmStatus === 'pending'
+  const status = holdoutStatus(holdoutRange)
 
   // Both halves chosen, the guard content, and actually different from what is
   // already committed — re-applying an unchanged window would re-split the
@@ -189,10 +213,40 @@ export function ValidationHoldoutSection({
     dirty
 
   return (
-    <div className="mt-1 space-y-2 border-t border-border/60 pt-3">
-      <h3 className="text-sm font-medium text-foreground">
-        Split Validation data (optional)
-      </h3>
+    // Its own card, the same surface as the Data Analysis card below — it used
+    // to be a `border-t` strip users scrolled past. Skippable, but said through
+    // the purpose line rather than an "(optional)" label.
+    <section
+      id={VALIDATION_SPLIT_ID}
+      aria-labelledby={`${VALIDATION_SPLIT_ID}-title`}
+      className="scroll-mt-4 space-y-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3
+          id={`${VALIDATION_SPLIT_ID}-title`}
+          className="flex items-center gap-2 text-sm font-semibold text-foreground"
+        >
+          <CalendarRange className="h-4 w-4 text-primary" />
+          Split Validation data
+        </h3>
+        {status.applied ? (
+          <Badge className="gap-1">
+            Applied ·{' '}
+            <span className="font-mono text-[11px] tabular-nums">
+              {status.days}
+            </span>
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="text-muted-foreground">
+            Not set
+          </Badge>
+        )}
+      </div>
+      <p className="max-w-prose text-xs text-muted-foreground">
+        Hold out a period the model never trains on. Model Selection and
+        Evaluation score the model on it. Leave it empty to score on the test
+        split only.
+      </p>
       {disabled && disabledReason && (
         <p className="text-[11px] text-muted-foreground">{disabledReason}</p>
       )}
@@ -285,6 +339,6 @@ export function ValidationHoldoutSection({
           )}
         </Button>
       </div>
-    </div>
+    </section>
   )
 }

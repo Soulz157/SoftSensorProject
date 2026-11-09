@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
+  estimateGoldRowDrop,
   preprocessPipelines,
   tagFillPreview,
   type CleaningStep,
@@ -26,6 +27,7 @@ import {
   dwPresetRangeStaleAtom,
   dwTagUnitsAtom,
   dwTargetTagAtom,
+  dwCriticalTagsAtom,
 } from '@/store/dataset-studio'
 import { useImputationTagList } from '@/hooks/dataset/use-imputation-tag-list'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
@@ -40,6 +42,9 @@ import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipelin
 import { CutOffSection } from './cutoff-section'
 import { datasetHealth } from '@/lib/feature-preset'
 import { SdtaPresetCard } from './sdta-preset-card'
+import { zeroSuggestions } from '@/lib/zero-readings'
+import { PresetRangeCard } from './preset-range-card'
+import { GoldRowLossNotice } from './gold-row-loss-notice'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
@@ -134,6 +139,10 @@ export function Step5DataCleaning({ nav }: Props) {
     ...cleaningTags,
   ])
   const [previewIndex, setPreviewIndex] = useState(0)
+  const zeroSuggestionList = useMemo(
+    () => zeroSuggestions(cropped, cleaningTags, draft),
+    [cropped, cleaningTags, draft],
+  )
   const [rawIsolated, setRawIsolated] = useState('')
 
   // Seed the draft from the first tag's saved pipeline when a batch starts
@@ -203,10 +212,21 @@ export function Step5DataCleaning({ nav }: Props) {
   const presetRangeStale = useAtomValue(dwPresetRangeStaleAtom)
   const tagUnits = useAtomValue(dwTagUnitsAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
+  const criticalTags = useAtomValue(dwCriticalTagsAtom)
   // Mirrors the sidebar's `cleanableTags` (dataset-tag-sidebar.tsx).
   const cleanableTags = useMemo(
     () => base.tags.filter(t => t !== targetTag),
     [base.tags, targetTag],
+  )
+  // DS-LAKE-038. The columns the committed artifact has: Step 4's warm applied
+  // `selectedColumns` server-side, but this step's `featured` frame is not
+  // pruned. A range may only name one of these or the commit is refused.
+  const committedTags = useMemo(
+    () =>
+      selectedColumns === null
+        ? featured.tags
+        : featured.tags.filter(t => selectedColumns.includes(t)),
+    [featured.tags, selectedColumns],
   )
   // DS-LAKE-023: part of the recipe signature `commitCleaningScale` checks
   // against `dwFeatureArtifactStampAtom` before committing — see that
@@ -234,22 +254,43 @@ export function Step5DataCleaning({ nav }: Props) {
     // batch — see `handleNext`, D4 forbids chaining batch-by-batch.
     if (isEditLocked && draft.length > 0) void applyClean(cleaningTags, draft)
   }
-  const preprocessed = useMemo(
-    () => preprocessPipelines(base, cleaningPipelines).rows.length,
+  // The full accumulated recipe applied locally — what Continue commits.
+  const finalDataset = useMemo(
+    () => preprocessPipelines(base, cleaningPipelines),
     [base, cleaningPipelines],
   )
+  const preprocessed = finalDataset.rows.length
+  // Rows GOLD will drop for still holding a non-Good reading (an Exclude range,
+  // or a source Bad with no fill step) — the server's `drop_bad_feature_rows`
+  // rule. CREATE MODE only: edit-mode saves do not send preset ranges, so the
+  // same count would overstate what an edit save drops.
+  const goldDrop = useMemo(
+    () =>
+      isEditLocked
+        ? null
+        : estimateGoldRowDrop(finalDataset, {
+            tags: committedTags,
+            targetTag,
+          }),
+    [isEditLocked, finalDataset, committedTags, targetTag],
+  )
+  const goldEmpty =
+    goldDrop !== null && goldDrop.total > 0 && goldDrop.kept === 0
 
   const allDropped = base.rows.length > 0 && preprocessed === 0
   // Step-by-step preview for the isolated tag: apply only the first
   // `previewIndex` draft steps so the scrubber shows each stage's effect live.
+  // Original is `featured` (before any rule); Cleaned is `base` (cut-off,
+  // SD&TA, Preset range already applied) plus the draft steps, so a rule
+  // change moves the Cleaned line even at the Raw Data position.
   const previewRows = useMemo(() => {
     const truncated = draft.slice(0, previewIndex)
     const processed = preprocessPipelines(
       base,
       isolatedTag ? { [isolatedTag]: truncated } : {},
     )
-    return tagFillPreview(base, processed, isolatedTag)
-  }, [base, draft, previewIndex, isolatedTag])
+    return tagFillPreview(featured, processed, isolatedTag)
+  }, [featured, base, draft, previewIndex, isolatedTag])
 
   // T01 hybrid: a server-verified preview fires ONLY when the scrubber is
   // sitting on the final step (every draft step applied) — every intermediate
@@ -300,6 +341,8 @@ export function Step5DataCleaning({ nav }: Props) {
       scalers: scalerConfigs,
       targetY: targetTag,
       holdout: holdoutRange,
+      conditionalRules,
+      availableTags: committedTags,
     })
     if (ok) nav.next()
   }
@@ -372,6 +415,26 @@ export function Step5DataCleaning({ nav }: Props) {
               relock()
             }}
           />
+          {/* DS-LAKE-038. The Preset range cutoff, moved up from the Outlier
+              Removal sidebar so it sits beside the SD&TA card instead of four
+              levels down. Same relock as the SD&TA card: a changed cut must be
+              re-committed before Step 6. */}
+          <PresetRangeCard
+            candidates={presetRangeCandidates}
+            stale={presetRangeStale}
+            tags={committedTags}
+            scopeTag={isolatedTag}
+            tagUnits={tagUnits}
+            previewDataset={cropped}
+            conditionalRules={conditionalRules}
+            onConditionalChange={next => {
+              nav.setConditionalRules(next)
+              relock()
+            }}
+            targetTag={targetTag}
+            criticalTags={criticalTags}
+            editMode={isEditLocked}
+          />
           {/* DS-LAKE-032-D06. Same atom as the sidebar's cleaning boxes, and
               the same candidates (`cleanableTags`: every tag but the target),
               so either control drives the header below. Outside the
@@ -406,6 +469,7 @@ export function Step5DataCleaning({ nav }: Props) {
                 onIsolate={setRawIsolated}
                 quality={isolatedQuality}
                 dataBounds={dataBounds}
+                zeroSuggestions={zeroSuggestionList}
               />
 
               {/* T01 hybrid: server-verified check, ONLY visible when the
@@ -447,16 +511,13 @@ export function Step5DataCleaning({ nav }: Props) {
                 }
                 onClearExclusions={() => nav.setExclusions([])}
                 scopeTag={isolatedTag}
+                tagUnits={tagUnits}
                 breakdown={breakdown}
                 croppedDataset={cropped}
                 conditionalRules={conditionalRules}
                 statisticalRules={statisticalRules}
                 onConditionalChange={nav.setConditionalRules}
                 onStatisticalChange={nav.setStatisticalRules}
-                presetRangeCandidates={presetRangeCandidates}
-                presetRangeStale={presetRangeStale}
-                tagUnits={tagUnits}
-                targetTag={targetTag}
               />
             </div>
           ) : (
@@ -476,6 +537,8 @@ export function Step5DataCleaning({ nav }: Props) {
         </Alert>
       )}
 
+      {goldDrop && !allDropped && <GoldRowLossNotice estimate={goldDrop} />}
+
       {!isEditLocked && commitState.status === 'error' && (
         <Alert variant="destructive">
           <AlertTitle>Could not finish cleaning on the server</AlertTitle>
@@ -494,6 +557,7 @@ export function Step5DataCleaning({ nav }: Props) {
         onNext={() => void handleNext()}
         nextDisabled={
           preprocessed === 0 ||
+          goldEmpty ||
           (!isEditLocked && commitState.status === 'committing')
         }
       />

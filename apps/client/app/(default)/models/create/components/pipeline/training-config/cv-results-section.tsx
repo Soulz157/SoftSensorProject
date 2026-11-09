@@ -26,14 +26,14 @@ export function cvEstimateOf(
   )
 }
 
-/** `mean ± std`, or an em dash when the mean was not recorded. */
+/** A CV score: the fold mean alone, or an em dash when it was not recorded.
+ *  The fold spread (± std) is no longer printed beside it (user decision
+ *  2026-10-19, MODEL-FLOW-035) — it read as part of the score. */
 export function formatCvScore(
   mean: number | null,
-  std: number | null,
   format: (v: number) => string = v => v.toFixed(3),
 ): string {
-  if (mean === null) return '—'
-  return std !== null ? `${format(mean)} ± ${format(std)}` : format(mean)
+  return mean === null ? '—' : format(mean)
 }
 
 interface Props {
@@ -91,10 +91,10 @@ export function CvRunSection({ draftId, run }: Props) {
                 {METRIC_META[key].label}
               </p>
               <p className="font-mono text-sm tabular-nums text-foreground">
-                {formatCvScore(estimate.mean[key], estimate.std[key])}
+                {formatCvScore(estimate.mean[key])}
               </p>
               <p className="text-[9px] text-muted-foreground">
-                mean ± std across folds
+                mean across folds
               </p>
             </div>
           ))}

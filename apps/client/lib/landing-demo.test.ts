@@ -10,7 +10,7 @@ import {
   dayTimeline,
   demoKpis,
   formatKpiValue,
-  psiStatusOf,
+  driftStatusOf,
   signed,
   sparkPoints,
   tagHistory,
@@ -18,15 +18,15 @@ import {
 } from './landing-demo'
 
 describe('landing demo data', () => {
-  it('grades PSI with the app cutoffs, >= at each', () => {
-    expect(psiStatusOf(0.0999)).toBe('OK')
-    expect(psiStatusOf(0.1)).toBe('WARN')
-    expect(psiStatusOf(0.2499)).toBe('WARN')
-    expect(psiStatusOf(0.25)).toBe('CRITICAL')
+  it('grades out-of-range % with the app cutoffs, >= at each', () => {
+    expect(driftStatusOf(4.99)).toBe('OK')
+    expect(driftStatusOf(5)).toBe('WARN')
+    expect(driftStatusOf(19.99)).toBe('WARN')
+    expect(driftStatusOf(20)).toBe('CRITICAL')
   })
 
   it('demo shows one drifting input and the rest stable', () => {
-    const statuses = DEMO_TAGS.map(t => psiStatusOf(t.psi))
+    const statuses = DEMO_TAGS.map(t => driftStatusOf(t.outOfRangePct))
     expect(statuses.filter(s => s === 'WARN')).toHaveLength(1)
     expect(statuses.filter(s => s === 'OK')).toHaveLength(3)
   })
@@ -103,7 +103,7 @@ describe('landing KPI tiles', () => {
     expect(byId.get('r2')).toBe(DEMO_MODEL.r2)
     expect(byId.get('rmse')).toBe(DEMO_MODEL.rmse)
     expect(byId.get('drift')).toBe(
-      DEMO_TAGS.filter(t => psiStatusOf(t.psi) !== 'OK').length,
+      DEMO_TAGS.filter(t => driftStatusOf(t.outOfRangePct) !== 'OK').length,
     )
   })
 

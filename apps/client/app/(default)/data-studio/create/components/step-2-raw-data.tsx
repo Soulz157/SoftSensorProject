@@ -27,6 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useCsvMaterialize } from '@/hooks/dataset/use-csv-materialize'
 import { useDatasetStudioFetch } from '@/hooks/dataset/use-dataset-studio-fetch'
+import { useDatasetResumeRefetch } from '@/hooks/dataset/use-dataset-resume-refetch'
 import { useDatasetStudioPreview } from '@/hooks/dataset/use-dataset-studio-preview'
 import { useSourceConnectionVerify } from '@/hooks/dataset/use-source-connection-verify'
 import { ConnectionVerifyPanel } from './source-configs/connection-verify-panel'
@@ -56,11 +57,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { RawReadingsTable } from './raw-readings-table'
+import { LabStaleNotice } from './lab-stale-notice'
 import { EditLockBanner } from './step-1-tags'
 import {
   SourceFetchConfigCard,
   configFromSource,
   defaultConfigForKind,
+  refreshIdentityFields,
 } from './source-configs/source-fetch-config-card'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 
@@ -100,6 +103,9 @@ export function Step2RawData({ nav }: Props) {
   const range = nav.timeRange
   const raw = useAtomValue(dwRawDatasetAtom)
   const fetch = useDatasetStudioFetch()
+  // DS-LAKE-037. After a draft resume, re-run this same fetch and then jump to
+  // the step the user left; a no-op in every other session.
+  useDatasetResumeRefetch(fetch, fetchTags, range)
   // All-CSV runs need no fetch — this materializes the uploaded file into the
   // raw dataset and settles the fetch state, so the step gate passes untouched.
   const csv = useCsvMaterialize()
@@ -107,7 +113,7 @@ export function Step2RawData({ nav }: Props) {
   const verify = useSourceConnectionVerify()
   const [customInterval, setCustomInterval] = useAtom(dwCustomIntervalAtom)
 
-  const selectedSources = useAtomValue(dwSelectedSourcesAtom)
+  const [selectedSources, setSelectedSources] = useAtom(dwSelectedSourcesAtom)
 
   const [sourceConfigs, setSourceConfigs] = useAtom(dwSourceFetchConfigsAtom)
   const [fetchConfig, setFetchConfig] = useAtom(dwFetchConfigAtom)
@@ -139,7 +145,10 @@ export function Step2RawData({ nav }: Props) {
   const advanceOnDone = useRef(false)
 
   const now = new Date()
+  // Top of the hour, so the default window starts on a bucket boundary rather
+  // than on whatever minute the page was opened.
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000)
+  oneHourAgo.setMinutes(0, 0, 0)
 
   // MODEL-SERVE-017. The earliest start a retrain-built dataset may have, as
   // a `datetime-local` value. Formatted field by field in LOCAL time, never
@@ -160,13 +169,19 @@ export function Step2RawData({ nav }: Props) {
     )
   }, [retrainCutTimestamp])
 
-  // Defaults to one hour ago — EXCEPT in a retrain session, where that is
-  // almost always before the split boundary and would open the step on a
-  // window the server refuses. Computed above for exactly this reason.
-  const [customFrom, setCustomFrom] = useState(
+  // Defaults to the top of the hour one hour ago — EXCEPT in a retrain
+  // session, where that is almost always before the split boundary and would
+  // open the step on a window the server refuses. Computed above for exactly
+  // this reason.
+  const [defaultFrom] = useState(
     () => retrainMinStart ?? toDateTimeLocal(oneHourAgo),
   )
-  const [customTo, setCustomTo] = useState(() => toDateTimeLocal(now))
+  const [defaultTo] = useState(() => toDateTimeLocal(now))
+  // The atom is the single source of truth: the pickers show exactly the
+  // window `useDatasetStudioFetch` will send, also after a remount or a draft
+  // resume. The defaults only stand in until the init effect below writes them.
+  const customFrom = nav.customDateRange?.from ?? defaultFrom
+  const customTo = nav.customDateRange?.to ?? defaultTo
 
   // How far the Interval calendars page. Nothing is fetched yet, so there is
   // no first reading to bound by: the retrain split floor when there is one,
@@ -221,12 +236,10 @@ export function Step2RawData({ nav }: Props) {
   }
 
   const handleCustomFromChange = (v: string) => {
-    setCustomFrom(v)
     nav.setCustomRange(v, customTo)
   }
 
   const handleCustomToChange = (v: string) => {
-    setCustomTo(v)
     nav.setCustomRange(customFrom, v)
   }
 
@@ -331,13 +344,27 @@ export function Step2RawData({ nav }: Props) {
               onChange={cfg =>
                 setSourceConfigs(prev => ({ ...prev, [source.id]: cfg }))
               }
+              onSourceUpdate={updated => {
+                setSelectedSources(prev =>
+                  prev.map(s => (s.id === updated.id ? updated : s)),
+                )
+                setSourceConfigs(prev => ({
+                  ...prev,
+                  [updated.id]: refreshIdentityFields(
+                    prev[updated.id],
+                    updated,
+                  ),
+                }))
+              }}
               disabled={controlsDisabled}
             />
           ))}
         </div>
       )}
 
-      {/* ── Fetch Period + Interval — only for sources that need fetching ───── */}
+      {/* ── Interval (the PI bucket) — only for sources that need fetching.
+           Was titled "Fetch Period", which read as a date range; these
+           buttons set how far apart the rows are (2026-10-19). ─────────── */}
       {!csvBypass && (
         <div
           className={cn(
@@ -347,7 +374,10 @@ export function Step2RawData({ nav }: Props) {
         >
           <div className="flex items-center gap-2">
             <ClipboardClock className="h-4 w-4 text-muted-foreground" />
-            <p className="text-sm font-medium text-foreground">Fetch Period</p>
+            <p className="text-sm font-medium text-foreground">Interval</p>
+            <span className="text-xs text-muted-foreground">
+              How far apart the fetched rows are
+            </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {(['1min', '5min', '10min', '1h', '1d'] as const).map(p => (
@@ -448,6 +478,7 @@ export function Step2RawData({ nav }: Props) {
                 allowed={{ min: retrainMinStart, max: customTo }}
                 dataBounds={fetchCalendarBounds}
                 defaultTime="00:00"
+                resetTimeOnDayPick
                 disabled={isFetching}
                 onChange={handleCustomFromChange}
                 className="w-full"
@@ -464,6 +495,7 @@ export function Step2RawData({ nav }: Props) {
                 allowed={{ min: customFrom, max: nowStamp }}
                 dataBounds={fetchCalendarBounds}
                 defaultTime="23:59"
+                resetTimeOnDayPick
                 disabled={isFetching}
                 onChange={handleCustomToChange}
                 className="w-full"
@@ -757,6 +789,7 @@ export function Step2RawData({ nav }: Props) {
               </div>
             </div>
           </div>
+          <LabStaleNotice dataset={raw} />
         </div>
       ) : csvBypass ? (
         /* CSV with nothing uploaded yet — Step 1 owns the file. */
@@ -782,8 +815,8 @@ export function Step2RawData({ nav }: Props) {
               {fetchTags.length === 1 ? '' : 's'}
             </p>
             <p className="text-xs text-muted-foreground">
-              Set the fetch period and interval above, then click “Fetch Data”
-              to load the raw readings.
+              Set the date range and interval above, then click “Fetch Data” to
+              load the raw readings.
             </p>
           </div>
         </div>

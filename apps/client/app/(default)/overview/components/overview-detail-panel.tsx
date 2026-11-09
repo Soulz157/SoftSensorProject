@@ -3,6 +3,9 @@
 import {
   ArrowRight,
   Building2,
+  ChevronRight,
+  Cpu,
+  Database,
   X,
   AlertTriangle,
   AlertCircle,
@@ -14,18 +17,25 @@ import { cn } from '@/lib/utils'
 import { workspaceIcons } from '@/store/workspace'
 import { useModels } from '@/hooks/workspace/use-models'
 import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
+import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
+import {
+  CountRow,
+  WorkspaceQuota,
+} from '@/components/workspace/workspace-quota'
 import { failedDeploys, isModelAbnormal } from '@/lib/model-status'
+import { isAbnormal as isAbnormalStatus } from '@/lib/overview-status'
 import { OverviewAssetTree } from './overview-asset-tree'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
 
 interface OverviewDetailPanelProps {
   workspace: Workspace | null
-  nodes: CanvasNode[]
+  equipmentList: CanvasNode[]
   onClose: () => void
   onViewWorkspace: (id: string) => void
   onViewAlerts: () => void
   onOpenSettings: (id: string) => void
+  onViewDataManagement: (id: string) => void
 }
 
 function StatCell({
@@ -54,27 +64,33 @@ function StatCell({
 
 function PanelContent({
   workspace,
-  nodes,
+  equipmentList,
   onClose,
   onViewWorkspace,
   onViewAlerts,
   onOpenSettings,
+  onViewDataManagement,
 }: OverviewDetailPanelProps & { workspace: Workspace }) {
   const { data: modelsRaw, isFetching: modelsFetching } = useModels(
     workspace.id,
   )
   const models = modelsRaw ?? []
   const { plants } = useWorkspacePlants(workspace.id)
+  const { workspace: detail, loading: detailLoading } = useWorkspace(
+    workspace.id,
+  )
   const modelsLoading =
     (modelsFetching && modelsRaw === null) || plants === null
 
-  const nodeCount = nodes.length
-  const alarmCount = nodes.filter(n => n.data.status === 'alarm').length
+  const equipmentCount = equipmentList.length
+  const alarmCount = equipmentList.filter(n =>
+    isAbnormalStatus(n.data.status),
+  ).length
   const failedCount = failedDeploys(models).length
 
-  // MODEL-SERVE-024-D02. Abnormal = equipment ALERT + abnormal models
-  // (failed deploy or monitoring ALERT). Warning/offline equipment and
-  // monitoring warnings are not Abnormal; they stay on the Alerts page.
+  // MODEL-SERVE-024-D02 (widened 2026-11-03). Abnormal = equipment ALERT or
+  // WARNING + abnormal models (failed deploy, monitoring ALERT/WARN/FROZEN).
+  // Offline equipment is not Abnormal.
   const abnormalModelCount = models.filter(isModelAbnormal).length
   const abnormalCount = alarmCount + abnormalModelCount
 
@@ -150,69 +166,103 @@ function PanelContent({
             )}
           </div>
 
-          {/* Stats grid 2×2 */}
+          {/* One Summary (MODEL-SERVE-040 folded Quota into it). The one status
+              figure keeps the full-width cell on top (Von Restorff); under it
+              the counts share one list — Equipment, then Models and Members
+              against their cap (Proximity: all "what is in this workspace"). */}
           <div className="border-b border-border/50 px-4 py-4">
             <div className="mb-3 text-xs font-medium text-muted-foreground">
               Summary
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <StatCell label="Equipment" value={nodeCount} />
-              <StatCell
-                label="Models"
-                value={workspace._count.models ? workspace._count.models : 0}
-              />
-              <StatCell
-                label="Abnormal"
-                value={abnormalCount}
-                valueClass={
-                  abnormalCount > 0
-                    ? 'text-destructive'
-                    : 'text-green-700 dark:text-green-400'
-                }
-              />
+            <StatCell
+              label="Abnormal"
+              value={abnormalCount}
+              valueClass={
+                abnormalCount > 0
+                  ? 'text-destructive'
+                  : 'text-green-700 dark:text-green-400'
+              }
+            />
+            <div className="mt-4">
+              <WorkspaceQuota
+                quota={detail?.quota}
+                owner={detail?.owner}
+                loading={detailLoading}
+              >
+                <CountRow label="Equipment" icon={Cpu} value={equipmentCount} />
+              </WorkspaceQuota>
             </div>
           </div>
 
           <OverviewAssetTree
             plants={plants ?? []}
-            nodes={nodes}
+            equipmentList={equipmentList}
             models={models}
             loading={modelsLoading}
           />
         </div>
       </ScrollArea>
 
-      {/* Sticky actions footer */}
-      <div className="shrink-0 space-y-2 border-t border-border bg-card/80 px-4 py-4">
-        {alarmCount > 0 && (
+      {/* Sticky actions footer, ordered by Laws of UX:
+          - Von Restorff: the alert action is the one destructive control,
+            shown only when something is wrong, and read first.
+          - Hick's Law: one primary action (View Plant). The other two are
+            visibly secondary instead of equal-weight bars to choose from.
+          - Proximity: Data Management and Settings are both "manage this
+            workspace" destinations, so they sit together as a nav list.
+          - Jakob's Law: same labels, icons and order as the sidebar's
+            workspace links (Overview → Data Management → Settings). */}
+      <div className="shrink-0 space-y-3 border-t border-border bg-card/80 px-4 py-4">
+        <div className="space-y-2">
+          {alarmCount > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              className="w-full gap-2"
+              onClick={onViewAlerts}
+            >
+              View All Alerts
+              <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
+            </Button>
+          )}
           <Button
-            variant="destructive"
+            variant="default"
             size="sm"
             className="w-full gap-2"
-            onClick={onViewAlerts}
+            onClick={() => onViewWorkspace(workspace.id)}
           >
-            View All Alerts
+            View Plant
             <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
           </Button>
-        )}
-        <Button
-          variant="default"
-          size="sm"
-          className="w-full gap-2"
-          onClick={() => onViewWorkspace(workspace.id)}
-        >
-          View Plant
-          <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full gap-2"
-          onClick={() => onOpenSettings(workspace.id)}
-        >
-          <Settings aria-hidden="true" className="h-3 w-3 shrink-0" />
-          Settings
-        </Button>
+        </div>
+        <nav aria-label="Manage workspace" className="space-y-0.5">
+          {[
+            {
+              label: 'Data Management',
+              icon: Database,
+              onClick: () => onViewDataManagement(workspace.id),
+            },
+            {
+              label: 'Settings',
+              icon: Settings,
+              onClick: () => onOpenSettings(workspace.id),
+            },
+          ].map(item => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={item.onClick}
+              className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+            >
+              <item.icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+              <span className="flex-1 text-left">{item.label}</span>
+              <ChevronRight
+                aria-hidden="true"
+                className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60"
+              />
+            </button>
+          ))}
+        </nav>
       </div>
     </div>
   )

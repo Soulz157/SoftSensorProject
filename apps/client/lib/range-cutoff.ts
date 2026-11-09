@@ -1,5 +1,6 @@
 import type { ParsedRange } from '@/lib/feature-preset'
 import type { Dataset } from '@/lib/preprocessing'
+import type { ConditionalAction, ConditionalRule } from '@/lib/precleanse'
 
 /**
  * Unit reconciliation between a preset's quoted engineering range and the
@@ -38,7 +39,8 @@ export interface RangeUnitReconciliation {
 /**
  * Canonical key for a unit string, collapsing the case/spacing/synonym
  * variants observed in the reference workbook (`kg/hr` | `kg/h` | `kgph`,
- * `tph` | `t/h`, `c` | `°c` | `degc`). Units with no synonym-table entry
+ * `tph` | `t/h`, `c` | `°c` | `degc` | `oc` - ROC COLD's Unit column writes
+ * degrees Celsius as `oC`). Units with no synonym-table entry
  * still normalize (trimmed, lower-cased, spaces/degree-signs stripped) so
  * two differently-formatted but equivalent strings still compare equal.
  */
@@ -49,6 +51,7 @@ function normalizeUnit(unit: string): string {
     kgph: 'kg/h',
     tph: 't/h',
     degc: 'c',
+    oc: 'c',
   }
   return synonyms[compact] ?? compact
 }
@@ -132,11 +135,39 @@ export function reconcileRangeUnit(
  */
 const MIN_LABELLED_ROWS = 30
 
+/**
+ * DS-LAKE-038. What an enabled range does to an out-of-range reading. `clip`
+ * clamps it to the bound (the row and its Good status survive); `exclude`
+ * marks it Bad and keeps its value - the cleaning toolkit's Exclude Range,
+ * applied outside the window - so a later fill step can impute it.
+ */
+export type RangeAction = 'clip' | 'exclude'
+
+/** The rule action a range action is stored as: Exclude is `mark` (Bad, value kept). */
+export function toRuleAction(action: RangeAction): ConditionalAction {
+  return action === 'clip' ? 'clip' : 'mark'
+}
+
+/** The range action a preset-range rule reads as; any non-clip is Exclude. */
+export function rangeActionOf(
+  rule: Pick<ConditionalRule, 'action'>,
+): RangeAction {
+  return rule.action === 'clip' ? 'clip' : 'exclude'
+}
+
+export interface RangeBound {
+  tag: string
+  min: number
+  max: number
+  /** Absent = `exclude`: rules saved before Clip existed marked the reading Bad. */
+  action?: RangeAction
+}
+
 export interface RangeCutoffGuardInput {
   /** The frame the enabled cutoffs would apply against. */
   dataset: Dataset
   /** Currently enabled preset-range bounds, one entry per tag. */
-  activeBounds: { tag: string; min: number; max: number }[]
+  activeBounds: RangeBound[]
   /** Null until Step 4 — the labelled-row guard cannot run without it. */
   targetTag: string | null
 }
@@ -166,10 +197,25 @@ export function describeRangeCutoffSelection({
     }
   }
 
+  // A clip keeps every row and its Good status, so only EXCLUDE bounds (which
+  // mark readings Bad) can shrink the training set. Counting clips here would
+  // warn about rows that are fine.
+  const excludeBounds = activeBounds.filter(
+    b => (b.action ?? 'exclude') === 'exclude',
+  )
+  if (excludeBounds.length === 0) {
+    return {
+      refusals,
+      warnings,
+      remainingRows: dataset.rows.length,
+      remainingLabelledRows: null,
+    }
+  }
+
   let remainingRows = 0
   let remainingLabelled = 0
   for (const row of dataset.rows) {
-    const violated = activeBounds.some(({ tag, min, max }) => {
+    const violated = excludeBounds.some(({ tag, min, max }) => {
       const cell = row.cells[tag]
       return (
         cell &&
@@ -192,7 +238,7 @@ export function describeRangeCutoffSelection({
   // shed far more than any single tag's impact number suggests.
   if (dataset.rows.length > 0 && remainingRows === 0) {
     refusals.push(
-      'Every row would be marked Bad by the enabled range cutoffs — at ' +
+      'Every row would lose a reading to the enabled range cutoffs — at ' +
         'least one bound is too aggressive for this frame.',
     )
   }
@@ -221,4 +267,112 @@ export function describeRangeCutoffSelection({
     remainingRows,
     remainingLabelledRows: targetTag ? remainingLabelled : null,
   }
+}
+
+/** `30.000000001` -> `30`: bounds come out of a unit conversion, so tidy the noise. */
+function fmtBound(n: number): string {
+  return String(Number(n.toPrecision(10)))
+}
+
+/**
+ * The WINDOW a range keeps, read left to right: `30 ≤ x ≤ 100 kg/h`. The card
+ * shows what survives untouched rather than the bounds' two rules, because a
+ * reader asks "is my value inside?". `≤` on both sides is deliberate: a value
+ * exactly ON a bound is in range under either action.
+ */
+export function formatKeptWindow(
+  applied: { min: number | null; max: number | null },
+  unit: string | null,
+): string {
+  const { min, max } = applied
+  const suffix = unit ? ` ${unit}` : ''
+  if (min !== null && max !== null) {
+    return `${fmtBound(min)} ≤ x ≤ ${fmtBound(max)}${suffix}`
+  }
+  if (min !== null) return `x ≥ ${fmtBound(min)}${suffix}`
+  if (max !== null) return `x ≤ ${fmtBound(max)}${suffix}`
+  return 'no bounds'
+}
+
+/**
+ * The enabled preset-range rules as one bound per (tag, action).
+ *
+ * A pair is `< min` and `> max`; each is grouped with the other bound of the
+ * SAME tag AND action, so a pair whose two rules were given different actions
+ * in the Conditional tab stays two bounds, each open on one side. The legacy
+ * `mark` and `drop` actions both read as `exclude`.
+ */
+export function presetRangeBounds(rules: ConditionalRule[]): RangeBound[] {
+  const byKey = new Map<string, RangeBound>()
+  for (const rule of rules) {
+    if (!rule.enabled || rule.source !== 'preset-range') continue
+    if (rule.value === '' || rule.lower) continue
+    if (rule.op !== '<' && rule.op !== '>') continue
+    const action = rangeActionOf(rule)
+    const key = `${rule.tag}\u0000${action}`
+    const bound = byKey.get(key) ?? {
+      tag: rule.tag,
+      min: -Infinity,
+      max: Infinity,
+      action,
+    }
+    if (rule.op === '<') bound.min = rule.value
+    else bound.max = rule.value
+    byKey.set(key, bound)
+  }
+  return Array.from(byKey.values())
+}
+
+/**
+ * The window one tag's preset-range rules keep, for display: the `<` rule
+ * gives the lower bound, the `>` rule the upper. Read straight off the rules
+ * (not `presetRangeBounds`), so a pair whose bounds were given different
+ * actions still reads as ONE window. `null` = that side is open.
+ */
+export function presetRangeWindow(rules: ConditionalRule[]): {
+  min: number | null
+  max: number | null
+} {
+  let min: number | null = null
+  let max: number | null = null
+  for (const rule of rules) {
+    if (rule.source !== 'preset-range' || rule.value === '' || rule.lower) {
+      continue
+    }
+    if (rule.op === '<') min = rule.value
+    else if (rule.op === '>') max = rule.value
+  }
+  return { min, max }
+}
+
+/**
+ * True when any of these preset-range rules no longer carries the preset's
+ * own value - i.e. the user edited a bound in the Outlier Removal panel.
+ * Rules without a recorded `original` (saved before it existed) count as
+ * unedited rather than guessed at.
+ */
+export function isPresetRangeEdited(rules: ConditionalRule[]): boolean {
+  return rules.some(
+    r =>
+      r.source === 'preset-range' &&
+      typeof r.presetRange?.original === 'number' &&
+      r.value !== r.presetRange.original,
+  )
+}
+
+/**
+ * Validates an edited window before it is written to the rules. Both sides
+ * are optional (an open-ended range has one); a present side must be a finite
+ * number, and low must sit below high. Returns the reason, or null when valid.
+ */
+export function presetRangeEditError(
+  min: number | null,
+  max: number | null,
+): string | null {
+  if (min !== null && !Number.isFinite(min)) return 'Low must be a number'
+  if (max !== null && !Number.isFinite(max)) return 'High must be a number'
+  if (min !== null && max !== null && min >= max) {
+    return 'Low must be below high'
+  }
+  return null
 }

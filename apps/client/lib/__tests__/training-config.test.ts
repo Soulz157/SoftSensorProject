@@ -33,15 +33,6 @@ describe('defaultHyperparams', () => {
     ols: ['fit_intercept'],
     // MODEL-FLOW-027: fit_intercept/solver joined the original alpha.
     ridge: ['alpha', 'fit_intercept', 'solver'],
-    // MODEL-FLOW-027: the three capacity knobs joined the original three.
-    hist_gradient_boosting: [
-      'learning_rate',
-      'n_estimators',
-      'num_leaves',
-      'max_depth',
-      'min_samples_leaf',
-      'l2_regularization',
-    ],
     // MODEL-FLOW-027: tol/max_iter joined the original three.
     svm: ['C', 'kernel', 'epsilon', 'tol', 'max_iter'],
     mlp: ['hidden_layer_sizes', 'alpha', 'max_iter'],
@@ -49,6 +40,14 @@ describe('defaultHyperparams', () => {
     pls: ['n_components', 'max_iter'],
     // MODEL-FLOW-026: the three capacity knobs joined the original pair.
     random_forest: [
+      'n_estimators',
+      'max_depth',
+      'max_leaf_nodes',
+      'min_samples_leaf',
+      'min_samples_split',
+    ],
+    // MODEL-FLOW-033: the same five keys build_model reads for random_forest.
+    extra_trees: [
       'n_estimators',
       'max_depth',
       'max_leaf_nodes',
@@ -91,12 +90,12 @@ describe('defaultHyperparams', () => {
     })
   }
 
-  it('ridge and hist_gradient_boosting are reachable — the T10 catalogue/trainer gap this task closes', () => {
+  it('ridge is reachable; hist_gradient_boosting is retired (MODEL-FLOW-034)', () => {
     // Before this task, build_model implemented ridge/hist_gradient_boosting
     // but the UI catalogue never offered them; the catalogue offered 9 ids
     // build_model didn't implement. This pins the catalogue side of the fix.
     expect(ALGORITHMS).toContain('ridge')
-    expect(ALGORITHMS).toContain('hist_gradient_boosting')
+    expect(ALGORITHMS).not.toContain('hist_gradient_boosting')
     expect(defaultHyperparams('ridge')).toEqual({
       alpha: 1.0,
       fit_intercept: true,
@@ -156,7 +155,7 @@ describe('MODEL-FLOW-019-T37: the loss default is a value the control offers', (
     // option was the resolution. DEFAULT_RANK_METRIC is the same choice
     // MODEL-FLOW-005 made after a real run scored r2 = -1,110,858.
     expect(DEFAULT_LOSS_FUNCTION).toBe(DEFAULT_RANK_METRIC)
-    expect([...optionValues].sort()).toEqual(['mae', 'r2', 'rmse'])
+    expect([...optionValues].sort()).toEqual(['mae', 'rmse'])
   })
 })
 
@@ -173,6 +172,10 @@ describe('normaliseLossFunction', () => {
     // Asserted as its own case so a future blanket fallback cannot quietly
     // absorb it — the mapping is a decision, and it is recorded as one.
     expect(normaliseLossFunction('mse')).toBe('rmse')
+  })
+
+  it("maps the legacy 'r2' to 'rmse' (MODEL-FLOW-035: R² is displayed, not chosen)", () => {
+    expect(normaliseLossFunction('r2')).toBe('rmse')
   })
 
   it('resolves absent and empty to the default', () => {

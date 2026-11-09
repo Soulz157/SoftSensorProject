@@ -528,6 +528,24 @@ class InferenceWindowUploadPresignResponse(BaseModel):
     expires_at: str
 
 
+class InferenceWindowLastPredictionRequest(BaseModel):
+    """Run Predict for a sequence model: the newest prediction its
+    just-scored window wrote. `source_key` must be that window's own
+    predictions.parquet."""
+
+    source_key: str = Field(..., min_length=1)
+
+
+class InferenceWindowLastPredictionResponse(BaseModel):
+    """`timestamp` is the scored row's Bangkok wall-clock time, the same
+    naive convention predictions.parquet itself carries; null with
+    `prediction` when the file holds no rows."""
+
+    timestamp: str | None = None
+    prediction: float | None = None
+    row_count: int = 0
+
+
 class InferenceWindowObjectPresignRequest(BaseModel):
     """MODEL-SERVE-006-T06. Presigns an inference window's own
     predictions.parquet for READING — deliberately separate from
@@ -656,6 +674,42 @@ class RunCvFoldsResponse(BaseModel):
     algorithm: str
     n_splits: int
     folds: list[CvFoldRecord]
+
+
+class RunGridSearchRequest(BaseModel):
+    """MODEL-FLOW-038. Reads a grid-search run's `grid_search_results.json`
+    verbatim — already exactly the response shape
+    (`images/trainer/app/pipelines/grid_search.py` writes it that way on
+    purpose). `source_key` is guarded the same structural way
+    `RunCvFoldsRequest` guards its own."""
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's grid_search_results.json key."
+    )
+
+
+class GridSearchCombination(BaseModel):
+    rank: int
+    # Only the keys the grid varied; `hyperparameters` is the full record the
+    # combination ran with.
+    params: dict[str, Any]
+    hyperparameters: dict[str, Any]
+    mean_score: float
+    std_score: float
+    mean_fit_time: float
+
+
+class RunGridSearchResponse(BaseModel):
+    algorithm: str
+    ranking_metric: str
+    cv: bool
+    n_folds: int
+    n_combinations: int
+    grid: dict[str, list[Any]]
+    best: GridSearchCombination
+    combinations: list[GridSearchCombination]
 
 
 class RunFeatureImportanceRequest(BaseModel):
@@ -951,10 +1005,17 @@ class InferenceWindowMaterializeRequest(BaseModel):
     interval: str = Field(..., examples=["1m"])
     pi: Optional[PIFetchRequest] = None
     sql: Optional[SqlMaterializeSpec] = None
+    #: MODEL-SERVE-037-T03. Live source override: training column -> PI tag.
+    #: The source is fetched by tag and renamed back to the training names.
+    column_tag_map: Optional[dict[str, str]] = None
     #: A retry re-materializing the same window writes over its own prior
     #: (failed) attempt — the window row, not the object key, is this
     #: entity's immutability boundary (unlike a committed dataset version).
     overwrite: bool = True
+    #: MODEL-SERVE-043. Rows of history BEFORE window_start a sequence model
+    #: needs (`sequence_length - 1`), written to context.parquet beside
+    #: input.parquet. 0 for every non-sequence model — then nothing changes.
+    context_rows: int = Field(0, ge=0, le=10_000)
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "InferenceWindowMaterializeRequest":
@@ -964,6 +1025,64 @@ class InferenceWindowMaterializeRequest(BaseModel):
                 "is ambiguous, and one with neither has nothing to read."
             )
         return self
+
+
+class InferenceEvalFrameRequest(BaseModel):
+    """MODEL-SERVE-032. The Evaluation page's range read: the same fetch +
+    recipe + trim as `InferenceWindowMaterializeRequest`, but the rows come
+    back INLINE and nothing is persisted -- so it carries no model / version /
+    dt / hour (there is no `inference/` key to build and none to collide with
+    a scheduled window's artifact).
+
+    `window_start` / `window_end` are REAL UTC instants, half-open
+    [start, end), exactly as for the scheduled window.
+    """
+
+    feature_spec_key: str
+    feature_columns: list[str] = Field(..., min_length=1)
+    #: Extra raw tags to return beside the features, for the X trend panel
+    #: (the model's own `baseTags`). Never scored.
+    display_tags: list[str] = Field(default_factory=list)
+    window_start: str = Field(..., examples=["2026-10-14T00:00:00.000Z"])
+    window_end: str = Field(..., examples=["2026-10-15T00:00:00.000Z"])
+    interval: str = Field(..., examples=["1m"])
+    #: Refuse BEFORE fetching when the range implies more rows than this.
+    max_rows: int = Field(2000, ge=1, le=20000)
+    pi: Optional[PIFetchRequest] = None
+    sql: Optional[SqlMaterializeSpec] = None
+    #: MODEL-SERVE-037-T03. Live source override: training column -> PI tag.
+    #: The source is fetched by tag and renamed back to the training names.
+    column_tag_map: Optional[dict[str, str]] = None
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> "InferenceEvalFrameRequest":
+        if (self.pi is None) == (self.sql is None):
+            raise ValueError("Provide exactly one of 'pi' or 'sql'.")
+        return self
+
+
+class EvalFrameCell(BaseModel):
+    #: None for a Bad cell: a Bad cell's stored number (0.0) is a placeholder,
+    #: never a reading, and must not reach a chart or a scorer.
+    value: Optional[float]
+    status: Literal["Good", "Bad", "Questionable"]
+
+
+class EvalFrameRow(BaseModel):
+    #: UTC instant, ISO-8601 `Z`.
+    timestamp: str
+    #: True only when EVERY feature column is Good -- the same rule the live
+    #: predict driver applies before it scores a row.
+    usable: bool
+    cells: dict[str, EvalFrameCell]
+
+
+class InferenceEvalFrameResponse(BaseModel):
+    rows: list[EvalFrameRow]
+    feature_columns: list[str]
+    display_tags: list[str]
+    #: Rows with at least one non-Good feature cell (they get no prediction).
+    unusable_rows: int
 
 
 class InferenceWindowMaterializeResponse(BaseModel):
@@ -1015,6 +1134,11 @@ class InferenceWindowMaterializeResponse(BaseModel):
     #: the frame is OMITTED rather than reported null — absence of evidence
     #: is not evidence of a value. Empty `{}` on an empty frame.
     tag_observations: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    #: MODEL-SERVE-043. The lead-in file, when `context_rows > 0` and at
+    #: least one Good lead-in row survived. `context_rows` is how many did.
+    context_object_key: str | None = None
+    context_checksum: str | None = None
+    context_rows: int = 0
 
 
 class InferenceWindowTruthJoinRequest(BaseModel):
@@ -1060,6 +1184,9 @@ class InferenceWindowTruthJoinRequest(BaseModel):
     tolerance_seconds: int = Field(..., gt=0, examples=[1800])
     pi: Optional[PIFetchRequest] = None
     sql: Optional[SqlMaterializeSpec] = None
+    #: MODEL-SERVE-037-T03. Live source override: training column -> PI tag.
+    #: The source is fetched by tag and renamed back to the training names.
+    column_tag_map: Optional[dict[str, str]] = None
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "InferenceWindowTruthJoinRequest":
@@ -1106,6 +1233,9 @@ class InferenceWindowTruthJoinResponse(BaseModel):
     sum_signed: float
     sum_actual: float
     sum_actual_sq: float
+    #: MODEL-SERVE-046. Largest |predicted - actual| over this window's
+    #: pairs; 0.0 when `n == 0`. The per-point residual status reads it.
+    max_abs_residual: float = 0.0
 
 
 class InferenceWindowTruthSeriesRequest(BaseModel):
@@ -1184,6 +1314,84 @@ class InferenceWindowMetricsSeriesResponse(BaseModel):
     missing: int
 
 
+class InputSeriesWindow(BaseModel):
+    """One scheduled window's input Parquet (`InferenceWindow.inputKey`)."""
+
+    key: str
+    window_start: str
+    window_end: str
+
+
+class InputSeriesReference(BaseModel):
+    """A column's frozen training reference (`feature_spec.json`
+    `psiRefEdges`/`psiBinMode`). Its outer edges ARE the training range."""
+
+    edges: list[float] = Field(..., min_length=1)
+    bin_mode: Literal["continuous", "categorical"]
+
+
+class InferenceWindowInputSeriesRequest(BaseModel):
+    """MODEL-SERVE-036. Raw input values per tag across scheduled windows,
+    for the Input Drift card: the trend, the per-window table, and the
+    out-of-range counts that grade the badge — all from the SAME rows.
+
+    Out-of-range is decided by `softsensor_scaling.bucket_value`, the
+    primitive every window histogram is bucketed with, so a categorical
+    tag's half-gap tolerance applies here exactly as it does there.
+    """
+
+    windows: list[InputSeriesWindow] = Field(..., min_length=1, max_length=800)
+    #: Empty: every feature column found in the window frames.
+    columns: list[str] = Field(default_factory=list)
+    #: Columns absent here have no training range: values only, no counts.
+    references: dict[str, InputSeriesReference] = Field(default_factory=dict)
+    #: Above this many rows per column the trend is bucketed (min/max kept).
+    max_points: int = Field(600, ge=50, le=5000)
+
+
+class InputSeriesPoint(BaseModel):
+    t: str
+    value: float
+    min: float
+    max: float
+    out_of_range: int
+
+
+class InputSeriesWindowStats(BaseModel):
+    window_start: str
+    window_end: str
+    n: int
+    min: float | None
+    max: float | None
+    mean: float | None
+    below: int
+    above: int
+
+
+class InputSeriesColumn(BaseModel):
+    resolution: Literal["raw", "bucketed"]
+    bucket_minutes: int | None
+    points: list[InputSeriesPoint]
+    #: Newest first.
+    windows: list[InputSeriesWindowStats]
+    total: int
+    below: int
+    above: int
+    #: In-range bin counts summed over every window; null without a
+    #: reference.
+    counts: list[int] | None
+    live_min: float | None
+    live_max: float | None
+    live_mean: float | None
+    last_out_of_range_at: str | None
+
+
+class InferenceWindowInputSeriesResponse(BaseModel):
+    columns: dict[str, InputSeriesColumn]
+    #: Window keys that did not resolve — a gap, never a failed read.
+    missing: int
+
+
 class ResplitHoldoutRequest(BaseModel):
     """Re-split an EXISTING, PRISTINE (never-split) BRONZE against a holdout
     window, without re-fetching from the source.
@@ -1246,7 +1454,15 @@ class FeatureConfigRequest(BaseModel):
 
     id: str
     kind: Literal[
-        "lag", "rolling", "delta", "arith", "ratio", "log", "datetime", "formula"
+        "lag",
+        "rolling",
+        "delta",
+        "arith",
+        "ratio",
+        "log",
+        "datetime",
+        "formula",
+        "group",
     ]
     tag: Optional[str] = None
     tags: Optional[list[str]] = None
@@ -1639,7 +1855,32 @@ class ValidateRequest(BaseModel):
     max_outlier_fraction: Optional[float] = None
 
 
-class RowsRequest(BaseModel):
+class ExcludeWindowFields(BaseModel):
+    """2026-10-18. One inner window to DROP from a read, on top of
+    `start_time`/`end_time` — the validation holdout, which can sit in the
+    middle of a dataset with training rows on both sides. Both bounds or
+    neither, inclusive, naive wall-clock like `start_time`/`end_time`. See
+    `services/frame_window.py`."""
+
+    exclude_start: Optional[str] = None
+    exclude_end: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _exclude_window_is_a_pair(self):
+        if (self.exclude_start is None) != (self.exclude_end is None):
+            raise ValueError("exclude_start and exclude_end must be given together")
+        if self.exclude_start is not None and self.exclude_end is not None:
+            try:
+                lo = datetime.fromisoformat(self.exclude_start)
+                hi = datetime.fromisoformat(self.exclude_end)
+            except ValueError as exc:
+                raise ValueError(f"exclude window is not a timestamp: {exc}") from exc
+            if lo.replace(tzinfo=None) > hi.replace(tzinfo=None):
+                raise ValueError("exclude_start must not be after exclude_end")
+        return self
+
+
+class RowsRequest(ExcludeWindowFields):
     """Paginated read of a committed artifact, for client hydration.
 
     `limit` is bounded (`MAX_SAMPLE_ROWS`) regardless of artifact size — the
@@ -2143,7 +2384,7 @@ DEFAULT_HISTOGRAM_KDE_SAMPLES = 100
 DEFAULT_HISTOGRAM_BIN_COUNT = 12
 
 
-class HistogramRequest(BaseModel):
+class HistogramRequest(ExcludeWindowFields):
     """DS-LAKE-005B-D-T01. Reuses `PreviewRequest`'s exact payload shape
     (TRANSPORT decision, DS-LAKE-005B-D.userDecisions) — a NEW endpoint, not
     an extension of `/preview`'s response, so chart cadence stays independent
@@ -2211,7 +2452,7 @@ class HistogramResponse(BaseModel):
 DEFAULT_BOXPLOT_OUTLIER_CAP = 50
 
 
-class BoxplotRequest(BaseModel):
+class BoxplotRequest(ExcludeWindowFields):
     """DS-LAKE-005B-D-T03. Same payload shape as `HistogramRequest`
     (TRANSPORT decision, DS-LAKE-005B-D.userDecisions) — reuses the identical
     operations/precision/tags/sample_rows/start_time/end_time fields so this
@@ -2486,7 +2727,7 @@ DEFAULT_CORRELATION_TOP_K = 20
 MAX_CORRELATION_TOP_K = 100
 
 
-class CorrelationRequest(BaseModel):
+class CorrelationRequest(ExcludeWindowFields):
     """DS-LAKE-005B-D-T05b. Same operations/precision/sample_rows/
     start_time/end_time fields as Histogram/Boxplot/ScatterRequest —
     proven reactivity mechanism, not a second implementation of it.

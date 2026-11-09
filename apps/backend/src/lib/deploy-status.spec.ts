@@ -6,7 +6,7 @@ import {
 } from './deploy-status';
 import {
   resolveColumnBaseline,
-  resolvePsiReference,
+  resolveDriftReference,
 } from '@/lib/artifact-baseline';
 
 // MODEL-SERVE-001-T30. `deriveDeployStatuses` now calls `resolveColumnBaseline`
@@ -18,7 +18,7 @@ import {
 // fixtures and never reaches it at all.
 jest.mock('@/lib/artifact-baseline');
 const mockedResolveColumnBaseline = resolveColumnBaseline as jest.Mock;
-const mockedResolvePsiReference = resolvePsiReference as jest.Mock;
+const mockedResolveDriftReference = resolveDriftReference as jest.Mock;
 
 describe('classifyDeployStatus (MODEL-SERVE-006-T12, reshaped by T26)', () => {
   it('is stopped when the schedule is not enabled, regardless of history', () => {
@@ -238,6 +238,9 @@ describe('deriveDeployStatuses (batched)', () => {
       // defines as silent.
       modelVersion: { findMany: jest.fn().mockResolvedValue([]) },
       inferenceWindowTruth: { groupBy: jest.fn().mockResolvedValue([]) },
+      // MODEL-SERVE-046. Held-deviation fallback reads: empty by default.
+      tagObservation: { findMany: jest.fn().mockResolvedValue([]) },
+      predictionLog: { findMany: jest.fn().mockResolvedValue([]) },
       ...overrides,
     } as unknown as Parameters<typeof deriveDeployStatuses>[0];
   }
@@ -400,16 +403,11 @@ describe('deriveDeployStatuses (batched)', () => {
         groupBy: jest.fn().mockResolvedValue([
           {
             modelVersionId: 'v1',
-            // 40 pairs whose residual SD is 8 -> ratio 4 against a
-            // reference of 2, which is past criticalSd.
-            _sum: {
-              n: 40,
-              sumSe: 40 * 64,
-              sumAe: 40 * 8,
-              sumSigned: 0,
-              sumActual: 4000,
-              sumActualSq: 401000,
-            },
+            windowStart: new Date(),
+            // One window whose worst residual is 8 against a reference SD
+            // of 2 -> 4 SD out, past criticalSd.
+            _sum: { n: 40 },
+            _max: { maxAbsResidual: 8 },
           },
         ]),
       },
@@ -429,6 +427,110 @@ describe('deriveDeployStatuses (batched)', () => {
     // m2 has a production version but NO joined pairs — UNKNOWN, never OK,
     // and so it stays OFF on this liveness-only payload.
     expect(result.m2.monitoring.status).toBe('OFF');
+  });
+
+  /**
+   * MODEL-SERVE-046. No joined pair yet, but the newest prediction sits 4 SD
+   * from the last reported lab value: the LIST must say Alert, the same as the
+   * Monitoring chart's held deviation.
+   */
+  it('grades the held deviation when no pair has joined, and ignores it once one has', async () => {
+    const schedule = (modelId: string) => ({
+      modelId,
+      enabled: true,
+      cadenceMinutes: 60,
+      lagMinutes: 15,
+      preflightOk: true,
+      skipStreakAlert: 3,
+      missingPctWarn: 5,
+      missingPctAlert: 20,
+      warnSd: 2,
+      criticalSd: 3.0,
+    });
+    const observation = (modelId: string) => ({
+      modelId,
+      tag: 'Lab',
+      lastValue: 100,
+      lastSeenAt: new Date(),
+    });
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest.fn().mockResolvedValue([schedule('m1'), schedule('m2')]),
+      },
+      inferenceWindow: {
+        groupBy: jest.fn().mockResolvedValue([
+          { modelId: 'm1', _max: { windowStart: new Date() } },
+          { modelId: 'm2', _max: { windowStart: new Date() } },
+        ]),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      modelVersion: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'v1',
+            modelId: 'm1',
+            metrics: { sd: 10 },
+            sourceRun: { targetY: 'Lab' },
+          },
+          {
+            id: 'v2',
+            modelId: 'm2',
+            metrics: { sd: 10 },
+            sourceRun: { targetY: 'Lab' },
+          },
+        ]),
+      },
+      // m2 HAS a joined pair whose worst point is only 5 (0.5 SD).
+      inferenceWindowTruth: {
+        groupBy: jest.fn().mockResolvedValue([
+          {
+            modelVersionId: 'v2',
+            windowStart: new Date(),
+            _sum: { n: 3 },
+            _max: { maxAbsResidual: 5 },
+          },
+        ]),
+      },
+      tagObservation: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([observation('m1'), observation('m2')]),
+      },
+      predictionLog: {
+        findMany: jest.fn().mockResolvedValue([
+          // 100 held vs a prediction of 65 -> 35 away = 3.5 SD of 10.
+          {
+            modelVersionId: 'v1',
+            requestedAt: new Date(),
+            predictionStats: { n: 1, min: 65, max: 65 },
+          },
+          {
+            modelVersionId: 'v2',
+            requestedAt: new Date(),
+            predictionStats: { n: 1, min: 65, max: 65 },
+          },
+        ]),
+      },
+    });
+
+    const result = await deriveDeployStatuses(prisma, ['m1', 'm2']);
+
+    expect(result.m1.monitoring.status).toBe('ALERT');
+    expect(result.m1.monitoring.reason).toBe('RESIDUAL_SD_CRITICAL');
+    // m2's joined pair wins: held evidence is not consulted once one exists,
+    // and its worst point (0.5 SD) is in spec -> a measured OK.
+    expect(result.m2.monitoring.status).toBe('OK');
+    const mock = prisma as unknown as {
+      predictionLog: { findMany: jest.Mock };
+    };
+    expect(mock.predictionLog.findMany).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        (mock.predictionLog.findMany.mock.calls[0] as unknown[])[0] as {
+          where: { modelVersionId: { in: string[] } };
+        }
+      ).where.modelVersionId.in,
+    ).toEqual(['v1']);
   });
 
   it('returns an empty object for an empty id list without querying', async () => {
@@ -784,6 +886,9 @@ describe('deriveDeployStatuses — frozen detection (MODEL-SERVE-001-T30)', () =
       },
       modelVersion: { findMany: jest.fn().mockResolvedValue([]) },
       inferenceWindowTruth: { groupBy: jest.fn().mockResolvedValue([]) },
+      // MODEL-SERVE-046. Held-deviation fallback reads: empty by default.
+      tagObservation: { findMany: jest.fn().mockResolvedValue([]) },
+      predictionLog: { findMany: jest.fn().mockResolvedValue([]) },
       ...overrides,
     } as unknown as Parameters<typeof deriveDeployStatuses>[0];
   }
@@ -991,10 +1096,10 @@ describe('deriveDeployStatuses — frozen detection (MODEL-SERVE-001-T30)', () =
   });
 });
 
-describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / MODEL-SERVE-028)', () => {
+describe('deriveDeployStatuses — training-range drift on the list (MODEL-SERVE-024-D03 / MODEL-SERVE-036)', () => {
   afterEach(() => {
     mockedResolveColumnBaseline.mockReset();
-    mockedResolvePsiReference.mockReset();
+    mockedResolveDriftReference.mockReset();
   });
 
   const SCHEDULE = {
@@ -1028,10 +1133,13 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
     },
   };
 
-  /** A production window whose tag_a live histogram is `[lo, hi]`. Against
-   *  the 50/50 reference: 70/30 is PSI ~0.17 (WARN), 95/5 is ~1.0 (CRITICAL). */
-  const window = (lo: number, hi: number) => ({
-    featureHistograms: { tag_a: { counts: [lo, hi], below: 0, above: 0 } },
+  /** A production window with `inside` tag_a values in range and `above`
+   *  past the training max. 10% out is WARN (>= 5%), 25% is CRITICAL
+   *  (>= 20%). */
+  const window = (inside: number, above: number) => ({
+    featureHistograms: {
+      tag_a: { counts: [inside, 0], below: 0, above },
+    },
   });
 
   /** `findMany` serves two queries: the recent-terminal one (no
@@ -1067,8 +1175,8 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
   }
 
   it('grades the production version’s newest 24 windows and reports DRIFT_WARN as WARN', async () => {
-    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
-    const { prisma, findMany } = buildPrisma([window(35, 15), window(35, 15)]);
+    mockedResolveDriftReference.mockResolvedValue(REFERENCE);
+    const { prisma, findMany } = buildPrisma([window(45, 5), window(45, 5)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
@@ -1083,8 +1191,8 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
   });
 
   it('reports DRIFT_CRITICAL as ALERT', async () => {
-    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
-    const { prisma } = buildPrisma([window(95, 5)]);
+    mockedResolveDriftReference.mockResolvedValue(REFERENCE);
+    const { prisma } = buildPrisma([window(75, 25)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
@@ -1093,7 +1201,7 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
   });
 
   it('makes no drift claim and no extra query when drift watching is off', async () => {
-    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
+    mockedResolveDriftReference.mockResolvedValue(REFERENCE);
     const { prisma, findMany } = buildPrisma([window(95, 5)], {
       ...SCHEDULE,
       driftMonitor: false,
@@ -1107,8 +1215,8 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
     expect(result.m1?.monitoring.reason).toBeNull();
   });
 
-  it('treats an empty PSI reference as no evidence, never as no drift', async () => {
-    mockedResolvePsiReference.mockResolvedValue({});
+  it('treats an empty training-range reference as no evidence, never as no drift', async () => {
+    mockedResolveDriftReference.mockResolvedValue({});
     const { prisma } = buildPrisma([window(95, 5)]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
@@ -1118,12 +1226,12 @@ describe('deriveDeployStatuses — PSI drift on the list (MODEL-SERVE-024-D03 / 
   });
 
   it('treats windows with no histograms as no evidence, and skips the reference read', async () => {
-    mockedResolvePsiReference.mockResolvedValue(REFERENCE);
+    mockedResolveDriftReference.mockResolvedValue(REFERENCE);
     const { prisma } = buildPrisma([{ featureHistograms: null }]);
 
     const result = await deriveDeployStatuses(prisma, ['m1']);
 
-    expect(mockedResolvePsiReference).not.toHaveBeenCalled();
+    expect(mockedResolveDriftReference).not.toHaveBeenCalled();
     expect(result.m1?.monitoring.reason).toBeNull();
     expect(result.m1?.monitoring.status).not.toBe('OK');
   });

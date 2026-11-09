@@ -44,8 +44,6 @@ export default function DataSourcesPage() {
         workspaceFilter={s.workspaceFilter}
         setWorkspaceFilter={s.setWorkspaceFilter}
         workspaces={s.workspaces}
-        statusFilter={s.statusFilter}
-        setStatusFilter={s.setStatusFilter}
         typeFilter={s.typeFilter}
         setTypeFilter={s.setTypeFilter}
       />
@@ -67,8 +65,6 @@ export default function DataSourcesPage() {
       <DataSourcesTab
         loading={s.loading}
         filteredSources={s.filteredSources}
-        connectedCount={s.connectedCount}
-        offlineCount={s.offlineCount}
         hasFilter={s.hasFilter}
         onEditSource={s.setEditingSource}
         onDeleteSource={id => void s.deleteSource(id)}

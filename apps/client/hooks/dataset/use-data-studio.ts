@@ -3,13 +3,10 @@
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAtom, useSetAtom } from 'jotai'
-import {
-  dsSearchAtom,
-  dsTypeFilterAtom,
-  dsStatusFilterAtom,
-} from '@/store/data-sources'
+import { dsSearchAtom, dsTypeFilterAtom } from '@/store/data-sources'
 import { toast } from 'sonner'
 import { initDatasetWizardAtom } from '@/store/dataset-studio'
+import { clearModelCreateHandoff } from '@/lib/model-create-handoff'
 import type { SavedDataset } from '@/store/datasets'
 import { useDataSources } from '@/hooks/use-data-sources'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
@@ -42,7 +39,6 @@ export function useDataStudio() {
 
   const [search, setSearch] = useAtom(dsSearchAtom)
   const [typeFilter, setTypeFilter] = useAtom(dsTypeFilterAtom)
-  const [statusFilter, setStatusFilter] = useAtom(dsStatusFilterAtom)
   const initDatasetWizard = useSetAtom(initDatasetWizardAtom)
   const openDatasetForEdit = useDatasetEditNavigation()
 
@@ -75,16 +71,15 @@ export function useDataStudio() {
         s.host.toLowerCase().includes(q) ||
         s.createdBy.toLowerCase().includes(q)
       const matchesType = typeFilter === 'all' || s.type === typeFilter
-      const matchesStatus = statusFilter === 'all' || s.status === statusFilter
       // `workspaceId` may not exist on every source — skip the filter when absent.
       const sourceWorkspaceId = (s as { workspaceId?: string }).workspaceId
       const matchesWorkspace =
         workspaceFilter === 'all' ||
         sourceWorkspaceId === workspaceFilter ||
         !sourceWorkspaceId
-      return matchesSearch && matchesType && matchesStatus && matchesWorkspace
+      return matchesSearch && matchesType && matchesWorkspace
     })
-  }, [allSources, search, typeFilter, statusFilter, workspaceFilter])
+  }, [allSources, search, typeFilter, workspaceFilter])
 
   const handleDatasetCreated = (
     name: string,
@@ -94,6 +89,9 @@ export function useDataStudio() {
   ) => {
     // Sources may be pre-selected in the dialog; any not chosen here can still
     // be added in-wizard (Step 1 → SourcePickerSheet).
+    // MODEL-FLOW-032. Started from Data Studio, so this Save must land back
+    // in Data Studio even if an abandoned Create Model trip left its intent.
+    clearModelCreateHandoff()
     initDatasetWizard({
       name,
       description,
@@ -135,18 +133,12 @@ export function useDataStudio() {
     }
   }
 
-  const connectedCount = allSources.filter(s => s.status === 'connected').length
-  const offlineCount = allSources.length - connectedCount
   const hasFilter =
-    search !== '' ||
-    typeFilter !== 'all' ||
-    statusFilter !== 'all' ||
-    workspaceFilter !== 'all'
+    search !== '' || typeFilter !== 'all' || workspaceFilter !== 'all'
 
   const handleClearFilters = () => {
     setSearch('')
     setTypeFilter('all')
-    setStatusFilter('all')
     setWorkspaceFilter('all')
   }
 
@@ -184,15 +176,11 @@ export function useDataStudio() {
     setWorkspaceFilter,
     typeFilter,
     setTypeFilter,
-    statusFilter,
-    setStatusFilter,
     hasFilter,
     handleClearFilters,
     // derived
     filteredDatasets,
     filteredSources,
-    connectedCount,
-    offlineCount,
     getWorkspaceName,
     getSourceName,
     getSourceMeta,

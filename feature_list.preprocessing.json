@@ -5,7 +5,7 @@
   "audit_document": "docs/DATASET_FLOW_AUDIT.md",
   "description": "Refactor the Dataset Creation Flow into a scalable Bronze/Silver/Gold/Final Lakehouse pipeline while keeping the existing five-step wizard UX intact. Every processing stage produces an immutable MinIO artifact with lineage and checksum. A Dataset Version is created ONLY at Save. MinIO is the single source of truth for rows. Large datasets are accessed through server-side metadata, pagination, bounded previews and virtualized frontend rendering; the browser must never materialize or clone the full dataset. Server-side Parquet querying is the default path for large artifacts. TimescaleDB remains a future serving layer reached through an asynchronous Loader seam.",
   "status": "in_progress",
-  "progress": 97,
+  "progress": 96,
   "supersedes": {
     "project": "Data Cleaning & Feature Engineering Service Pipeline — Slice 1",
     "version": "1.0.0",
@@ -4745,6 +4745,624 @@
           "status": "pending",
           "description": "Live: save a dataset named 'Dataset 6 month — new data' in workspace 68ce2dfc and see the name message, not the retry message."
         }
+      ]
+    },
+    {
+      "id": "DS-LAKE-037",
+      "title": "Wizard survives session expiry: the in-progress dataset is persisted on its DatasetDraft and the user returns to it after signing in again",
+      "priority": 37,
+      "status": "in_progress",
+      "progress": 88,
+      "dependencies": [],
+      "description": "Reported 2026-10-12: a user part-way through Create Dataset (e.g. Step 3.2 Data Cleaning, or any later step) whose session expires is sent to /login, and after signing in again the dataset is gone, so the whole wizard has to be redone. Two independent causes, both confirmed by reading the code (not yet reproduced live): (1) RETURN PATH IS LOST - both sign-out paths hardcode callbackUrl '/login', and even the proxy's own ?callbackUrl= is never honoured, because login() only calls router.refresh() and the proxy then sends any signed-in user on an auth path to /overview. (2) WIZARD STATE IS NOT DURABLE - every wizard input lives in the 74 in-memory dw* jotai atoms; the server-side DatasetDraft row holds only sourceIds + currentArtifactId, has no configuration and no current step, is created lazily (after the Step 2 fetch warm, or at the first Save Cleaned Tags), and is AVEVA-only. A full-page sign-out wipes the atoms, and nothing in the UI can find the orphaned draft again. Fix mirrors the already-shipped Model Creation pattern (ModelDraft config columns + debounced PATCH via useModelDraftSync + GET ?status=ACTIVE + ?draftId= resume via useModelDraftResume): give DatasetDraft a versioned wizardState snapshot, sync it, resume from it, and carry the wizard path + draftId through login. The six-step wizard UX does not change; Save remains the only DatasetVersion commit.",
+      "findings": [
+        "SIGN-OUT DROPS THE PATH: apps/client/lib/fetcher.ts:63-64 (any 401) and apps/client/hooks/auth/use-auth.ts:17-23 (session.error === 'RefreshTokenExpired') both call signOut({ callbackUrl: '/login' }).",
+        "LOGIN IGNORES callbackUrl: apps/client/proxy.ts:26-29 does set ?callbackUrl=<pathname> on a guest page load (pathname only - the query string, e.g. ?draftId=, is dropped). But use-auth.ts:26-41 login() calls signIn(..., { redirect: false }) then router.refresh(), and proxy.ts:33-34 redirects a signed-in user on an AUTH_PATH to /overview. login-form.tsx does not read callbackUrl. The Microsoft button hardcodes '/overview' (components/auth/microsoft-sign-in.tsx:15).",
+        "STATE IS MEMORY-ONLY: apps/client/store/dataset-studio.ts declares 74 dw* atoms (plain atom(), no atomWithStorage / sessionStorage / localStorage). Resets live at dataset-studio.ts ~677, ~769, ~837.",
+        "DRAFT ROW CARRIES NO CONFIG: packages/prisma/prisma/schema.prisma model DatasetDraft = { id, name?, workspaceId, sourceIds[], status, currentArtifactId?, savedDatasetId?, editingDatasetId?, createdById, timestamps }. Compare ModelDraft, which stores plantId/nodeId/datasetId/targetY/algorithm/hyperparameters/splitRatio.",
+        "DRAFT IS CREATED LATE AND AVEVA-ONLY: ensureDraftId (apps/client/hooks/dataset/dataset-draft-bronze.ts:74-91) is called from use-dataset-bronze-warm.ts (after the Step 2 fetch completes) and use-dataset-draft-pipeline.ts:140 (first server sync). It throws for a non-'aveva' source, so the CSV path never has a server draft.",
+        "NO LIST / PATCH ENDPOINT: dataset-draft.authorized.controller.ts exposes POST /, GET /:id, POST /for-dataset/:datasetId, POST /:id/abandon, POST /:id/touch, artifact/job routes and POST /:id/save. There is no GET / (list) and no PATCH /:id, unlike model-draft.authorized.controller.ts:61 (list) and :87 (patch).",
+        "SWEEP WOULD EAT A CONFIG-ONLY DRAFT: env.config.ts CLEANUP_ACTIVE_EMPTY_MINUTES = 15 (ACTIVE draft with zero live artifacts) and CLEANUP_ACTIVE_IDLE_HOURS = 6 (ACTIVE with artifacts, no heartbeat); CLEANUP_DRAFT_RECOVERY_HOURS = 168 keeps an ABANDONED draft's artifacts. use-dataset-draft-heartbeat.ts beats /touch every 60s only while the tab is visible - it stops the moment the user is bounced to /login.",
+        "REUSABLE HYDRATION EXISTS: apps/client/hooks/dataset/use-dataset-edit-hydration.ts already re-seeds the wizard from a saved dataset's pipelineConfig and artifact ids, and hooks/model/use-model-draft-resume.ts shows the reset-then-raw-setters pattern for a ?draftId= cold mount (project memory: hydrate with raw atom setters only)."
+      ],
+      "decisions": [
+        {
+          "id": "DS-LAKE-037-D01",
+          "decision": "CONFIRMED 2026-10-12. Persist the wizard on the existing DatasetDraft row (new nullable wizardState Json + wizardStateVersion Int), not in browser storage.",
+          "why": "Matches the project's own reversed decision for Model Creation (draft is a DB entity, not jotai) and survives a different device/browser. localStorage was considered and rejected: Set-valued atoms (dwSelectedTagKeysAtom) do not serialize as-is, dwRawDatasetAtom exceeds the storage quota, and a shared browser leaks one user's draft to the next unless the key carries the userId."
+        },
+        {
+          "id": "DS-LAKE-037-D02",
+          "decision": "PROPOSED. The snapshot holds CONFIGURATION ONLY - never rows. Excluded: dwRawDatasetAtom, dwCsvDatasetAtom, dwFeaturedDatasetAtom, preview samples, fetch state/progress, warm states, dwDraftSyncStateAtom, and UI-only atoms (hidden/focused tag, sidebar collapsed). Rows come back from the draft's artifacts (currentArtifactId / GOLD / feature artifact ids), which are already server-side.",
+          "why": "MinIO is the single source of truth for rows (global_definition_of_done); Postgres stores metadata and pointers only."
+        },
+        {
+          "id": "DS-LAKE-037-D03",
+          "decision": "PROPOSED. If the snapshot's artifacts have been reaped, resume keeps the configuration and lands on Step 2 with fetch required (re-fetch with the same tags/range), rather than failing the resume.",
+          "why": "Losing a re-fetchable artifact should cost one fetch, not the user's whole configuration."
+        },
+        {
+          "id": "DS-LAKE-037-D04",
+          "decision": "CONFIRMED 2026-10-12: (a) resume list includes ABANDONED drafts inside CLEANUP_DRAFT_RECOVERY_HOURS (168h); resume revives them to ACTIVE. CAVEAT: the sweep reclaims an idle ACTIVE draft's artifacts after CLEANUP_ACTIVE_IDLE_HOURS (6h) before auto-abandoning, so a resume after >6h restores settings + an automatic re-fetch, not cached server data. (b) CSV: settings only, user re-uploads the file. (c) create mode only; edit/retrain deferred.",
+          "why": "Each changes sweep semantics or adds storage cost, so it is the user's call, not a default."
+        },
+        {
+          "id": "DS-LAKE-037-D05",
+          "decision": "callbackUrl is accepted only as a same-origin relative path (starts with '/', not '//', no scheme), otherwise fall back to /overview.",
+          "why": "Honouring an arbitrary callbackUrl is an open redirect (docs/SECURITY.md)."
+        },
+        {
+          "id": "DS-LAKE-037-D06",
+          "decision": "The create-mode URL carries ?draftId=<id> (router.replace after the draft is created). Edit mode and retrain mode never write it.",
+          "why": "callbackUrl needs something to resume; edit mode also sets dwDraftIdAtom, so writing it there would walk an edit reload into create-resume."
+        },
+        {
+          "id": "DS-LAKE-037-D07",
+          "decision": "Explicit Discard (POST /:id/abandon) nulls wizardState; the sweep's auto-abandon keeps it.",
+          "why": "A discarded draft must not reappear in the resume list; an auto-abandoned one must stay revivable within the recovery window."
+        },
+        {
+          "id": "DS-LAKE-037-D08",
+          "decision": "Rows come back by re-running the Step 2 fetch with the restored tags/range/config, not by paging BRONZE back.",
+          "why": "Steps 3-6 gate on dwRawDatasetAtom; BRONZE excludes the holdout window and lacks the client-side constant overlay, so parity is unverified. BRONZE fast-restore is a follow-up."
+        },
+        {
+          "id": "DS-LAKE-037-D09",
+          "decision": "Only the draft's creator receives wizardState, may PATCH it, or may resume it.",
+          "why": "GET /:id is readable by any workspace member and a shared browser can hand one user's ?draftId= to another."
+        },
+        {
+          "id": "DS-LAKE-037-D10",
+          "decision": "A session with no PI (aveva) source keeps its snapshot draft id in datasetSnapshotDraftIdAtom, NEVER dwDraftIdAtom. A PI session uses dwDraftIdAtom (the row the bronze pipeline would create anyway). The atom is cleared when the wizard shell unmounts.",
+          "why": "~15 hooks (Step 6 save path, gold warm, validation, holdout resplit, cleaning commit) treat 'has a draft id' as 'uses the draft-first pipeline'. Setting it for a CSV dataset would flip every one of those branches for a flow that never used them. Found by advisor review before any live run."
+        },
+        {
+          "id": "DS-LAKE-037-D11",
+          "decision": "Resume drops cleanedTags and featureArtifactStamp, keeps cleaningPipelines/cleaningTags, and pulls a saved Step 5/6 back to Step 4 (planResume in lib/dataset-wizard-snapshot.ts).",
+          "why": "Those two fields are claims about SERVER artifacts that resume does not restore (it builds a fresh BRONZE). Restoring them lets the UI say 'cleaned' about data that is not, and Step 6 would save the uncleaned artifact. Landing on Step 4 re-runs the feature warm; re-committing cleaning is one click per batch."
+        },
+        {
+          "id": "DS-LAKE-037-D12",
+          "decision": "Only a PI config's non-secret fields are snapshotted from dwSourceFetchConfigsAtom; every other source's config is omitted and reseeded by Step 2's mount effect from the live source. The PI userName is restored from the live source.",
+          "why": "The store's DataSourceConfig is a union: CSVConfig.rows is row data, SQLConfig.connectionString and InfluxConfig.token are credentials, RestApiConfig.headers can hold a bearer token, PIConfig has an optional password. docs/SECURITY.md named by CLAUDE.md does not exist in the repo."
+        },
+        {
+          "id": "DS-LAKE-037-D13",
+          "decision": "WIZARD_STATE_MAX_BYTES is 1 MiB (was 256 KiB in the draft plan). Sync failures are console.warn'd, not silent.",
+          "why": "Per-tag cleaning pipelines for a few hundred tags can approach 256 KiB, and a rejected PATCH would leave resume quietly never working. The backend body limit is 50 MiB."
+        }
+      ],
+      "out_of_scope": [
+        "POSSIBLE PREMATURE LOGOUT (hypothesis, unverified): auth.authorized.service.ts:136 deletes the old refresh token immediately on rotation with no grace window, and lib/auth/index.ts:139-168 refreshes inside the NextAuth jwt callback. fetcher.ts already single-flights getSession() within one tab, but a second tab or a concurrent useSession refetch could present the already-rotated token and get 'RefreshTokenExpired' long before JWT_REFRESH_EXPIRES_IN (7d). Repro idea: JWT_ACCESS_EXPIRES=2m, two tabs on Step 3 EDA, watch for two /auth/refresh calls with the same token. If confirmed, file it as its own auth feature (grace window or cross-tab lock) - it is not a dataset-flow change.",
+        "Saving a Dataset row before Save - Save stays the only DatasetVersion commit."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-037-T01",
+          "title": "Schema: DatasetDraft.wizardState Json? + wizardStateVersion Int?",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Hand-written migration (generate SQL with prisma migrate diff, apply by hand - never run migrate dev against this DB; check the column does not already exist). Then pnpm build in packages/prisma, since the backend compiles against dist.",
+          "result": "Done 2026-10-12. DatasetDraft.wizardState Json? + wizardStateVersion Int? in schema.prisma; hand-written additive migration 20261012152852_ds_lake_037_draft_wizard_state. Applied by hand to the LOCAL dev DB (docker softsensorproject-db-1 / soft_sensor_db, user-confirmed; 90 existing drafts, none touched, columns verified jsonb/integer). NOT recorded in _prisma_migrations, matching the 4 other hand-applied migrations (87 recorded vs 91 dirs) - run `migrate resolve --applied` only if the team starts recording. pnpm build in packages/prisma done. CORRECTION to the plan: the active DB is local Docker Postgres; the Supabase URLs in .env are commented out and DIRECT_URL is unset."
+        },
+        {
+          "id": "DS-LAKE-037-T02",
+          "title": "Backend: PATCH /:id (wizardState + name) and GET / (list) on dataset-draft",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Mirror model-draft: declare GET / before GET /:id; list scoped to the caller (createdById) and workspace, filter by status, newest updatedAt first, returns id/name/workspaceId/status/updatedAt/current step from the snapshot - never the full snapshot. PATCH refuses (409, AppException) once SAVED; validates wizardStateVersion and a byte cap on wizardState in the DTO; bumps updatedAt so it doubles as a heartbeat. Business logic in the service; controller stays thin.",
+          "result": "Done 2026-10-12. GET /authorized/dataset-drafts (listResumableDraftsService: caller's own, editingDatasetId null, wizardStateVersion set, ACTIVE or ABANDONED inside CLEANUP_DRAFT_RECOVERY_HOURS, summaries only incl. currentStep), PATCH /:id (patchDraftService: 403 non-creator, 409 SAVED, revives ABANDONED->ACTIVE, 256KB cap in PatchDraftSchema), GET /:id now returns isCreator and withholds wizardState/wizardStateVersion from non-creators, abandon nulls the snapshot (D07). model-draft DTO comment corrected."
+        },
+        {
+          "id": "DS-LAKE-037-T03",
+          "title": "Sweep: a draft with a wizardState is not 'empty'",
+          "status": "completed",
+          "progress": 100,
+          "detail": "artifact-cleanup-eligibility: an ACTIVE draft with no live artifact but a non-null wizardState moves to the CLEANUP_ACTIVE_IDLE_HOURS tier instead of CLEANUP_ACTIVE_EMPTY_MINUTES, so a user who logs back in after 20 minutes still finds it. Apply whatever D04(a) decides for ABANDONED drafts.",
+          "result": "Done 2026-10-12. autoAbandonEmptyActiveDrafts: OR of {no snapshot: CLEANUP_ACTIVE_EMPTY_MINUTES} and {snapshot: CLEANUP_ACTIVE_IDLE_HOURS}. artifact-cleanup-eligibility.ts untouched (the 6h artifact reclaim is unchanged, which is the documented D04 caveat)."
+        },
+        {
+          "id": "DS-LAKE-037-T04",
+          "title": "lib: pure snapshot serializer / deserializer with version",
+          "status": "completed",
+          "progress": 100,
+          "detail": "lib/dataset-wizard-snapshot.ts: buildWizardSnapshot(values) -> plain JSON (Set -> array, Date -> ISO) and parseWizardSnapshot(json, version) -> typed values or a typed 'incompatible' result. Covers the config atoms named in D02's complement: name, description, workspaceId, selected source ids, selected/removed/edited/inserted tags, tag constants/units/overrides, preset range, fetch tags, time range, custom date range/interval, holdout range, source fetch configs, fetch config, feature configs/preset, target tag, SDTA presets, EDA window, crop range, value crop/clip, exclusions, conditional/statistical rules, cleaning pipelines/tags, cleaned tags, selected tag keys, selected columns, scaler configs, draft/gold/feature artifact ids + feature artifact stamp, current step, highest unlocked. Colocated round-trip tests.",
+          "result": "Done 2026-10-12. lib/dataset-wizard-snapshot.ts (WizardSnapshotValues typed off the atoms via ExtractAtomValue, buildWizardSnapshot, parseWizardSnapshot with per-field guards + version, clampStep) and hooks/dataset/dataset-wizard-snapshot-atoms.ts (read/write/subscribe registry over the jotai store, raw setters only). Deviation from the task text: draft/gold/feature artifact ids are NOT in the snapshot - resume leaves them null so the bronze warm builds a fresh BRONZE under the same draft (always correct, even when the old artifact was reclaimed). 6 + 3 test cases. HARDENED 2026-10-12 after advisor review: sanitizeSourceFetchConfigs/restoreSourceConfigs (D12) and planResume (D11) added; lib test now 11 cases."
+        },
+        {
+          "id": "DS-LAKE-037-T05",
+          "title": "Client: create the draft at Step 1 and sync the snapshot (useDatasetDraftSync)",
+          "status": "in_progress",
+          "progress": 75,
+          "detail": "ensureDraftId is called when the user leaves Step 1, not first at the Step 2 warm; per D04(b), a non-AVEVA source gets a config-only draft instead of a throw (the BRONZE path keeps its AVEVA guard). New hooks/dataset/use-dataset-draft-sync.ts: debounced PATCH (same 600ms + flush() shape as useModelDraftSync) whenever a snapshotted atom changes; silent failure like the heartbeat. Mounted from wizard-shell only.",
+          "result": "Implemented 2026-10-12, unit-tested (use-dataset-draft-sync.test.tsx, 5 cases), NOT live-verified. ensureWizardDraftId (shares inFlightDrafts with ensureDraftId); useDatasetDraftSync: store.sub on the snapshot atoms, 600ms debounce, serialised writes, create-mode only, skipped for retrain, draft created on leaving Step 1, router.replace keeps other query params, console.warn on failure, resume-target override so the parked Step 2 never overwrites the saved step. D10: PI session -> dwDraftIdAtom, otherwise datasetSnapshotDraftIdAtom (tested: a CSV session leaves dwDraftIdAtom null). Mounted in wizard-shell.tsx. OPEN: whether a CSV connection is a real DataSource row with a UUID is unverified against a live CSV dataset - if not, the CSV draft create 400s (now logged) and CSV datasets do not resume. PI regression risk to check live: the draft id now appears when leaving Step 1 instead of after the Step 2 bronze warm; readers pair it with artifact ids (feature-preview, gold warm, validation, cleaning commit) but holdout-resplit only guards on draftId."
+        },
+        {
+          "id": "DS-LAKE-037-T06",
+          "title": "Client: ?draftId= resume (useDatasetDraftResume)",
+          "status": "in_progress",
+          "progress": 75,
+          "detail": "New hooks/dataset/use-dataset-draft-resume.ts: GET the draft, reset the wizard, then hydrate with raw atom setters only (never the action atoms that reset downstream state), re-point artifact ids, set current step / highest unlocked. Reuse use-dataset-edit-hydration.ts pieces where they fit. Artifact gone -> D03 fallback. Incompatible snapshot version -> toast + start at Step 1 with sources preselected.",
+          "result": "Implemented 2026-10-12, unit-tested (use-dataset-draft-resume.test.tsx, 5 cases), NOT live-verified. useDatasetDraftResume: GET, refuse unless isCreator / not SAVED / not edit / readable snapshot, initDatasetWizardAtom reset THEN raw-setter hydrate through planResume (D11), sources re-resolved from ids, PI -> park on Step 2 with datasetResumeTargetAtom, CSV -> Step 1 + re-upload toast (D10 slot). useDatasetResumeRefetch (step-2-raw-data.tsx) re-runs the same fetch.retry and releases the saved step when it lands; the target is kept on error so Retry still ends on the right step."
+        },
+        {
+          "id": "DS-LAKE-037-T07",
+          "title": "Auth: carry the wizard path + draftId through login",
+          "status": "in_progress",
+          "progress": 75,
+          "detail": "fetcher.ts 401 and use-auth.ts RefreshTokenExpired pass callbackUrl = /login?callbackUrl=<current path + search>. Do NOT flush the draft sync before signOut: that PATCH would carry the same expired token and fail with 401. Use signOut({ redirectTo }) - callbackUrl is deprecated in next-auth 5.0.0-beta.31. login() and login-form honour a safe callbackUrl (D05); proxy.ts does not override it with /overview. COORDINATE FIRST: fetcher.ts / use-auth.ts / proxy.ts neighbours (backend auth services, env.config.ts) carry uncommitted changes from another session as of 2026-10-12 - check git status before editing.",
+          "result": "Implemented 2026-10-12, unit-tested for the guard only, NOT live-verified. lib/auth/safe-callback-url.ts (safeCallbackUrl + loginUrlWithCallback, 13 cases); fetcher.ts 401 and use-auth.ts RefreshTokenExpired now signOut({ redirectTo: /login?callbackUrl=<path+search> }); proxy.ts keeps the query string in callbackUrl and sends a signed-in user on an auth path to safeCallbackUrl(callbackUrl) ?? /overview - this one change also covers password login (router.refresh() on /login) so use-auth login() and login-form are unchanged; Microsoft button passes the safe callback. No flush-before-signOut (D-fix). None of these files were modified by the other session."
+        },
+        {
+          "id": "DS-LAKE-037-T08",
+          "title": "UI: 'Resume unfinished dataset' entry on Data Studio",
+          "status": "in_progress",
+          "progress": 80,
+          "detail": "Data Studio list shows the caller's resumable drafts (name, last edited, step) with Resume (navigates to /data-studio/create?draftId=) and Discard (POST /:id/abandon). Follow DESIGN_SYSTEM / DESIGN.md; no red/amber (status-color reservation).",
+          "result": "Implemented 2026-10-12, component-tested (4 cases), NOT live-verified. useResumableDatasetDrafts + DatasetDraftResumeSection rendered above DatasetsTab on /datasets (the /data-studio route redirects there): name, workspace, Step N of 6, edited-ago, 'data will be fetched again' for ABANDONED, Resume (-> /data-studio/create?draftId=) and a confirmed Discard (abandon)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A user who is signed out by a 401 or by RefreshTokenExpired while on any Create Dataset step lands back on that wizard, at that step, with the same configuration, after signing in again.",
+        "Reopening via 'Resume unfinished dataset' on Data Studio restores the same state, including from another browser.",
+        "No step before Save creates a Dataset or DatasetVersion row; Save remains the only commit.",
+        "The snapshot never contains row data.",
+        "A callbackUrl that is not a same-origin relative path is ignored.",
+        "If the draft's artifacts have been reaped, resume keeps the configuration and asks for a re-fetch instead of failing.",
+        "The six-step wizard (labels, navigation gating, edit-mode landing step) is unchanged."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-037-V01",
+          "status": "completed",
+          "description": "Unit: snapshot round-trip (Set, Date, nested pipelines) and an incompatible-version result.",
+          "result": "PASS - lib/dataset-wizard-snapshot.test.ts (11), dataset-wizard-snapshot-atoms.test.ts (3, real jotai store), use-dataset-draft-sync.test.tsx (5), use-dataset-draft-resume.test.tsx (5): round-trip, version/shape refusal, no rows, no secrets in source configs, planResume drops cleanedTags/stamp and pulls Step 5/6 back, CSV never sets dwDraftIdAtom, non-creator/SAVED/old-version refused."
+        },
+        {
+          "id": "DS-LAKE-037-V02",
+          "status": "completed",
+          "description": "Backend spec: PATCH refuses a SAVED draft (409) and an oversized snapshot; list returns only the caller's drafts and never the snapshot body.",
+          "result": "PASS - dataset-draft.authorized.service.spec.ts (6 new of 115): PATCH 403 non-creator / 409 SAVED / revive, GET withholds the snapshot from a non-creator, list scoping + summary-only, abandon drops the snapshot."
+        },
+        {
+          "id": "DS-LAKE-037-V03",
+          "status": "completed",
+          "description": "Unit: callbackUrl guard rejects 'https://evil', '//evil', 'javascript:' and accepts '/data-studio/create?draftId=x'.",
+          "result": "PASS - lib/auth/safe-callback-url.test.ts (13): rejects https://evil, //evil, /\\evil, javascript:, control chars, auth pages; accepts /data-studio/create?draftId=x."
+        },
+        {
+          "id": "DS-LAKE-037-V04",
+          "status": "completed",
+          "description": "Unit: sweep eligibility keeps a config-only ACTIVE draft past 15 minutes.",
+          "result": "PASS - artifact-cleanup.admin.service.spec.ts: the sweep gives a snapshot draft the CLEANUP_ACTIVE_IDLE_HOURS window and asserts it is longer than the 15-minute one."
+        },
+        {
+          "id": "DS-LAKE-037-V05",
+          "status": "pending",
+          "description": "Live: set JWT_ACCESS_EXPIRES short and revoke the refresh token while on Step 3.2 with cleaning pipelines configured; sign in again and confirm the same step, tags, cutoffs and pipelines - and confirm no DatasetVersion row was created (SELECT on DatasetVersion before/after).",
+          "result": "NOT RUN. Needs the app running with a real login: expire the session on Step 3.2 and confirm the return trip. Also needs the CSV-source-is-a-UUID question in T05 answered."
+        }
+      ],
+      "progress_note": "2026-10-12: backend (T01-T03) done; client T04-T08 implemented and unit-tested (41 new client tests, 6 new backend cases, all green) but NOTHING user-visible is verified live (V05). An advisor review caught three defects before any live run - CSV sessions getting dwDraftIdAtom (D10), resume restoring claims about artifacts it does not restore (D11), and credentials/rows in the source-config snapshot (D12) - which is the reason to run a plain create-dataset flow for one CSV and one PI dataset (no expiry) before trusting this. Unrelated failures in the client suite at this point: models/create pipeline tests, model-detail-dialog, lib/feature-count-sweep, lib/monitoring formatAxisValue, store/__tests__/useAtom.test.ts (no suite). Backend: 9 existing scaffold specs fail (missing ./dto/workspace.admin.dto, bare 'should be defined' DI) plus the other session's auth.public.service.spec.ts."
+    },
+    {
+      "id": "DS-LAKE-038",
+      "title": "Preset Range card in Step 5 beside SD&TA: Clip | Drop per row, and the chosen action reaches the saved dataset",
+      "priority": 38,
+      "status": "in_progress",
+      "progress": 86,
+      "dependencies": [
+        "DS-LAKE-020"
+      ],
+      "supersedes": "DS-LAKE-020-T04 (decision to keep the range control in outlier-removal-panel.tsx and add no server op)",
+      "description": "Requested 2026-10-12: the preset Range control sat four levels deep in Step 5 (CutOffSection -> collapsible Outlier Removal sidebar -> 130-unit ScrollArea -> OutlierRemovalPanel -> PresetRangeSection) and rendered only once cleaning tags were chosen. It now has its own card directly under SdtaPresetCard, each row reads as the kept window '30 <= x <= 100 kg/h', and carries a Clip | Drop toggle. FINDING that drove the server work: preset ranges are ConditionalRules and conditional rules never reach the server - the create-mode commit sent only toCleaningOperationsFromRecord(cleaningPipelines) and cleaning_service.py had no conditional handler (DS-LAKE-020-T04/V03, owner DS-LAKE-005B-D-T01). So before this feature neither action would have reached a saved PI dataset. This reverses the earlier steer recorded in DS-LAKE-020-T04.",
+      "decisions": [
+        {
+          "id": "DS-LAKE-038-D01",
+          "decision": "Own card under SdtaPresetCard (not merged, not side by side). Read-only kept window with <= on both sides; quoted text + provenance as a muted subtitle.",
+          "why": "User choice 2026-10-12. A value ON a bound is untouched by either action, so <= reads true."
+        },
+        {
+          "id": "DS-LAKE-038-D02",
+          "decision": "Actions are Clip and Drop; Mark is gone from preset-range rows. Clip clamps to the bound and keeps status and row. Drop turns the reading into a HOLE (value 0, status Bad). A legacy preset-range rule with action 'mark' reads as Drop.",
+          "why": "User asked to replace Mark with Clip. A saved frame cannot hold an absent cell (frame_service: a hole is a real Bad cell, never NaN), so a hole is the only server form of 'remove this reading'. The preview writes the same hole instead of deleting the cell, so preview == saved data after a fill step."
+        },
+        {
+          "id": "DS-LAKE-038-D03",
+          "decision": "Server: a new cleaning method range_drop (strict bounds, every status, no-op with no bounds) plus the EXISTING clip op. The action rides in the method name, so paramLow/param carry the bounds and no DTO changes (backend zod and python pydantic already pass them).",
+          "why": "Smallest change; clip already has parity coverage. Range ops are sent FIRST in the commit, matching the client order (precleanse before preprocessPipelines)."
+        },
+        {
+          "id": "DS-LAKE-038-D04",
+          "decision": "Selected states use the neutral SegmentedToggle (bg-primary), not ActionToggle's amber/destructive.",
+          "why": "docs/DESIGN_SYSTEM.md section 5 and the status-colour reservation keep red/amber for workspace/plant status."
+        },
+        {
+          "id": "DS-LAKE-038-D05",
+          "decision": "Edit mode is NOT changed. use-dataset-draft-pipeline.ts sends per-batch ops scoped to the batch's tags; prepending every tag's range ops would break that contract.",
+          "why": "Recorded as a known gap: edit-mode saves still do not apply preset ranges server-side. Same family as the SD&TA / hand-typed conditional gap (DS-LAKE-005B-D-T01), not fixed here."
+        },
+        {
+          "id": "DS-LAKE-038-D06",
+          "decision": "In the preview, EVERY preset-range action other than clip writes the hole (0, Bad) - including the legacy 'mark'. The card is the only creator of preset-range rules, so 'mark' exists only in drafts and datasets saved before this feature.",
+          "why": "toPresetRangeOperations sends mark as range_drop (value -> 0). If the preview kept the value, a later crop/clip/smoothing step would read the real number in the preview and 0 on the server. Found by advisor review; tested (mark == drop, and mark -> crop removes the same rows)."
+        },
+        {
+          "id": "DS-LAKE-038-D07",
+          "decision": "Range operations are filtered to the columns the committed artifact has (selectedColumns applied), both in the card's tag list and in the commit (recipe.availableTags).",
+          "why": "python apply_operations -> validate_tags raises on an unknown column and FAILS the whole commit; the client frame in Step 5 is not pruned by selectedColumns. Tested. NOTE the existing cleaning pipelines are not filtered this way - pre-existing, not touched."
+        },
+        {
+          "id": "DS-LAKE-038-D08",
+          "decision": "Drop is REPLACED by Exclude (user request 2026-10-12): an out-of-range reading is marked Bad and KEEPS its value - the cleaning toolkit's Exclude Range, applied outside the kept window with strict bounds. Stored as the rule action `mark`; sent as the new server op `range_exclude`. `range_drop` (the 0.0/Bad hole) was removed before it shipped, with its fixtures and tests. A preset rule an earlier build saved with `drop` reads and sends as Exclude.",
+          "why": "Same vocabulary and the same treatment as the toolkit the user already uses (Clip Bounds / Exclude Range, same Scissors/Ban icons). Keeping the value also means a later crop or clip judges the real reading, not a 0.0 placeholder - the parity case range_exclude_then_crop pins that."
+        },
+        {
+          "id": "DS-LAKE-038-D09",
+          "decision": "Conditions the user writes in the Outlier Removal Conditional tab get the same Clip | Exclude as the preset ranges (the cleaning toolkit's vocabulary), replacing Mark | Drop. Clip clamps a matched reading to the rule's value and is offered only for one-sided <, <=, >, >= rules (conditionalRuleCanClip); a Range or ==/!= rule offers only Exclude, and a rule that becomes unclippable while on Clip falls back to Exclude. A hand-written condition saved with `drop` now behaves as Exclude (Bad, value kept) instead of deleting the cell - parity fixture precleanse_conditional_drop changed by exactly that one cell. SD&TA conditions keep their own drop_row toggle; Statistical rules keep Mark | Drop. The dev-only /design-preview route was deleted.",
+          "why": "User request 2026-10-12: one vocabulary across preset ranges, conditions and the toolkit. Deleting the cell left a reading no fill step could impute; Exclude keeps it imputable. Note hand-written conditions still reach only the preview and the legacy CSV recipe path, not the server (the existing DS-LAKE-005B-D-T01 gap)."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-038-T01",
+          "title": "Engine: ConditionalAction 'clip', preset-range drop = hole, range_drop client method",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/precleanse.ts: ConditionalAction = OutlierAction | 'clip'; clip clamps single-op rules and is not counted as a removal; a preset-range 'drop' writes (0, Bad) while a hand-authored drop still deletes the cell. lib/preprocessing.ts: range_drop in CleaningMethod + applyCleaningStep. 6 + parity cases. REVIEW FIX: legacy 'mark' now also writes the hole in the preview (D06); +2 tests. SUPERSEDED IN PART 2026-10-12 by D08: range_drop -> range_exclude (Bad, value kept)."
+        },
+        {
+          "id": "DS-LAKE-038-T02",
+          "title": "Server: range_drop op in cleaning_service.py",
+          "status": "completed",
+          "progress": 100,
+          "result": "_op_range_drop registered in CLEANING_OPS. 7 unit cases (tests/test_cleaning_range_drop.py: strict bound, open-ended, no-op, other tags and rows kept, fill step imputes the hole, request-shaped entry). SUPERSEDED IN PART 2026-10-12 by D08: range_drop -> range_exclude (Bad, value kept)."
+        },
+        {
+          "id": "DS-LAKE-038-T03",
+          "title": "Parity fixtures incl. CHAINED cases",
+          "status": "completed",
+          "progress": 100,
+          "result": "range_drop_{both_bounds,low_only,high_only,no_bounds_is_noop}, range_drop_then_{interpolate,crop,moving_avg}, clip_then_interpolate, precleanse_preset_range_{drop,clip}; fixtures regenerated into packages/parity-fixtures. Python value parity PASSES for all, including range_drop_then_crop, where the hole's 0.0 is cropped away on BOTH engines (the divergence a deleted client cell would have caused). test_parity.py pins that row removal. SUPERSEDED IN PART 2026-10-12 by D08: range_drop -> range_exclude (Bad, value kept)."
+        },
+        {
+          "id": "DS-LAKE-038-T04",
+          "title": "Mapper + commit: toPresetRangeOperations, sent before the cleaning pipelines",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/cleaning-op-mapper.ts groups enabled preset-range rules per tag AND action (a mixed pair yields two one-sided ops; legacy mark -> range_drop). use-dataset-cleaning-scale-commit.ts prepends them; Step 5 passes conditionalRules. 7 mapper cases + 4 commit cases incl. 'a range changed after a commit is sent by the next commit'. Stale-cut safety: onConditionalChange calls relock() (caps unlock at Step 5) so Step 6 cannot be reached without a fresh commit. REVIEW FIX: commit takes availableTags and never sends a range on a column the artifact lacks (D07); +1 test."
+        },
+        {
+          "id": "DS-LAKE-038-T05",
+          "title": "Guards: action-aware describeRangeCutoffSelection, presetRangeBounds, formatKeptWindow",
+          "status": "completed",
+          "progress": 100,
+          "result": "Only DROP bounds can shrink the training set; a clip raises neither refusal nor labelled-row warning. 25 cases in lib/range-cutoff.test.ts."
+        },
+        {
+          "id": "DS-LAKE-038-T06",
+          "title": "UI: PresetRangeCard under SdtaPresetCard; section removed from the Outlier Removal sidebar",
+          "status": "completed",
+          "progress": 100,
+          "result": "components/preset-range-card.tsx (19 cases). Props removed from CutOffSection -> CutoffSidebar -> OutlierRemovalPanel. Conditional tab: a preset-range rule shows Clip | Drop, hand-authored rules keep Mark | Drop (6 panel cases). Mixed pair shows a notice and one click aligns both bounds. REVIEW FIX: card lists only artifact columns and shows a muted note in edit mode (D05); card now 21 cases."
+        },
+        {
+          "id": "DS-LAKE-038-T07",
+          "title": "Live verification (V05)",
+          "status": "pending",
+          "progress": 0,
+          "result": "NOT RUN. Needs the app with a PI dataset and a preset, and the local apps/python service restarted to load range_drop."
+        }
+      ],
+      "acceptance_criteria": [
+        "In Step 5 with a preset applied, the Preset range card appears directly under the SD&TA card without scrolling, with or without cleaning tags selected.",
+        "Each row reads as a kept window with <= on both sides and offers Clip | Drop.",
+        "Clip: out-of-range readings in the saved dataset equal the bound and stay Good. Drop: they are holes (0.0, Bad) and other tags in those rows survive.",
+        "A range or action changed after a commit is re-committed before Step 6.",
+        "Preview and saved data agree for Drop, including after a following fill, crop or smoothing step."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-038-V01",
+          "status": "completed",
+          "description": "Python parity for every range_drop / clip chained fixture.",
+          "result": "PASS - tests/test_parity.py 338 passed, 94 skipped (the skips are the existing no-precleanse-engine cases). Full python suite: 1027 passed, 94 skipped, INCLUDING the 7 new test_cleaning_range_drop.py cases (an earlier note of '1027 + 7' double-counted)."
+        },
+        {
+          "id": "DS-LAKE-038-V02",
+          "status": "completed",
+          "description": "Client unit coverage: precleanse, mapper, commit, guards, card, panel.",
+          "result": "PASS - non-zero case counts: card 21, outlier panel 6, range-cutoff 25, precleanse-preset-range 8, mapper 7, commit hook 9, parity fixtures 7; tsc clean; eslint 0 errors on touched files. Full client suite: 9 files fail, all unrelated and existing (models/create pipeline tests x5, model-detail-dialog, lib/feature-count-sweep, lib/monitoring formatAxisValue, store/__tests__/useAtom.test.ts = no suite). One earlier full run also showed raw-readings-table, retrain-validation-window, phase-3-training-config and date-time-picker failing; all four pass alone and on the next full run - LOAD-FLAKY, not regressions."
+        },
+        {
+          "id": "DS-LAKE-038-V03",
+          "status": "pending",
+          "description": "Live: enable FIC-101 with Drop, press Next, read the committed GOLD via the draft /rows route and confirm out-of-range cells are holes with other tags intact; repeat with Clip (values equal the bound, Good); confirm the same in the saved dataset after Step 6."
+        }
+      ],
+      "known_gaps": [
+        "EDIT MODE: the card shows (with a note) but an edit-mode save does not apply preset ranges server-side (D05).",
+        "TRAIN/SERVE SKEW: no serving or inference path applies cleaning to live inputs (grep: cleaningPipelines/conditionalRules/valueClip are read only by the client, pipeline-config and artifact_service.clean). Clip therefore trains on clamped values while serving feeds raw ones - the same property every existing cleaning step has, now also true of a preset Clip. Not introduced as a new mechanism, but newly reachable from a one-click control.",
+        "HOLDOUT: replay_holdout deliberately does not call apply_operations (the holdout stays raw, an earlier user decision), so a Clip/Drop range never touches the validation holdout. Same as every other cleaning op.",
+        "TRAINER IMAGE: checked and NOT affected - images/trainer/app has no cleaning registry and reads the FINAL parquet; retrain reads DatasetArtifact.operations only for row counts. So range_drop cannot raise 'Unknown cleaning method' on retrain. (The image still is not built in CI, so a trainer-side feature would be a silent no-op - irrelevant here.)",
+        "The local apps/python service must be restarted to load range_drop before the live check."
+      ],
+      "progress_note": "2026-10-12: implemented and unit-tested end to end (client engine, python op, parity incl. chained, mapper, commit, card). NOT verified live (V03). An advisor review caught two real defects before any live run - legacy 'mark' disagreeing between preview and server (D06) and a range on a deselected column failing the whole commit (D07) - and surfaced the known gaps recorded above. 2026-10-12 later: Drop replaced by Exclude (D08); preset ranges are editable in the Outlier Removal panel and the card shows 'Edited' with the preset's original and a Reset."
+    },
+    {
+      "id": "DS-LAKE-039",
+      "title": "Step 5: charts honour Bad readings, and a GOLD row-loss notice before Continue",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "DS-LAKE-038"
+      ],
+      "supersedes": [],
+      "description": "User report 2026-10-16: the Preset Range cutoff 'is not saved into GOLD', and the other Step 5 charts show different values from the before/after preview. Investigation (draft bde50a8a, job 955e460f): the 7 preset ranges DID reach the server as range_exclude and the job SUCCEEDED, but range_exclude marks readings Bad with the value kept, and drop_bad_feature_rows (apps/python/services/feature_service.py) then drops every row holding any non-Good feature reading before scaling. SILVER 36,480 rows -> GOLD 171 (droppedBadRows 36,309 = exactly the rows with any tag outside its range; AI602B 82%, AI602A 77%, LI602 47% outside). Separately toChartRows plotted cell.value ignoring status, so every chart except the before/after preview (tagFillPreview, Good-only) drew the excluded readings as if untouched.",
+      "decisions": [
+        "2026-10-16 user: keep the current GOLD behaviour (a row with any Bad feature reading is dropped). Fix the display and warn instead.",
+        "Charts: toChartRows gains { goodOnly } (default off). Step 5's cleaned views use it; 'Before Clean' stays as fetched (PI's own Bad readings shown). Step 4 and the holdout chart are unchanged; Step 6 already reads the server GOLD sample (all Good).",
+        "Notice: create mode only (edit-mode saves do not send preset ranges, known DS-LAKE-038 gap, so the count would overstate). Nothing at 0 rows; neutral note under 50%; warning at >=50%; Continue disabled when every row would go. Percent never rounds a partial loss up to 100%."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-039-T01",
+          "title": "toChartRows goodOnly + Step 5 cleaned charts",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/preprocessing.ts toChartRows(ds, { goodOnly }); cutoff-section.tsx (goodOnly when preview !== 'raw') and data-cropping-chart.tsx (chartDataset = cleaned frame, goodOnly)."
+        },
+        {
+          "id": "DS-LAKE-039-T02",
+          "title": "estimateGoldRowDrop + GoldRowLossNotice + Continue gate",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/preprocessing.ts estimateGoldRowDrop(ds, { tags, targetTag }) mirrors drop_bad_feature_rows (any non-Good saved feature tag, target skipped, missing tag ignored, Questionable counts). step-5-data-cleaning.tsx computes it on the full recipe (preprocessPipelines(base, cleaningPipelines)) over committedTags, renders gold-row-loss-notice.tsx above the footer, and disables Continue when kept === 0."
+        },
+        {
+          "id": "DS-LAKE-039-T03",
+          "title": "Live check in Step 5",
+          "status": "pending",
+          "progress": 0,
+          "result": "NOT RUN: dev servers down. Expect on draft bde50a8a with the 7 Exclude ranges: the warning 'Saving will remove 36,309 of 36,480 rows (99.5%)' and gaps in the Cut Off / cropping charts' cleaned view."
+        }
+      ],
+      "acceptance_criteria": [
+        "In Step 5 the cleaned views of the Cut Off and cropping charts show excluded (Bad) readings as gaps, matching the before/after preview.",
+        "Before Continue, Step 5 states how many rows GOLD will drop and which tags cause it, with the ways to keep rows (Clip, widen, fill).",
+        "Continue is disabled when every row would be dropped.",
+        "The GOLD drop rule itself is unchanged."
+      ],
+      "verification": [
+        "Unit: lib/__tests__/gold-row-drop.test.ts (8) and gold-row-loss-notice.test.tsx (5): 13 passed.",
+        "Real data: estimateGoldRowDrop on job 955e460f's SILVER frame (exported from MinIO, the 7 ranges applied as range_exclude) gave dropped 36,309 / kept 171 — exactly the server's droppedBadRows. Run as a throwaway test, then deleted.",
+        "tsc --noEmit: 0 errors; eslint on changed files: 0 errors (one pre-existing unused-function warning in lib/preprocessing.ts).",
+        "Full client suite: the 9 known failing files (25 tests); raw-readings-table and retrain-validation-window failed once each under full-suite load and passed twice in isolation (flaky, not this change).",
+        "Live Step 5: NOT YET RUN."
+      ],
+      "known_gaps": [
+        "Edit mode shows no notice (preset ranges are not sent on edit saves, DS-LAKE-038 gap).",
+        "The estimate covers the whole frame; the server applies the rule to the training rows and, separately, to the holdout before scaling."
+      ],
+      "progress_note": "90%: code and tests done, real-data parity verified; live Step 5 check pending."
+    },
+    {
+      "id": "DS-LAKE-040",
+      "title": "Feature-engineering assist: critical tags, auto-generated features, zeros-as-missing, interpolate max gap, cyclic time and loop aggregates",
+      "priority": "medium",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "DS-LAKE-038"
+      ],
+      "description": "User request 2026-10-19: check whether an hourly feature-engineering recipe (zeros treated as missing, short-gap imputation, physical clipping, lags, rolling mean/std, differences, pairwise differences, analyzer-loop aggregates, time-cycle features, windows capped at 24 h) can be added to the Create Dataset flow as automatic features. Audit result: lags, rolling mean/std, differences, pairwise differences and hour/day-of-week already exist as feature kinds; clipping exists (clip, Preset range card); zeros-as-missing is reachable with exclude [0, 0]; interpolate had no gap limit; time-cycle sin/cos and analyzer-loop aggregates do not exist. Built in phases: 1.5 critical tags + Clip/Exclude suggestion, 1 Auto-generate in Step 4, 2 zeros-as-missing suggestion and interpolate max gap, 3 cyclic datetime parts and a new group feature kind for loop aggregates.",
+      "decisions": [
+        "2026-10-19 user: critical tags are picked in Step 1's tag table (star beside Target), not in the Preset range card.",
+        "2026-10-19 user: Preset range cutoff suggests Clip for a critical tag and Exclude otherwise; an untouched row DEFAULTS to the suggestion (previously every row defaulted to Clip) and the reason is in a tooltip. An explicit pick or an enabled row is never rewritten.",
+        "Auto-generate uses only existing feature kinds (lag, rolling, delta, arith sub, datetime), so feature_spec.json, holdout replay and inference lookback (max_replay_lookback) need no change.",
+        "Windows are stated in hours and converted to rows at the data's own cadence (median timestamp gap of the preview sample), falling back to the configured fetch bucket; the Step 2 summaryDuration override is not part of the saved recipe, so edit mode cannot rely on it.",
+        "Rolling windows are capped at 240 rows: the server computes rolling row by row at about 150 ns per window cell (measured 2026-10-19), so 24 h of 1-minute data is about a minute per feature. Lags are not row-capped.",
+        "The target is never a source for auto features (a lag of Y makes the model target-derived).",
+        "Zeros-as-missing is a suggestion only (0 can be a real reading): one ordinary exclude step with band [0, 0], scoped to the suggested tags and inserted FIRST in the pipeline. No new cleaning op.",
+        "Interpolate max gap rides on the step's existing param: whole rows >= 1, otherwise no limit, so every saved recipe replays byte-identically (existing parity fixtures unchanged).",
+        "2026-10-19 user: loop aggregates group tags automatically by name - same ISA letters + loop number, any trailing letter, same attribute (AI602A.PV + AI602B.PV -> AI602; FIC114A..C -> FIC114). A value and its setpoint, or different letters (FIC107 vs FY107), are never grouped. Each loop can be left out in the dialog.",
+        "2026-10-19 user: a group aggregate is Bad when ANY member is not Good (same rule as arith/ratio).",
+        "2026-10-19 user: aggregates are mean, spread (max - min), min, max, and sample std (only for loops of 3+ tags in Auto-generate).",
+        "Cyclic time is new datetime parts (hourSin/hourCos/dayOfWeekSin/dayOfWeekCos), not a new kind; Auto-generate's Time cycle family now emits the sin/cos pairs instead of the raw hour/day-of-week.",
+        "A group config's `name` IS its output column (e.g. AI602__grp_mean), the meaning `name` already has in feature_spec.json, the holdout replay rebuild and max_replay_lookback; a bare loop label there would be misread as the column."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-040-T01",
+          "title": "Critical tags (Phase 1.5)",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/critical-tags.ts; dwCriticalTagsAtom (store/dataset-studio.ts, cleared by both resets, hydrated from pipelineConfig.criticalTags in edit mode); PipelineConfig.criticalTags written by Step 6; wizard snapshot field (optional guard, old drafts resume with []); Step 1 star in unified-tag-table.tsx follows target/rename/delete/preset-target; PresetRangeCard suggestion badge + tooltip + off-suggestion note."
+        },
+        {
+          "id": "DS-LAKE-040-T02",
+          "title": "Auto-generate features in Step 4 (Phase 1)",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/auto-features.ts (planAutoFeatures, resolveFeatureInterval, inferIntervalMs, estimateRowCount, selectionWithFeatures, withoutAutoFeatures; ids prefixed auto:); feature-engineering/auto-features-dialog.tsx; Step 4 header Auto-generate and Remove auto-generated (N)."
+        },
+        {
+          "id": "DS-LAKE-040-T03",
+          "title": "Zeros-as-missing suggestion in Step 5 (Phase 2)",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/zero-readings.ts (Good readings exactly 0 at >= 5% of the loaded sample); notice + Treat zeros as missing in imputation-detail-panel.tsx, fed by step-5-data-cleaning.tsx."
+        },
+        {
+          "id": "DS-LAKE-040-T04",
+          "title": "Interpolate max gap (Phase 2)",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/preprocessing.ts interpolateMaxGap/longGapCells; apps/python/services/cleaning_service.py _max_gap/_long_gap_cells; Max gap input (placeholder no limit) on the Interpolate step; parity fixtures interpolate_max_gap_2 and interpolate_max_gap_0_is_no_limit."
+        },
+        {
+          "id": "DS-LAKE-040-T06",
+          "title": "Cyclic datetime parts (Phase 3)",
+          "status": "completed",
+          "progress": 100,
+          "result": "DatetimePart hourSin/hourCos/dayOfWeekSin/dayOfWeekCos in lib/feature-engineering.ts and feature_service._datetime_part; Extraction panel options; Auto-generate Time cycle emits the sin/cos pairs; parity fixture feature_datetime_cyclic (rows 5 h apart)."
+        },
+        {
+          "id": "DS-LAKE-040-T07",
+          "title": "group feature kind + loop aggregates (Phase 3)",
+          "status": "completed",
+          "progress": 100,
+          "result": "kind 'group' {name, tags, agg} in lib/feature-engineering.ts, feature_service (_group_aggregate), schemas FeatureConfigRequest, backend FeatureConfigSchema + feature-sources directSources, softsensor_scaling.feature_column_name; findLoopGroups + Loop aggregates family in lib/auto-features.ts and the dialog; parity fixture feature_group_aggregates."
+        },
+        {
+          "id": "DS-LAKE-040-T08",
+          "title": "Every non-formula feature listed in the Extraction panel",
+          "status": "completed",
+          "progress": 100,
+          "result": "extraction-panel.tsx listed only lag/rolling/datetime, so the delta, pairwise arith and group configs Auto-generate adds could only be removed as a batch; the list now shows every non-formula kind (scrolls)."
+        },
+        {
+          "id": "DS-LAKE-040-T05",
+          "title": "Live check in the wizard",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Star tags in Step 1, enable a preset range row, run Auto-generate on an hourly dataset and a 1-minute one, apply zeros-as-missing and a max gap, save; confirm the GOLD row loss in Step 5's notice is acceptable and pipelineConfig.criticalTags persists. Also check loop aggregates on Dataset-s611water (AI602A/B) and the 6-month dataset (FIC114A-D), and that an inference window computes the group columns."
+        }
+      ],
+      "acceptance_criteria": [
+        "A critical tag's preset range row suggests and defaults to Clip; any other tag's to Exclude; the tooltip says why; the target cannot be critical.",
+        "Critical tags survive a rename, drop on delete, and persist through Save, edit-mode hydrate and draft resume.",
+        "Auto-generate never reads the target, never duplicates an existing column, caps every window at 24 h and rolling at 240 rows, and states anything it left out.",
+        "Auto-generated features can be removed as one batch without touching hand-made ones.",
+        "Zero-heavy tags are named with their share; nothing changes until the user clicks; the inserted step runs before any fill.",
+        "Interpolate with a max gap leaves longer runs non-Good in both the browser and Python; without one, behaviour is unchanged.",
+        "Loop aggregates are offered only for loops with 2+ chosen non-target tags, agree between the browser and Python, and are Bad whenever any member is.",
+        "A group column survives feature_spec.json -> holdout replay with the same name, and a lag of it compounds lookback.",
+        "Every auto-generated feature can be removed one by one."
+      ],
+      "verification": [
+        "Client unit/component (vitest): critical-tags 5, store critical-tags 3, wizard snapshot back-compat 2 + atom watch 1, preset-range-card suggestion block 8, unified-tag-table star 4, auto-features 18, auto-features-dialog 6, zero-readings 6, interpolate-max-gap 4, imputation-detail-panel phase 2 3: all passed.",
+        "Parity: packages/parity-fixtures regenerated, only the 2 new fixtures + index.json changed; apps/python tests/test_parity.py test_matches_client_output and test_apply_operations_matches_client_output pass for both new cases.",
+        "Python: tests/test_cleaning_interpolate_max_gap.py 6 passed; full apps/python suite 1116 passed, 96 skipped.",
+        "Auto feature kinds run through apps/python apply_features: column names match the client's featureColumnName and max_replay_lookback reports 24 for a 24-row recipe.",
+        "Client: tsc clean; full suite 25 failed / 3275 passed in the same 9 baseline files.",
+        "Phase 3 parity: feature_datetime_cyclic and feature_group_aggregates - test_matches_client_output passes (16 of 40 group rows Bad from the grid's ragged missingness; 7 distinct days of week).",
+        "Python tests/test_feature_group.py 5 passed (Bad propagation, every aggregate, name through spec/replay rebuild, lookback compounding, cyclic values); full apps/python suite 1131 passed, 100 skipped; apps/serving 47 passed.",
+        "Backend: feature-sources.spec group case; tsc clean; feature-sources + dataset-version specs 102 passed.",
+        "Client: auto-features 22 + dialog 8 + extraction-panel list 1 passed; tsc clean; full suite 25 failed / 3282 passed in the same 9 baseline files."
+      ],
+      "known_gaps": [
+        "Not exercised in a live browser (T05).",
+        "Step 4 and Step 6 wiring are covered by tsc and the lib helpers only; no full-page render test.",
+        "Zero share is measured on the loaded preview sample, not the whole artifact.",
+        "Pairwise differences pair only critical tags (at most 10).",
+        "Loop grouping is by name only; a plant whose tags do not follow ISA letters+number+suffix gets no loop groups (no manual grouping UI).",
+        "The browser preview's datetime parts parse a naive timestamp in the viewer's local zone before reading UTC hours (pre-existing for hour/dayOfWeek); the server value is authoritative and parity fixtures use UTC stamps.",
+        "apps/python must be restarted to pick up the new kind; the serving image needs no rebuild (it never names group columns)."
+      ],
+      "progress_note": "90%: code and tests done (client, python, parity); live wizard check pending."
+    },
+    {
+      "id": "DS-LAKE-041",
+      "title": "Data Sources page: drop the Online/Offline status filter and the Online/Offline stat cards",
+      "priority": "low",
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [],
+      "description": "User request 2026-10-27: remove the connection-status filter and the Offline view from the Data Sources tab, because a connection is already checked when it is created (Add Connection test) and again on every raw-data fetch, so a status filter here only repeated it. Removed the All / Online / Offline toggle from the filter bar (Search, Workspace and Type stay) and the 'Online Connections' / 'Offline' stat cards above the source grid.",
+      "decisions": [
+        "2026-10-27 user: status is not a filter on Data Sources; it is checked at create and at fetch.",
+        "Kept the per-card StatusBadge on each source card and the Connected/Offline filter in the Create Dataset source picker (source-picker-sheet.tsx): neither was asked for, and the picker is a different screen."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-041-T01",
+          "title": "Remove the status toggle, the stat cards and their state",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-10-27. studio-filter-bar.tsx (toggle + statusFilter props gone), data-sources-tab.tsx (stats row + connectedCount/offlineCount props gone), data-sources/page.tsx and datasets/page.tsx (props), hooks/dataset/use-data-studio.ts (statusFilter, matchesStatus, connectedCount, offlineCount; hasFilter and Clear all filters no longer count a status), store/data-sources.ts (dsStatusFilterAtom). stat-card.tsx deleted (no other user)."
+        },
+        {
+          "id": "DS-LAKE-041-T02",
+          "title": "Live check: /data-sources shows no status toggle or stat cards; Type and Workspace filters and Clear all filters still work",
+          "status": "pending",
+          "progress": 0,
+          "result": "NOT VERIFIED — no browser session."
+        }
+      ],
+      "acceptance_criteria": [
+        "The Data Sources filter bar has Search, Workspace and Type only.",
+        "No Online Connections / Offline stat cards on the Data Sources page.",
+        "No dead status-filter state left in the hook or store."
+      ],
+      "verification": [
+        "tsc clean for the touched files; eslint + prettier clean (2026-10-27).",
+        "vitest app/(default)/data-studio: 221/222 — the one failure is a 5 s timeout in raw-readings-table.test.tsx (untouched; passes 6/6 alone).",
+        "Live check PENDING (no browser)."
+      ]
+    },
+    {
+      "id": "DS-LAKE-042",
+      "title": "Edit-mode save lost the feature recipe: feature jobs must start from pre-feature data",
+      "priority": "high",
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": [
+        "DS-LAKE-022",
+        "DS-LAKE-024"
+      ],
+      "description": "Found 2026-11-02 while deploying LSTM2 (MODEL-SERVE-043 live check): Start refused with '108 feature column(s) are neither a base tag of this model's dataset nor recorded in its feature spec'. DatasetTest v2's feature_spec.json had features=[] while its data held 108 lag columns (v1: 108). Lineage BRONZE -> GOLD 79551d0a (spec 108) -> GOLD 0251f1e1 (spec 0) -> FINAL. Root cause, from DB + code: (1) PreprocessingJobService advances draft.currentArtifactId to every successful job's result, FEATURE jobs included; (2) reopening an edit draft (resolveOrCreateEditDraftService) handed that pointer to the wizard as its pipeline source (dwDraftArtifactIdAtom -> useDatasetGoldWarm); (3) the next FEATURE job ran on the draft's own GOLD, every recipe column collided, apply_features skipped each one, and features() wrote a spec listing only the non-skipped configs — none. The dataset trained, then could not be deployed.",
+      "decisions": [
+        "2026-11-02 (user): fix all three layers as one new DS-LAKE feature.",
+        "Layer 3 is applied server-side at the one place the edit wizard reads its source pointer (resolveOrCreateEditDraftService) rather than in the client: it returns the nearest pre-feature artifact in the lineage and leaves the stored pointer alone, so create-mode resume semantics are untouched.",
+        "Python refuses only GENERATED feature names already present in the source (lag/rolling/ratio/delta/arith/log/datetime); user-named kinds (formula, group) keep the deliberate silent skip apply_features documents (a preset formula named like a real tag)."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-042-T01",
+          "title": "Backend: refuse a feature job/inline features call whose source (or any ancestor) is GOLD/FINAL or FEATURE-produced",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. dataset-draft.authorized.service.ts featureBearingReason() on startDraftFeaturesJobService + createDraftFeaturesArtifactService, 409 with the reason. Local DB evidence: 119/119 successful FEATURE jobs sourced a BRONZE; the only GOLD-sourced ones (27: 24 FAILED, 3 SUCCEEDED) are this defect."
+        },
+        {
+          "id": "DS-LAKE-042-T02",
+          "title": "Python: features() refuses a source that already contains this recipe's generated feature columns",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. artifact_service.features (+ _USER_NAMED_FEATURE_KINDS). tests/test_artifact_service_features_featured_source.py 3/3; full python suite 1151 passed, 100 skipped."
+        },
+        {
+          "id": "DS-LAKE-042-T03",
+          "title": "Edit draft re-entry hands the wizard the pre-feature artifact, not the draft's GOLD",
+          "status": "completed",
+          "progress": 100,
+          "result": "DONE 2026-11-02. resolveOrCreateEditDraftService existing-draft branch -> preFeatureArtifactId(currentArtifactId). dataset-draft spec 121/121 (6 new DS-LAKE-042 cases; 10 edit-resolve fixtures given a null findUnique for the lineage walk). tsc clean, eslint 0 errors, prettier applied."
+        },
+        {
+          "id": "DS-LAKE-042-T04",
+          "title": "Remediate already-saved datasets whose spec lost its recipe",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Local DB: only DatasetTest v2 (FINAL bbf2db7d) came from a GOLD-sourced feature job that SUCCEEDED (the other two never became a saved version). Its v1 (FINAL bc8606d0) still has the full 108-feature spec. Re-save after this fix (edit now sources the pre-feature artifact), or train on v1. Other environments need the same query run."
+        },
+        {
+          "id": "DS-LAKE-042-T05",
+          "title": "Live check: edit a dataset with lag features, leave and re-enter edit, save; the new version's spec lists every feature",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Not run. Requires backend restart to pick up the backend change (python reloads itself)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A feature job sourced from an artifact that already carries features is refused (409) before it runs.",
+        "features() never writes a spec that omits a generated feature column the data holds.",
+        "Re-entering an edit draft after Step 4 ran resumes from the pre-feature artifact, so a re-save keeps the full recipe."
+      ],
+      "verification": [
+        "jest dataset-draft 121/121; pytest full suite 1151 passed / 100 skipped.",
+        "Live re-entry check (T05) not yet run."
       ]
     }
   ],

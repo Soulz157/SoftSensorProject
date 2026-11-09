@@ -8,15 +8,18 @@ import {
   computeLayoutBoundingBox,
 } from '@/lib/isomatric'
 import type { ZoneItem } from '@/lib/isomatric'
-import { PlantTower, PlantNameBadge, DEFAULT_SQUASH } from './overview-tower'
+import { PlantTower, PlantNameBadge, DEFAULT_SQUASH } from './tower'
 import { OverviewHoverCard } from './overview-hover-card'
 import type { CanvasNode } from '@/services/canvas'
 import type { Workspace } from '@/types'
 import {
   type NodeStatus,
   type BinaryStatus,
+  type EquipmentAlertChip,
   BINARY_STATUS_META,
+  countBinary,
   deriveStatus,
+  equipmentAlertChip,
 } from '@/lib/overview-status'
 import { useMapViewport } from '@/hooks/canvas/use-map-viewport'
 import { failedDeploys } from '@/lib/model-status'
@@ -53,26 +56,24 @@ function pathSquash(d: string | undefined): number | null {
 
 interface PlantsMapProps {
   workspaces: Workspace[]
-  nodesByWorkspace: Record<string, CanvasNode[]>
+  equipmentListByWorkspace: Record<string, CanvasNode[]>
   selectedWorkspaceId: string | null
   onWorkspaceClick: (id: string) => void
   onWorkspaceDoubleClick: (id: string) => void
   highlightedIds?: Set<string>
   failedDeploysByWorkspace?: Record<string, number>
-  failedByNodeId?: Record<string, number>
-  abnormalNodeIds?: Set<string>
+  abnormalEquipmentIds?: Set<string>
 }
 
 export function PlantsMap({
   workspaces,
-  nodesByWorkspace,
+  equipmentListByWorkspace,
   selectedWorkspaceId,
   onWorkspaceClick,
   onWorkspaceDoubleClick,
   highlightedIds,
   failedDeploysByWorkspace,
-  failedByNodeId,
-  abnormalNodeIds,
+  abnormalEquipmentIds,
 }: PlantsMapProps) {
   const { resolvedTheme, setTheme } = useTheme()
   const isDark = resolvedTheme !== 'light'
@@ -131,7 +132,22 @@ export function PlantsMap({
   const { data: hoveredModelsRaw } = useModels(hoveredId ?? '')
   const hoveredFailedCount = failedDeploys(hoveredModelsRaw ?? []).length
 
-  const totalAbnormal = abnormalNodeIds?.size ?? 0
+  const totalAbnormal = abnormalEquipmentIds?.size ?? 0
+
+  // MODEL-SERVE-033. The badge's "2/8", by the same rule that turns the plant
+  // red (`isEquipmentAbnormal`, as page.tsx reconciles workspace status).
+  const chipByWorkspace = useMemo(() => {
+    const out: Record<string, EquipmentAlertChip | null> = {}
+    for (const ws of workspaces) {
+      out[ws.id] = equipmentAlertChip(
+        countBinary(
+          equipmentListByWorkspace[ws.id] ?? [],
+          abnormalEquipmentIds,
+        ),
+      )
+    }
+    return out
+  }, [workspaces, equipmentListByWorkspace, abnormalEquipmentIds])
   // MODEL-SERVE-024-D02: Abnormal only for an alerting node or an abnormal
   // model (`abnormalNodeIds`). Offline equipment no longer turns it red.
   const overallBinary: BinaryStatus = totalAbnormal > 0 ? 'abnormal' : 'normal'
@@ -145,9 +161,9 @@ export function PlantsMap({
   // const failedText = isDark ? '#fbbf24' : '#b45309'
 
   const hoveredWs = hoveredId ? workspaces.find(w => w.id === hoveredId) : null
-  const hoveredNodes = useMemo(
-    () => (hoveredId ? (nodesByWorkspace[hoveredId] ?? []) : []),
-    [hoveredId, nodesByWorkspace],
+  const hoveredEquipmentList = useMemo(
+    () => (hoveredId ? (equipmentListByWorkspace[hoveredId] ?? []) : []),
+    [hoveredId, equipmentListByWorkspace],
   )
 
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
@@ -335,7 +351,7 @@ export function PlantsMap({
       {hoveredWs && hoverPos && !isDragging && (
         <OverviewHoverCard
           workspace={hoveredWs}
-          nodes={hoveredNodes}
+          equipmentList={hoveredEquipmentList}
           models={hoveredModelsRaw ?? []}
           failedCount={hoveredFailedCount}
           isDark={isDark}
@@ -359,13 +375,15 @@ export function PlantsMap({
           {spread.map(({ zone, floorPath, labelX, labelY, dx, dy }) => {
             const ws = workspaces.find(w => w.id === zone.id)
             if (!ws) return null
-            const nodes = nodesByWorkspace[ws.id] ?? []
-            const nodeStatus =
-              (ws.status as NodeStatus | undefined) ?? deriveStatus(nodes)
+            const equipmentList = equipmentListByWorkspace[ws.id] ?? []
+            const equipmentStatus =
+              (ws.status as NodeStatus | undefined) ??
+              deriveStatus(equipmentList)
             // MODEL-SERVE-024-D02: an abnormal model (failed deploy or
             // monitoring ALERT) makes the workspace Abnormal, i.e. 'alarm'.
             const failedCount = failedDeploysByWorkspace?.[ws.id] ?? 0
-            const status: NodeStatus = failedCount > 0 ? 'alarm' : nodeStatus
+            const status: NodeStatus =
+              failedCount > 0 ? 'alarm' : equipmentStatus
             const isSelected = selectedWorkspaceId === ws.id
             const isHovered = hoveredId === ws.id
             const isFiltered =
@@ -426,17 +444,12 @@ export function PlantsMap({
                   cx={labelX}
                   cy={labelY - 10}
                   squash={floorSquash}
-                  showBadge={false}
-                  nodeCount={ws.nodeCount ?? nodes.length}
+                  equipmentCount={ws.nodeCount ?? equipmentList.length}
                   status={status}
-                  nodeStatuses={nodes.map(n => {
-                    const base = n.data.status as NodeStatus
-                    return (failedByNodeId?.[n.id] ?? 0) > 0 ? 'alarm' : base
-                  })}
+                  chip={chipByWorkspace[ws.id] ?? null}
                   workspaceColor={ws.color ?? 'blue'}
                   name={ws.name}
                   selected={isSelected}
-                  isDark={isDark}
                   onMouseEnter={() => !isDragging && setHoveredId(ws.id)}
                   onMouseLeave={handleTowerLeave}
                   onClick={() => !isDragging && onWorkspaceClick(ws.id)}
@@ -451,13 +464,15 @@ export function PlantsMap({
           {spread.map(({ zone, labelX, labelY, dx, dy }) => {
             const ws = workspaces.find(w => w.id === zone.id)
             if (!ws) return null
-            const nodes = nodesByWorkspace[ws.id] ?? []
-            const nodeStatus =
-              (ws.status as NodeStatus | undefined) ?? deriveStatus(nodes)
+            const equipmentList = equipmentListByWorkspace[ws.id] ?? []
+            const equipmentStatus =
+              (ws.status as NodeStatus | undefined) ??
+              deriveStatus(equipmentList)
             // MODEL-SERVE-024-D02: an abnormal model (failed deploy or
             // monitoring ALERT) makes the workspace Abnormal, i.e. 'alarm'.
             const failedCount = failedDeploysByWorkspace?.[ws.id] ?? 0
-            const status: NodeStatus = failedCount > 0 ? 'alarm' : nodeStatus
+            const status: NodeStatus =
+              failedCount > 0 ? 'alarm' : equipmentStatus
             const isFiltered =
               highlightedIds !== undefined && !highlightedIds.has(ws.id)
 
@@ -475,10 +490,7 @@ export function PlantsMap({
                   cx={labelX}
                   cy={labelY - 30}
                   status={status}
-                  nodeStatuses={nodes.map(n => {
-                    const base = n.data.status as NodeStatus
-                    return (failedByNodeId?.[n.id] ?? 0) > 0 ? 'alarm' : base
-                  })}
+                  chip={chipByWorkspace[ws.id] ?? null}
                   name={ws.name}
                   isDark={isDark}
                   squash={floorSquash}

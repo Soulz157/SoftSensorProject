@@ -6,6 +6,7 @@ import {
   applyHeldValue,
   formatAxisValue,
   heldDeviationStats,
+  unpairedBandSd,
   heldEvalPoints,
   mergeLivePredictions,
   mergeManualPredictions,
@@ -850,4 +851,52 @@ describe('wall-clock labels (tooltip time of day)', () => {
       expect(pickTimeFormat(span)(t)).toBe(expected)
     },
   )
+})
+
+/**
+ * 2026-10-19, model s611water: a water-content target around 1.4 with
+ * predictions inside 0.0005 of each other and no lab pair. Two-decimal
+ * rounding turned every spread to 0 and the ±1 SD band disappeared; with no
+ * pair the band now uses the training residual SD instead.
+ */
+describe('small-scale targets keep their band (s611water)', () => {
+  it('heldDeviationStats keeps a spread far below 0.01 instead of rounding it to 0', () => {
+    const rows = [-0.0398, -0.0402, -0.0396, -0.0404].map((d, i) => ({
+      t: i,
+      timestamp: '',
+      heldDeviation: d,
+    })) as LiveOverlayRow[]
+    const { sd } = heldDeviationStats(rows)
+    expect(sd).toBeGreaterThan(0)
+    expect(sd).toBeCloseTo(0.000316, 5)
+  })
+
+  it('windowStats and band edges keep 4th-decimal precision', () => {
+    const pts = [
+      point('2026-01-01T00:00:00.000Z', 1.4651, 1.4252),
+      point('2026-01-01T01:00:00.000Z', 1.4653, 1.4257),
+      point('2026-01-01T02:00:00.000Z', 1.4649, 1.4255),
+    ]
+    const { sd } = windowStats(pts)
+    expect(sd).toBeGreaterThan(0)
+    const [lo, hi] = buildMonitoringRows(pts, 0.1697)[0]!.sd1!
+    expect(lo).toBeCloseTo(1.4651 - 0.1697, 6)
+    expect(hi).toBeCloseTo(1.4651 + 0.1697, 6)
+  })
+
+  it('with no pair, the band uses the training residual SD when there is one', () => {
+    expect(unpairedBandSd(0.169744, 0.0002)).toEqual({
+      sd: 0.169744,
+      basis: 'reference',
+    })
+    expect(unpairedBandSd(null, 0.0002)).toEqual({ sd: 0.0002, basis: 'held' })
+    expect(unpairedBandSd(0, 0.0002).basis).toBe('held')
+  })
+
+  it('draws that band around the held actual', () => {
+    const rows = [{ t: 0, timestamp: '', held: 1.465 }] as LiveOverlayRow[]
+    const [row] = applyHeldDeviationBand(rows, 0.169744)
+    expect(row!.sd1![0]).toBeCloseTo(1.295256, 5)
+    expect(row!.sd1![1]).toBeCloseTo(1.634744, 5)
+  })
 })

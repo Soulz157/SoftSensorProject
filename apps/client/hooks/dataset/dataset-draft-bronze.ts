@@ -1,13 +1,9 @@
 import { datasetDraftService } from '@/services/dataset-draft'
-import {
-  piFetchInputError,
-  resolveInterval,
-  toPiTime,
-} from '@/lib/dataset-fetch'
+import { piFetchInputError, toPiTime } from '@/lib/dataset-fetch'
 import type { CustomInterval, FetchPeriod } from '@/store/model-pipeline'
 import type { CustomDateRange } from '@/store/data-visualize'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
-import type { HistoricalFetchConfig } from '@/lib/fetch-config'
+import { piSummaryParams, type HistoricalFetchConfig } from '@/lib/fetch-config'
 
 /**
  * Pure (no React, no atoms) draft/bronze creation logic, extracted from
@@ -91,6 +87,37 @@ export async function ensureDraftId(
   })
 }
 
+/**
+ * DS-LAKE-037. Like `ensureDraftId`, but for the wizard-resume snapshot rather
+ * than for BRONZE: it must also work for a source the BRONZE path cannot read
+ * (a CSV), because the snapshot is configuration only. Prefers the PI source
+ * when there is one, so the draft `ensureDraftId` later finds is the SAME row.
+ * Shares `inFlightDrafts`, so a snapshot create and a bronze-warm create
+ * racing on one workspace issue ONE POST.
+ */
+export async function ensureWizardDraftId(
+  ctx: Pick<BronzeContext, 'workspaceId' | 'selectedSources'> & {
+    name?: string
+  },
+  draftId: string | null,
+): Promise<string> {
+  if (draftId) return draftId
+  return dedup(inFlightDrafts, ctx.workspaceId, async () => {
+    const source =
+      ctx.selectedSources.find(s => s.type === 'aveva') ??
+      ctx.selectedSources[0]
+    if (!source) {
+      throw new Error('Select a data source before saving a resumable draft.')
+    }
+    const res = await datasetDraftService.create({
+      workspaceId: ctx.workspaceId,
+      sourceIds: [source.id],
+      name: ctx.name || undefined,
+    })
+    return res.data.id
+  })
+}
+
 export async function ensureBronzeArtifactId(
   ctx: BronzeContext,
   draftId: string,
@@ -98,7 +125,18 @@ export async function ensureBronzeArtifactId(
   tags: string[],
 ): Promise<string> {
   if (artifactId) return artifactId
-  const key = `${draftId}:${[...tags].sort().join(',')}`
+  // The fetch window and summary settings are part of the key: a materialize
+  // still in flight for the PREVIOUS Step 2 range must not be handed to a
+  // caller asking for the new one (it would return the old, shorter BRONZE).
+  const key = [
+    draftId,
+    ctx.customDateRange?.from ?? '',
+    ctx.customDateRange?.to ?? '',
+    JSON.stringify(
+      piSummaryParams(ctx.fetchConfig, ctx.period, ctx.customInterval),
+    ),
+    [...tags].sort().join(','),
+  ].join('|')
   return dedup(inFlightArtifacts, key, async () => {
     const guard = piFetchInputError(
       ctx.selectedSources,
@@ -108,16 +146,13 @@ export async function ensureBronzeArtifactId(
     )
     if (!guard.ok) throw new Error(guard.error)
 
-    const summaryDuration =
-      ctx.fetchConfig.summaryDuration.trim() ||
-      resolveInterval(ctx.period, ctx.customInterval)
-
     const res = await datasetDraftService.materialize(draftId, {
       sourceId: guard.source.id,
       tags,
       startTime: toPiTime(ctx.customDateRange!.from),
       endTime: toPiTime(ctx.customDateRange!.to),
-      summaryDuration,
+      // Bucket AND the Historical Fetch Settings: the BRONZE is what trains.
+      ...piSummaryParams(ctx.fetchConfig, ctx.period, ctx.customInterval),
       // DS-LAKE-018-T03: same toPiTime conversion as startTime/endTime — the
       // python side compares holdout timestamps directly against the
       // materialized frame's own, so both must speak the same format.

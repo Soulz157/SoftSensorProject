@@ -40,6 +40,9 @@ const STEP_FILES = [
   'dataset-review/source-identity-panel.tsx',
   'dataset-review/per-tag-stats-panel.tsx',
   'dataset-review/holdout-panel.tsx',
+  'dataset-review/holdout-trend-chart.tsx',
+  'dataset-review/split-overview.tsx',
+  'dataset-review/review-section-heading.tsx',
 ]
 
 function read(file: string): string {
@@ -108,5 +111,20 @@ describe('Dataset Review step contract (MODEL-FLOW-010-V02)', () => {
     // FeatureTransformDialog writes dwScalerConfigsAtom. Mounting it here
     // would let a reviewer silently edit an unrelated dataset draft.
     expect(src).toMatch(/showTransforms=\{false\}/)
+  })
+
+  it('Training and Validation are tabs that both stay mounted', () => {
+    const src = read('phase-2-dataset-review.tsx')
+    // An unmounted tab would reset the analysis card's tag and period and
+    // refetch on every switch.
+    const panels = src.match(/<TabsContent[^>]*>/g) ?? []
+    expect(panels).toHaveLength(2)
+    for (const panel of panels) expect(panel).toMatch(/forceMount/)
+  })
+
+  it('Compare Dataset offers the raw (BRONZE) fetch as a left side', () => {
+    const src = read('phase-2-dataset-review.tsx')
+    expect(src).toMatch(/<DatasetCompareModal/)
+    expect(src).toMatch(/rawArtifactId=\{dataset\.adoptedBronzeArtifactId/)
   })
 })

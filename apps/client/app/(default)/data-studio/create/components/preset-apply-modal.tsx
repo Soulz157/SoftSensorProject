@@ -38,6 +38,7 @@ import {
 import { cn } from '@/lib/utils'
 import { dwWorkspaceIdAtom } from '@/store/dataset-studio'
 import { useFeaturePresets } from '@/hooks/dataset/use-feature-presets'
+import { PresetUploadSelect } from './preset-upload-select'
 import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
 import type { FeatureConfig } from '@/lib/feature-engineering'
 import {
@@ -122,10 +123,12 @@ export function PresetApplyManager({
   const {
     presets,
     currentImport,
+    uploads,
     loading,
     importing,
     error,
     importWorkbook,
+    selectImport,
     loadDocument,
     loadSdta,
   } = useFeaturePresets(workspaceId)
@@ -215,6 +218,16 @@ export function PresetApplyManager({
     () => document?.features.filter(f => f.type === 'raw_tag') ?? [],
     [document],
   )
+  // Workbook `Range control` per raw tag, for the check table. A tag listed
+  // twice keeps its first non-blank range.
+  const rangeByTag = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const f of rawTags) {
+      const tag = f.required_base_tags[0] ?? f.name
+      if (f.range && !map.get(tag)) map.set(tag, f.range)
+    }
+    return map
+  }, [rawTags])
 
   const targetPresent = Boolean(document && resolved.has(document.target_y))
 
@@ -257,12 +270,47 @@ export function PresetApplyManager({
     setOverrides({})
   }, [])
 
+  /**
+   * Switch to another upload (e.g. the user's own template). Everything chosen
+   * from the previous upload - unit, configuration, overrides, a loaded SD&TA
+   * config - belongs to THAT upload's objects, so it is cleared rather than
+   * carried over, then the first usable preset is opened like after an upload.
+   */
+  const handleSelectImport = useCallback(
+    async (importId: string) => {
+      setUnit('')
+      setPresetId('')
+      setDocument(null)
+      setDocError(null)
+      setOverrides({})
+      setSdta(null)
+      setSdtaError(null)
+      setSdtaApplied(false)
+      try {
+        const next = await selectImport(importId)
+        const first = next.find(p => !p.incomplete) ?? next[0]
+        if (first) {
+          setUnit(first.unit)
+          void selectPreset(first.id)
+        }
+      } catch {
+        // `useFeaturePresets` already surfaces the failure through `error`.
+      }
+    },
+    [selectImport, selectPreset],
+  )
+
   const handleFile = useCallback(
     async (file: File | undefined) => {
       if (!file) return
       try {
         const next = await importWorkbook(file)
         toast.success(`Imported ${next.length} preset(s) from ${file.name}`)
+        // The SD&TA config belongs to an IMPORT; one loaded from the previous
+        // upload must not stay staged against the new one.
+        setSdta(null)
+        setSdtaError(null)
+        setSdtaApplied(false)
         // Land on something usable rather than an empty panel.
         const first = next.find(p => !p.incomplete) ?? next[0]
         if (first) {
@@ -368,6 +416,13 @@ export function PresetApplyManager({
               setDragging={setDragging}
               fileRef={fileRef}
               onFile={handleFile}
+            />
+
+            <PresetUploadSelect
+              uploads={uploads}
+              selectedId={currentImport?.id ?? null}
+              onSelect={id => void handleSelectImport(id)}
+              disabled={loading || importing}
             />
 
             {/* Independent of preset selection — SD&TA belongs to the IMPORT. */}
@@ -546,11 +601,12 @@ export function PresetApplyManager({
                               : ''}
                     </p>
                   ) : (
-                    <table className="w-full min-w-[620px] table-fixed text-xs">
+                    <table className="w-full min-w-[720px] table-fixed text-xs">
                       <colgroup>
                         <col className="w-24" />
                         <col className="w-56" />
                         <col />
+                        <col className="w-28" />
                         <col className="w-24" />
                       </colgroup>
                       <thead className="sticky top-0 z-10 bg-card">
@@ -558,6 +614,7 @@ export function PresetApplyManager({
                           <th className="p-2 pl-3 font-medium">Status</th>
                           <th className="p-2 font-medium">Tag</th>
                           <th className="p-2 font-medium">Required by</th>
+                          <th className="p-2 font-medium">Range control</th>
                           <th className="p-2 pr-3 font-medium">Type</th>
                         </tr>
                       </thead>
@@ -566,6 +623,7 @@ export function PresetApplyManager({
                           <CheckRow
                             key={check.tag}
                             check={check}
+                            range={rangeByTag.get(check.tag) ?? null}
                             options={mappableTags}
                             onMap={tag =>
                               setOverrides(prev => ({
@@ -868,7 +926,7 @@ function PresetSource({
           onFile(e.dataTransfer.files?.[0])
         }}
         className={cn(
-          'flex w-full flex-col items-center gap-1.5 rounded-xl border-2 border-dashed p-5 transition-colors',
+          'cursor-pointer flex w-full flex-col items-center gap-1.5 rounded-xl border-2 border-dashed p-5 transition-colors',
           dragging
             ? 'border-primary bg-primary/5'
             : 'border-border hover:border-primary/40 hover:bg-muted/40',
@@ -953,6 +1011,7 @@ function PresetPreview({
               <p className="break-all font-mono text-[11px] text-muted-foreground">
                 {eq.formula}
               </p>
+              <RangeControl range={eq.range} />
               {eq.parse_warnings.map((warning, i) => (
                 <p
                   key={i}
@@ -974,14 +1033,19 @@ function PresetPreview({
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
           </Collapsible.Trigger>
           <Collapsible.Content className="space-y-1.5 pt-1.5">
-            <div className="flex flex-wrap gap-1">
+            <div className="space-y-1">
               {rawTags.map(tag => (
-                <span
+                <div
                   key={tag.name}
-                  className="mt-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                  className="mt-1 flex min-w-0 items-baseline justify-between gap-2 rounded bg-muted/60 px-1.5 py-0.5"
                 >
-                  {tag.name}
-                </span>
+                  <span className="break-all font-mono text-[11px] text-muted-foreground">
+                    {tag.name}
+                  </span>
+                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                    {tag.range || '—'}
+                  </span>
+                </div>
               ))}
             </div>
             {rawTags.map(tag =>
@@ -1002,12 +1066,25 @@ function PresetPreview({
   )
 }
 
+/** The workbook's `Range control` cell, verbatim — the parsed bound is only
+ * proposed later, in Step 3.2's preset range cutoff. */
+function RangeControl({ range }: { range: string }) {
+  if (!range) return null
+  return (
+    <p className="mt-1 text-[11px] text-muted-foreground">
+      Range control: <span className="font-mono">{range}</span>
+    </p>
+  )
+}
+
 function CheckRow({
   check,
+  range,
   options,
   onMap,
 }: {
   check: TagCheck
+  range: string | null
   options: string[]
   onMap: (tag: string) => void
 }) {
@@ -1060,6 +1137,9 @@ function CheckRow({
         >
           {check.usedIn.join(', ')}
         </span>
+      </td>
+      <td className="break-words p-2 align-top font-mono text-muted-foreground">
+        {range ?? '—'}
       </td>
       <td className="whitespace-nowrap p-2 pr-3 align-top text-muted-foreground">
         {check.usedBy.includes('equation') ? 'Equation' : 'Raw tag'}

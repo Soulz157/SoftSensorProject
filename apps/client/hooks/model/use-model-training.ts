@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   modelDraftRunService,
@@ -12,17 +12,22 @@ import {
 import type { DraftSplitStatsResult } from '@/services/dataset-version'
 import { datasetSizeFrom } from '@/lib/hyperparam-ranges'
 import { baseHyperparamsFor } from '@/lib/tuning-preview'
+import {
+  planFineTuneLaunch,
+  planTrainingLaunch,
+  type FineTuneInput,
+  type LaunchPlan,
+  waitingForComputeMessage,
+} from '@/lib/training-launch'
+import { scoreMetricOf } from '@/lib/run-params'
 import { isSequenceAlgorithm } from '@/lib/metric-source'
 import {
   mpTrainStateAtom,
   mpServerDraftIdAtom,
   mpTargetVariableAtom,
   mpAlgorithmsAtom,
-  mpFindBestModelAtom,
-  mpFindBestParamsAtom,
   mpHyperparamsAtom,
   mpPerAlgorithmHyperparamsAtom,
-  mpExtraVariantsAtom,
   mpTrainTestSplitAtom,
   mpSplitStatsTagsAtom,
   mpSeedAtom,
@@ -30,6 +35,7 @@ import {
   mpSelectedDatasetAtom,
   mpTrainingResultAtom,
   mpCandidateJobIdAtom,
+  mpLossFunctionAtom,
   mpArtifactRefAtom,
   ALGORITHM_LABELS,
   type TrainState,
@@ -42,9 +48,19 @@ const POLL_MS = 2500
 const MAX_CONSECUTIVE_POLL_FAILURES = 3
 
 export interface UseModelTrainingResult extends TrainState {
+  /** Round 1: train every selected algorithm once with its card values. */
   start: () => void
+  /** Round 2 (MODEL-FLOW-035): a hyperparameter search over one algorithm. */
+  fineTune: (input: FineTuneInput) => void
   retry: () => void
   reset: () => void
+  /** Stop the run or job in flight and kill its container. Idle when nothing
+   *  is training. */
+  cancel: () => Promise<void>
+  /** A cancel request is in flight. */
+  canceling: boolean
+  /** Why the last cancel failed, while the run is still going; else null. */
+  cancelError: string | null
 }
 
 interface Deps {
@@ -91,7 +107,7 @@ interface Deps {
  * explicit refusal (model-run-launch) is for a CV run. What actually 400ed a
  * direct HYPERPARAMETER_SEARCH was `expandSearchCandidates` finding NO
  * `TUNING_GRID` entry, which MODEL-FLOW-024 added. A direct Find Best
- * Parameters on one lstm/gru is therefore allowed. A SWEEP (Find Best Model,
+ * Parameters on one lstm/gru is therefore allowed. A SWEEP (two or more algorithms,
  * with or without tuning) still refuses them: it would launch up to three
  * sequence fits before any tuning, and whether it should is an open decision
  * on MODEL-FLOW-024, not something to enable by accident. `null` here is this
@@ -124,17 +140,15 @@ export function useModelTraining({
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const targetVariables = useAtomValue(mpTargetVariableAtom)
   const algorithms = useAtomValue(mpAlgorithmsAtom)
-  const findBestModel = useAtomValue(mpFindBestModelAtom)
-  const findBestParams = useAtomValue(mpFindBestParamsAtom)
   const hyperparameters = useAtomValue(mpHyperparamsAtom)
   const perAlgorithmHyperparameters = useAtomValue(
     mpPerAlgorithmHyperparamsAtom,
   )
-  const extraVariants = useAtomValue(mpExtraVariantsAtom)
   const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
   const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
   const seed = useAtomValue(mpSeedAtom)
   const nSplits = useAtomValue(mpNSplitsAtom)
+  const lossFunction = useAtomValue(mpLossFunctionAtom)
   const selectedDataset = useAtomValue(mpSelectedDatasetAtom)
   const setTrainingResult = useSetAtom(mpTrainingResultAtom)
   const setArtifactRef = useSetAtom(mpArtifactRefAtom)
@@ -142,6 +156,19 @@ export function useModelTraining({
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const runningRef = useRef(false)
+  /**
+   * The run or job being polled right now — what Cancel acts on, and what a
+   * poll tick checks before it writes state: a tick already in flight when the
+   * user cancels must not paint an error over the idle state that follows.
+   * Cleared when a cancel lands and on reset.
+   */
+  const activeRef = useRef<{
+    kind: 'run' | 'job'
+    draftId: string
+    id: string
+  } | null>(null)
+  const [canceling, setCanceling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
   /**
    * Consecutive poll failures. A single dropped request must not surface as
    * "Lost connection" while the container is still fitting fine — worse,
@@ -163,16 +190,25 @@ export function useModelTraining({
     (draftId: string, runId: string) => {
       stopPolling()
       failCountRef.current = 0
+      activeRef.current = { kind: 'run', draftId, id: runId }
 
       const tick = async () => {
         try {
           const res = await modelDraftRunService.get(draftId, runId)
+          if (activeRef.current?.id !== runId) return // canceled or reset
           failCountRef.current = 0
           const run = res.data
           const lastLog = run.logs[run.logs.length - 1]?.message
 
           if (run.status === 'QUEUED' || run.status === 'RUNNING') {
-            setTrainState({ status: 'training', progress: 0, lastLog })
+            setTrainState({
+              status: 'training',
+              progress: 0,
+              lastLog:
+                run.status === 'QUEUED' && run.queuedAhead != null
+                  ? waitingForComputeMessage(run.queuedAhead)
+                  : lastLog,
+            })
             return
           }
 
@@ -249,23 +285,37 @@ export function useModelTraining({
     (draftId: string, jobId: string) => {
       stopPolling()
       failCountRef.current = 0
+      activeRef.current = { kind: 'job', draftId, id: jobId }
 
       const tick = async () => {
         try {
           const res = await modelDraftCandidateJobService.get(draftId, jobId)
+          if (activeRef.current?.id !== jobId) return // canceled or reset
           failCountRef.current = 0
           const job: ModelCandidateJob = res.data
 
           if (job.status === 'QUEUED' || job.status === 'RUNNING') {
             const inFlight = job.candidates[job.completedRuns]
             const position = `${Math.min(job.completedRuns + 1, job.totalRuns)} of ${job.totalRuns}`
+            // MODEL-FLOW-038. A grid job is one run that crosses every
+            // combination, so "Candidate 1 of 1" would say nothing true.
+            const gridCombinations = inFlight?.paramGrid
+              ? Object.values(inFlight.paramGrid).reduce(
+                  (n, values) => n * values.length,
+                  1,
+                )
+              : null
             setTrainState({
               status: 'training',
               progress: 0,
               lastLog:
-                inFlight?.phase === 2
-                  ? `Tuning ${ALGORITHM_LABELS[inFlight.algorithm as Algorithm] ?? inFlight.algorithm} — ${position}…`
-                  : `Candidate ${position}…`,
+                inFlight?.queuedAhead != null
+                  ? waitingForComputeMessage(inFlight.queuedAhead)
+                  : gridCombinations !== null
+                    ? `Grid search running — ${gridCombinations} combination${gridCombinations === 1 ? '' : 's'}…`
+                    : inFlight?.phase === 2
+                      ? `Tuning ${ALGORITHM_LABELS[inFlight.algorithm as Algorithm] ?? inFlight.algorithm} — ${position}…`
+                      : `Candidate ${position}…`,
             })
             return
           }
@@ -423,248 +473,229 @@ export function useModelTraining({
     [algorithms, hyperparameters, perAlgorithmHyperparameters],
   )
 
-  const run = useCallback(async () => {
-    if (runningRef.current || trainState.status === 'training') return
-    runningRef.current = true
-    setTrainState({ status: 'training', progress: 0 })
+  const launch = useCallback(
+    async (buildPlan: () => LaunchPlan) => {
+      if (runningRef.current || trainState.status === 'training') return
+      runningRef.current = true
+      setTrainState({ status: 'training', progress: 0 })
 
-    try {
-      if (!selectedDataset) {
-        throw new Error('No dataset selected — go back to Step 1.')
-      }
-      if (
-        selectedDataset.currentArtifactType !== 'FINAL' ||
-        !selectedDataset.currentArtifactId
-      ) {
-        throw new Error(
-          `"${selectedDataset.name}" has no saved FINAL artifact yet — save the dataset in Data Studio first.`,
-        )
-      }
-      // Narrowed with an explicit undefined check, not just a length
-      // comparison — noUncheckedIndexedAccess means `arr[0]` stays
-      // `T | undefined` to the type checker regardless of a prior
-      // `arr.length === 1` check on a *different* expression.
-      const [targetY] = targetVariables
-      if (targetVariables.length !== 1 || !targetY) {
-        throw new Error(
-          targetVariables.length === 0
-            ? 'Select a target variable before training.'
-            : 'Select exactly one target — a run fits one target per model.',
-        )
-      }
-      // MODEL-FLOW-013-T11 / [fix]. Find Best Parameters TUNES a winner —
-      // either the sweep's (Find Best Model on) or, with exactly one
-      // algorithm selected, that algorithm directly (a HYPERPARAMETER_SEARCH
-      // job — no sweep needed, there is only one candidate). The UI already
-      // disables the toggle for every other combination
-      // (automl-toggles.tsx); this is defense in depth against stale draft
-      // state from before that dependency existed.
-      if (findBestParams && !findBestModel && algorithms.length !== 1) {
-        throw new Error(
-          'Find Best Parameters tunes the sweep’s winner — turn on Find Best Model too, or select exactly one algorithm to tune it directly.',
-        )
-      }
-      // MODEL-FLOW-016. userDecisions: CV × algorithm sweep is mutually
-      // exclusive — a CV run fits one algorithm's k folds, a sweep
-      // evaluates several. The UI already disables Find Best Model while
-      // CV is on (automl-toggles.tsx) and clears nSplits when a sweep
-      // turns on (CvControl's own eligibility effect, core-config.tsx);
-      // this is defense in depth against stale draft state from before
-      // either dependency existed, same discipline the check above applies.
-      if (nSplits !== undefined && findBestModel) {
-        throw new Error(
-          'Cross-Validation fits one algorithm — turn off Find Best Model, or turn off Cross-Validation to sweep.',
-        )
-      }
-
-      const draftId = await ensureDraftId()
-      if (!draftId) {
-        throw new Error("Model draft isn't ready yet — check Step 1.")
-      }
-
-      // [fix]. Find Best Parameters with exactly one algorithm selected and
-      // no sweep — a direct HYPERPARAMETER_SEARCH job. The client sends ONE
-      // candidate (this algorithm's current/default hyperparameters); the
-      // server expands it into the curated TUNING_GRID shortlist
-      // (tuning-grid.ts, the same shortlist SWEEP_THEN_TUNE's phase 2
-      // already uses) — the grid stays declared in exactly one place,
-      // never duplicated client-side.
-      if (findBestParams && !findBestModel) {
-        const [algorithm] = algorithms
-        if (algorithms.length !== 1 || !algorithm) {
+      try {
+        if (!selectedDataset) {
+          throw new Error('No dataset selected — go back to Step 1.')
+        }
+        if (
+          selectedDataset.currentArtifactType !== 'FINAL' ||
+          !selectedDataset.currentArtifactId
+        ) {
           throw new Error(
-            'Select exactly one algorithm to tune it directly, or turn on Find Best Model to sweep first.',
+            `"${selectedDataset.name}" has no saved FINAL artifact yet — save the dataset in Data Studio first.`,
           )
         }
+        // Narrowed with an explicit undefined check, not just a length
+        // comparison — noUncheckedIndexedAccess means `arr[0]` stays
+        // `T | undefined` to the type checker regardless of a prior
+        // `arr.length === 1` check on a *different* expression.
+        const [targetY] = targetVariables
+        if (targetVariables.length !== 1 || !targetY) {
+          throw new Error(
+            targetVariables.length === 0
+              ? 'Select a target variable before training.'
+              : 'Select exactly one target — a run fits one target per model.',
+          )
+        }
+        // What to launch is decided by the pure planners in
+        // lib/training-launch.ts alone (`planTrainingLaunch` for Round 1,
+        // `planFineTuneLaunch` for Round 2). They throw the refusals the
+        // controls already prevent — CV or LSTM/GRU beside another algorithm,
+        // more than 20 candidates — so stale draft state still cannot reach
+        // the server.
+        const plan = buildPlan()
+
+        const draftId = await ensureDraftId()
+        if (!draftId) {
+          throw new Error("Model draft isn't ready yet — check Step 1.")
+        }
+
+        if (plan.type === 'job') {
+          // A sweep refuses LSTM/GRU (scope decision, MODEL-FLOW-024); a
+          // one-algorithm search may tune one.
+          const forSweep = plan.kind !== 'HYPERPARAMETER_SEARCH'
+          const candidates = plan.candidates.map(c => {
+            const backendAlgorithm = toBackendAlgorithm(c.algorithm, forSweep)
+            if (!backendAlgorithm) {
+              throw new Error(
+                `"${ALGORITHM_LABELS[c.algorithm]}" isn't supported by the training service yet — remove it.`,
+              )
+            }
+            return {
+              algorithm: backendAlgorithm,
+              hyperparameters: c.hyperparameters,
+            }
+          })
+          const created = await modelDraftCandidateJobService.create(draftId, {
+            goldArtifactId: selectedDataset.currentArtifactId,
+            targetY,
+            kind: plan.kind,
+            // MODEL-FLOW-035. The Loss function ranks the job's winner.
+            rankingMetric: scoreMetricOf(lossFunction),
+            // MODEL-FLOW-029. EXACTLY ONE of the two. Only a one-algorithm
+            // search can be cross-validated; `planTrainingLaunch` has already
+            // refused CV for every other kind.
+            ...(nSplits !== undefined && plan.kind === 'HYPERPARAMETER_SEARCH'
+              ? { nSplits }
+              : { trainTestSplit: trainTestSplit / 100 }),
+            candidates,
+            // MODEL-FLOW-026. Only a grid search on one algorithm carries them
+            // separately; everywhere else the rows are already candidates.
+            ...(plan.extraVariants
+              ? { extraVariants: plan.extraVariants }
+              : {}),
+            // MODEL-FLOW-038. A grid search is one candidate, one run: the
+            // trainer crosses these lists itself.
+            ...(plan.paramGrid ? { paramGrid: plan.paramGrid } : {}),
+            ...sizedFigures,
+          })
+
+          pollJob(draftId, created.data.id)
+          return
+        }
+
+        const { algorithm } = plan.candidate
         const backendAlgorithm = toBackendAlgorithm(algorithm, false)
         if (!backendAlgorithm) {
           throw new Error(
-            `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick another algorithm.`,
+            `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick Linear Regression.`,
           )
         }
-        const created = await modelDraftCandidateJobService.create(draftId, {
+
+        // A single-run launch — clear any PREVIOUS sweep's job id so Step 4
+        // doesn't show a stale candidate table for this new, unrelated run.
+        setCandidateJobId(null)
+
+        const created = await modelDraftRunService.create(draftId, {
           goldArtifactId: selectedDataset.currentArtifactId,
           targetY,
-          kind: 'HYPERPARAMETER_SEARCH',
-          // MODEL-FLOW-029. EXACTLY ONE of the two, as for a single run: with
-          // Cross-Validation on, every variant is a cv_expanding run and the
-          // job's winner is the lowest mean CV RMSE. This branch used to send
-          // the ratio unconditionally, silently dropping CV.
+          algorithm: backendAlgorithm,
+          hyperparameters,
+          // MODEL-FLOW-016-T10. EXACTLY ONE of the two, mirroring
+          // CreateTrainingRunSchema's own .refine() server-side — sending
+          // both would 400 a run the UI otherwise built correctly.
+          // trainTestSplit is a FRACTION, never a percentage — converted
+          // once, here, at the client boundary (same rule
+          // useModelDraftSync's PATCH follows).
           ...(nSplits !== undefined
             ? { nSplits }
             : { trainTestSplit: trainTestSplit / 100 }),
-          candidates: [
-            {
-              algorithm: backendAlgorithm,
-              // MODEL-FLOW-022-T04. This algorithm is always the primary
-              // here (findBestParams + single-algorithm), so this is the
-              // USER'S value, not the default it used to send.
-              hyperparameters: hyperparametersFor(algorithm),
-            },
-          ],
-          // MODEL-FLOW-026. The rows the user added by hand in Step 3's
-          // variant table. Sent only on THIS branch: a SWEEP_THEN_TUNE job
-          // builds its tuning phase server-side after the winner is known,
-          // from the job row, so the server refuses the field there rather
-          // than accept a list it could never read back.
-          ...(extraVariants[algorithm]?.length
-            ? { extraVariants: extraVariants[algorithm] }
-            : {}),
-          ...sizedFigures,
+          // MODEL-FLOW-014-T06. The Split Distribution panel's own tag
+          // selection, so the frozen sidecar matches what was displayed.
+          // Omitted (undefined) when the panel never seeded a selection —
+          // the backend's own default is [targetY] either way.
+          ...(splitStatsTags.length > 0 && { splitStatsTags }),
+          // MODEL-FLOW-014-T07. Omitted when the user never set one — the
+          // server generates its own random seed in that case. Undefined and
+          // "explicitly 42" must stay distinguishable for reproducibility.
+          ...(seed !== undefined && { seed }),
         })
 
-        pollJob(draftId, created.data.id)
-        return
-      }
-
-      if (findBestModel) {
-        // MODEL-FLOW-013-T07/T11. Algorithm sweep — one candidate per
-        // selected algorithm, its own clean defaults, RMSE decides the
-        // winner. The job schema's own floor (.min(2)) is why 2 is required
-        // here, not 1: a single-candidate "sweep" is just a normal run,
-        // which createDraftRunService already exists for. Both toggles on
-        // (SWEEP_THEN_TUNE) launches the SAME phase-1 candidates — phase 2
-        // (tuning phase 1's winner) is appended server-side once phase 1
-        // exhausts, never built client-side.
-        if (algorithms.length < 2) {
-          throw new Error(
-            'Select at least 2 algorithms to sweep, or turn off Find Best Model.',
-          )
-        }
-        const candidates = algorithms.map(a => {
-          const backendAlgorithm = toBackendAlgorithm(a, true)
-          if (!backendAlgorithm) {
-            throw new Error(
-              `"${ALGORITHM_LABELS[a]}" isn't supported by the training service yet — remove it from the sweep.`,
-            )
-          }
-          return {
-            algorithm: backendAlgorithm,
-            // MODEL-FLOW-022-T04. The user's own per-tab value — the fix
-            // this feature exists for. `hyperparametersFor` falls back to
-            // `defaultHyperparams(a)` only for an algorithm the user never
-            // opened a tab for.
-            hyperparameters: hyperparametersFor(a),
-          }
+        pollRun(draftId, created.data.id)
+      } catch (err) {
+        runningRef.current = false
+        setTrainState({
+          status: 'error',
+          progress: 0,
+          error:
+            err instanceof Error && err.message
+              ? err.message
+              : 'Failed to start training.',
         })
-
-        const created = await modelDraftCandidateJobService.create(draftId, {
-          goldArtifactId: selectedDataset.currentArtifactId,
-          targetY,
-          kind: findBestParams ? 'SWEEP_THEN_TUNE' : 'ALGORITHM_SWEEP',
-          trainTestSplit: trainTestSplit / 100,
-          candidates,
-          ...sizedFigures,
-        })
-
-        pollJob(draftId, created.data.id)
-        return
       }
+    },
+    [
+      trainState.status,
+      selectedDataset,
+      targetVariables,
+      hyperparameters,
+      trainTestSplit,
+      nSplits,
+      lossFunction,
+      splitStatsTags,
+      seed,
+      sizedFigures,
+      ensureDraftId,
+      pollRun,
+      pollJob,
+      setCandidateJobId,
+      setTrainState,
+    ],
+  )
 
-      const [algorithm] = algorithms
-      if (algorithms.length !== 1 || !algorithm) {
-        throw new Error(
-          'Select exactly one algorithm — a run fits one algorithm per model.',
-        )
-      }
-      const backendAlgorithm = toBackendAlgorithm(algorithm, false)
-      if (!backendAlgorithm) {
-        throw new Error(
-          `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick Linear Regression.`,
-        )
-      }
+  // Round 1. Card values only; the deps are what the planner reads.
+  const run = useCallback(
+    () =>
+      launch(() =>
+        planTrainingLaunch({
+          algorithms,
+          baseFor: hyperparametersFor,
+          nSplits,
+        }),
+      ),
+    [launch, algorithms, hyperparametersFor, nSplits],
+  )
 
-      // A single-run launch — clear any PREVIOUS sweep's job id so Step 4
-      // doesn't show a stale candidate table for this new, unrelated run.
-      setCandidateJobId(null)
-
-      const created = await modelDraftRunService.create(draftId, {
-        goldArtifactId: selectedDataset.currentArtifactId,
-        targetY,
-        algorithm: backendAlgorithm,
-        hyperparameters,
-        // MODEL-FLOW-016-T10. EXACTLY ONE of the two, mirroring
-        // CreateTrainingRunSchema's own .refine() server-side — sending
-        // both would 400 a run the UI otherwise built correctly.
-        // trainTestSplit is a FRACTION, never a percentage — converted
-        // once, here, at the client boundary (same rule
-        // useModelDraftSync's PATCH follows).
-        ...(nSplits !== undefined
-          ? { nSplits }
-          : { trainTestSplit: trainTestSplit / 100 }),
-        // MODEL-FLOW-014-T06. The Split Distribution panel's own tag
-        // selection, so the frozen sidecar matches what was displayed.
-        // Omitted (undefined) when the panel never seeded a selection —
-        // the backend's own default is [targetY] either way.
-        ...(splitStatsTags.length > 0 && { splitStatsTags }),
-        // MODEL-FLOW-014-T07. Omitted when the user never set one — the
-        // server generates its own random seed in that case. Undefined and
-        // "explicitly 42" must stay distinguishable for reproducibility.
-        ...(seed !== undefined && { seed }),
-      })
-
-      pollRun(draftId, created.data.id)
-    } catch (err) {
-      runningRef.current = false
-      setTrainState({
-        status: 'error',
-        progress: 0,
-        error:
-          err instanceof Error && err.message
-            ? err.message
-            : 'Failed to start training.',
-      })
-    }
-  }, [
-    trainState.status,
-    selectedDataset,
-    targetVariables,
-    findBestModel,
-    findBestParams,
-    algorithms,
-    hyperparameters,
-    // MODEL-FLOW-026. Without this the callback closes over the rows as they
-    // were when the algorithm list last changed, so a variant added just
-    // before Start Training would silently not be sent.
-    extraVariants,
-    hyperparametersFor,
-    trainTestSplit,
-    nSplits,
-    splitStatsTags,
-    seed,
-    sizedFigures,
-    ensureDraftId,
-    pollRun,
-    pollJob,
-    setCandidateJobId,
-    setTrainState,
-  ])
+  // Round 2 (MODEL-FLOW-035). The section hands in the chosen run's base and
+  // the rows; one-algorithm HYPERPARAMETER_SEARCH, CV allowed.
+  const fineTune = useCallback(
+    (input: FineTuneInput) => launch(() => planFineTuneLaunch(input)),
+    [launch],
+  )
 
   const reset = useCallback(() => {
     stopPolling()
     runningRef.current = false
+    activeRef.current = null
     setTrainState({ status: 'idle', progress: 0 })
   }, [setTrainState, stopPolling])
 
-  return { ...trainState, start: run, retry: run, reset }
+  /**
+   * Stop what is training and kill its container. Polling keeps running until
+   * the server has confirmed: a failed request leaves the run live and
+   * visible, with the reason shown, rather than a Step 3 that says "idle"
+   * over a container still burning CPU. Nothing here touches a Model.
+   */
+  const cancel = useCallback(async () => {
+    const active = activeRef.current
+    if (!active || canceling) return
+    setCanceling(true)
+    setCancelError(null)
+    try {
+      if (active.kind === 'job') {
+        await modelDraftCandidateJobService.cancel(active.draftId, active.id)
+      } else {
+        await modelDraftRunService.cancel(active.draftId, active.id)
+      }
+      stopPolling()
+      runningRef.current = false
+      activeRef.current = null
+      setTrainState({ status: 'idle', progress: 0 })
+    } catch (err) {
+      setCancelError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not cancel the training.',
+      )
+    } finally {
+      setCanceling(false)
+    }
+  }, [canceling, setTrainState, stopPolling])
+
+  return {
+    ...trainState,
+    start: run,
+    fineTune,
+    retry: run,
+    reset,
+    cancel,
+    canceling,
+    cancelError,
+  }
 }

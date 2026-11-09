@@ -8,11 +8,19 @@ export const InviteMemberSchema = z.object({
 
 export const UpdateMemberRoleSchema = z.object({
   role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
-  // Read-only feature grants, meaningful only for a VIEWER (stored empty for
-  // any other role). Omitted → the member keeps their current grants.
+  // Grants, stored per role (normalizePermissions): read-only feature grants
+  // for a VIEWER, member-management grants for a STAFF (MODEL-SERVE-034).
+  // Omitted → the member keeps their current grants.
   permissions: z
-    .array(z.enum(['MONITORING_VIEW', 'NOTIFICATIONS_VIEW']))
-    .max(2)
+    .array(
+      z.enum([
+        'MONITORING_VIEW',
+        'NOTIFICATIONS_VIEW',
+        'MEMBER_ROLE_ASSIGN',
+        'MEMBER_INVITE',
+      ]),
+    )
+    .max(4)
     .optional(),
 });
 

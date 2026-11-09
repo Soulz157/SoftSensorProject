@@ -98,6 +98,9 @@ export const AdminWorkspaceDetailSchema = z.object({
   icon: z.string(),
   color: z.string(),
   description: z.string().nullable(),
+  /** MODEL-SERVE-035. null = no limit. */
+  maxModels: z.number().int().nullable(),
+  maxMembers: z.number().int().nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   _count: z.object({
@@ -148,6 +151,18 @@ export const AdminUpdateMemberRoleSchema = z.object({
   role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
 });
 
+/**
+ * MODEL-SERVE-035. Admin-only: its own route and DTO, NOT part of
+ * UpdateWorkspaceRequestSchema — that one also backs the owner-facing
+ * PATCH /authorized/workspace/:id, and an owner must not raise their own cap.
+ * null = no limit. A value below the current count is allowed.
+ */
+const WorkspaceLimitSchema = z.number().int().min(1).max(10000).nullable();
+export const UpdateWorkspaceLimitsSchema = z.object({
+  maxModels: WorkspaceLimitSchema,
+  maxMembers: WorkspaceLimitSchema,
+});
+
 export const AdminMoveMemberSchema = z.object({
   targetWorkspaceId: z.string().min(1, 'targetWorkspaceId ต้องไม่ว่างเปล่า'),
 });
@@ -186,3 +201,6 @@ export class AdminUpdateMemberRoleDto extends createZodDto(
   AdminUpdateMemberRoleSchema,
 ) {}
 export class AdminMoveMemberDto extends createZodDto(AdminMoveMemberSchema) {}
+export class UpdateWorkspaceLimitsDto extends createZodDto(
+  UpdateWorkspaceLimitsSchema,
+) {}

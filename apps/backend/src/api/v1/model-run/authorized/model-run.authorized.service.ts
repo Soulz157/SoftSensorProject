@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
 import {
+  GRID_SEARCH_RESULTS_FILENAME,
   sidecarKey,
   VALIDATE_DATA_FILENAME,
   VALIDATE_NEW_DATA_FILENAME,
@@ -28,6 +29,7 @@ import {
   RESIDUAL_SD_METRIC_KEY,
 } from '@/lib/model-version-residual-sd';
 import { buildRunKey, resolveRunOwner, RunOwner } from '@/lib/model-run-owner';
+import { gridOfJob } from '@/lib/tuning-grid';
 import {
   findHoldoutArtifact,
   readNewDataValidationWindow,
@@ -568,9 +570,15 @@ export class ModelRunAuthorizedService {
             retrainStrategy: true,
             sourceVersionId: true,
             cvFolds: true,
+            candidates: true,
+            rankingMetric: true,
           },
         })
       : null;
+    // MODEL-FLOW-038. A grid-search job has exactly one candidate, and that
+    // candidate carries the grid; read off the JOB ROW, never the container's
+    // request, like every other training input.
+    const paramGrid = gridOfJob(job?.candidates);
     const holdout = isCvRun
       ? null
       : job?.retrainStrategy === 'NEW_DATA_ONLY'
@@ -634,6 +642,9 @@ export class ModelRunAuthorizedService {
       ...(holdout ?? {}),
       ...(cvGap ? { cvGap } : {}),
       ...(augmentNewDataFrom ? { augmentNewDataFrom } : {}),
+      ...(paramGrid
+        ? { paramGrid, rankingMetric: job?.rankingMetric ?? 'rmse' }
+        : {}),
     };
   }
 
@@ -738,9 +749,33 @@ export class ModelRunAuthorizedService {
     const keyIf = (f: string) =>
       uploaded.has(f) ? buildRunKey(owner, run.id, f) : null;
 
+    // MODEL-FLOW-038. A grid-search run must come back with the winning
+    // combination AND the ranked results. A trainer image that predates grid
+    // search ignores `paramGrid`, trains the base setting and reports success;
+    // accepting that would show the user a "searched" run that searched
+    // nothing. Marked FAILED instead, naming the real fix.
+    const gridJob = run.candidateJobId
+      ? await this.prisma.modelCandidateJob.findUnique({
+          where: { id: run.candidateJobId },
+          select: { candidates: true },
+        })
+      : null;
+    const isGridRun = Boolean(gridOfJob(gridJob?.candidates));
+    const gridResultMissing =
+      isGridRun &&
+      dto.status === 'SUCCEEDED' &&
+      (!dto.bestHyperparameters || !uploaded.has(GRID_SEARCH_RESULTS_FILENAME));
+
     const data = {
-      status: dto.status,
-      failureReason: dto.failureReason ?? null,
+      status: gridResultMissing ? ('FAILED' as const) : dto.status,
+      failureReason: gridResultMissing
+        ? 'Trainer image does not support grid search — rebuild images/trainer and bump the tag.'
+        : (dto.failureReason ?? null),
+      // The winning combination replaces the base setting this run was
+      // launched with, in this same update.
+      ...(isGridRun && dto.status === 'SUCCEEDED' && dto.bestHyperparameters
+        ? { hyperparameters: dto.bestHyperparameters }
+        : {}),
       metrics: dto.metrics ?? undefined,
       // DS-LAKE-018-T05. Same shape as metrics, scored on the replayed raw
       // holdout — a SEPARATE column, never merged into metrics above.

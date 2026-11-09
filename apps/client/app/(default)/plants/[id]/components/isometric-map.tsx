@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react'
 import { Sun, Moon } from 'lucide-react'
-import { MachineNode } from './machine-node'
+import { EquipmentMachine } from './equipment-machine'
 import { ZoneHoverCard } from './zone-hover-card'
 import { calculateIsometricLayout } from '@/lib/isomatric'
 import type { ZoneItem } from '@/lib/isomatric'
@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { useTheme } from 'next-themes'
 import {
   countBinary,
-  isNodeAbnormal,
+  isEquipmentAbnormal,
   deriveBinaryStatus,
 } from '@/lib/overview-status'
 
@@ -38,31 +38,31 @@ const COLOR_HEX: Record<string, string> = {
 
 interface IsometricMapProps {
   zones: ZoneItem[]
-  nodes: CanvasNode[]
-  workspaceNodes?: CanvasNode[]
-  zoneNodeKey: 'planId' | 'workspaceId'
+  equipmentList: CanvasNode[]
+  workspaceEquipmentList?: CanvasNode[]
+  zoneEquipmentKey: 'planId' | 'workspaceId'
   selectedZoneId: string | null
-  selectedNodeId: string | null
-  onNodeClick: (nodeId: string) => void
+  selectedEquipmentId: string | null
+  onEquipmentClick: (equipmentId: string) => void
   onZoneSelect?: (zoneId: string) => void
   onZoneDoubleClick?: (zoneId: string) => void
   viewMode?: 'plants' | 'equipment'
   /** MODEL-SERVE-024-D02. Equipment with an abnormal model on it. */
-  abnormalModelNodeIds?: ReadonlySet<string>
+  abnormalModelEquipmentIds?: ReadonlySet<string>
 }
 
 export function IsometricMap({
   zones,
-  nodes,
-  workspaceNodes,
-  zoneNodeKey,
+  equipmentList,
+  workspaceEquipmentList,
+  zoneEquipmentKey,
   selectedZoneId,
-  selectedNodeId,
-  onNodeClick,
+  selectedEquipmentId,
+  onEquipmentClick,
   onZoneSelect,
   onZoneDoubleClick,
   viewMode,
-  abnormalModelNodeIds,
+  abnormalModelEquipmentIds,
 }: IsometricMapProps) {
   const { resolvedTheme, setTheme } = useTheme()
   const isDark = resolvedTheme !== 'light'
@@ -88,19 +88,25 @@ export function IsometricMap({
 
   const layoutData = useMemo(() => {
     const map = new Map<string, CanvasNode[]>()
-    for (const node of nodes) {
-      const key = node[zoneNodeKey]
+    for (const equipment of equipmentList) {
+      const key = equipment[zoneEquipmentKey]
       const arr = map.get(key) ?? []
-      arr.push(node)
+      arr.push(equipment)
       map.set(key, arr)
     }
     return calculateIsometricLayout(zones, map, CX, CY)
-  }, [zones, nodes, zoneNodeKey])
+  }, [zones, equipmentList, zoneEquipmentKey])
 
-  const equipmentNodes = workspaceNodes ?? nodes
-  const totalEquipment = equipmentNodes.length
-  const statusCounts = countBinary(equipmentNodes, abnormalModelNodeIds)
-  const overallBinary = deriveBinaryStatus(equipmentNodes, abnormalModelNodeIds)
+  const equipmentEquipmentList = workspaceEquipmentList ?? equipmentList
+  const totalEquipment = equipmentEquipmentList.length
+  const statusCounts = countBinary(
+    equipmentEquipmentList,
+    abnormalModelEquipmentIds,
+  )
+  const overallBinary = deriveBinaryStatus(
+    equipmentEquipmentList,
+    abnormalModelEquipmentIds,
+  )
   const abnormalCount = statusCounts.abnormal
   const overallHealth = overallBinary === 'abnormal' ? 'ABNORMAL' : 'NORMAL'
   const healthColor =
@@ -237,14 +243,14 @@ export function IsometricMap({
         >
           <g transform={`translate(${pan.x}, ${pan.y})`}>
             {layoutData.map(
-              ({ zone, mappedNodes, floorPath, labelX, labelY }) => {
+              ({ zone, mappedEquipmentList, floorPath, labelX, labelY }) => {
                 const accentHex = COLOR_HEX[zone.color ?? 'blue'] ?? '#3b82f6'
                 const isSelected = selectedZoneId === zone.id
                 const isHovered = hoveredZoneId === zone.id
 
                 const zoneCounts = countBinary(
-                  mappedNodes.map(m => m.node),
-                  abnormalModelNodeIds,
+                  mappedEquipmentList.map(m => m.node),
+                  abnormalModelEquipmentIds,
                 )
                 const zoneAbnormal = zoneCounts.abnormal
 
@@ -325,32 +331,39 @@ export function IsometricMap({
                         <ZoneHoverCard
                           name={zone.name}
                           counts={zoneCounts}
-                          deviceCount={mappedNodes.length}
+                          deviceCount={mappedEquipmentList.length}
                         />
                       </TooltipContent>
                     </Tooltip>
 
-                    {mappedNodes.map(({ node, isoX, isoY }) => (
-                      <MachineNode
-                        key={node.id}
-                        type={node.data.type}
-                        icon={node.data.icon}
-                        // Binary display through THE one rule
-                        // (MODEL-SERVE-024-D02): only an alerting node is red
-                        // + pulse; warning/offline read normal. SVGs unchanged.
-                        status={
-                          isNodeAbnormal(node, abnormalModelNodeIds)
-                            ? 'alarm'
-                            : 'normal'
-                        }
-                        label={node.data.name}
-                        isoX={isoX}
-                        isoY={isoY}
-                        selected={selectedNodeId === node.id}
-                        onClick={() => !isDragging && onNodeClick(node.id)}
-                        isViewMode={viewMode === 'equipment'}
-                      />
-                    ))}
+                    {mappedEquipmentList.map(
+                      ({ node: equipment, isoX, isoY }) => (
+                        <EquipmentMachine
+                          key={equipment.id}
+                          type={equipment.data.type}
+                          icon={equipment.data.icon}
+                          // Binary display through THE one rule
+                          // (MODEL-SERVE-024-D02): only an alerting node is red
+                          // + pulse; warning/offline read normal. SVGs unchanged.
+                          status={
+                            isEquipmentAbnormal(
+                              equipment,
+                              abnormalModelEquipmentIds,
+                            )
+                              ? 'alarm'
+                              : 'normal'
+                          }
+                          label={equipment.data.name}
+                          isoX={isoX}
+                          isoY={isoY}
+                          selected={selectedEquipmentId === equipment.id}
+                          onClick={() =>
+                            !isDragging && onEquipmentClick(equipment.id)
+                          }
+                          isViewMode={viewMode === 'equipment'}
+                        />
+                      ),
+                    )}
 
                     {viewMode === 'plants' && (
                       <g style={{ pointerEvents: 'none' }}>

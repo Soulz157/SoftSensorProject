@@ -4,6 +4,7 @@ import { Layers, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useDataStudio } from '@/hooks/dataset/use-data-studio'
 import { StudioFilterBar } from '@/app/(default)/data-studio/components/studio-filter-bar'
+import { DatasetDraftResumeSection } from '@/app/(default)/data-studio/components/dataset-draft-resume-section'
 import { DatasetsTab } from '@/app/(default)/data-studio/components/datasets-tab'
 import { CreateDatasetDialog } from '@/app/(default)/data-studio/components/create-dataset-dialog'
 
@@ -44,8 +45,6 @@ export default function DatasetsPage() {
         workspaceFilter={s.workspaceFilter}
         setWorkspaceFilter={s.setWorkspaceFilter}
         workspaces={s.workspaces}
-        statusFilter={s.statusFilter}
-        setStatusFilter={s.setStatusFilter}
         typeFilter={s.typeFilter}
         setTypeFilter={s.setTypeFilter}
       />
@@ -63,6 +62,8 @@ export default function DatasetsPage() {
           </button>
         </div>
       )}
+
+      <DatasetDraftResumeSection getWorkspaceName={s.getWorkspaceName} />
 
       <DatasetsTab
         datasets={s.datasets}

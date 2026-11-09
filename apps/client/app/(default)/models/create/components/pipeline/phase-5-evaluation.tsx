@@ -35,7 +35,7 @@ import {
 } from '@/store/model-pipeline'
 import { useDraftRunEvaluation } from '@/hooks/model/use-draft-run-evaluation'
 import { useMetricRegistryKeys } from '@/hooks/model/use-metric-registry'
-import { isSequenceAlgorithm } from '@/lib/metric-source'
+import { isScoring, isSequenceAlgorithm } from '@/lib/metric-source'
 import { EmptyPanel } from './evaluation/empty-panel'
 import { EvaluationPopulationPanel } from './evaluation/evaluation-population-panel'
 import { CvFoldTable } from './evaluation/cv-fold-table'
@@ -196,7 +196,7 @@ export function Phase5Evaluation({ nav }: Props) {
     unavailableReason: sequence
       ? `Holdout scoring has no windowing path for ${run.algorithm} — not available for this run.`
       : null,
-    scoring: Boolean(run.scoringContainerId),
+    scoring: isScoring(run),
     triggering,
     error: scoringError,
     onScore: () => void handleTriggerScoring(),
@@ -245,10 +245,14 @@ export function Phase5Evaluation({ nav }: Props) {
         className="flex w-full flex-col"
       >
         {/* Toolbar: population switch + metric selector */}
-  <div className="flex w-full flex-wrap items-center justify-between gap-2">
+        <div className="flex w-full flex-wrap items-center justify-between gap-2">
           <TabsList>
-            <TabsTrigger value="own">{ownLabel}</TabsTrigger>
-            <TabsTrigger value="holdout">Validation holdout</TabsTrigger>
+            <TabsTrigger value="own" className="cursor-pointer">
+              {ownLabel}
+            </TabsTrigger>
+            <TabsTrigger value="holdout" className="cursor-pointer">
+              Validation holdout
+            </TabsTrigger>
           </TabsList>
 
           <DropdownMenu>
@@ -277,7 +281,6 @@ export function Phase5Evaluation({ nav }: Props) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-
         <TabsContent value="own" className="w-full pt-4">
           <EvaluationPopulationPanel
             evaluation={own}

@@ -16,12 +16,12 @@ const MetricsSchema = z.record(z.string(), JsonScalar);
 export const TrainingAlgorithmEnum = z.enum([
   'ols',
   'ridge',
-  'hist_gradient_boosting',
   'svm',
   'mlp',
   'grp',
   'pls',
   'random_forest',
+  'extra_trees',
   'lightgbm',
   'xgboost',
   'lstm',
@@ -360,6 +360,10 @@ export const RunCompleteSchema = z
     incumbentNewDataHoldoutMetrics: MetricsSchema.optional(),
 
     splitSpec: SplitSpecSchema.optional(),
+
+    // MODEL-FLOW-038. Grid-search runs only: the winning combination, which
+    // `complete()` writes over the run's own hyperparameters.
+    bestHyperparameters: HyperparametersSchema.optional(),
 
     uploaded: z.array(RunUploadFilenameEnum).optional(),
   })

@@ -246,3 +246,97 @@ describe('RetrainTab', () => {
     )
   })
 })
+
+describe('RetrainTab — cancel', () => {
+  const live = () => ({
+    job: { ...doneJob(), status: 'RUNNING' as const, comparison: null },
+    phase: 'training' as const,
+    isRetraining: true,
+  })
+
+  it('offers Cancel only while a retrain is live', () => {
+    renderTab({ ...live(), onCancelRetrain: vi.fn() })
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  })
+
+  it('draws no Cancel when idle, or when no handler is passed', () => {
+    renderTab({ onCancelRetrain: vi.fn() })
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+  })
+
+  it('draws no Cancel for a live retrain when the page passes no handler', () => {
+    renderTab(live())
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+  })
+
+  it('asks before it stops anything, and cancels once after the user confirms', async () => {
+    const user = userEvent.setup()
+    const onCancelRetrain = vi.fn()
+    renderTab({ ...live(), onCancelRetrain })
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(
+      screen.getByRole('alertdialog', { name: 'Cancel retrain?' }),
+    ).toBeInTheDocument()
+    expect(onCancelRetrain).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Cancel retrain' }))
+    expect(onCancelRetrain).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeping it running cancels nothing', async () => {
+    const user = userEvent.setup()
+    const onCancelRetrain = vi.fn()
+    renderTab({ ...live(), onCancelRetrain })
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: 'Keep running' }))
+    expect(onCancelRetrain).not.toHaveBeenCalled()
+  })
+
+  it('says why a cancel failed while the retrain is still going', () => {
+    renderTab({
+      ...live(),
+      onCancelRetrain: vi.fn(),
+      cancelError: 'Network down',
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Could not cancel: Network down',
+    )
+  })
+
+  it('shows Canceling… and disables the button while the request is in flight', () => {
+    renderTab({ ...live(), onCancelRetrain: vi.fn(), canceling: true })
+    expect(screen.getByRole('button', { name: 'Canceling…' })).toBeDisabled()
+  })
+
+  it('reads a canceled retrain as canceled — not as a failure — and re-enables Retrain', () => {
+    renderTab({
+      job: {
+        ...doneJob(),
+        status: 'CANCELED',
+        failureReason: 'Canceled by user.',
+        comparison: null,
+      },
+      phase: 'error',
+      isRetraining: false,
+    })
+    expect(screen.getByText(/Retrain canceled/)).toBeInTheDocument()
+    expect(screen.queryByText(/Retrain failed/)).toBeNull()
+    expect(screen.getByRole('button', { name: /^Retrain$/ })).toBeEnabled()
+  })
+
+  it('still reports a real failure as a failure', () => {
+    renderTab({
+      job: {
+        ...doneJob(),
+        status: 'FAILED',
+        failureReason: 'boom',
+        comparison: null,
+      },
+      phase: 'error',
+      isRetraining: false,
+    })
+    expect(screen.getByText(/Retrain failed — boom/)).toBeInTheDocument()
+  })
+})

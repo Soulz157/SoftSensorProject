@@ -4,7 +4,6 @@ import {
   OnApplicationShutdown,
   OnModuleInit,
 } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { decryptSecret } from '@/lib/crypto';
 import { mintRunToken } from '@/lib/mint-run-token';
@@ -12,11 +11,23 @@ import {
   materializeInferenceWindow,
   type InferenceWindowMaterializeResult,
 } from '@/lib/python-preprocess-client';
-import { formatDtHour, windowStartsBetween } from '@/lib/inference-windows';
+import {
+  formatDtHour,
+  windowFloor,
+  windowStartsBetween,
+  isLiveWindow,
+} from '@/lib/inference-windows';
 import { env } from '@/config/env.config';
+import { buildPiCredentials } from '@/lib/source-block';
 import { nextTagObservation, type FetchOutcome } from '@/lib/tag-observation';
+import { readLiveSourceOverride } from '@/lib/live-source-override';
+import { contextRowsFor } from '@/lib/sequence-model';
+import { ContainerDispatchService } from '../../trainning-container/authorized/container-dispatch.service';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
+
+/** Bounds one tick's requests. Newest first, so only the oldest backfill waits. */
+const DUE_WINDOWS_PER_TICK = 500;
 
 function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -38,9 +49,9 @@ function msg(err: unknown): string {
  * inserts what was missed, per the unique constraint), but if the tick
  * itself scored, a slow window would delay the NEXT tick's own inserts —
  * the interval would become load-bearing, and a missed insert IS a
- * permanent gap in the monitoring record (T01's own finding). Dispatch is
- * bounded by INFERENCE_MAX_CONCURRENCY so a first boot with a long backfill
- * horizon cannot spawn dozens of containers from one tick.
+ * permanent gap in the monitoring record (T01's own finding). Dispatch goes
+ * through ContainerDispatchService, so a first boot with a long backfill
+ * horizon queues on host capacity instead of spawning dozens at once.
  */
 @Injectable()
 export class InferenceWindowSchedulerService
@@ -53,10 +64,12 @@ export class InferenceWindowSchedulerService
   constructor(
     private readonly prisma: PrismaService,
     private readonly runner: TrainningContainerAuthorizedService,
+    private readonly dispatch: ContainerDispatchService,
     private readonly descriptor: ModelServingAuthorizedService,
   ) {}
 
   onModuleInit(): void {
+    this.dispatch.registerInferencePrep((id) => this.dispatchOne(id));
     const intervalMs = env.INFERENCE_TICK_INTERVAL_MS;
     if (intervalMs <= 0) {
       this.logger.log(
@@ -91,19 +104,9 @@ export class InferenceWindowSchedulerService
     } catch (err) {
       this.logger.warn(`Inference window reconcile sweep failed: ${msg(err)}`);
     }
-    // Not awaited by the tick's own error handling above on purpose — a
-    // dispatch failure is per-window (caught inside dispatchDue itself) and
-    // must never be conflated with an insert/reconcile sweep failure.
     void this.dispatchDue();
   }
 
-  /**
-   * T01/T02/T11. For every enabled schedule, insert PENDING rows for every
-   * due window that has none — `createMany({ skipDuplicates: true })`
-   * against the `(modelVersionId, windowStart)` unique index makes a
-   * repeated insert a no-op, so there is no idempotency key of the kind
-   * PredictionJob needs.
-   */
   private async insertDueWindows(): Promise<void> {
     const schedules = await this.prisma.inferenceSchedule.findMany({
       where: { enabled: true },
@@ -114,27 +117,18 @@ export class InferenceWindowSchedulerService
     for (const schedule of schedules) {
       const version = await this.prisma.modelVersion.findFirst({
         where: { modelId: schedule.modelId, stage: 'PRODUCTION' },
-        select: { id: true },
+        select: { id: true, promotedAt: true },
       });
-      // No PRODUCTION version — nothing to pin a window to. Not an error:
-      // a demote-then-no-promote leaves a schedule enabled with nothing to
-      // run, and T10's staleness alarm is exactly what surfaces this to a
-      // human, not a background exception.
+
       if (!version) continue;
 
-      const from = new Date(
-        now.getTime() - env.INFERENCE_BACKFILL_HORIZON_HOURS * 3_600_000,
-      );
-      // T11: a window is due once it has ELAPSED and its lag has passed —
-      // windowEnd = now() - lag (schema.prisma's own documented contract
-      // on InferenceSchedule.lagMinutes). Gating on windowStart alone (the
-      // prior code) made a window due at windowStart + lag, one whole
-      // cadence before windowEnd — so the fetch asked the historian for a
-      // window whose end was still up to `cadenceMinutes` in the FUTURE.
-      // Measured live: 20 fully-elapsed windows returned 60/60 rows at
-      // 0% missing while 4 windows read this early returned 19-30 rows,
-      // tracking elapsed minutes linearly. windowEnd = windowStart +
-      // cadenceMinutes, so "due" becomes windowStart <= now - lag - cadence.
+      const horizonMs =
+        now.getTime() - env.INFERENCE_BACKFILL_HORIZON_HOURS * 3_600_000;
+      const anchorsMs = [schedule.enabledAt, version.promotedAt]
+        .filter((at): at is Date => at instanceof Date)
+        .map((at) => windowFloor(at, schedule.cadenceMinutes).getTime());
+      const from = new Date(Math.max(horizonMs, ...anchorsMs));
+
       const to = new Date(
         now.getTime() -
           (schedule.lagMinutes + schedule.cadenceMinutes) * 60_000,
@@ -146,14 +140,6 @@ export class InferenceWindowSchedulerService
         Date.now() + env.INFERENCE_WINDOW_TOKEN_TTL_MS,
       );
 
-      // MODEL-SERVE-001-T20, decided 2026-09-15: `skipDuplicates` keys on
-      // (modelVersionId, windowStart), the same slot a CANCELED row already
-      // occupies — so re-enabling a schedule does NOT resurrect a window a
-      // Stop cancelled while it fell inside INFERENCE_BACKFILL_HORIZON_HOURS.
-      // That windowStart is permanently skipped here, forever. Deliberate:
-      // "cancelled means cancelled," not "cancelled means paused" — the
-      // rejected alternative was flipping CANCELED back to PENDING on the
-      // enable path instead.
       await this.prisma.inferenceWindow.createMany({
         data: starts.map((windowStart) => {
           const { tokenHash } = mintRunToken();
@@ -211,36 +197,18 @@ export class InferenceWindowSchedulerService
   }
 
   /**
-   * Materializes and spawns up to INFERENCE_MAX_CONCURRENCY PENDING
-   * windows, NEWEST FIRST. Out of band from the tick's own error handling —
-   * a spawn failure marks its OWN row FAILED and must never abort sibling
-   * windows in the same batch.
+   * Requests preparation for every PENDING window of a running schedule.
+   * Out of band from the tick's own error handling, and repeatable: the queue
+   * dedupes a window already waiting.
    *
-   * NEWEST FIRST, NOT OLDEST. This claim is global across every model and
-   * takes INFERENCE_MAX_CONCURRENCY rows (1 by default), so the ordering
-   * decides what the whole system works on next. Oldest-first meant a
-   * freshly enabled schedule spent its entire backfill — up to
-   * INFERENCE_BACKFILL_HORIZON_HOURS of windows, 48 by default, one per
-   * tick — replaying history before it ever scored the CURRENT hour. Two
-   * things followed, both bad:
-   *
-   *   1. `deriveDeployStatuses` measures staleness from the most recent
-   *      SUCCEEDED window. Replaying the oldest windows first leaves that
-   *      maximum sitting in the past, so a perfectly healthy model reports
-   *      STALE for the entire drain — hours of looking broken while
-   *      working correctly.
-   *   2. The claim is not scoped per model, so ONE model's backfill
-   *      monopolised the single slot and every other model's live window
-   *      queued behind it — the same batch-head starvation this ledger
-   *      already had to fix once, in the ground-truth sweeper.
-   *
-   * Newest-first fixes both at once: current-hour windows are the newest
-   * rows in the table for EVERY model, so live inference always wins the
-   * slot and backfill fills in behind it. The trade is that a permanently
-   * saturated queue would leave the oldest backfill windows unclaimed —
-   * accepted deliberately, because in a monitoring system a fresh reading
-   * is worth more than an old one, and a stale-looking healthy model is a
-   * worse failure than a late backfill.
+   * NEWEST FIRST, AND LIVE AHEAD OF BACKFILL. A freshly enabled schedule has up
+   * to INFERENCE_BACKFILL_HORIZON_HOURS of windows to replay. Working oldest
+   * first left `deriveDeployStatuses`, which measures staleness from the most
+   * recent SUCCEEDED window, reporting a healthy model STALE for the whole
+   * drain, and let one model's backfill hold every other model's live window
+   * behind it. So the current window of EVERY model outranks all backfill. The
+   * trade is that a permanently saturated queue leaves the oldest backfill
+   * unclaimed, accepted because a fresh reading is worth more than an old one.
    */
   private async dispatchDue(): Promise<void> {
     if (this.dispatching) return; // one dispatch pass in flight at a time
@@ -270,9 +238,12 @@ export class InferenceWindowSchedulerService
       // documents.
       const enabledSchedules = await this.prisma.inferenceSchedule.findMany({
         where: { enabled: true },
-        select: { modelId: true },
+        select: { modelId: true, cadenceMinutes: true, lagMinutes: true },
       });
       if (enabledSchedules.length === 0) return;
+      const scheduleByModel = new Map(
+        enabledSchedules.map((s) => [s.modelId, s]),
+      );
 
       const due = await this.prisma.inferenceWindow.findMany({
         where: {
@@ -280,34 +251,37 @@ export class InferenceWindowSchedulerService
           modelId: { in: enabledSchedules.map((s) => s.modelId) },
         },
         orderBy: { windowStart: 'desc' },
-        take: env.INFERENCE_MAX_CONCURRENCY,
+        take: DUE_WINDOWS_PER_TICK,
+        select: { id: true, modelId: true, windowStart: true },
       });
+      const now = new Date();
       for (const window of due) {
-        await this.dispatchOne(window.id).catch((err) => {
-          this.logger.error(
-            `Dispatch failed for inference window ${window.id}`,
-            err,
-          );
-        });
+        const schedule = scheduleByModel.get(window.modelId);
+        if (!schedule) continue;
+        await this.dispatch.enqueueInferencePrep(
+          window.id,
+          isLiveWindow(window.windowStart, schedule, now),
+        );
       }
     } finally {
       this.dispatching = false;
     }
   }
 
+  /** MODEL-SERVE-011-T01. An operator's run-now: queued at live priority
+   *  instead of waiting for the next tick. Resolves once queued. */
+  requestDispatch(windowId: string): Promise<void> {
+    return this.dispatch.enqueueInferencePrep(windowId, true);
+  }
+
   /**
-   * MODEL-SERVE-011-T01. PUBLIC, body unchanged. `dispatchDue` above is no
-   * longer the only caller: `runNowService` dispatches one window the
-   * instant an operator asks for it instead of waiting up to a whole
-   * INFERENCE_TICK_INTERVAL_MS for the next sweep. The `status !== 'PENDING'`
-   * guard below is what makes a second caller safe — a window already
-   * claimed by a sweep (or by a double-click) is a no-op here, so no second
-   * container is ever spawned for one row.
+   * CONTAINER-QUEUE-001. Runs on the inference-prep queue: fetches and
+   * materializes one window, then queues it for a container. Kept out of the
+   * admission worker because a slow PI fetch there would hold up every job.
    *
-   * NOTE the `enabled: true` filter lives in `dispatchDue`, not here, and
-   * therefore does NOT cover this path: `runNowService` refuses a stopped
-   * schedule itself, with a 409 that says so, rather than silently
-   * dispatching one.
+   * The `status !== 'PENDING'` guard makes a repeat a no-op. The `enabled`
+   * filter lives in `dispatchDue`; `runNowService` refuses a stopped schedule
+   * itself, with a 409 that says so.
    */
   async dispatchOne(windowId: string): Promise<void> {
     const window = await this.prisma.inferenceWindow.findUnique({
@@ -364,6 +338,9 @@ export class InferenceWindowSchedulerService
         window_start: window.windowStart.toISOString(),
         window_end: window.windowEnd.toISOString(),
         interval: fetchConfig.intervalTime,
+        // MODEL-SERVE-043. A sequence model needs `sequence_length - 1` rows
+        // of history before windowStart; 0 for every other algorithm.
+        context_rows: contextRowsFor(d.sequenceLength),
         ...source,
       });
     } catch (err) {
@@ -388,6 +365,10 @@ export class InferenceWindowSchedulerService
       data: {
         inputKey: materialized.object_key,
         inputChecksum: materialized.checksum,
+        // MODEL-SERVE-043. Written every time, null included: a retry that
+        // found no Good lead-in must not leave a previous attempt's pointer.
+        contextKey: materialized.context_object_key,
+        contextChecksum: materialized.context_checksum,
         inputRows: materialized.scored_rows,
         missingPct: materialized.missing_pct,
         // MODEL-SERVE-001-T17. Written in this SAME statement, BEFORE the
@@ -442,22 +423,9 @@ export class InferenceWindowSchedulerService
       return;
     }
 
-    // Re-mint: the row's stored tokenHash was set at INSERT time; the
-    // container needs the PLAINTEXT, which was never persisted. Re-hashing
-    // onto the row here keeps the plaintext-never-touches-a-row discipline
-    // every other token in this codebase follows.
-    const { token } = mintRunToken();
-    const tokenHash = createHash('sha256').update(token).digest('hex');
-    await this.prisma.inferenceWindow.update({
-      where: { id: window.id },
-      data: { tokenHash },
+    await this.dispatch.enqueue('infer', window.id, {
+      live: isLiveWindow(window.windowStart, schedule, new Date()),
     });
-
-    try {
-      await this.runner.spawn(window.id, token, 'infer');
-    } catch (err) {
-      await this.fail(window.id, `Could not start container: ${msg(err)}`);
-    }
   }
 
   /**
@@ -588,6 +556,9 @@ export class InferenceWindowSchedulerService
     table?: string;
     timeColumn?: string;
     tags?: string[];
+    /** MODEL-SERVE-037-T03. Training column -> PI tag, only under a live
+     *  source override. `tags` are then the PI names (what is fetched). */
+    columnTagMap?: Record<string, string>;
   } {
     const raw = (value ?? {}) as Record<string, unknown>;
     return {
@@ -601,6 +572,7 @@ export class InferenceWindowSchedulerService
       tags: Array.isArray(raw.baseTags)
         ? raw.baseTags.filter((t): t is string => typeof t === 'string')
         : undefined,
+      columnTagMap: readLiveSourceOverride(value)?.columnTagMap,
     };
   }
 
@@ -619,7 +591,13 @@ export class InferenceWindowSchedulerService
   async resolveSource(
     sourceId: string,
     fetchConfig: ReturnType<InferenceWindowSchedulerService['asFetchConfig']>,
-  ): Promise<{ pi?: Record<string, unknown>; sql?: Record<string, unknown> }> {
+  ): Promise<{
+    pi?: Record<string, unknown>;
+    sql?: Record<string, unknown>;
+    // MODEL-SERVE-037-T03. Rides along with the credentials so every python
+    // call that spreads this result renames the fetched tags back.
+    column_tag_map?: Record<string, string>;
+  }> {
     const row = await this.prisma.dataSource.findUnique({
       where: { id: sourceId },
     });
@@ -628,18 +606,15 @@ export class InferenceWindowSchedulerService
     }
     const secret = decryptSecret(row.secretCiphertext);
     const config = (row.config ?? {}) as Record<string, unknown>;
+    const mapped = fetchConfig.columnTagMap
+      ? { column_tag_map: fetchConfig.columnTagMap }
+      : {};
 
     if (row.type === 'aveva') {
       return {
+        ...mapped,
         pi: {
-          credentials: {
-            api_server: row.host,
-            pi_server:
-              (typeof config.piServer === 'string' && config.piServer) ||
-              row.dbName,
-            user: row.username,
-            password: secret,
-          },
+          credentials: buildPiCredentials(row, secret),
           tag_list: fetchConfig.tags ?? [],
           // Placeholders — materialize_window overrides start_time/end_time
           // with its own widened fetch range before calling out to PI.
@@ -653,6 +628,7 @@ export class InferenceWindowSchedulerService
     }
     if (row.type === 'sql') {
       return {
+        ...mapped,
         sql: {
           query: {
             credentials: {

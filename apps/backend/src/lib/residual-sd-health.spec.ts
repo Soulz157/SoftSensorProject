@@ -1,204 +1,151 @@
 import {
-  classifyResidualSd,
-  MIN_RESIDUAL_SD_PAIRS,
+  classifyResidualPoints,
+  RESIDUAL_POINT_HOURS,
+  RESIDUAL_POINT_STALE_HOURS,
+  type ResidualPointWindow,
   type ResidualSdThresholds,
 } from '@/lib/residual-sd-health';
-import type { TruthStats } from '@/lib/live-error';
 
-/** Same helper shape as live-error.spec.ts: a fixture reads as the pairs it
- *  means rather than as six opaque sums. */
-function statsFor(
-  pairs: Array<[predicted: number, actual: number]>,
-): TruthStats {
-  return pairs.reduce<TruthStats>(
-    (acc, [predicted, actual]) => {
-      const residual = predicted - actual;
-      return {
-        n: acc.n + 1,
-        sumSe: acc.sumSe + residual * residual,
-        sumAe: acc.sumAe + Math.abs(residual),
-        sumSigned: acc.sumSigned + residual,
-        sumActual: acc.sumActual + actual,
-        sumActualSq: acc.sumActualSq + actual * actual,
-      };
-    },
-    { n: 0, sumSe: 0, sumAe: 0, sumSigned: 0, sumActual: 0, sumActualSq: 0 },
-  );
+const HOUR = 60 * 60 * 1000;
+const NOW = new Date('2026-11-03T12:00:00.000Z');
+const THRESHOLDS: ResidualSdThresholds = { warnSd: 2, criticalSd: 3 };
+
+/** A joined window `hoursAgo` before NOW whose worst residual is `max`. */
+function window(hoursAgo: number, max: number, n = 1): ResidualPointWindow {
+  return {
+    windowStart: new Date(NOW.getTime() - hoursAgo * HOUR),
+    n,
+    maxAbsResidual: max,
+  };
 }
 
-const THRESHOLDS: ResidualSdThresholds = { warnSd: 1.5, criticalSd: 3.0 };
+const classify = (
+  windows: ResidualPointWindow[],
+  baselineSd: number | null = 10,
+  thresholds = THRESHOLDS,
+) => classifyResidualPoints({ windows, baselineSd, thresholds, now: NOW });
 
-/**
- * `count` pairs whose residuals alternate ±`spread` around a moving actual.
- * The residual SD is then exactly `spread`, so a test can state the ratio it
- * expects instead of deriving it.
- */
-function pairsWithSpread(spread: number, count = MIN_RESIDUAL_SD_PAIRS) {
-  return statsFor(
-    Array.from({ length: count }, (_, i): [number, number] => {
-      const actual = 100 + i;
-      return [actual + (i % 2 === 0 ? spread : -spread), actual];
-    }),
-  );
-}
-
-describe('classifyResidualSd', () => {
-  it('is OK while the live spread matches the reference', () => {
-    const verdict = classifyResidualSd({
-      windows: [pairsWithSpread(2)],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
+describe('classifyResidualPoints (MODEL-SERVE-046)', () => {
+  it('is OK while the worst point stays inside 2 SD', () => {
+    const verdict = classify([window(30, 15)]);
+    expect(verdict).toMatchObject({
+      status: 'OK',
+      worstAbsResidual: 15,
+      ratio: 1.5,
+      baselineSd: 10,
     });
+  });
 
+  it('warns beyond 2 SD and alerts beyond 3 SD', () => {
+    expect(classify([window(30, 21)]).status).toBe('WARN');
+    expect(classify([window(30, 31)]).status).toBe('ALERT');
+  });
+
+  it('treats a point exactly ON a guard line as inside it', () => {
+    expect(classify([window(30, 20)]).status).toBe('OK');
+    expect(classify([window(30, 30)]).status).toBe('WARN');
+  });
+
+  it('lets ONE bad point decide, however many good ones surround it', () => {
+    const verdict = classify([
+      window(30, 3, 20),
+      window(29, 35, 1),
+      window(28, 2, 20),
+    ]);
+    expect(verdict.status).toBe('ALERT');
+    expect(verdict.n).toBe(41);
+  });
+
+  it('judges the latest 24 h counted back from the newest JOINED window, not from now', () => {
+    // The newest joined window is 30 h old (the join runs a lag after the
+    // window), so a cut at now-24h would be empty and the axis UNKNOWN forever.
+    const verdict = classify([
+      window(30, 5),
+      window(30 + RESIDUAL_POINT_HOURS - 1, 5),
+    ]);
     expect(verdict.status).toBe('OK');
-    expect(verdict.ratio).toBeCloseTo(1);
-    expect(verdict.liveSd).toBeCloseTo(2);
-    expect(verdict.n).toBe(MIN_RESIDUAL_SD_PAIRS);
+    expect(verdict.n).toBe(2);
   });
 
-  /**
-   * THE TEST THE REJECTED DESIGNS FAIL. A rule that measures residuals
-   * against an SD recomputed from those same residuals — or that counts the
-   * share of points outside their own ±k·SD bands — returns an identical
-   * verdict for both halves of this test, because both quantities are
-   * scale-invariant. The reference SD is what makes error growth visible.
-   */
-  it('DETECTS a tenfold error growth against a frozen reference', () => {
-    const baselineSd = 2;
-    const healthy = classifyResidualSd({
-      windows: [pairsWithSpread(2)],
-      baselineSd,
-      thresholds: THRESHOLDS,
-    });
-    const degraded = classifyResidualSd({
-      windows: [pairsWithSpread(20)],
-      baselineSd,
-      thresholds: THRESHOLDS,
-    });
-
-    expect(healthy.status).toBe('OK');
-    expect(degraded.status).toBe('ALERT');
-    expect(degraded.ratio).toBeCloseTo(10);
-  });
-
-  it('warns between warnSd and criticalSd', () => {
-    const verdict = classifyResidualSd({
-      windows: [pairsWithSpread(4)],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
-    });
-
-    expect(verdict.status).toBe('WARN');
-    expect(verdict.ratio).toBeCloseTo(2);
-  });
-
-  it('treats each threshold as inclusive at its exact boundary', () => {
-    const atWarn = classifyResidualSd({
-      windows: [pairsWithSpread(3)],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
-    });
-    const atCritical = classifyResidualSd({
-      windows: [pairsWithSpread(6)],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
-    });
-
-    expect(atWarn.status).toBe('WARN');
-    expect(atCritical.status).toBe('ALERT');
-  });
-
-  it('stays OK when the model is BETTER than its reference — the test is one-sided', () => {
-    const verdict = classifyResidualSd({
-      windows: [pairsWithSpread(0.5)],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
-    });
-
+  it('ignores a bad point older than 24 h before the newest joined window', () => {
+    const verdict = classify([
+      window(30, 5),
+      window(30 + RESIDUAL_POINT_HOURS + 1, 99),
+    ]);
     expect(verdict.status).toBe('OK');
-    expect(verdict.ratio).toBeCloseTo(0.25);
+    expect(verdict.worstAbsResidual).toBe(5);
   });
 
-  it('is UNKNOWN, never OK, with no reference SD', () => {
-    const verdict = classifyResidualSd({
-      windows: [pairsWithSpread(20)],
-      baselineSd: null,
-      thresholds: THRESHOLDS,
-    });
-
-    expect(verdict.status).toBe('UNKNOWN');
-    expect(verdict.ratio).toBeNull();
-  });
-
-  it('is UNKNOWN on a zero reference SD rather than dividing by it', () => {
-    const verdict = classifyResidualSd({
-      windows: [pairsWithSpread(20)],
-      baselineSd: 0,
-      thresholds: THRESHOLDS,
-    });
-
-    expect(verdict.status).toBe('UNKNOWN');
-    expect(verdict.ratio).toBeNull();
+  it('is UNKNOWN, never OK, with no reference SD or a zero one', () => {
+    expect(classify([window(30, 5)], null).status).toBe('UNKNOWN');
+    expect(classify([window(30, 5)], 0).status).toBe('UNKNOWN');
   });
 
   it('is UNKNOWN when no ground truth has joined', () => {
-    const verdict = classifyResidualSd({
-      windows: [],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
-    });
+    expect(classify([]).status).toBe('UNKNOWN');
+    expect(classify([window(30, 0, 0)]).status).toBe('UNKNOWN');
+  });
 
+  it('is UNKNOWN once the newest evidence is stale', () => {
+    const verdict = classify([window(RESIDUAL_POINT_STALE_HOURS + 1, 99)]);
     expect(verdict.status).toBe('UNKNOWN');
-    expect(verdict.liveSd).toBeNull();
-    expect(verdict.n).toBe(0);
   });
 
-  it('REFUSES to raise on a sample below the minimum, however bad it looks', () => {
-    const verdict = classifyResidualSd({
-      windows: [pairsWithSpread(50, MIN_RESIDUAL_SD_PAIRS - 1)],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
-    });
-
-    expect(verdict.status).toBe('UNKNOWN');
-    // The spread is still reported — the refusal is about the VERDICT, not
-    // about hiding the figure from a reader. Loose precision because an ODD
-    // pair count leaves the alternating residuals with a small non-zero mean,
-    // so the SD lands a hair under the nominal spread.
-    expect(verdict.liveSd).toBeCloseTo(50, 0);
-    expect(verdict.n).toBe(MIN_RESIDUAL_SD_PAIRS - 1);
+  it('follows the schedule thresholds, not a hard-coded 2 and 3', () => {
+    const tight = { warnSd: 1, criticalSd: 1.5 };
+    expect(classify([window(30, 12)], 10, tight).status).toBe('WARN');
+    expect(classify([window(30, 16)], 10, tight).status).toBe('ALERT');
   });
 
-  it('pools windows rather than judging them one at a time', () => {
-    const half = Math.ceil(MIN_RESIDUAL_SD_PAIRS / 2);
-    const verdict = classifyResidualSd({
-      windows: [pairsWithSpread(8, half), pairsWithSpread(8, half)],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
+  describe('held-deviation fallback', () => {
+    const held = { worstAbsResidual: 35 };
+
+    it('grades the held deviation while no pair has joined', () => {
+      const verdict = classifyResidualPoints({
+        windows: [],
+        baselineSd: 10,
+        thresholds: THRESHOLDS,
+        heldFallback: held,
+        now: NOW,
+      });
+      expect(verdict).toMatchObject({
+        status: 'ALERT',
+        ratio: 3.5,
+        basis: 'held',
+        n: 0,
+      });
     });
 
-    expect(verdict.n).toBe(half * 2);
-    expect(verdict.status).toBe('ALERT');
-  });
-
-  it('measures SPREAD, not offset — a biased but consistent model is not an SD fault', () => {
-    // Every residual is exactly +20: a large, systematic over-prediction
-    // with ZERO spread. This axis reports OK, correctly; a constant offset
-    // is a different fault with a different fix, and naming it here would
-    // put two faults under one reason code.
-    const windows = statsFor(
-      Array.from(
-        { length: MIN_RESIDUAL_SD_PAIRS },
-        (_, i): [number, number] => [100 + i + 20, 100 + i],
-      ),
-    );
-    const verdict = classifyResidualSd({
-      windows: [windows],
-      baselineSd: 2,
-      thresholds: THRESHOLDS,
+    it('is ignored the moment a joined pair exists', () => {
+      const verdict = classifyResidualPoints({
+        windows: [window(30, 5)],
+        baselineSd: 10,
+        thresholds: THRESHOLDS,
+        heldFallback: held,
+        now: NOW,
+      });
+      expect(verdict).toMatchObject({ status: 'OK', basis: 'pairs' });
     });
 
-    expect(verdict.liveSd).toBeCloseTo(0);
-    expect(verdict.status).toBe('OK');
+    it('stays UNKNOWN without a reference SD, and OK inside the band', () => {
+      expect(
+        classifyResidualPoints({
+          windows: [],
+          baselineSd: null,
+          thresholds: THRESHOLDS,
+          heldFallback: held,
+          now: NOW,
+        }).status,
+      ).toBe('UNKNOWN');
+      expect(
+        classifyResidualPoints({
+          windows: [],
+          baselineSd: 100,
+          thresholds: THRESHOLDS,
+          heldFallback: held,
+          now: NOW,
+        }).status,
+      ).toBe('OK');
+    });
   });
 });
