@@ -1,0 +1,29 @@
+parameters:
+  - name: name
+    type: string
+  - name: repository
+    type: string
+  - name: dockerfile
+    type: string
+  - name: serviceConnection
+    type: string
+
+jobs:
+  - job: image_${{ parameters.name }}
+    displayName: Image ${{ parameters.name }}
+    timeoutInMinutes: 45
+    steps:
+      # Build context is the repo root: both images need packages/py-scaling.
+      - script: docker build -f ${{ parameters.dockerfile }} -t "$(ACR_NAME).azurecr.io/${{ parameters.repository }}:$(Build.SourceVersion)" .
+        displayName: Build
+      - task: AzureCLI@2
+        displayName: Push
+        condition: and(succeeded(), eq(variables.isPullRequest, 'False'))
+        inputs:
+          azureSubscription: ${{ parameters.serviceConnection }}
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            az acr login --name "$(ACR_NAME)"
+            docker push "$(ACR_NAME).azurecr.io/${{ parameters.repository }}:$(Build.SourceVersion)"

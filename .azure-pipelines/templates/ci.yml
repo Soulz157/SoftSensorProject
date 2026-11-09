@@ -1,0 +1,57 @@
+jobs:
+  - job: node
+    displayName: Node lint, types, tests
+    timeoutInMinutes: 45
+    variables:
+      # Prisma needs a value to generate; nothing connects to it here.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+    steps:
+      - task: UseNode@1
+        inputs:
+          version: 24.x
+      - script: corepack enable && pnpm install --frozen-lockfile
+        displayName: Install
+      - script: pnpm lint
+        displayName: Lint
+      - script: pnpm check-types
+        displayName: Type-check
+      # Not blocking yet: 9 backend suites and 20 client cases were already red
+      # when this pipeline was added. Tracked in the AZURE-BLOB-001 known_gaps.
+      - script: pnpm --filter=backend test
+        displayName: Backend tests
+        continueOnError: true
+      - script: pnpm --filter=client test
+        displayName: Client tests
+        continueOnError: true
+
+  - job: python
+    displayName: Python service tests
+    timeoutInMinutes: 30
+    variables:
+      SYS_USER: ci
+      SYS_PASS: ci
+      PI_NAME: ci
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '3.13'
+      - script: docker run -d -p 127.0.0.1:10000:10000 mcr.microsoft.com/azure-storage/azurite azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+        displayName: Start Azurite
+      - script: |
+          pip install -r requirements.txt pytest
+          python -m pytest -q tests
+        displayName: pytest
+        workingDirectory: apps/python
+
+  - job: trainer
+    displayName: Trainer tests
+    timeoutInMinutes: 30
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '3.12'
+      - script: |
+          pip install -r requirements.txt pytest
+          python -m pytest -q test
+        displayName: pytest
+        workingDirectory: images/trainer

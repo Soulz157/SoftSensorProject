@@ -114,7 +114,7 @@ describe('WorkspaceDataIntakeAuthorizedService.getWorkspaceIntake', () => {
     );
     expect(prisma.model.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ workspaceId: 'ws1' }),
+        where: expect.objectContaining({ workspaceId: 'ws1' }) as object,
       }),
     );
     expect(prisma.datasetArtifact.findMany).toHaveBeenCalledWith(
@@ -282,7 +282,7 @@ describe('WorkspaceDataIntakeAuthorizedService.getAllIntake', () => {
         rowsIngested: 10,
         storageBytes: 0,
         datasetCount: 0,
-        tags: expect.objectContaining({ bad: 1 }),
+        tags: expect.objectContaining({ bad: 1 }) as object,
       }),
       expect.objectContaining({
         id: 'ws2',

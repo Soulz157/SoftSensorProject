@@ -11,7 +11,7 @@
       "progress": 85,
       "tasks": [
         {
-          "id": "CONTAINER-QUEUE-001-T01",
+          "id": "CONTAINER-QUEUE- 001-T01",
           "title": "Measure peak memory and CPU per mode",
           "detail": "Sized on the largest real dataset (35,593 rows x 129 tags). Reservations default from these numbers. Measured 2026-11-09: GPR 2.40 GiB, LSTM 1.74, forest grid 0.70, Extra Trees 0.57, LightGBM 0.43, RF 0.39, XGBoost 0.25, load+predict 0.33.",
           "status": "completed"

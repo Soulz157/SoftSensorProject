@@ -286,6 +286,22 @@ overwrite it.
 
 ---
 
+## Object Storage Backends (AZURE-BLOB-001)
+
+`ObjectStore` (`apps/python/intergrations/object_store.py`) is the only way into storage. It owns Parquet, key layout and retention. The SDK calls sit behind `StorageBackend`, chosen by `STORAGE_BACKEND`:
+
+- `minio`: local development.
+- `azure`: production. Signs in with Microsoft Entra ID, so the app holds no account key. Containers receive user delegation SAS URLs limited to one blob.
+
+Rules on Azure:
+
+- The account must keep a flat namespace, or tags stop driving lifecycle.
+- The service identity needs `Storage Blob Data Owner`. Contributor cannot set blob index tags.
+- The `lifecycle=tmp` expiry rule is declared in `infra/modules/storage.bicep`, not set at runtime.
+- A presigned PUT must send `x-ms-blob-type: BlockBlob`. The trainer sends it from image 1.0.28.
+
+Deployment setup is in `infra/README.md`. Where containers run on Azure is undecided: see `AZURE-HOST-001` in `docs/feature_list_azure_storage.json`.
+
 ## Container Job Queue (CONTAINER-QUEUE-001)
 
 Train, score, batch and scheduled-inference containers start only when the host

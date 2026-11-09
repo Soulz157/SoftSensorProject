@@ -73,8 +73,12 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // NanoCpus); measured 1.5-1.8x under a 2-CPU cap with an identical result.
   // Built by the user (2026-11-05, image 333eb812b570); trainer suite 124/124
   // against the code baked into it. Not pushed.
+  //
+  // 1.0.28 — AZURE-BLOB-001. upload_artifacts sends `x-ms-blob-type:
+  // BlockBlob`, which Azure Blob requires on a presigned PUT and MinIO ignores.
+  // ADDITIVE: nothing else changes, and an older image cannot upload to Azure.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.27';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.28';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
 

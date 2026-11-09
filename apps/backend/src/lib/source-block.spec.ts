@@ -65,7 +65,7 @@ describe('buildSourceBlock — PI summary parameters', () => {
         cal_basis: 'EventWeighted',
         summary_type: ['Maximum'],
         batch_size: 50,
-      }),
+      }) as object,
     });
   });
 

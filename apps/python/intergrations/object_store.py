@@ -1,4 +1,5 @@
-"""MinIO / S3 object storage for dataset version artifacts.
+"""Object storage for dataset version artifacts: MinIO locally, Azure Blob in
+production (see `storage_backends.py`).
 
 Note the package spelling: `intergrations` is the existing (misspelled) package
 name used throughout this service. Kept deliberately — a parallel, correctly
@@ -58,13 +59,12 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
-from minio import Minio
-from minio.commonconfig import ENABLED, CopySource, Filter, Tag
-from minio.datatypes import Tags
-from minio.error import S3Error
-from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
-
 from config import settings
+from intergrations.storage_backends import (
+    StorageBackend,
+    StorageError,
+    build_backend,
+)
 from softsensor_scaling import (
     STATUS_BAD,
     STATUS_GOOD,
@@ -189,18 +189,18 @@ RETENTION_REFERENCED = "referenced"
 RETENTION_PERMANENT = "permanent"
 
 
-def _with_retention_tag(key: str, tags: Tags | None) -> Tags:
+def _with_retention_tag(
+    key: str, tags: dict[str, str] | None
+) -> dict[str, str]:
     """Return `tags` with this key's retention class added.
 
     MODEL-SERVE-007-T02. MERGES rather than replaces: `put_frame` already
-    passes a `Tags` carrying `lifecycle=tmp`, and dropping that would leave
+    passes tags carrying `lifecycle=tmp`, and dropping that would leave
     the tmp lifecycle rule with nothing to match. `class_for_key` is defined
     at the bottom of this module beside the other key predicates; it is a
     pure function of the key, so calling it on every write costs nothing.
     """
-    merged = tags if tags is not None else Tags.new_object_tags()
-    merged[RETENTION_TAG_KEY] = class_for_key(key)
-    return merged
+    return {**(tags or {}), RETENTION_TAG_KEY: class_for_key(key)}
 
 
 class ObjectStoreError(RuntimeError):
@@ -220,7 +220,7 @@ class ObjectNotFoundError(ObjectStoreError):
     """
 
 
-def _read_failure(key: str, err: S3Error) -> ObjectStoreError:
+def _read_failure(key: str, err: StorageError) -> ObjectStoreError:
     """Pick the failure type for a GET that raised — see `ObjectNotFoundError`.
 
     One helper rather than the same `if err.code == ...` inline at each of
@@ -351,10 +351,10 @@ logger = logging.getLogger(__name__)
 
 
 class ObjectStore:
-    """Thin Parquet-over-MinIO wrapper.
+    """Thin Parquet-over-object-storage wrapper.
 
-    Only this service holds S3 credentials. NestJS reaches artifacts through the
-    Python API, which keeps one seam and one place to audit.
+    Only this service holds storage access. NestJS reaches artifacts through
+    the Python API, which keeps one seam and one place to audit.
     """
 
     def __init__(
@@ -364,38 +364,26 @@ class ObjectStore:
         secret_key: str | None = None,
         bucket: str | None = None,
         region: str | None = None,
+        *,
+        backend: StorageBackend | None = None,
     ) -> None:
-        raw_endpoint = endpoint or settings.S3_ENDPOINT
-        secure = raw_endpoint.startswith("https://")
-        host = raw_endpoint.split("://", 1)[-1].rstrip("/")
-
-        self._presign_minio: Minio | None = None
-        self.bucket = bucket or settings.S3_BUCKET
-        self._client = Minio(
-            host,
-            access_key=access_key or settings.S3_ACCESS_KEY,
-            secret_key=secret_key or settings.S3_SECRET_KEY,
-            region=region or settings.S3_REGION,
-            secure=secure,
+        self._backend = backend or build_backend(
+            endpoint, access_key, secret_key, bucket, region
         )
+        self.bucket = self._backend.container
 
     # ── bucket ───────────────────────────────────────────────────────────
 
     def ensure_bucket(self) -> None:
         try:
-            if not self._client.bucket_exists(self.bucket):
-                self._client.make_bucket(self.bucket)
-        except S3Error as err:
+            self._backend.ensure_container()
+        except StorageError as err:
             raise ObjectStoreError(
                 f"Could not prepare bucket '{self.bucket}': {err.code}"
             ) from err
 
     def exists(self, key: str) -> bool:
-        try:
-            self._client.stat_object(self.bucket, key)
-            return True
-        except S3Error:
-            return False
+        return self._backend.exists(key)
 
     def tag_retention(self, key: str) -> bool:
         """Apply `key`'s retention class to an object already in the store.
@@ -420,11 +408,9 @@ class ObjectStore:
         if "/tmp/" in key:
             return False
         try:
-            tags = Tags.new_object_tags()
-            tags[RETENTION_TAG_KEY] = class_for_key(key)
-            self._client.set_object_tags(self.bucket, key, tags)
+            self._backend.set_tags(key, {RETENTION_TAG_KEY: class_for_key(key)})
             return True
-        except S3Error as err:
+        except StorageError as err:
             logger.warning(
                 "retention tag not applied to '%s': %s", key, err.code)
             return False
@@ -462,8 +448,7 @@ class ObjectStore:
         # object is a narrower thing than the SWEEPABLE class it belongs to.
         object_tags = None
         if "/tmp/" in key:
-            object_tags = Tags.new_object_tags()
-            object_tags[TMP_LIFECYCLE_TAG_KEY] = TMP_LIFECYCLE_TAG_VALUE
+            object_tags = {TMP_LIFECYCLE_TAG_KEY: TMP_LIFECYCLE_TAG_VALUE}
 
         self.put_object_bytes(
             key,
@@ -487,13 +472,13 @@ class ObjectStore:
         data: bytes,
         *,
         content_type: str = "application/octet-stream",
-        tags: Tags | None = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         """Raw bytes write — the low-level primitive `put_frame` writes atop.
 
         DS-LAKE-021-T01: factored out of `put_frame`'s own MinIO-call body
         so `put_frame` and this method share one PUT path instead of two
-        near-identical ones (`put_json` still calls `self._client.put_object`
+        near-identical ones (`put_json` still calls `self._backend.put`
         directly — out of scope here, not folded in). No immutability check
         here — that is `put_frame`'s own concern (committed Parquet
         artifacts refuse an overwrite); a sidecar like `export.csv` is
@@ -515,7 +500,7 @@ class ObjectStore:
         length: int,
         *,
         content_type: str = "application/octet-stream",
-        tags: Tags | None = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         """Streaming write — `put_object_bytes` above is the bytes-in-hand
         convenience wrapper atop this.
@@ -524,21 +509,20 @@ class ObjectStore:
         CSV output into a `SpooledTemporaryFile` rather than an in-memory
         `bytes` value, so it needs a PUT that accepts a file-like object
         directly — wrapping the whole file back into `bytes` just to call
-        `put_object_bytes` would defeat the point. `self._client.put_object`
+        `put_object_bytes` would defeat the point. `self._backend.put`
         already accepts any file-like object with `.read()`, so this is a
-        thin, direct pass-through, same `S3Error` → `ObjectStoreError`
+        thin, direct pass-through, same `StorageError` → `ObjectStoreError`
         wrapping as `put_object_bytes` always had.
         """
         try:
-            self._client.put_object(
-                self.bucket,
+            self._backend.put(
                 key,
                 stream,
-                length=length,
-                content_type=content_type,
-                tags=_with_retention_tag(key, tags),
+                length,
+                content_type,
+                _with_retention_tag(key, tags),
             )
-        except S3Error as err:
+        except StorageError as err:
             raise ObjectStoreError(
                 f"Could not write '{key}': {err.code}") from err
 
@@ -562,15 +546,14 @@ class ObjectStore:
             # Tagged only in `put_object_stream` it would miss every JSON
             # sidecar — run_manifest.json, metrics.json, feature_spec.json —
             # while every Parquet-based test still passed.
-            self._client.put_object(
-                self.bucket,
+            self._backend.put(
                 key,
                 io.BytesIO(payload),
-                length=len(payload),
-                content_type="application/json",
-                tags=_with_retention_tag(key, None),
+                len(payload),
+                "application/json",
+                _with_retention_tag(key, None),
             )
-        except S3Error as err:
+        except StorageError as err:
             raise ObjectStoreError(
                 f"Could not write '{key}': {err.code}") from err
         return len(payload)
@@ -604,7 +587,7 @@ class ObjectStore:
         DS-LAKE-021-T01: factored out of `get_frame`'s own MinIO-call body
         so `get_frame` and this method share one GET path instead of two
         near-identical ones (`get_json`, `get_frame_metadata`, `checksum_of`
-        and `get_frame_slice_duckdb` still call `self._client.get_object`
+        and `get_frame_slice_duckdb` still call `self._backend.open_read`
         directly — out of scope here, not folded in). Exists for callers
         that want the whole object as one `bytes` value; `export_service.
         export_artifact_csv` used to be one such caller but now streams via
@@ -613,9 +596,9 @@ class ObjectStore:
         """
         response = None
         try:
-            response = self._client.get_object(self.bucket, key)
+            response = self._backend.open_read(key)
             return response.read()
-        except S3Error as err:
+        except StorageError as err:
             raise _read_failure(key, err) from err
         finally:
             if response is not None:
@@ -637,20 +620,20 @@ class ObjectStore:
         `chunk_bytes` of the response in memory at once; the caller decides
         where the chunks land (a `SpooledTemporaryFile`, typically), which
         is what actually lets peak memory stay flat as row count grows.
-        Same `S3Error` → `ObjectStoreError` wrapping and same
+        Same `StorageError` → `ObjectStoreError` wrapping and same
         `close()`/`release_conn()` `finally` block as `get_object_bytes` —
-        a missing key still raises from `get_object` itself, before any
+        a missing key still raises from `open_read` itself, before any
         chunk is read.
         """
         response = None
         written = 0
         try:
-            response = self._client.get_object(self.bucket, key)
+            response = self._backend.open_read(key)
             for chunk in response.stream(chunk_bytes):
                 fileobj.write(chunk)
                 written += len(chunk)
             return written
-        except S3Error as err:
+        except StorageError as err:
             raise _read_failure(key, err) from err
         finally:
             if response is not None:
@@ -676,9 +659,9 @@ class ObjectStore:
         """
         response = None
         try:
-            response = self._client.get_object(self.bucket, key)
+            response = self._backend.open_read(key)
             payload = response.read()
-        except S3Error as err:
+        except StorageError as err:
             raise _read_failure(key, err) from err
         finally:
             if response is not None:
@@ -720,9 +703,9 @@ class ObjectStore:
     def get_json(self, key: str) -> Any:
         response = None
         try:
-            response = self._client.get_object(self.bucket, key)
+            response = self._backend.open_read(key)
             return json.loads(response.read())
-        except S3Error as err:
+        except StorageError as err:
             raise _read_failure(key, err) from err
         finally:
             if response is not None:
@@ -738,9 +721,9 @@ class ObjectStore:
         """
         response = None
         try:
-            response = self._client.get_object(self.bucket, key)
+            response = self._backend.open_read(key)
             return sha256_hex(response.read())
-        except S3Error as err:
+        except StorageError as err:
             raise _read_failure(key, err) from err
         finally:
             if response is not None:
@@ -802,9 +785,9 @@ class ObjectStore:
         response = None
         tmp_path: str | None = None
         try:
-            response = self._client.get_object(self.bucket, key)
+            response = self._backend.open_read(key)
             payload = response.read()
-        except S3Error as err:
+        except StorageError as err:
             raise _read_failure(key, err) from err
         finally:
             if response is not None:
@@ -842,13 +825,8 @@ class ObjectStore:
         window is a normal "no requests logged this hour", not an error.
         """
         try:
-            return [
-                obj.object_name
-                for obj in self._client.list_objects(
-                    self.bucket, prefix=prefix, recursive=True
-                )
-            ]
-        except S3Error as err:
+            return list(self._backend.list_keys(prefix))
+        except StorageError as err:
             raise ObjectStoreError(
                 f"Could not list prefix '{prefix}': {err.code}"
             ) from err
@@ -857,12 +835,10 @@ class ObjectStore:
         """Drop every object under a prefix — used to clear tmp/{jobId}/."""
         removed = 0
         try:
-            for obj in self._client.list_objects(
-                self.bucket, prefix=prefix, recursive=True
-            ):
-                self._client.remove_object(self.bucket, obj.object_name)
+            for key in self._backend.list_keys(prefix):
+                self._backend.delete(key)
                 removed += 1
-        except S3Error as err:
+        except StorageError as err:
             raise ObjectStoreError(
                 f"Could not clear prefix '{prefix}': {err.code}"
             ) from err
@@ -886,7 +862,7 @@ class ObjectStore:
         process, so a wide artifact costs the same here as a small one.
         Single-part server-side copy tops out at 5 GiB per object; nothing
         this service writes is near that, and a source past it would
-        surface as a loud `S3Error` rather than a silent truncation.
+        surface as a loud `StorageError` rather than a silent truncation.
 
         An object whose destination already exists is counted and skipped,
         not re-copied. That is what makes a retried Save converge instead
@@ -904,16 +880,10 @@ class ObjectStore:
 
         copied: list[str] = []
         try:
-            for obj in self._client.list_objects(
-                self.bucket, prefix=src_prefix, recursive=True
-            ):
-                src_key = obj.object_name
+            for src_key in self._backend.list_keys(src_prefix):
                 dst_key = f"{dst_prefix}{src_key[len(src_prefix):]}"
                 if not self.exists(dst_key):
-                    self._client.copy_object(
-                        self.bucket, dst_key, CopySource(
-                            self.bucket, src_key)
-                    )
+                    self._backend.copy(src_key, dst_key)
                     # MODEL-SERVE-007-T02. This is the THIRD write path, and
                     # the one neither half of that task reached: a copy mints
                     # a NEW object without going through `put_object_stream`,
@@ -928,7 +898,7 @@ class ObjectStore:
                     # class change.
                     self.tag_retention(dst_key)
                 copied.append(dst_key)
-        except S3Error as err:
+        except StorageError as err:
             raise ObjectStoreError(
                 f"Could not copy '{src_prefix}' to '{dst_prefix}': {err.code}"
             ) from err
@@ -958,50 +928,16 @@ class ObjectStore:
         call), and left as an explicit ops bootstrap step — run it once
         per environment, the same way `ensure_bucket()` is.
         """
-        desired = Rule(
-            ENABLED,
-            rule_id=TMP_LIFECYCLE_RULE_ID,
-            rule_filter=Filter(
-                tag=Tag(TMP_LIFECYCLE_TAG_KEY, TMP_LIFECYCLE_TAG_VALUE)),
-            expiration=Expiration(days=TMP_LIFECYCLE_EXPIRY_DAYS),
-        )
-
         try:
-            existing = self._client.get_bucket_lifecycle(self.bucket)
-        except S3Error as err:
-            # NoSuchLifecycleConfiguration means "none set yet" — not a
-            # failure to surface.
-            if err.code != "NoSuchLifecycleConfiguration":
-                raise ObjectStoreError(
-                    f"Could not read lifecycle config for '{self.bucket}': "
-                    f"{err.code}"
-                ) from err
-            existing = None
-
-        other_rules = [
-            rule
-            for rule in (existing.rules if existing else [])
-            if rule.rule_id != TMP_LIFECYCLE_RULE_ID
-        ]
-        current = next(
-            (
-                rule
-                for rule in (existing.rules if existing else [])
-                if rule.rule_id == TMP_LIFECYCLE_RULE_ID
-            ),
-            None,
-        )
-        if current == desired:
-            return  # already in the desired state — no-op, no API call
-
-        try:
-            self._client.set_bucket_lifecycle(
-                self.bucket, LifecycleConfig([*other_rules, desired])
+            self._backend.ensure_tmp_lifecycle(
+                TMP_LIFECYCLE_RULE_ID,
+                TMP_LIFECYCLE_TAG_KEY,
+                TMP_LIFECYCLE_TAG_VALUE,
+                TMP_LIFECYCLE_EXPIRY_DAYS,
             )
-        except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not set lifecycle rule on '{self.bucket}': {err.code}"
-            ) from err
+        except StorageError as err:
+            raise ObjectStoreError(str(err)) from err
+
     # ── presign ──────────────────────────────────────────────────────────
     #
     # A presigned URL is a bearer capability: whoever holds it can perform
@@ -1018,33 +954,6 @@ class ObjectStore:
     #: Write TTL. Minted at the END of a run, on request, for the same reason.
     PRESIGN_WRITE_TTL = timedelta(minutes=30)
 
-    def _presign_client(self) -> Minio:
-        """Minio client bound to the PUBLICLY reachable endpoint.
-
-        SigV4 signs the Host header, so the hostname is baked into the
-        signature and cannot be rewritten afterwards without invalidating it.
-        `S3_ENDPOINT` is what THIS service dials — per
-        `ensure_tmp_lifecycle_rule`'s doc comment MinIO runs as an
-        uncommitted `minio-local` container, a name a training container on
-        another network cannot resolve. `S3_PUBLIC_ENDPOINT` is the name the
-        CONTAINER must use; it falls back to `S3_ENDPOINT` for the case where
-        the two are genuinely the same, so a single-network deployment needs
-        no new config.
-        """
-        if getattr(self, "_presign_minio", None) is None:
-            raw = getattr(settings, "S3_PUBLIC_ENDPOINT",
-                          None) or settings.S3_ENDPOINT
-            secure = raw.startswith("https://")
-            host = raw.split("://", 1)[-1].rstrip("/")
-            self._presign_minio = Minio(
-                host,
-                access_key=settings.S3_ACCESS_KEY,
-                secret_key=settings.S3_SECRET_KEY,
-                region=settings.S3_REGION,
-                secure=secure,
-            )
-        return self._presign_minio
-
     def presigned_get(self, key: str, *, ttl: timedelta | None = None) -> str:
         """Time-limited read URL for one object.
 
@@ -1056,10 +965,8 @@ class ObjectStore:
             raise ObjectStoreError(
                 f"Cannot presign '{key}': object not found.")
         try:
-            return self._presign_client().get_presigned_url(
-                "GET", self.bucket, key, expires=ttl or self.PRESIGN_READ_TTL
-            )
-        except S3Error as err:
+            return self._backend.presign_get(key, ttl or self.PRESIGN_READ_TTL)
+        except StorageError as err:
             raise ObjectStoreError(
                 f"Could not presign read for '{key}': {err.code}"
             ) from err
@@ -1074,10 +981,8 @@ class ObjectStore:
         the key is effectively write-once by construction rather than by check.
         """
         try:
-            return self._presign_client().get_presigned_url(
-                "PUT", self.bucket, key, expires=ttl or self.PRESIGN_WRITE_TTL
-            )
-        except S3Error as err:
+            return self._backend.presign_put(key, ttl or self.PRESIGN_WRITE_TTL)
+        except StorageError as err:
             raise ObjectStoreError(
                 f"Could not presign write for '{key}': {err.code}"
             ) from err

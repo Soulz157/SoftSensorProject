@@ -526,7 +526,7 @@ describe('deriveDeployStatuses (batched)', () => {
     expect(mock.predictionLog.findMany).toHaveBeenCalledTimes(1);
     expect(
       (
-        mock.predictionLog.findMany.mock.calls[0][0] as {
+        (mock.predictionLog.findMany.mock.calls[0] as unknown[])[0] as {
           where: { modelVersionId: { in: string[] } };
         }
       ).where.modelVersionId.in,
