@@ -302,13 +302,6 @@ export function rangeTimestamps(
   return out
 }
 
-/** Most recent reading (input is ascending). */
-export function latestReading(
-  readings: SensorReading[],
-): SensorReading | undefined {
-  return readings.length ? readings[readings.length - 1] : undefined
-}
-
 export interface MockTagRow {
   tagName: string
   status: 'good' | 'bad'

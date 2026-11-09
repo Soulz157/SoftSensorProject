@@ -78,11 +78,9 @@ for name, (desc, unit, _b, _mix) in LAB_TAGS.items():
     TAGS[name] = {"desc": desc, "unit": unit, "type": "Int32"}
 TAG_NAMES = sorted(TAGS)
 
-# Real plant tag -> mock tag, mirroring the tag tokens of
-# apps/client/components/dev/mockup-map.ts. A feature preset saved from the
-# real plant still asks PI for its REAL names; with mockup mode on, the page
-# shows them as the mock names, so each alias serves the SAME series as its
-# mock tag. Aliases resolve by name only — catalog search lists mock names.
+# Real plant tag -> mock tag. A feature preset saved from the real plant still
+# asks PI for its REAL names, so each alias serves the SAME series as its mock
+# tag. Aliases resolve by name only — catalog search lists mock names.
 ALIASES: dict[str, str] = {
     "AI602A.PV": "Analyzer-4", "AI602B.PV": "Analyzer-5",
     "FIC318.PV": "Flow-10", "FIC505.PV": "Flow-11", "FIC604.PV": "Flow-12",

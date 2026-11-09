@@ -11,12 +11,6 @@ export const ARTIFACT_EXTENSIONS = ['.pkg', '.mar', '.zip'] as const
 /** Client-side size ceiling used for the mock upload's validation messaging. */
 export const MAX_ARTIFACT_BYTES = 200 * 1024 * 1024 // 200 MB
 
-/** A tag mapped to a model, tagged with its inference role. Local-only for now. */
-export interface ModelTag {
-  piTag: string
-  role: 'input' | 'output'
-}
-
 /** True when `fileName` ends with one of {@link ARTIFACT_EXTENSIONS}. */
 export function hasArtifactExtension(fileName: string): boolean {
   const lower = fileName.toLowerCase()

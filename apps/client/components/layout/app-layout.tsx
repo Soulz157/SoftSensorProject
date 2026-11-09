@@ -8,8 +8,6 @@ import { Navbar } from '@/components/layout/navbar'
 import { Sidebar } from '@/components/layout/sidebar'
 import { sidebarCollapsedAtom } from '@/store/workspace'
 import { CreateWorkspaceDialog } from '../create-workspace'
-import { MockupNamesPatch } from '@/components/dev/mockup-names-patch'
-import { MonitoringMockupPatch } from '@/components/dev/monitoring-mockup-patch'
 
 interface AppLayoutProps {
   children?: React.ReactNode
@@ -35,21 +33,11 @@ export function AppLayout({ children }: AppLayoutProps) {
   // While the session is still loading `/` shows its full-screen skeleton, so
   // the shell never flashes for a guest.
   if (pathname === '/' && status !== 'authenticated') {
-    return (
-      <>
-        <MonitoringMockupPatch />
-        <MockupNamesPatch />
-        {children}
-      </>
-    )
+    return <>{children}</>
   }
 
   return (
     <div className="flex h-screen bg-background">
-      {/* Dev-only document mockup modes; first so they patch before any
-          fetch. Monitoring before names, so the names patch wraps it. */}
-      <MonitoringMockupPatch />
-      <MockupNamesPatch />
       <Sidebar
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
